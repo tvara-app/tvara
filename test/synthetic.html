@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>LCT Torture Test — 1,500-message chat</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font: 15px/1.6 -apple-system, "Segoe UI", sans-serif; background: #212327; color: #ececf1; }
+    header { position: fixed; top: 0; left: 0; right: 0; padding: 10px 20px; background: #17181c;
+             display: flex; gap: 16px; align-items: center; z-index: 10; }
+    header b { color: #7aa2ff; }
+    #chat { max-width: 760px; margin: 60px auto 120px; padding: 0 16px; }
+    .msg { padding: 18px 20px; margin: 10px 0; border-radius: 12px; }
+    .msg.user { background: #2f3136; }
+    .msg.assistant { background: #26282e; }
+    .msg .who { font-size: 12px; font-weight: 700; opacity: 0.6; margin-bottom: 6px; }
+    pre { background: #0f1013; border-radius: 8px; padding: 12px; overflow-x: auto;
+          font: 12.5px/1.5 ui-monospace, Menlo, monospace; margin-top: 8px; color: #9fe8a4; }
+    footer { position: fixed; bottom: 0; left: 0; right: 0; padding: 14px 20px; background: #17181c; }
+    footer input { width: 100%; max-width: 728px; display: block; margin: 0 auto; padding: 12px 16px;
+                   border-radius: 10px; border: 1px solid #34363c; background: #26282e; color: #ececf1; font-size: 15px; }
+  </style>
+</head>
+<body>
+  <header>
+    <span>🧪 <b>LCT Torture Test</b> — 1,500 messages, heavy code blocks.</span>
+    <span id="hint">Type below with the extension OFF, then ON. Feel the difference.</span>
+  </header>
+  <div id="chat"></div>
+  <footer>
+    <input id="box" placeholder="Type here to feel input lag… (this is the test)" />
+  </footer>
+
+  <script>
+    const chat = document.getElementById("chat");
+    const LOREM = "The quick brown fox jumps over the lazy dog while considering the architectural implications of distributed systems at scale. ".repeat(6);
+    const CODE = Array.from({ length: 18 }, (_, i) =>
+      `function compute_${i}(data) {\n  return data.map(x => x * ${i}).filter(Boolean).reduce((a, b) => a + b, 0);\n}`
+    ).join("\n\n");
+
+    const N = 1500;
+    const frag = document.createDocumentFragment();
+    for (let i = 0; i < N; i++) {
+      const user = i % 2 === 0;
+      const div = document.createElement("div");
+      div.className = "msg " + (user ? "user" : "assistant");
+      div.setAttribute("data-lct-message", "");
+      div.setAttribute("data-lct-role", user ? "user" : "assistant");
+      div.innerHTML =
+        `<div class="who">${user ? "🧑 You" : "🤖 AI"} · #${i + 1}</div>` +
+        `<div>${user ? "Question " + (i + 1) + ": " + LOREM.slice(0, 220) : LOREM}</div>` +
+        (!user && i % 3 === 0 ? `<pre>${CODE}</pre>` : "");
+      frag.appendChild(div);
+    }
+    chat.appendChild(frag);
+    window.scrollTo(0, document.body.scrollHeight);
+  </script>
+</body>
+</html>

@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header>
+    <div class="logo">⚡</div>
+    <div class="title">
+      <h1>Long Chat Toolkit</h1>
+      <span id="plan-badge" class="badge free">FREE</span>
+    </div>
+  </header>
+
+  <section class="stats">
+    <div class="stat">
+      <span id="stat-windowed">0</span>
+      <label>messages accelerated</label>
+    </div>
+    <div id="stat-hosts"></div>
+  </section>
+
+  <section class="controls">
+    <label class="row">
+      <span>⚡ Speed engine</span>
+      <input type="checkbox" id="toggle-enabled" checked />
+    </label>
+    <label class="row">
+      <span>🗺️ Minimap</span>
+      <input type="checkbox" id="toggle-minimap" checked />
+    </label>
+  </section>
+
+  <section class="license" id="license-section">
+    <h2>💎 Unlock Pro — $9 once, forever</h2>
+    <p class="muted">Speed engine is free everywhere. Pro unlocks minimap, in-chat search (⌘⇧F) &amp; one-click backup on Claude, Gemini &amp; Perplexity — free on ChatGPT. Offline license — this extension never touches the internet.</p>
+    <div class="license-row">
+      <input type="text" id="license-input" placeholder="Paste your license key (LCT1.…)" spellcheck="false" />
+      <button id="license-activate">Activate</button>
+    </div>
+    <p id="license-status" class="muted"></p>
+  </section>
+
+  <footer>
+    <span class="muted">🔒 Zero network permissions · open source</span>
+  </footer>
+
+  <script src="../lib/license.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

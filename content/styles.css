@@ -1,0 +1,202 @@
+/* Long Chat Toolkit — injected styles. Everything namespaced with lct- */
+
+/* ===== The speed engine ===== */
+/* Windowed messages: browser skips their contents, but the element's own box
+   still paints — so we give it a subtle skeleton silhouette. No more black
+   void when jumping across a huge chat; you see ghost-blocks that become real
+   messages the instant they enter the safety zone. */
+.lct-cv {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 320px;
+  background: rgba(127, 127, 127, 0.055);
+  border-radius: 12px;
+}
+
+/* ===== Minimap ===== */
+#lct-minimap {
+  position: fixed;
+  top: 70px;
+  right: 6px;
+  bottom: 90px;
+  width: 24px;
+  z-index: 2147483000;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  border-radius: 8px;
+  background: rgba(127, 127, 127, 0.07);
+  backdrop-filter: blur(4px);
+  transition: opacity 0.2s ease, width 0.2s ease;
+  opacity: 0.85;
+}
+#lct-minimap:hover { opacity: 1; }
+#lct-minimap.lct-collapsed { width: 14px; }
+#lct-minimap.lct-collapsed #lct-mm-canvas { display: none; }
+
+#lct-mm-canvas {
+  flex: 1;
+  width: 100%;
+  cursor: pointer;
+  border-radius: 0 0 8px 8px;
+}
+
+#lct-mm-toggle {
+  height: 20px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  opacity: 0.6;
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 8px 8px 0 0;
+}
+#lct-mm-toggle:hover { opacity: 1; background: rgba(127,127,127,0.15); }
+
+#lct-mm-tooltip {
+  display: none;
+  position: fixed;
+  right: 36px;
+  max-width: 340px;
+  padding: 6px 10px;
+  z-index: 2147483001;
+  font: 12px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  border-radius: 8px;
+  background: rgba(20, 22, 28, 0.94);
+  color: #e8eaf0;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.25);
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ===== Windowed-count pill ===== */
+#lct-mm-count {
+  display: none;
+  text-align: center;
+  padding: 2px 1px 3px;
+  font: 700 8.5px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #7aa2ff;
+  letter-spacing: -0.02em;
+  cursor: default;
+  user-select: none;
+}
+
+/* ===== Export bar ===== */
+#lct-export-bar {
+  display: flex;
+  justify-content: center;
+  padding: 3px 0 5px;
+}
+#lct-export-bar button {
+  border: none;
+  background: transparent;
+  font-size: 13px;
+  cursor: pointer;
+  opacity: 0.65;
+  transition: transform 0.15s ease, opacity 0.15s ease;
+}
+#lct-export-bar button:hover { opacity: 1; transform: scale(1.2); }
+
+/* ===== In-chat search ===== */
+#lct-search {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%) translateY(-70px);
+  z-index: 2147483003;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(22, 24, 30, 0.97);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition: transform 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+  font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+#lct-search.lct-s-open { transform: translateX(-50%) translateY(0); }
+#lct-search .lct-s-icon { font-size: 13px; opacity: 0.7; }
+#lct-search input {
+  width: 300px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: #e8eaf0;
+  font-size: 13.5px;
+}
+#lct-search input::placeholder { color: #8a91a0; }
+#lct-search .lct-s-count {
+  min-width: 44px;
+  text-align: center;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #7aa2ff;
+}
+#lct-search .lct-s-count.lct-s-none { color: #ef6a6a; }
+#lct-search button {
+  border: none;
+  background: rgba(255, 255, 255, 0.07);
+  color: #cfd4de;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: background 0.15s ease;
+}
+#lct-search button:hover { background: rgba(255, 255, 255, 0.16); }
+
+/* pulse highlight on the message a search jump lands on */
+.lct-hit {
+  animation: lct-pulse 1.5s ease-out;
+  border-radius: 12px;
+}
+@keyframes lct-pulse {
+  0%   { box-shadow: 0 0 0 3px rgba(122, 162, 255, 0.95); }
+  100% { box-shadow: 0 0 0 3px rgba(122, 162, 255, 0); }
+}
+
+/* ===== Resume chip ===== */
+#lct-resume {
+  position: fixed;
+  left: 50%;
+  bottom: 92px;
+  transform: translateX(-50%);
+  z-index: 2147483002;
+  padding: 9px 16px;
+  border: none;
+  border-radius: 999px;
+  background: rgba(22, 24, 30, 0.95);
+  color: #e8eaf0;
+  font: 600 12.5px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(122, 162, 255, 0.35);
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+#lct-resume:hover { transform: translateX(-50%) scale(1.04); }
+
+/* ===== Toast note ===== */
+#lct-note {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%) translateY(20px);
+  z-index: 2147483002;
+  max-width: 480px;
+  padding: 10px 18px;
+  font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  border-radius: 10px;
+  background: rgba(20, 22, 28, 0.95);
+  color: #e8eaf0;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+#lct-note.lct-note-show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}

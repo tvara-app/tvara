@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "name": "Long Chat Toolkit",
+  "version": "0.1.0",
+  "description": "Make long AI chats fast again. Speed windowing, minimap navigation & one-click backup for ChatGPT, Claude, Gemini & Perplexity. 100% local — zero network access.",
+  "permissions": ["storage"],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "Long Chat Toolkit"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://claude.ai/*",
+        "https://gemini.google.com/*",
+        "https://www.perplexity.ai/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*"
+      ],
+      "js": [
+        "lib/license.js",
+        "content/adapters.js",
+        "content/engine.js",
+        "content/minimap.js",
+        "content/exporter.js",
+        "content/search.js",
+        "content/main.js"
+      ],
+      "css": ["content/styles.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}
