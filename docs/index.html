@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Long Chat Toolkit — Make long AI chats fast again</title>
+<meta name="description" content="Speed engine, minimap, in-chat search, timestamps & backup for ChatGPT, Claude & Gemini. 100% local — zero network permissions. Free speed engine; Pro $9 once." />
+<style>
+  :root {
+    --bg: #0e1117; --panel: #161b26; --text: #e8eaf0; --muted: #9aa3b5;
+    --accent: #7aa2ff; --line: rgba(255,255,255,0.08);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--bg); color: var(--text); font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 0 24px; }
+  header { padding: 72px 0 48px; text-align: center; }
+  .logo { font-size: 52px; }
+  h1 { font-size: 40px; line-height: 1.2; margin: 16px 0 12px; }
+  .sub { color: var(--muted); font-size: 19px; max-width: 620px; margin: 0 auto; }
+  .cta { display: inline-block; margin-top: 28px; padding: 13px 28px; border-radius: 10px; background: var(--accent); color: #0b0e14; font-weight: 700; text-decoration: none; }
+  .cta.alt { background: transparent; color: var(--accent); border: 1px solid var(--accent); margin-left: 10px; }
+  .badge { display: inline-block; margin-top: 18px; padding: 5px 14px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); font-size: 13.5px; }
+  section { padding: 44px 0; border-top: 1px solid var(--line); }
+  h2 { font-size: 26px; margin-bottom: 22px; }
+  h3 { font-size: 17px; margin: 18px 0 6px; }
+  p, li { color: var(--muted); }
+  strong { color: var(--text); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 22px; }
+  .card .em { font-size: 26px; }
+  .card b { display: block; margin: 8px 0 6px; color: var(--text); font-size: 16.5px; }
+  .card p { font-size: 14.5px; }
+  .price-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+  .price { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 26px; }
+  .price.hot { border-color: var(--accent); }
+  .price .amt { font-size: 34px; font-weight: 800; color: var(--text); }
+  .price .per { color: var(--muted); font-size: 14px; }
+  .price ul { list-style: none; margin-top: 14px; }
+  .price li { padding: 4px 0 4px 24px; position: relative; font-size: 14.5px; }
+  .price li::before { content: "✓"; position: absolute; left: 0; color: var(--accent); }
+  .legal p, .legal li { font-size: 14.5px; }
+  .legal ul { margin: 8px 0 8px 20px; }
+  footer { padding: 36px 0 56px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; text-align: center; }
+  a { color: var(--accent); }
+  nav { text-align: center; padding: 10px 0 0; font-size: 14px; }
+  nav a { margin: 0 10px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="logo">⚡</div>
+  <h1>Make long AI chats fast again</h1>
+  <p class="sub">Long Chat Toolkit is a browser extension that keeps huge ChatGPT, Claude &amp; Gemini conversations fast — and adds the navigation those apps forgot: minimap, in-chat search, message timestamps, resume &amp; one-click backup.</p>
+  <div>
+    <a class="cta" href="https://github.com/Tharuntejandhe/long-chat-toolkit">View source on GitHub</a>
+    <a class="cta alt" href="mailto:ishanai4567@gmail.com">Contact</a>
+  </div>
+  <div class="badge">🔒 Zero network permissions — your chats can't leave your browser. Verify it in the manifest.</div>
+  <nav>
+    <a href="#features">Features</a> · <a href="#pricing">Pricing</a> · <a href="#privacy">Privacy</a> · <a href="#terms">Terms</a> · <a href="#refunds">Refunds</a>
+  </nav>
+</header>
+
+<section id="features">
+  <h2>What it does</h2>
+  <div class="grid">
+    <div class="card"><span class="em">⚡</span><b>Speed engine</b><p>Messages outside your view are put to sleep and wake instantly as you scroll. A 2,000-message chat feels like a 20-message chat. Watch the 💤 counter work.</p></div>
+    <div class="card"><span class="em">🕒</span><b>Message timestamps</b><p>AI chat sites don't show when anything was said. Hover any message to see its time — real send times on ChatGPT, honest "first seen" times elsewhere.</p></div>
+    <div class="card"><span class="em">🗺️</span><b>Minimap</b><p>A VS Code-style strip of the whole conversation. Hover for previews, click to jump anywhere.</p></div>
+    <div class="card"><span class="em">🔎</span><b>In-chat search</b><p>Instant full-text search with a match counter and one-key jumping — even across sleeping messages (⌘⇧F / Ctrl+Shift+F).</p></div>
+    <div class="card"><span class="em">⤵</span><b>Resume</b><p>Reopen a long chat and one tap returns you to the exact message you were reading.</p></div>
+    <div class="card"><span class="em">💾</span><b>One-click backup</b><p>Export the conversation to clean Markdown or JSON — structure, code blocks and timestamps preserved. Your chats, on your disk.</p></div>
+  </div>
+</section>
+
+<section id="pricing">
+  <h2>Pricing</h2>
+  <div class="price-row">
+    <div class="price">
+      <div class="amt">Free</div>
+      <div class="per">forever</div>
+      <ul>
+        <li>Speed engine on every supported platform</li>
+        <li>All tools on ChatGPT</li>
+        <li>All tools on Perplexity (experimental)</li>
+        <li>No account, no sign-up</li>
+      </ul>
+    </div>
+    <div class="price hot">
+      <div class="amt">$9</div>
+      <div class="per">one-time purchase — no subscription, forever</div>
+      <ul>
+        <li>Everything in Free</li>
+        <li>Minimap, search, timestamps &amp; backup on Claude</li>
+        <li>Minimap, search, timestamps &amp; backup on Gemini</li>
+        <li>Offline license key — works without internet</li>
+        <li>All future Pro updates included</li>
+      </ul>
+    </div>
+  </div>
+  <p style="margin-top:14px;">Payments are processed by our merchant of record. After purchase you receive a license key by email; paste it into the extension popup to activate. The license never phones home — activation is verified cryptographically on your device.</p>
+</section>
+
+<section id="privacy" class="legal">
+  <h2>Privacy Policy</h2>
+  <p><em>Effective: July 2026</em></p>
+  <p>Long Chat Toolkit is built so that trust is verifiable, not promised:</p>
+  <ul>
+    <li><strong>The extension collects no data.</strong> It requests zero network permissions, which means the browser itself prevents it from transmitting anything, anywhere. Your conversations, settings, reading positions, local timestamp records and license key are stored only in your browser's local extension storage, on your device.</li>
+    <li><strong>No accounts, no analytics, no tracking</strong> — in the extension and on this website. This site is a static page with no cookies and no third-party scripts.</li>
+    <li><strong>On ChatGPT only</strong>, a small read-only script runs in the page to read each message's timestamp from the app's own state. It makes no network requests and changes nothing on the page. All processing is local.</li>
+    <li><strong>Purchases</strong> are handled by our payment provider (merchant of record). We receive your email address solely to issue your license key. We do not receive or store your card details.</li>
+    <li>The extension's full source code is public at <a href="https://github.com/Tharuntejandhe/long-chat-toolkit">GitHub</a> — you can audit every line.</li>
+  </ul>
+  <p>Questions: <a href="mailto:ishanai4567@gmail.com">ishanai4567@gmail.com</a></p>
+</section>
+
+<section id="terms" class="legal">
+  <h2>Terms of Service</h2>
+  <p><em>Effective: July 2026</em></p>
+  <ul>
+    <li>Long Chat Toolkit is a browser extension that improves performance and navigation of third-party AI chat websites. It is an independent product, not affiliated with or endorsed by OpenAI, Anthropic, Google or Perplexity.</li>
+    <li>The Free tier may be used without payment. A Pro license is a one-time purchase that unlocks Pro features on supported platforms for personal use on your devices, with no recurring fees.</li>
+    <li>Your license key is for you; please don't redistribute it. We may revoke keys that are publicly shared.</li>
+    <li>The software is provided "as is", without warranty of any kind (see the MIT license in the source repository). Third-party sites change frequently; features degrade gracefully but may temporarily break until we ship a fix.</li>
+    <li>These terms are governed by the laws of India.</li>
+  </ul>
+</section>
+
+<section id="refunds" class="legal">
+  <h2>Refund Policy</h2>
+  <p>If Pro doesn't work for you, email <a href="mailto:ishanai4567@gmail.com">ishanai4567@gmail.com</a> within <strong>14 days of purchase</strong> and we'll refund you in full — no questions, no hoops. Refunds are processed back to your original payment method by our payment provider, typically within 5–10 business days.</p>
+</section>
+
+<footer>
+  ⚡ Long Chat Toolkit · <a href="https://github.com/Tharuntejandhe/long-chat-toolkit">Open source (MIT)</a> · <a href="mailto:ishanai4567@gmail.com">ishanai4567@gmail.com</a>
+</footer>
+
+</div>
+</body>
+</html>
