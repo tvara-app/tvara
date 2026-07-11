@@ -17,15 +17,21 @@
   let isOpen = false;
   let debounceTimer = null;
   let lastHit = null;
+  const textCache = new WeakMap(); // el -> lowercased text
 
   function init(a) { adapter = a; }
 
   function buildCache() {
     try {
-      items = adapter.messages().map((el) => ({
-        el,
-        text: (el.textContent || "").toLowerCase()
-      }));
+      // cache per element; only the streaming tail can change content
+      items = adapter.messages().map((el, i, arr) => {
+        let text = textCache.get(el);
+        if (text === undefined || i >= arr.length - 5) {
+          text = (el.textContent || "").toLowerCase();
+          textCache.set(el, text);
+        }
+        return { el, text };
+      });
     } catch (_) {
       items = [];
     }
@@ -51,21 +57,36 @@
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(runQuery, 140);
     });
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); e.shiftKey ? step(-1) : step(1); }
-      else if (e.key === "Escape") { e.preventDefault(); close(); }
-      e.stopPropagation(); // don't let the host app eat our keys
-    });
+    // Key shield at the WINDOW capture phase: host apps register document-level
+    // capture handlers ("type anywhere to focus composer", "Esc stops
+    // generation") that would fire before any listener on our input. Window
+    // capture runs before all of them.
+    const shield = (e) => {
+      if (!isOpen || !bar || !bar.contains(e.target)) return;
+      if (e.type === "keydown") {
+        if (e.key === "Enter") { e.preventDefault(); e.shiftKey ? step(-1) : step(1); }
+        else if (e.key === "Escape") { e.preventDefault(); close(); }
+      }
+      e.stopPropagation();
+    };
+    for (const type of ["keydown", "keypress", "keyup"]) {
+      window.addEventListener(type, shield, true);
+    }
     bar.querySelector(".lct-s-prev").addEventListener("click", () => step(-1));
     bar.querySelector(".lct-s-next").addEventListener("click", () => step(1));
     bar.querySelector(".lct-s-close").addEventListener("click", close);
+  }
+
+  /** 1 char is a real query in CJK scripts; require 2 only for ASCII. */
+  function longEnough(q) {
+    return q.length >= 2 || (q.length === 1 && /[^\u0000-\u007f]/.test(q));
   }
 
   function runQuery() {
     const q = input.value.trim().toLowerCase();
     hits = [];
     cur = -1;
-    if (q.length >= 2) {
+    if (longEnough(q)) {
       for (let i = 0; i < items.length; i++) {
         if (items[i].text.includes(q)) hits.push(i);
       }
@@ -82,8 +103,9 @@
   }
 
   function updateCounter() {
-    counter.textContent = hits.length ? `${cur + 1}/${hits.length}` : (input.value.trim().length >= 2 ? "0/0" : "");
-    counter.classList.toggle("lct-s-none", !hits.length && input.value.trim().length >= 2);
+    const active = longEnough(input.value.trim());
+    counter.textContent = hits.length ? `${cur + 1}/${hits.length}` : (active ? "0/0" : "");
+    counter.classList.toggle("lct-s-none", !hits.length && active);
   }
 
   function jumpTo(el) {

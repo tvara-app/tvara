@@ -5,19 +5,20 @@
   const $ = (id) => document.getElementById(id);
 
   async function load() {
-    const { settings, license, stats } = await chrome.storage.local.get([
-      "settings",
-      "license",
-      "stats"
-    ]);
+    const all = await chrome.storage.local.get(null);
+    const { settings, license } = all;
 
     $("toggle-enabled").checked = !settings || settings.enabled !== false;
     $("toggle-minimap").checked = !settings || settings.minimap !== false;
-    $("stat-windowed").textContent = (stats && stats.totalWindowed) || 0;
+    $("toggle-time").checked = !settings || settings.time !== false;
 
-    // per-platform breakdown — proof of work, per site
-    const hosts = (stats && stats.perHost) || {};
-    const rows = Object.entries(hosts)
+    // per-platform breakdown — proof of work, per site (one storage key per
+    // host so tabs never clobber each other)
+    const hosts = Object.entries(all)
+      .filter(([k]) => k.startsWith("stats:"))
+      .map(([k, h]) => [k.slice(6), h]);
+    $("stat-windowed").textContent = hosts.reduce((s, [, h]) => s + (h.windowed || 0), 0);
+    const rows = hosts
       .filter(([, h]) => h.windowed > 0)
       .sort((a, b) => b[1].windowed - a[1].windowed)
       .map(([host, h]) => {
@@ -50,13 +51,15 @@
     await chrome.storage.local.set({
       settings: {
         enabled: $("toggle-enabled").checked,
-        minimap: $("toggle-minimap").checked
+        minimap: $("toggle-minimap").checked,
+        time: $("toggle-time").checked
       }
     });
   }
 
   $("toggle-enabled").addEventListener("change", saveSettings);
   $("toggle-minimap").addEventListener("change", saveSettings);
+  $("toggle-time").addEventListener("change", saveSettings);
 
   $("license-activate").addEventListener("click", async () => {
     const key = $("license-input").value.trim();

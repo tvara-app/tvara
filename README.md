@@ -7,14 +7,15 @@ Long conversations grind AI chat UIs to a halt — every message stays fully ren
 ## Features
 
 - **⚡ Speed engine** — off-screen messages are windowed with native CSS `content-visibility`, so the browser stops paying for what you can't see. Messages wake instantly when scrolled to. Nothing is removed or mutated.
-- **🗺️ Minimap** — a VS Code–style strip of the whole conversation. Your messages, AI messages, code blocks. Hover for previews, click anywhere to jump.
-- **🔎 In-chat search** (`⌘⇧F` / `Ctrl+Shift+F`) — searches every message instantly, *including the ones asleep*. The browser's Ctrl+F can't see what isn't rendered; this can.
-- **⤵ Resume where you left off** — reopen a long chat and one tap returns you to your exact spot.
-- **💾 One-click backup** — export the entire conversation to clean Markdown or JSON, downloaded straight to your disk.
+- **🕒 Message timestamps** — AI chat sites don't show *when* anything was said; hover any message to see its time. ChatGPT: real send times for the entire history (read locally from the app's own state by a tiny read-only page-world script). Claude/Gemini: honest "first seen on this device" times from the moment you install — never faked as send times.
+- **🗺️ Minimap** — a VS Code–style strip of the whole conversation. Your messages, AI messages, code blocks. Hover for previews and times, click anywhere to jump.
+- **🔎 In-chat search** (`⌘⇧F` / `Ctrl+Shift+F`) — instant full-text search of the whole loaded conversation with match counter and Enter/Shift+Enter jumping, even across sleeping messages (we search a text cache, not the rendered page).
+- **⤵ Resume where you left off** — reopen a long chat and one tap returns you to the exact message you were reading (anchored to the message, not pixels — survives reloads and reflows).
+- **💾 One-click backup** — export the loaded conversation to clean, structured Markdown or JSON with timestamps, paragraphs, lists and code fences preserved.
 
 ## Pricing
 
-The speed engine is **free everywhere, forever**. Minimap, search & backup are free on ChatGPT; **Pro — $9 once, no subscription** — unlocks them on Claude, Gemini & Perplexity.
+The speed engine is **free everywhere, forever**. Minimap, search, timestamps & backup are free on ChatGPT (and on Perplexity while support is experimental); **Pro — $9 once, no subscription** — unlocks them on Claude & Gemini.
 
 ## 🔒 Privacy — provable, not promised
 
@@ -44,14 +45,17 @@ Private key lives in `tools/.keys/` (gitignored). **Back it up.**
 ## Architecture
 
 ```
-content/adapters.js   platform selectors (defensive, multi-fallback, degrade-to-nothing)
-content/engine.js     content-visibility windowing + mutation/SPA observers
-content/minimap.js    canvas minimap (one draw call, any chat size)
-content/exporter.js   Markdown/JSON extraction with code-fence preservation
-content/search.js     in-chat search over the full message cache (windowed included)
-content/main.js       orchestrator: settings/license/pricing wiring, resume chip
-lib/license.js        offline ECDSA license verification (WebCrypto)
-popup/                settings UI
+content/adapters.js          platform selectors (defensive, multi-fallback, degrade-to-nothing)
+content/engine.js            content-visibility windowing + IO safety zone + mutation/SPA observers
+content/minimap.js           canvas minimap (one draw call, any chat size)
+content/exporter.js          structured Markdown/JSON extraction (blocks, lists, code fences, times)
+content/search.js            in-chat search over the full message cache (windowed included)
+content/timeline.js          message times: first-seen clock + honest labeling + lazy-mount guard
+content/inject/fiber-times.js ChatGPT exact times — read-only, page-world, no network, auto-degrades
+content/main.js              orchestrator: settings/license/pricing wiring, anchor-based resume
+lib/store.js                 storage wrapper that survives extension reloads
+lib/license.js               offline ECDSA license verification (WebCrypto)
+popup/                       settings UI
 ```
 
 Design rule: **never break the host page.** Unknown DOM → do nothing. Selector drift → do nothing. Our worst case is the page's normal behavior.

@@ -33,15 +33,21 @@
   let windowedCount = 0;
   let onUpdate = null;          // callback(messages, windowedCount)
 
-  let nearSet = new WeakSet();      // messages near the viewport (never window)
-  let tailSet = new WeakSet();      // newest messages (never window)
-  let observedSet = new WeakSet();  // messages already registered with the IO
+  let nearSet = new WeakSet();       // messages near the viewport (never window)
+  let tailSet = new WeakSet();       // newest messages (never window)
+  let observedSet = new WeakSet();   // messages already registered with the IO
+  let classifiedSet = new WeakSet(); // messages the IO has classified at least once
 
   function ensureIO() {
     if (io) return;
     io = new IntersectionObserver(
       (entries) => {
+        let firstClassifications = false;
         for (const en of entries) {
+          if (!classifiedSet.has(en.target)) {
+            classifiedSet.add(en.target);
+            firstClassifications = true;
+          }
           if (en.isIntersecting) {
             nearSet.add(en.target);
             en.target.classList.remove(CLASS);
@@ -50,6 +56,8 @@
             if (!tailSet.has(en.target) && enabled) en.target.classList.add(CLASS);
           }
         }
+        // newly classified messages change the windowed count — refresh it
+        if (firstClassifications) scheduleRescan();
       },
       { root: null, rootMargin: NEAR_MARGIN }
     );
@@ -83,14 +91,17 @@
     for (const el of messages) {
       if (!observedSet.has(el)) {
         observedSet.add(el);
-        io.observe(el); // initial IO callback will classify it correctly
+        io.observe(el); // initial IO callback will classify it
       }
       if (tailSet.has(el) || nearSet.has(el)) {
         el.classList.remove(CLASS);
-      } else {
+      } else if (classifiedSet.has(el)) {
         el.classList.add(CLASS);
         count++;
       }
+      // not yet classified by the IO → leave it live. Windowing a message the
+      // user might be looking at (first scan, chat switch) causes a visible
+      // collapse-to-skeleton flash; waiting one IO tick costs nothing.
     }
     windowedCount = count;
     if (onUpdate) onUpdate(messages, count);
@@ -121,6 +132,7 @@
         unwindowAll();
         nearSet = new WeakSet();
         observedSet = new WeakSet();
+        classifiedSet = new WeakSet();
         if (io) { io.disconnect(); io = null; }
         scheduleRescan();
       }
@@ -141,6 +153,7 @@
     nearSet = new WeakSet();
     tailSet = new WeakSet();
     observedSet = new WeakSet();
+    classifiedSet = new WeakSet();
     unwindowAll();
     windowedCount = 0;
     if (onUpdate) onUpdate([], 0);

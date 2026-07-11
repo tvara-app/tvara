@@ -14,10 +14,23 @@
   let scrollTarget = null; // what we bound the scroll listener to (element or window)
   let collapsed = false;
   let raf = 0;
+  let onResize = null;     // kept so destroy() can remove it
+  const metaCache = new WeakMap(); // el -> {role, hasCode, snippet}
 
   const W = 18;            // strip width (px)
+
+  /** Follow the SITE's theme, not the OS's — they often disagree. */
+  function pageIsDark() {
+    try {
+      const bg = getComputedStyle(document.body).backgroundColor;
+      const m = bg && bg.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+      if (m) return (+m[1] * 299 + +m[2] * 587 + +m[3] * 114) / 1000 < 128;
+    } catch (_) {}
+    return matchMedia("(prefers-color-scheme: dark)").matches;
+  }
+
   const COLORS = () => {
-    const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+    const dark = pageIsDark();
     return {
       user: dark ? "#7aa2ff" : "#3b6cff",
       assistant: dark ? "#4a4f5a" : "#c9cdd6",
@@ -57,7 +70,10 @@
     canvas.addEventListener("mousemove", (e) => {
       const idx = yToIndex(e.offsetY);
       if (idx >= 0 && messages[idx]) {
-        tooltip.textContent = (messages[idx].role === "user" ? "You: " : "AI: ") + messages[idx].snippet;
+        const m = messages[idx];
+        const time = self.LCTTimeline ? self.LCTTimeline.label(m.el) : "";
+        tooltip.textContent =
+          (m.role === "user" ? "You: " : "AI: ") + m.snippet + (time ? "  ·  " + time : "");
         tooltip.style.display = "block";
         tooltip.style.top = Math.max(8, e.clientY - 14) + "px";
       } else {
@@ -68,14 +84,11 @@
 
     // Zoom changes fire `resize` (not DOM mutations) — re-validate the
     // scroller here too, then redraw.
-    window.addEventListener(
-      "resize",
-      () => {
-        if (messages.length) bindScroller([messages[0].el]);
-        scheduleDraw();
-      },
-      { passive: true }
-    );
+    onResize = () => {
+      if (messages.length) bindScroller([messages[0].el]);
+      scheduleDraw();
+    };
+    window.addEventListener("resize", onResize, { passive: true });
   }
 
   function yToIndex(y) {
@@ -85,15 +98,30 @@
 
   function update(msgEls, adapter) {
     build();
-    messages = msgEls.map((el) => ({
-      el,
-      role: safeRole(adapter, el),
-      hasCode: !!el.querySelector("pre"),
-      snippet: (el.textContent || "").trim().slice(0, 80) || "📷 image / attachment"
-    }));
+    // Serializing textContent of every message on every update is exactly the
+    // jank we sell against — cache per element, recompute only the streaming
+    // tail (the last few messages are the only ones whose content changes).
+    messages = msgEls.map((el, i) => {
+      let meta = metaCache.get(el);
+      if (!meta || i >= msgEls.length - 3) {
+        meta = {
+          role: safeRole(adapter, el),
+          hasCode: !!el.querySelector("pre"),
+          snippet: (el.textContent || "").trim().slice(0, 80) || "📷 image / attachment"
+        };
+        metaCache.set(el, meta);
+      }
+      return { el, role: meta.role, hasCode: meta.hasCode, snippet: meta.snippet };
+    });
 
     if (msgEls.length) bindScroller(msgEls);
-    root.style.display = messages.length >= 10 ? "flex" : "none";
+
+    // Stay out of the way: hide under the host's own modal dialogs and in
+    // windows too small to give up 24px of edge space.
+    const dlg = document.querySelector('dialog[open], [aria-modal="true"]');
+    const modalOpen = !!(dlg && dlg.getBoundingClientRect().width > 0);
+    const roomy = innerWidth > 640 && innerHeight > 320;
+    root.style.display = !modalOpen && roomy && messages.length >= 10 ? "flex" : "none";
     scheduleDraw();
   }
 
@@ -167,6 +195,7 @@
 
   function destroy() {
     if (scrollTarget) { scrollTarget.removeEventListener("scroll", scheduleDraw); scrollTarget = null; }
+    if (onResize) { window.removeEventListener("resize", onResize); onResize = null; }
     if (root) { root.remove(); root = null; canvas = null; ctx = null; }
     if (tooltip) { tooltip.remove(); tooltip = null; }
     messages = []; scroller = null;
