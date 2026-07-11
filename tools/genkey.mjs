@@ -5,16 +5,20 @@
  *   node tools/genkey.mjs init            # one-time: create keypair, patch lib/license.js
  *   node tools/genkey.mjs issue a@b.com   # issue a Pro key for a customer
  *
- * The private key lives in tools/.keys/ (gitignored). NEVER commit or share it.
+ * The private key lives OUTSIDE the extension folder (~/.lct-keys/): Chrome
+ * scans any directory loaded unpacked and complains about bundled .pem files,
+ * and a signing key has no business inside a folder the browser ingests.
+ * NEVER commit or share it.
  * Key format: LCT1.<b64url(payload)>.<b64url(ECDSA-P256-SHA256 signature, P1363)>
  */
 import { generateKeyPairSync, createPrivateKey, sign } from "node:crypto";
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const KEYS_DIR = join(HERE, ".keys");
+const KEYS_DIR = join(homedir(), ".lct-keys");
 const PRIV_PATH = join(KEYS_DIR, "private.pem");
 const PUB_PATH = join(KEYS_DIR, "public.b64");
 const LICENSE_JS = join(HERE, "..", "lib", "license.js");
@@ -24,7 +28,7 @@ const b64url = (buf) =>
 
 function init() {
   if (existsSync(PRIV_PATH)) {
-    console.error("Keypair already exists at tools/.keys/ — refusing to overwrite.");
+    console.error(`Keypair already exists at ${KEYS_DIR} — refusing to overwrite.`);
     process.exit(1);
   }
   const { publicKey, privateKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
@@ -40,7 +44,7 @@ function init() {
   writeFileSync(LICENSE_JS, src);
 
   console.log("✅ Keypair created. Public key patched into lib/license.js.");
-  console.log("🔒 Private key: tools/.keys/private.pem — gitignored. BACK IT UP somewhere safe.");
+  console.log(`🔒 Private key: ${PRIV_PATH} — outside the repo. BACK IT UP somewhere safe.`);
 }
 
 function issue(email) {

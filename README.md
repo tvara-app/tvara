@@ -40,7 +40,7 @@ node tools/genkey.mjs init                 # once — creates keypair, patches p
 node tools/genkey.mjs issue buyer@mail.com # per sale — prints their Pro key
 ```
 
-Private key lives in `tools/.keys/` (gitignored). **Back it up.**
+The private key lives in `~/.lct-keys/` — outside this folder, because Chrome scans unpacked-extension directories and a signing key has no business inside one. **Back it up.**
 
 ## Architecture
 
