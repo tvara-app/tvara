@@ -57,6 +57,16 @@
         </span>
         <input type="checkbox" id="toggle-time" checked />
       </label>
+      <label class="row">
+        <span class="row-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/></svg>
+        </span>
+        <span class="row-text">
+          <span class="row-title">Collapse code blocks</span>
+          <span class="row-sub">Long code folds to one line — click to expand</span>
+        </span>
+        <input type="checkbox" id="toggle-fold" />
+      </label>
     </section>
 
     <section class="card pro-card" id="pro-upsell" hidden>
@@ -68,17 +78,19 @@
         <span class="price-pill">$9 · once, forever</span>
       </div>
       <ul class="pro-list">
-        <li>Minimap &amp; in-chat search <kbd>⌘⇧F</kbd></li>
-        <li>Message timestamps</li>
+        <li>Minimap, outline &amp; in-chat search <kbd>⌘⇧F</kbd></li>
+        <li>Starred messages &amp; timestamps</li>
         <li>One-click chat backup</li>
         <li>Offline license — no account, no tracking</li>
       </ul>
-      <p class="pro-note">Free on ChatGPT &amp; Perplexity. Speed engine is free everywhere.</p>
+      <p class="pro-note">Free on ChatGPT, Perplexity, DeepSeek &amp; Grok. Speed engine is free everywhere.</p>
       <div class="license-row">
         <input type="text" id="license-input" placeholder="Paste your license key (LCT1.…)" autocomplete="off" spellcheck="false" />
         <button id="license-activate">Activate</button>
       </div>
       <p id="license-status" role="status"></p>
+      <button id="trial-start" hidden>Start 7-day free trial — no signup</button>
+      <p id="trial-note" class="pro-note" hidden></p>
     </section>
 
     <section class="card active-card" id="pro-active" hidden>

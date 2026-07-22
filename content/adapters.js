@@ -9,6 +9,28 @@
 
   const dedupe = (els) => Array.from(new Set(els.filter(Boolean)));
 
+  /**
+   * Shared fallback for platforms with build-hashed class names (DeepSeek,
+   * Grok): the message list is the element with the most text-bearing
+   * children. Conservative: under 25 children we return nothing — the engine
+   * ignores short chats anyway, and guessing wrong on someone's app is worse
+   * than doing nothing.
+   */
+  function heuristicMessages() {
+    let best = null;
+    for (const el of document.querySelectorAll("div, section, ol, ul")) {
+      const n = el.childElementCount;
+      if (n < 25 || n > 2000) continue;
+      if (el.closest("nav, aside, header, footer")) continue;
+      if (!best || n > best.childElementCount) best = el;
+    }
+    if (!best) return [];
+    const kids = Array.from(best.children).filter(
+      (c) => (c.textContent || "").trim().length > 0
+    );
+    return kids.length >= 25 ? kids : [];
+  }
+
   /** Find the nearest scrollable ancestor of an element. */
   function findScroller(el) {
     let node = el;
@@ -81,6 +103,41 @@
       role(el) {
         if (el.hasAttribute("data-lct-message")) return el.getAttribute("data-lct-role") || "assistant";
         return /Prompt/i.test(el.className) ? "user" : "assistant";
+      }
+    },
+    {
+      id: "deepseek",
+      label: "DeepSeek",
+      hostRe: /(^|\.)chat\.deepseek\.com$/,
+      // Experimental: DeepSeek hashes its class names per deploy. Semantic
+      // hooks first, shared heuristic second, nothing third.
+      messages() {
+        let els = Array.from(
+          document.querySelectorAll('[class*="chat-message"], [class*="message-item"], .ds-markdown')
+        ).map((el) => el.closest('[class*="chat-message"], [class*="message-item"]') || el.parentElement || el);
+        els = dedupe(els);
+        return els.length >= 10 ? els : heuristicMessages();
+      },
+      role(el) {
+        return /user|human/i.test(String(el.className)) ? "user" : "assistant";
+      }
+    },
+    {
+      id: "grok",
+      label: "Grok",
+      hostRe: /(^|\.)grok\.com$/,
+      // Experimental: Grok's standalone app. Bubble selectors first, shared
+      // heuristic second, nothing third.
+      messages() {
+        let els = dedupe(
+          Array.from(document.querySelectorAll('[class*="message-bubble"], [class*="message-row"]')).map(
+            (el) => el.closest('[class*="message-row"]') || el
+          )
+        );
+        return els.length >= 10 ? els : heuristicMessages();
+      },
+      role(el) {
+        return /user|items-end|justify-end/i.test(String(el.className)) ? "user" : "assistant";
       }
     },
     {

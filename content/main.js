@@ -15,15 +15,19 @@
     enabled: true,
     minimap: true,
     time: true,
-    pro: false
+    fold: false,       // collapse code blocks (off by default — opt-in)
+    pro: false,
+    trialUntil: 0      // ms epoch; 0 = no trial started
   };
 
   // Pricing slice: the speed engine is FREE everywhere (our gift + reputation).
-  // Tools (minimap, search, timestamps, backup) are free on ChatGPT; Pro ($9
-  // once) unlocks them on Claude & Gemini. Perplexity support is experimental,
-  // so tools stay free there until it's proven on the live site.
-  const FREE_TOOL_PLATFORMS = new Set(["chatgpt", "perplexity", "synthetic"]);
-  const toolsUnlocked = () => state.pro || FREE_TOOL_PLATFORMS.has(adapter.id);
+  // Tools (minimap, search, outline, timestamps, backup) are free on ChatGPT;
+  // Pro ($9 once) or the 7-day trial unlocks them on Claude & Gemini.
+  // Perplexity/DeepSeek/Grok support is experimental, so tools stay free there
+  // until each is proven on the live site.
+  const FREE_TOOL_PLATFORMS = new Set(["chatgpt", "perplexity", "deepseek", "grok", "synthetic"]);
+  const trialActive = () => Date.now() < state.trialUntil;
+  const toolsUnlocked = () => state.pro || trialActive() || FREE_TOOL_PLATFORMS.has(adapter.id);
   const timeFn = () =>
     state.time && toolsUnlocked() ? (el) => self.LCTTimeline.info(el) : null;
 
@@ -31,13 +35,20 @@
   let currentHref = location.href;
   let statsTimer = null;
 
-  function pushStats(windowed) {
-    clearTimeout(statsTimer);
+  let statsLatest = null;
+  function pushStats(windowed, total) {
+    // THROTTLE, not debounce: engine updates fire on every DOM change, and a
+    // debounce would starve the write during continuous activity. This writes
+    // the freshest numbers at most once per 1.5s — but always writes.
+    statsLatest = { windowed, total };
+    if (statsTimer) return;
     statsTimer = setTimeout(() => {
+      statsTimer = null;
       // one key per host — no cross-tab read-modify-write races
       store.set({
         ["stats:" + location.hostname]: {
-          windowed,
+          windowed: statsLatest.windowed,
+          total: statsLatest.total, // honest denominator: "1,494 of 1,500 asleep"
           platform: adapter.label,
           updatedAt: Date.now()
         }
@@ -51,7 +62,8 @@
     if (state.minimap && toolsUnlocked()) self.LCTMinimap.update(messages, adapter);
     else self.LCTMinimap.destroy();
     self.LCTTimeline.update(messages);
-    pushStats(windowedCount);
+    self.LCTOutline.update(messages);
+    pushStats(windowedCount, messages.length);
     injectExportButtons();
     updateCountPill(windowedCount);
     maybeShowAha(messages.length, windowedCount);
@@ -272,6 +284,9 @@
     bar.id = "lct-export-bar";
     // static markup only — no user/storage data goes through innerHTML
     bar.innerHTML = `
+      <button data-act="outline" title="Outline &amp; starred messages" aria-label="Outline and starred messages">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg>
+      </button>
       <button data-fmt="md" title="Backup chat as Markdown" aria-label="Backup chat as Markdown">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>
       </button>
@@ -286,6 +301,11 @@
       document.documentElement.appendChild(bar);
     }
     bar.addEventListener("click", (e) => {
+      const act = e.target.closest("button[data-act]");
+      if (act) {
+        if (!toolsUnlocked()) return showUpgradeNote();
+        return self.LCTOutline.toggle();
+      }
       const btn = e.target.closest("button[data-fmt]");
       if (!btn) return;
       if (!toolsUnlocked()) return showUpgradeNote();
@@ -321,12 +341,15 @@
   /* ---------- settings / license ---------- */
 
   async function loadState() {
-    const { settings, license } = await store.get(["settings", "license"]);
+    const { settings, license, trial } = await store.get(["settings", "license", "trial"]);
     if (settings) {
       state.enabled = settings.enabled !== false;
       state.minimap = settings.minimap !== false;
       state.time = settings.time !== false;
+      state.fold = settings.fold === true;
     }
+    state.trialUntil = trial && trial.startedAt ? trial.startedAt + 7 * 864e5 : 0;
+    state.pro = false;
     if (license && license.key) {
       const res = await self.LCTLicense.verify(license.key);
       state.pro = res.valid;
@@ -335,6 +358,8 @@
 
   function applyState() {
     self.LCTTimeline.setDisplay(state.enabled && state.time && toolsUnlocked());
+    self.LCTOutline.setEnabled(state.enabled && toolsUnlocked());
+    document.documentElement.classList.toggle("lct-fold-code", state.enabled && state.fold);
     if (state.enabled) {
       if (!self.LCTEngine.enabled) self.LCTEngine.start(adapter, onEngineUpdate);
       else self.LCTEngine.rescan();
@@ -347,10 +372,25 @@
     }
   }
 
+  /* collapsed code blocks: click a folded block to expand it,
+     double-click an expanded one to fold it back */
+  document.addEventListener("click", (e) => {
+    if (!state.fold || !state.enabled) return;
+    const pre = e.target.closest("pre");
+    if (!pre || pre.classList.contains("lct-pre-open")) return;
+    if (pre.closest('[id^="lct-"]')) return;
+    pre.classList.add("lct-pre-open");
+  });
+  document.addEventListener("dblclick", (e) => {
+    if (!state.fold || !state.enabled) return;
+    const pre = e.target.closest("pre.lct-pre-open");
+    if (pre) pre.classList.remove("lct-pre-open");
+  });
+
   try {
     chrome.storage.onChanged.addListener(async (changes, area) => {
       if (area !== "local") return;
-      if (changes.settings || changes.license) {
+      if (changes.settings || changes.license || changes.trial) {
         await loadState();
         applyState();
       }
@@ -363,6 +403,7 @@
 
   self.LCTTimeline.init(adapter);
   self.LCTSearch.init(adapter);
+  self.LCTOutline.init(adapter);
   document.addEventListener(
     "keydown",
     (e) => {

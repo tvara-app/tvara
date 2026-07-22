@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Long Chat Toolkit",
-  "version": "0.2.0",
-  "description": "Make long AI chats fast again. Speed engine, minimap, search, timestamps & backup for ChatGPT, Claude & Gemini. 100% local.",
+  "version": "0.3.0",
+  "description": "Fix slow, laggy AI chats. Speed engine, minimap, search & backup for ChatGPT, Claude, Gemini, DeepSeek, Grok. 100% local, $0 data.",
   "permissions": ["storage"],
   "minimum_chrome_version": "111",
   "browser_specific_settings": {
@@ -29,6 +29,8 @@
         "https://claude.ai/*",
         "https://gemini.google.com/*",
         "https://www.perplexity.ai/*",
+        "https://chat.deepseek.com/*",
+        "https://grok.com/*",
         "http://localhost/*",
         "http://127.0.0.1/*"
       ],
@@ -41,6 +43,7 @@
         "content/exporter.js",
         "content/search.js",
         "content/timeline.js",
+        "content/outline.js",
         "content/main.js"
       ],
       "css": ["content/styles.css"],

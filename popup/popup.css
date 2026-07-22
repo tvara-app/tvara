@@ -91,6 +91,11 @@ h1 { font-size: 13.5px; font-weight: 700; letter-spacing: -0.01em; }
   background: linear-gradient(135deg, var(--accent), var(--accent-2));
   box-shadow: 0 2px 8px rgba(59, 108, 255, 0.35);
 }
+.badge.trial {
+  color: #6b4b00;
+  background: linear-gradient(135deg, #ffd45e, #f7b733);
+  box-shadow: 0 2px 8px rgba(247, 183, 51, 0.35);
+}
 
 /* ===== Cards ===== */
 main { padding: 12px 12px 2px; }
@@ -302,6 +307,23 @@ main { padding: 12px 12px 2px; }
 #license-status:empty { display: none; }
 #license-status.ok { color: var(--ok); }
 #license-status.err { color: var(--err); }
+
+#trial-start {
+  width: 100%;
+  margin-top: 8px;
+  height: 32px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: 8px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+#trial-start:hover { background: var(--accent-soft); }
+#trial-note { margin-top: 8px; }
+#trial-note.active { color: var(--accent); font-weight: 600; }
 
 /* ===== Pro active ===== */
 .active-card {

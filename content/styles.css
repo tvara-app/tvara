@@ -221,6 +221,141 @@
 }
 #lct-resume:hover { transform: translateX(-50%) scale(1.04); }
 
+/* ===== Collapsed code blocks (opt-in via popup) ===== */
+.lct-fold-code pre:not(.lct-pre-open) {
+  max-height: 3.4em;
+  overflow: hidden !important;
+  cursor: pointer;
+  position: relative;
+}
+.lct-fold-code pre:not(.lct-pre-open)::before {
+  content: "expand";
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  z-index: 2;
+  padding: 3px 9px;
+  font: 600 10px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #cfd6e4;
+  background: rgba(20, 22, 28, 0.85);
+  border-radius: 6px;
+  pointer-events: none;
+}
+.lct-fold-code pre:not(.lct-pre-open)::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 1.6em;
+  background: linear-gradient(transparent, rgba(127, 127, 127, 0.18));
+  pointer-events: none;
+}
+
+/* ===== Star button + starred marker ===== */
+#lct-star {
+  display: none;
+  position: fixed;
+  z-index: 2147483002;
+  width: 26px;
+  height: 26px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(20, 22, 28, 0.92);
+  color: #8b93a5;
+  cursor: pointer;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.25);
+  transition: color 0.12s ease, transform 0.12s ease;
+}
+#lct-star svg { width: 13px; height: 13px; }
+#lct-star:hover { color: #ffd45e; transform: scale(1.08); }
+#lct-star.lct-star-on { color: #ffd45e; }
+#lct-star.lct-star-on svg { fill: #ffd45e; }
+
+.lct-starred { box-shadow: inset 3px 0 0 rgba(255, 212, 94, 0.75); border-radius: 4px; }
+
+/* ===== Outline panel ===== */
+#lct-outline {
+  position: fixed;
+  top: 70px;
+  right: 46px;
+  bottom: 90px;
+  width: 264px;
+  z-index: 2147483002;
+  display: none;
+  flex-direction: column;
+  border-radius: 12px;
+  background: rgba(22, 24, 30, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  font: 12.5px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #e8eaf0;
+}
+#lct-outline.lct-o-open { display: flex; }
+
+.lct-o-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 8px 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+.lct-o-tab {
+  border: none;
+  background: transparent;
+  color: #8a91a0;
+  font: 600 12px/1 inherit;
+  font-family: inherit;
+  padding: 6px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.lct-o-tab.lct-o-on { color: #e8eaf0; background: rgba(255, 255, 255, 0.09); }
+.lct-o-close {
+  margin-left: auto;
+  border: none;
+  background: rgba(255, 255, 255, 0.07);
+  color: #cfd4de;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 11px;
+}
+.lct-o-close:hover { background: rgba(255, 255, 255, 0.16); }
+
+.lct-o-list { flex: 1; overflow-y: auto; padding: 6px; }
+.lct-o-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: #cfd6e4;
+  font: 12px/1.4 inherit;
+  font-family: inherit;
+  padding: 5px 8px;
+  border-radius: 7px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lct-o-item:hover { background: rgba(122, 162, 255, 0.14); color: #fff; }
+.lct-o-user { font-weight: 600; }
+.lct-o-user::before { content: "› "; color: #7aa2ff; }
+.lct-o-h { color: #9aa3b5; }
+.lct-o-h2 { padding-left: 18px; }
+.lct-o-h3 { padding-left: 28px; }
+.lct-o-star::before { content: "★ "; color: #ffd45e; }
+
+.lct-o-note {
+  padding: 6px 10px 8px;
+  font-size: 10.5px;
+  color: #8a91a0;
+}
+.lct-o-note:empty { display: none; }
+
 /* ===== Toast note ===== */
 #lct-note {
   position: fixed;
