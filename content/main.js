@@ -79,7 +79,7 @@
       mm.insertBefore(pill, mm.querySelector("#lct-mm-canvas"));
     }
     if (windowedCount > 0) {
-      pill.textContent = "💤" + windowedCount;
+      pill.textContent = String(windowedCount);
       pill.style.display = "block";
     } else {
       pill.style.display = "none";
@@ -94,11 +94,11 @@
     if (windowedCount < 50 || ahaShown.has(location.pathname)) return;
     ahaShown.add(location.pathname);
     let msg =
-      `⚡ This chat has ${total} messages — your browser is now rendering only ` +
+      `This chat has ${total} messages — your browser is now rendering only ` +
       `${total - windowedCount} of them. Long Chat Toolkit keeps it fast.`;
     if (!toolsUnlocked() && !upsoldThisSession) {
       upsoldThisSession = true; // don't nag: one upsell line per session
-      msg += " 💎 Unlock minimap, search, timestamps & backup — $9 once, in the extension popup.";
+      msg += " Unlock minimap, search, timestamps & backup — $9 once, in the extension popup.";
     }
     flashNote(msg);
   }
@@ -214,7 +214,7 @@
     removeChip();
     const chip = document.createElement("button");
     chip.id = "lct-resume";
-    chip.textContent = "⤵ Resume where you left off";
+    chip.textContent = "↓ Resume where you left off";
     document.documentElement.appendChild(chip);
     chip.addEventListener("click", () => {
       removeChip();
@@ -270,9 +270,14 @@
     }
     bar = document.createElement("div");
     bar.id = "lct-export-bar";
+    // static markup only — no user/storage data goes through innerHTML
     bar.innerHTML = `
-      <button data-fmt="md" title="Backup chat as Markdown">💾</button>
-      <button data-fmt="json" title="Backup chat as JSON">🗂️</button>
+      <button data-fmt="md" title="Backup chat as Markdown" aria-label="Backup chat as Markdown">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>
+      </button>
+      <button data-fmt="json" title="Backup chat as JSON" aria-label="Backup chat as JSON">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5c0 1.1.9 2 2 2h1"/><path d="M16 21h1a2 2 0 0 0 2-2v-5c0-1.1.9-2 2-2a2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1"/></svg>
+      </button>
     `;
     if (mm) {
       mm.appendChild(bar);
@@ -286,7 +291,7 @@
       if (!toolsUnlocked()) return showUpgradeNote();
       const res = self.LCTExporter.exportChat(adapter, btn.dataset.fmt, timeFn());
       if (res.ok) {
-        let msg = `✅ Backed up the ${res.count} loaded messages`;
+        let msg = `Backed up the ${res.count} loaded messages`;
         if (adapter.id === "chatgpt") {
           msg += " — for a huge chat, scroll to the top first (ChatGPT unloads old messages)";
         }
@@ -296,7 +301,7 @@
   }
 
   function showUpgradeNote() {
-    flashNote("💎 Tools on this site are Pro — $9 once, forever. Open the extension popup to unlock.");
+    flashNote("Tools on this site are Pro — $9 once, forever. Open the extension popup to unlock.");
   }
 
   let noteTimer = null;

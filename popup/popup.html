@@ -2,52 +2,100 @@
 <html>
 <head>
   <meta charset="utf-8" />
+  <meta name="color-scheme" content="light dark" />
   <link rel="stylesheet" href="popup.css" />
 </head>
 <body>
   <header>
-    <div class="logo">⚡</div>
-    <div class="title">
-      <h1>Long Chat Toolkit</h1>
-      <span id="plan-badge" class="badge free">FREE</span>
+    <div class="brand">
+      <div class="logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+      </div>
+      <div class="brand-text">
+        <h1>Long Chat Toolkit</h1>
+        <span class="version" id="version"></span>
+      </div>
     </div>
+    <span id="plan-badge" class="badge free">Free</span>
   </header>
 
-  <section class="stats">
-    <div class="stat">
-      <span id="stat-windowed">0</span>
-      <label>messages sleeping right now</label>
-    </div>
-    <div id="stat-hosts"></div>
-  </section>
+  <main>
+    <section class="card stats">
+      <div class="stat-num" id="stat-windowed">0</div>
+      <div class="stat-label">messages asleep right now</div>
+      <div id="stat-hosts"></div>
+    </section>
 
-  <section class="controls">
-    <label class="row">
-      <span>⚡ Speed engine</span>
-      <input type="checkbox" id="toggle-enabled" checked />
-    </label>
-    <label class="row">
-      <span>🗺️ Minimap</span>
-      <input type="checkbox" id="toggle-minimap" checked />
-    </label>
-    <label class="row">
-      <span>🕒 Timestamps</span>
-      <input type="checkbox" id="toggle-time" checked />
-    </label>
-  </section>
+    <section class="card controls">
+      <label class="row">
+        <span class="row-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+        </span>
+        <span class="row-text">
+          <span class="row-title">Speed engine</span>
+          <span class="row-sub">Keeps huge chats fast</span>
+        </span>
+        <input type="checkbox" id="toggle-enabled" checked />
+      </label>
+      <label class="row">
+        <span class="row-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/></svg>
+        </span>
+        <span class="row-text">
+          <span class="row-title">Minimap</span>
+          <span class="row-sub">Bird's-eye view of the chat</span>
+        </span>
+        <input type="checkbox" id="toggle-minimap" checked />
+      </label>
+      <label class="row">
+        <span class="row-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+        </span>
+        <span class="row-text">
+          <span class="row-title">Timestamps</span>
+          <span class="row-sub">Hover any message for its time</span>
+        </span>
+        <input type="checkbox" id="toggle-time" checked />
+      </label>
+    </section>
 
-  <section class="license" id="license-section">
-    <h2>💎 Unlock Pro — $9 once, forever</h2>
-    <p class="muted">Speed engine is free everywhere. Pro unlocks minimap, in-chat search (⌘⇧F), message timestamps &amp; one-click backup on Claude &amp; Gemini — free on ChatGPT (Perplexity: experimental, free). Offline license — this extension never touches the internet.</p>
-    <div class="license-row">
-      <input type="text" id="license-input" placeholder="Paste your license key (LCT1.…)" spellcheck="false" />
-      <button id="license-activate">Activate</button>
-    </div>
-    <p id="license-status" class="muted"></p>
-  </section>
+    <section class="card pro-card" id="pro-upsell" hidden>
+      <div class="pro-head">
+        <span class="pro-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.9 5.6L19.5 10l-5.6 1.9L12 17.5l-1.9-5.6L4.5 10l5.6-1.4L12 3z"/></svg>
+          Upgrade to Pro
+        </span>
+        <span class="price-pill">$9 · once, forever</span>
+      </div>
+      <ul class="pro-list">
+        <li>Minimap &amp; in-chat search <kbd>⌘⇧F</kbd></li>
+        <li>Message timestamps</li>
+        <li>One-click chat backup</li>
+        <li>Offline license — no account, no tracking</li>
+      </ul>
+      <p class="pro-note">Free on ChatGPT &amp; Perplexity. Speed engine is free everywhere.</p>
+      <div class="license-row">
+        <input type="text" id="license-input" placeholder="Paste your license key (LCT1.…)" autocomplete="off" spellcheck="false" />
+        <button id="license-activate">Activate</button>
+      </div>
+      <p id="license-status" role="status"></p>
+    </section>
+
+    <section class="card active-card" id="pro-active" hidden>
+      <span class="ok-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>
+      </span>
+      <span class="active-text">
+        <span class="active-title">Pro active</span>
+        <span class="active-sub" id="licensed-to"></span>
+      </span>
+      <button id="license-remove" class="ghost" title="Remove the license from this browser">Remove</button>
+    </section>
+  </main>
 
   <footer>
-    <span class="muted">🔒 Zero network permissions · open source</span>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.7 8.9a1 1 0 0 1-.6 0C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.2-2.7a1.2 1.2 0 0 1 1.6 0C14.5 3.8 17 5 19 5a1 1 0 0 1 1 1z"/></svg>
+    <span>Zero network permissions · <a href="https://github.com/Tharuntejandhe/long-chat-toolkit" target="_blank" rel="noopener">Open source</a></span>
   </footer>
 
   <script src="../lib/license.js"></script>

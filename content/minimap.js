@@ -107,7 +107,7 @@
         meta = {
           role: safeRole(adapter, el),
           hasCode: !!el.querySelector("pre"),
-          snippet: (el.textContent || "").trim().slice(0, 80) || "📷 image / attachment"
+          snippet: (el.textContent || "").trim().slice(0, 80) || "Image / attachment"
         };
         metaCache.set(el, meta);
       }

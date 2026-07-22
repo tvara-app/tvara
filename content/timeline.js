@@ -213,10 +213,10 @@
   function label(el) {
     if (!display) return "";
     const inf = info(el);
-    if (!inf) return "🕒 time unknown (sent before install)";
+    if (!inf) return "Time unknown (sent before install)";
     return inf.kind === "exact"
-      ? "🕒 " + fmt(inf.t)
-      : "🕒 first seen " + fmt(inf.t) + " · this device";
+      ? "Sent " + fmt(inf.t)
+      : "First seen " + fmt(inf.t) + " · this device";
   }
 
   /* ---------- hover label UI ---------- */
