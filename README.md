@@ -1,6 +1,8 @@
 # ⚡ Long Chat Toolkit
 
-**Make long AI chats fast again.** Speed windowing, minimap navigation & one-click backup for ChatGPT, Claude, Gemini & Perplexity.
+**Make long AI chats fast again.** Speed windowing, minimap, outline, search, starred messages & one-click backup for ChatGPT, Claude, Gemini, Perplexity, DeepSeek & Grok.
+
+📖 **[Complete user guide →](docs/USER-GUIDE.md)**
 
 Long conversations grind AI chat UIs to a halt — every message stays fully rendered forever, so a 1,000-message chat means seconds of typing lag and a screaming fan. This toolkit fixes that, locally, in your browser.
 
@@ -12,10 +14,13 @@ Long conversations grind AI chat UIs to a halt — every message stays fully ren
 - **🔎 In-chat search** (`⌘⇧F` / `Ctrl+Shift+F`) — instant full-text search of the whole loaded conversation with match counter and Enter/Shift+Enter jumping, even across sleeping messages (we search a text cache, not the rendered page).
 - **⤵ Resume where you left off** — reopen a long chat and one tap returns you to the exact message you were reading (anchored to the message, not pixels — survives reloads and reflows).
 - **💾 One-click backup** — export the loaded conversation to clean, structured Markdown or JSON with timestamps, paragraphs, lists and code fences preserved.
+- **📑 Outline** — an auto table of contents: every prompt you sent plus every heading in the answers, click to jump. Capped at 400 entries with the cap disclosed on screen.
+- **⭐ Starred messages** — hover any message to star it; find the gold of a long brainstorm again in one click. Saved per conversation, locally.
+- **📦 Collapse code blocks** — one toggle folds every code block to a single line; click to expand, double-click to fold back.
 
 ## Pricing
 
-The speed engine is **free everywhere, forever**. Minimap, search, timestamps & backup are free on ChatGPT (and on Perplexity while support is experimental); **Pro — $9 once, no subscription** — unlocks them on Claude & Gemini.
+The speed engine is **free everywhere, forever**. All tools are free on ChatGPT (and on Perplexity, DeepSeek & Grok while support is experimental). A **7-day free trial** — one click in the popup, no signup — unlocks everything on every platform. **Pro — $9 once, no subscription** — keeps the tools unlocked on Claude & Gemini forever.
 
 ## 🔒 Privacy — provable, not promised
 
