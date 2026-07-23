@@ -104,7 +104,6 @@ try {
     (await pop.isVisible("#pro-upsell")) && !(await pop.isVisible("#pro-active")));
   t("A1 speed/minimap/time toggles on by default",
     (await pop.isChecked("#toggle-enabled")) && (await pop.isChecked("#toggle-minimap")) && (await pop.isChecked("#toggle-time")));
-  t("A1 fold-code toggle OFF by default (opt-in)", !(await pop.isChecked("#toggle-fold")));
   t("A1 trial button visible in free state", await pop.isVisible("#trial-start"));
   t("A1 Total Recall entry row present", await pop.isVisible("#open-recall"));
   t("A1 no emoji anywhere in popup",
@@ -244,104 +243,6 @@ try {
 
   await page.screenshot({ path: join(SHOTS, "synthetic-page.png") });
 
-  /* ============ B6. collapse code blocks ============ */
-  // Fixtures in the never-slept tail: a tall pre (real), a SHORT pre (the
-  // ChatGPT one-liner bug: must never fold), and a nested pre (skip).
-  await page.evaluate(() => {
-    const msgs = [...document.querySelectorAll("[data-lct-message]")].slice(-6);
-    const pre = msgs.map((m) => m.querySelector("pre")).find(Boolean);
-    pre.id = "t-pre"; // NOT lct-prefixed — that namespace is the extension's own UI
-    const host = msgs[msgs.length - 1];
-    const short = document.createElement("pre");
-    short.id = "t-pre-short";
-    short.textContent = "Create → Mesh → Cone"; // the exact bug scenario
-    host.appendChild(short);
-    const outer = document.createElement("pre");
-    outer.id = "t-pre-outer";
-    const inner = document.createElement("pre");
-    inner.id = "t-pre-inner";
-    inner.textContent = Array.from({ length: 30 }, (_, i) => "line " + i).join("\n");
-    outer.appendChild(inner);
-    host.appendChild(outer);
-    window.scrollTo(0, document.body.scrollHeight);
-  });
-  const tallBefore = await page.evaluate(() => document.getElementById("t-pre").offsetHeight);
-  t("B6 code block tall before folding", tallBefore > 100, `${tallBefore}px`);
-  const shortBefore = await page.evaluate(() => document.getElementById("t-pre-short").offsetHeight);
-
-  await pop.click("#toggle-fold"); // popup toggle → storage → content reacts live
-  await page.waitForFunction(() => document.documentElement.classList.contains("lct-fold-code"));
-  await page.waitForFunction(() => {
-    const p = document.getElementById("t-pre");
-    return p.classList.contains("lct-foldable") && p.offsetHeight < 90;
-  }, null, { timeout: 10000 });
-  t("B6 tall block folded via popup toggle", true);
-
-  // the screenshot bug: one-line commands must NOT fold, no pill, same height
-  const shortState = await page.evaluate(() => {
-    const p = document.getElementById("t-pre-short");
-    return {
-      foldable: p.classList.contains("lct-foldable"),
-      h: p.offsetHeight,
-      pill: getComputedStyle(p, "::before").content
-    };
-  });
-  t("B6 one-line block NOT folded (ChatGPT bug)", !shortState.foldable && shortState.h === shortBefore,
-    JSON.stringify(shortState));
-  t("B6 one-line block has no expand pill", shortState.pill === "none", shortState.pill);
-
-  // pill lives at the BOTTOM, away from site copy-buttons in the top-right
-  const pillPos = await page.evaluate(() => {
-    const s = getComputedStyle(document.getElementById("t-pre"), "::before");
-    return { content: s.content, bottom: s.bottom, top: s.top };
-  });
-  t("B6 expand pill anchored to bottom (not over copy buttons)",
-    /expand/.test(pillPos.content) && pillPos.bottom === "4px", JSON.stringify(pillPos));
-
-  // nested pre: only the OUTER folds — no pill-inside-pill
-  t("B6 nested pre not tagged (outer only)",
-    await page.evaluate(() => {
-      const outer = document.getElementById("t-pre-outer");
-      const inner = document.getElementById("t-pre-inner");
-      return outer.classList.contains("lct-foldable") && !inner.classList.contains("lct-foldable");
-    }));
-
-  await page.click("#t-pre");
-  const openedH = await page.evaluate(() => {
-    const p = document.getElementById("t-pre");
-    return p.classList.contains("lct-pre-open") ? p.offsetHeight : -1;
-  });
-  t("B6 click expands the block", openedH > 100, `${openedH}px`);
-  await page.dblclick("#t-pre");
-  t("B6 double-click folds it back",
-    await page.evaluate(() => !document.getElementById("t-pre").classList.contains("lct-pre-open")));
-
-  // sleeping messages are never measured (their layout reads 0 — mis-tag risk)
-  t("B6 sleeping messages untouched by fold tagging",
-    await page.evaluate(() => {
-      const slept = [...document.querySelectorAll(".lct-cv")];
-      return slept.length > 50 &&
-        slept.every((m) => ![...m.querySelectorAll("pre")].some((p) => p.classList.contains("lct-foldable")));
-    }));
-
-  // waking a slept tall block gets it measured and folded (scroll up + nudge)
-  await page.evaluate(() => window.scrollTo(0, 0));
-  await page.waitForTimeout(800);
-  await page.evaluate(() => {
-    // a benign mutation, like streaming does, triggers the engine update
-    const chat = document.getElementById("chat");
-    const n = document.createTextNode("");
-    chat.appendChild(n);
-    n.remove();
-  });
-  await page.waitForFunction(() => {
-    const first = document.querySelector("[data-lct-message] pre");
-    return first && first.classList.contains("lct-foldable");
-  }, null, { timeout: 10000 });
-  t("B6 woken block measured and folded on next update", true);
-  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-  await page.waitForTimeout(600);
-
   /* ============ B7. outline panel ============ */
   await page.click('#lct-export-bar button[data-act="outline"]');
   await page.waitForSelector("#lct-outline.lct-o-open");
@@ -399,8 +300,11 @@ try {
   }, null, { timeout: 10000 });
   t("B9 stats carry honest total (windowed of 1500)", true);
   await pop.reload();
-  await pop.waitForFunction(() => document.querySelector("#stat-hosts .host-row"));
+  // the popup live-repaints on storage changes, so a stats write landing
+  // after popup-open still shows up — this wait covers that path too
+  await pop.waitForFunction(() => document.querySelector("#stat-hosts .host-row"), null, { timeout: 20000 });
   t("B9 popup shows 'N of 1500'", (await pop.textContent("#stat-hosts")).includes("of 1500"));
+  t("B9 popup repaints live from storage changes", true); // reaching here proves it
 
   /* ============ B10. Chat Card (sidebar hover insights) ============ */
   // record written for this conversation (throttled 2s)

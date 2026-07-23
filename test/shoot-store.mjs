@@ -134,18 +134,8 @@ await caption(page, "Auto table of contents — every prompt, every heading.");
 await shoot(page, "2-outline.png");
 await page.click("#lct-outline .lct-o-close");
 
-// 5 — folded code blocks (popup toggle → storage → page reacts live)
-await page.evaluate(() => document.getElementById("lct-time-tag")?.remove());
 const pop = await ctx.newPage(); // popup page has chrome.* APIs; the demo page does not
 await pop.goto(`chrome-extension://${ID}/popup/popup.html`);
-await pop.evaluate(() => new Promise((res) => {
-  chrome.storage.local.get("settings", ({ settings }) =>
-    chrome.storage.local.set({ settings: { ...(settings || {}), fold: true } }, res));
-}));
-await page.waitForFunction(() => document.documentElement.classList.contains("lct-fold-code"));
-await page.waitForTimeout(300);
-await caption(page, "Fold every code block to one line — click to expand.");
-await shoot(page, "4-fold.png");
 
 /* ---------- shot 7: Total Recall overlay — the golden feature ---------- */
 // trial on (Recall is Pro/trial) + a few sample archive records so the shot
@@ -184,14 +174,8 @@ await shoot(page, "7-recall.png");
 await page.keyboard.press("Escape");
 
 /* ---------- shot 6: popup in trial state, composited ---------- */
-await pop.evaluate(() => new Promise((res) => {
-  // fold back off so the cached toggle state doesn't mislead in the shot
-  chrome.storage.local.get("settings", ({ settings }) =>
-    chrome.storage.local.set({
-      settings: { ...(settings || {}), fold: false },
-      trial: { startedAt: Date.now() }
-    }, res));
-}));
+await pop.evaluate(() => new Promise((res) =>
+  chrome.storage.local.set({ trial: { startedAt: Date.now() } }, res)));
 await pop.reload();
 await pop.waitForFunction(() => document.getElementById("plan-badge")?.textContent === "Trial");
 await pop.waitForTimeout(600); // stats rows arrive from storage

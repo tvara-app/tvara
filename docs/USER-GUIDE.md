@@ -7,7 +7,7 @@ few hundred messages, ChatGPT, Claude and the rest grind to a halt — typing
 lags, scrolling stutters, the fan spins up. This extension makes a
 2,000-message chat feel like a 20-message chat, and then gives you the
 navigation tools those sites never built: a minimap, search, an auto table of
-contents, starred messages, timestamps and one-click backup.
+contents, starred messages, timestamps, one-click backup — and Total Recall, one search box for every AI conversation you've ever had.
 
 Everything runs **100% on your device**. The extension has **zero network
 permissions** — it is technically incapable of sending your conversations
@@ -49,7 +49,7 @@ No account. No signup. No settings you *have* to touch.
 
 ## 3. Supported platforms
 
-| Platform | Speed engine | Tools (minimap, search, outline, stars, timestamps, backup, fold) |
+| Platform | Speed engine | Tools (minimap, search, outline, stars, timestamps, backup) |
 |---|---|---|
 | **ChatGPT** (chatgpt.com) | ✅ Free | ✅ Free |
 | **Perplexity** | ✅ Free | ✅ Free (support is experimental) |
@@ -143,13 +143,6 @@ Messages that existed before install honestly say **"Time unknown (sent
 before install)"**. A first-seen time is never dressed up as a send time.
 **Turn it off:** popup → *Timestamps* toggle.
 
-### 📦 Collapse code blocks
-**What it does:** in coding sessions, walls of code make chats unscrollable.
-This folds **every long code block to a single line** with an "expand" pill — short one-liners are left alone.
-**How to use it:** popup → *Collapse code blocks* toggle (off by default).
-Click any folded block to expand it; double-click an expanded block to fold
-it back.
-
 ### 🪪 Chat Card — sidebar hover insights
 **What it does:** hover any conversation in the site's sidebar and a small
 card tells you about that chat before you open it: how many messages it has,
@@ -192,8 +185,8 @@ your own scripts).
 - **Badge** — your current plan: `Free`, `Trial` (amber) or `Pro`.
 - **Big number** — messages asleep right now, with a per-site "N of total"
   breakdown. This is the engine's live proof of work.
-- **Four toggles** — Speed engine · Minimap · Timestamps · Collapse code
-  blocks. Changes apply to open tabs instantly; no reload needed.
+- **Three toggles** — Speed engine · Minimap · Timestamps. Changes apply
+  to open tabs instantly; no reload needed.
 - **Upgrade card** (when not Pro) — the trial button, the license field, and
   what Pro includes.
 
@@ -281,8 +274,6 @@ safe.
 | `⌘⇧F` / `Ctrl+Shift+F` | Open in-chat search |
 | `Enter` / `Shift+Enter` | Next / previous match |
 | `Esc` | Close search or outline panel |
-| Click folded code block | Expand it |
-| Double-click expanded block | Fold it back |
 
 ---
 

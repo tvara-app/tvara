@@ -17,7 +17,6 @@ Long conversations grind AI chat UIs to a halt — every message stays fully ren
 - **💾 One-click backup** — export the loaded conversation to clean, structured Markdown or JSON with timestamps, paragraphs, lists and code fences preserved.
 - **📑 Outline** — an auto table of contents: every prompt you sent plus every heading in the answers, click to jump. Capped at 400 entries with the cap disclosed on screen.
 - **⭐ Starred messages** — hover any message to star it; find the gold of a long brainstorm again in one click. Saved per conversation, locally.
-- **📦 Collapse code blocks** — one toggle folds every long code block to a single line (short ones stay put); click to expand, double-click to fold back.
 - **🪪 Chat Card** — hover a conversation in the sidebar: message count, questions asked, stars, created (real time on ChatGPT) / first-seen date, last opened, and a "your longest visited chat" badge. Local records only — no API calls, chats you haven't opened honestly say "Not tracked yet".
 
 ## Pricing

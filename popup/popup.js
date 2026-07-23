@@ -50,7 +50,6 @@
     $("toggle-enabled").checked = !s || s.enabled !== false;
     $("toggle-minimap").checked = !s || s.minimap !== false;
     $("toggle-time").checked = !s || s.time !== false;
-    $("toggle-fold").checked = !!s && s.fold === true; // opt-in, default off
   }
 
   function hostRow(label, count, total) {
@@ -129,14 +128,13 @@
     const settings = {
       enabled: $("toggle-enabled").checked,
       minimap: $("toggle-minimap").checked,
-      time: $("toggle-time").checked,
-      fold: $("toggle-fold").checked
+      time: $("toggle-time").checked
     };
     saveCache({ settings });
     await chrome.storage.local.set({ settings });
   }
 
-  for (const id of ["toggle-enabled", "toggle-minimap", "toggle-time", "toggle-fold"]) {
+  for (const id of ["toggle-enabled", "toggle-minimap", "toggle-time"]) {
     $(id).addEventListener("change", saveSettings);
   }
 
@@ -206,4 +204,17 @@
   });
 
   load();
+
+  // Live repaint: content scripts keep writing stats (throttled) while the
+  // popup is open — without this, opening the popup a beat too early shows
+  // empty per-site rows until the next manual reopen.
+  try {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== "local") return;
+      if (Object.keys(changes).some((k) =>
+        k.startsWith("stats:") || k === "settings" || k === "license" || k === "trial")) {
+        load();
+      }
+    });
+  } catch { /* storage unavailable — static popup is still correct */ }
 })();

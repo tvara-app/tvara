@@ -15,7 +15,6 @@
     enabled: true,
     minimap: true,
     time: true,
-    fold: false,       // collapse code blocks (off by default — opt-in)
     pro: false,
     trialUntil: 0      // ms epoch; 0 = no trial started
   };
@@ -56,32 +55,6 @@
     }, 1500);
   }
 
-  // Measure-then-tag: only genuinely tall code blocks fold. A one-line
-  // command folded to one line with an "expand" pill is pure noise (real bug
-  // seen on ChatGPT). scrollHeight sees the full content even when clipped.
-  const FOLD_MIN_PX = 170; // ~8+ lines
-  const foldExamined = new WeakSet(); // measured once; tail re-measures (streaming)
-  function tagFoldables(messages) {
-    if (!state.fold || !state.enabled) return;
-    const tailFrom = messages.length - 8; // last messages may still be growing
-    for (let i = 0; i < messages.length; i++) {
-      // sleeping messages have no layout — scrollHeight would read 0 and
-      // mis-tag every block in them. Measure when they wake instead.
-      if (messages[i].classList.contains("lct-cv")) continue;
-      for (const pre of messages[i].querySelectorAll("pre")) {
-        if (i < tailFrom && foldExamined.has(pre)) continue;
-        if (pre.closest('[id^="lct-"]')) continue;
-        if (pre.parentElement && pre.parentElement.closest("pre")) continue; // nested
-        foldExamined.add(pre);
-        const foldable = pre.classList.contains("lct-foldable");
-        if (!foldable && pre.scrollHeight > FOLD_MIN_PX) pre.classList.add("lct-foldable");
-        else if (foldable && pre.scrollHeight <= FOLD_MIN_PX && !pre.classList.contains("lct-pre-open")) {
-          pre.classList.remove("lct-foldable");
-        }
-      }
-    }
-  }
-
   function onEngineUpdate(messages, windowedCount) {
     lastMessages = messages;
     if (location.href !== currentHref) onChatSwitch();
@@ -91,7 +64,6 @@
     self.LCTOutline.update(messages);
     self.LCTChatCard.update(messages);
     self.LCTRecall.update(messages);
-    tagFoldables(messages);
     pushStats(windowedCount, messages.length);
     injectExportButtons();
     updateCountPill(windowedCount);
@@ -375,7 +347,6 @@
       state.enabled = settings.enabled !== false;
       state.minimap = settings.minimap !== false;
       state.time = settings.time !== false;
-      state.fold = settings.fold === true;
     }
     state.trialUntil = trial && trial.startedAt ? trial.startedAt + 7 * 864e5 : 0;
     state.pro = false;
@@ -389,7 +360,6 @@
     self.LCTTimeline.setDisplay(state.enabled && state.time && toolsUnlocked());
     self.LCTOutline.setEnabled(state.enabled && toolsUnlocked());
     self.LCTChatCard.setEnabled(state.enabled && toolsUnlocked());
-    document.documentElement.classList.toggle("lct-fold-code", state.enabled && state.fold);
     if (state.enabled) {
       if (!self.LCTEngine.enabled) self.LCTEngine.start(adapter, onEngineUpdate);
       else self.LCTEngine.rescan();
@@ -401,21 +371,6 @@
       removeChip();
     }
   }
-
-  /* collapsed code blocks: click a folded block to expand it,
-     double-click an expanded one to fold it back */
-  document.addEventListener("click", (e) => {
-    if (!state.fold || !state.enabled) return;
-    const pre = e.target.closest("pre.lct-foldable");
-    if (!pre || pre.classList.contains("lct-pre-open")) return;
-    if (pre.closest('[id^="lct-"]')) return;
-    pre.classList.add("lct-pre-open");
-  });
-  document.addEventListener("dblclick", (e) => {
-    if (!state.fold || !state.enabled) return;
-    const pre = e.target.closest("pre.lct-pre-open");
-    if (pre) pre.classList.remove("lct-pre-open");
-  });
 
   try {
     chrome.storage.onChanged.addListener(async (changes, area) => {
