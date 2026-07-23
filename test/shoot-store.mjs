@@ -147,6 +147,42 @@ await page.waitForTimeout(300);
 await caption(page, "Fold every code block to one line — click to expand.");
 await shoot(page, "4-fold.png");
 
+/* ---------- shot 7: Total Recall overlay — the golden feature ---------- */
+// trial on (Recall is Pro/trial) + a few sample archive records so the shot
+// shows what it's FOR: one query, results across platforms.
+await pop.evaluate(() => new Promise((res) => {
+  chrome.storage.local.set({ trial: { startedAt: Date.now() } }, () => {
+    const mk = (host, path, platform, title, text, n, days) => ({
+      id: host + path, host, path, platform, title, n,
+      createdAt: Date.now() - days * 864e5, updatedAt: Date.now() - days * 864e5,
+      msgs: [
+        { r: "user", t: "How should I design the database schema for this?", ts: 0 },
+        { r: "assistant", t: text, ts: 0 }
+      ]
+    });
+    chrome.runtime.sendMessage({
+      type: "recall-import",
+      chats: [
+        mk("chatgpt.com", "/c/demo-1", "ChatGPT", "Budget tracker database schema",
+           "For the budget tracker, keep the database schema to three tables: accounts, transactions in integer cents, and monthly budget rollups.", 214, 42),
+        mk("claude.ai", "/chat/demo-2", "Claude", "Refactoring the sync service",
+           "Before touching the sync service, pin down the database schema migrations — otherwise the refactor will race the writers.", 385, 11),
+        mk("gemini.google.com", "/app/demo-3", "Gemini", "Study notes: normalization",
+           "Third normal form means every column depends on the key — your database schema for the tracker already satisfies it.", 92, 3)
+      ]
+    }, res);
+  });
+}));
+await page.waitForTimeout(600);
+await page.keyboard.press("Control+Shift+KeyK");
+await page.waitForSelector("#lct-recall.lct-r-open", { timeout: 8000 });
+await page.fill("#lct-recall input", "database schema");
+await page.waitForFunction(() =>
+  document.querySelectorAll("#lct-recall .lct-r-item").length >= 3, null, { timeout: 8000 });
+await caption(page, "Total Recall: search EVERY chat on EVERY platform. 100% local.");
+await shoot(page, "7-recall.png");
+await page.keyboard.press("Escape");
+
 /* ---------- shot 6: popup in trial state, composited ---------- */
 await pop.evaluate(() => new Promise((res) => {
   // fold back off so the cached toggle state doesn't mislead in the shot

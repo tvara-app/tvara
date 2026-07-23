@@ -39,6 +39,23 @@
     return "Untitled chat";
   }
 
+  // Prefer real content blocks over raw textContent: chat sites embed role
+  // labels ("You said:", sr-only headers) that would pollute every snippet.
+  // Falls back to full text when a message has no block structure.
+  const BLOCK_SEL = "p, h1, h2, h3, h4, li, pre, blockquote";
+  function textOf(el) {
+    const blocks = el.querySelectorAll(BLOCK_SEL);
+    if (!blocks.length) return (el.textContent || "").trim();
+    const parts = [];
+    for (const b of blocks) {
+      const anc = b.parentElement && b.parentElement.closest(BLOCK_SEL);
+      if (anc && el.contains(anc)) continue; // nested — its parent block covers it
+      const t = (b.textContent || "").trim();
+      if (t) parts.push(t);
+    }
+    return parts.join("\n") || (el.textContent || "").trim();
+  }
+
   function update(messages) {
     latest = messages;
     if (writeTimer) return;
@@ -61,7 +78,7 @@
       const inf = self.LCTTimeline.info(el);
       out.push({
         r: role,
-        t: (el.textContent || "").trim(),
+        t: textOf(el),
         ts: inf && inf.kind === "exact" ? inf.t : 0
       });
     }
