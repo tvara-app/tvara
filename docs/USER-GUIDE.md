@@ -1,6 +1,6 @@
 # Long Chat Toolkit — Complete User Guide
 
-**Version 0.4.0 · Chrome / Edge (Manifest V3)**
+**Version 0.5.0 · Chrome / Edge (Manifest V3)**
 
 Long Chat Toolkit fixes the thing every heavy AI user hits eventually: after a
 few hundred messages, ChatGPT, Claude and the rest grind to a halt — typing
@@ -65,6 +65,27 @@ appear there, the extension safely does nothing rather than breaking the page.
 ---
 
 ## 4. The features, one by one
+
+### 🧠 Total Recall — search every chat, every platform (Pro)
+**The problem it solves:** "I solved this in *some* chat… ChatGPT? Claude?
+Which one?" Your knowledge is scattered across hundreds of chats on five
+sites, none of which can search each other.
+**What it does:** press **⌘⇧K / Ctrl+Shift+K** on any chat site (or open the
+Recall page from the popup) → one search box across **every archived chat on
+every platform** → click a result and land in that chat with the in-chat
+search already open on your words.
+**How the archive builds:**
+- Every conversation you open is archived automatically, locally.
+- **Import your full history:** ChatGPT (Settings → Data controls → Export
+  data) and Claude (Settings → Privacy → Export data) give you an export
+  file — drop it on the Recall page and your entire multi-year history
+  becomes searchable in about a minute. Parsed 100% on your device.
+**Privacy, provable:** the archive lives in your browser's local extension
+storage. This extension has **no network permissions**, so the archive
+physically cannot be uploaded anywhere. The Recall page shows exactly what's
+stored (chats, messages, MB) and has a delete-everything button.
+**Honesty note:** without an import, Recall only knows chats you've opened
+since installing — it says so rather than pretending otherwise.
 
 ### ⚡ Speed engine
 **What it does:** puts off-screen messages to sleep so the browser stops
@@ -256,6 +277,7 @@ safe.
 
 | Keys | Action |
 |---|---|
+| `⌘⇧K` / `Ctrl+Shift+K` | Total Recall — search across ALL chats (Pro) |
 | `⌘⇧F` / `Ctrl+Shift+F` | Open in-chat search |
 | `Enter` / `Shift+Enter` | Next / previous match |
 | `Esc` | Close search or outline panel |

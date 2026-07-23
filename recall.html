@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="color-scheme" content="light dark" />
+  <title>Total Recall — Long Chat Toolkit</title>
+  <link rel="stylesheet" href="recall.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <div class="logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+      </div>
+      <div>
+        <h1>Total Recall</h1>
+        <p class="sub">Every AI conversation you've had — one search box. Stored on this device only.</p>
+      </div>
+    </div>
+    <span id="plan-badge" class="badge">…</span>
+  </header>
+
+  <main>
+    <section id="locked" class="card" hidden>
+      <h2>Total Recall is a Pro feature</h2>
+      <p>Search across every chat on ChatGPT, Claude, Gemini, DeepSeek, Grok and Perplexity — all from one box, all stored locally.</p>
+      <p><b>Start the 7-day free trial from the extension popup</b> (one click, no signup), or unlock forever for $9 once. Your archive is already being built locally either way — nothing is lost by deciding later.</p>
+    </section>
+
+    <section id="searchbox" class="card">
+      <div class="s-row">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        <input id="q" type="text" placeholder="Search every archived chat… (e.g. docker compose, database schema)" autocomplete="off" spellcheck="false" />
+        <span id="q-meta"></span>
+      </div>
+      <div id="results"></div>
+      <p class="hint">Tip: on any chat site, press <kbd>⌘⇧K</kbd> / <kbd>Ctrl+Shift+K</kbd> to search from right where you are.</p>
+    </section>
+
+    <section class="card" id="archive">
+      <h2>Your archive</h2>
+      <div id="stats" class="stats-row"></div>
+      <p class="dim">Chats are archived automatically as you open them. The archive lives in this browser's local extension storage — it never touches any server, because this extension has no network permissions.</p>
+    </section>
+
+    <section class="card">
+      <h2>Import your full history</h2>
+      <p class="dim">Don't wait to re-open old chats — import the official data export and your entire history becomes searchable in a minute, locally:</p>
+      <ol class="dim">
+        <li><b>ChatGPT:</b> Settings → Data controls → Export data → you get an email with a .zip</li>
+        <li><b>Claude:</b> Settings → Privacy → Export data</li>
+      </ol>
+      <label class="import-btn" for="import-file">Choose export file (.zip or conversations.json)</label>
+      <input id="import-file" type="file" accept=".zip,.json" hidden />
+      <p id="import-status" role="status"></p>
+    </section>
+
+    <section class="card danger">
+      <h2>Delete everything</h2>
+      <p class="dim">Wipes the entire local archive from this browser. Backups you exported are untouched.</p>
+      <button id="wipe">Delete my archive</button>
+    </section>
+  </main>
+
+  <footer>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.7 8.9a1 1 0 0 1-.6 0C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.2-2.7a1.2 1.2 0 0 1 1.6 0C14.5 3.8 17 5 19 5a1 1 0 0 1 1 1z"/></svg>
+    <span>Zero network permissions — your archive cannot leave this machine.</span>
+  </footer>
+
+  <script src="lib/license.js"></script>
+  <script src="recall-page.js"></script>
+</body>
+</html>

@@ -99,13 +99,14 @@ try {
 
   // A1 — free state renders correctly
   t("A1 badge shows Free", (await pop.textContent("#plan-badge")).trim() === "Free");
-  t("A1 version shown", (await pop.textContent("#version")).trim() === "v0.4.0");
+  t("A1 version shown", (await pop.textContent("#version")).trim() === "v0.5.0");
   t("A1 upsell visible / active card hidden",
     (await pop.isVisible("#pro-upsell")) && !(await pop.isVisible("#pro-active")));
   t("A1 speed/minimap/time toggles on by default",
     (await pop.isChecked("#toggle-enabled")) && (await pop.isChecked("#toggle-minimap")) && (await pop.isChecked("#toggle-time")));
   t("A1 fold-code toggle OFF by default (opt-in)", !(await pop.isChecked("#toggle-fold")));
   t("A1 trial button visible in free state", await pop.isVisible("#trial-start"));
+  t("A1 Total Recall entry row present", await pop.isVisible("#open-recall"));
   t("A1 no emoji anywhere in popup",
     !/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(await pop.evaluate(() => document.body.innerText)));
 
@@ -387,6 +388,139 @@ try {
       const c = document.getElementById("lct-chatcard");
       return !c || c.style.display === "none";
     }));
+
+  /* ============ B11. Total Recall (the golden feature) ============ */
+  // 1) the indexer archived the synthetic chat (background IndexedDB)
+  let recallStats = null;
+  for (let i = 0; i < 30 && (!recallStats || !recallStats.chats); i++) {
+    recallStats = await pop.evaluate(() =>
+      new Promise((res) => chrome.runtime.sendMessage({ type: "recall-stats" }, res)));
+    if (!recallStats || !recallStats.chats) await new Promise((r) => setTimeout(r, 500));
+  }
+  t("B11 chat auto-archived to background DB", recallStats && recallStats.chats >= 1,
+    JSON.stringify(recallStats));
+  t("B11 archive holds full message set", recallStats && recallStats.msgs >= 1500,
+    `msgs=${recallStats && recallStats.msgs}`);
+
+  // 2) background search finds it
+  const sRes = await pop.evaluate(() =>
+    new Promise((res) => chrome.runtime.sendMessage(
+      { type: "recall-search", q: "architectural implications" }, res)));
+  t("B11 background search hits the chat",
+    sRes && sRes.results.length >= 1 && sRes.results[0].path === "/test/synthetic.html",
+    JSON.stringify(sRes && sRes.results[0] || null).slice(0, 120));
+  t("B11 result carries platform + count", sRes.results[0].platform === "Test Page" && sRes.results[0].n >= 1500);
+
+  // 3) overlay: hotkey opens, searches, jumps into in-chat search
+  await page.keyboard.press("Control+Shift+KeyK");
+  await page.waitForSelector("#lct-recall.lct-r-open", { timeout: 5000 });
+  t("B11 overlay opens with Ctrl+Shift+K (trial active)", true);
+  await page.fill("#lct-recall input", "architectural implications");
+  await page.waitForSelector("#lct-recall .lct-r-item", { timeout: 5000 });
+  const overlayRow = await page.textContent("#lct-recall .lct-r-item");
+  t("B11 overlay lists the archived chat", /Test Page/.test(overlayRow) && /messages/.test(overlayRow));
+  await page.screenshot({ path: join(SHOTS, "synthetic-recall.png") });
+  await page.click("#lct-recall .lct-r-item");
+  await page.waitForSelector("#lct-search.lct-s-open", { timeout: 5000 });
+  t("B11 same-chat result drops into in-chat search",
+    (await page.inputValue("#lct-search input")) === "architectural implications");
+  await page.keyboard.press("Escape");
+
+  // 4) cross-chat jump handoff: stash → reload → in-chat search auto-opens
+  await pop.evaluate(() => chrome.storage.local.set({
+    "recall-jump": { host: "127.0.0.1", path: "/test/synthetic.html", q: "quick brown", at: Date.now() }
+  }));
+  await page.reload();
+  await page.waitForSelector("#lct-search.lct-s-open", { timeout: 20000 });
+  t("B11 recall-jump lands in in-chat search on arrival",
+    (await page.inputValue("#lct-search input")) === "quick brown");
+  t("B11 jump stash consumed (single-use)",
+    await pop.evaluate(async () => !(await chrome.storage.local.get("recall-jump"))["recall-jump"]));
+  await page.keyboard.press("Escape");
+
+  // 5) the Recall page: unlocked under trial, searches, shows stats
+  const recall = await ctx.newPage();
+  trackErrors(recall);
+  await recall.goto(POPUP.replace("popup/popup.html", "recall.html"));
+  await recall.waitForSelector("#searchbox:not([hidden])", { timeout: 5000 });
+  t("B11 recall page unlocked under trial", !(await recall.isVisible("#locked")));
+  t("B11 recall page badge shows Trial", (await recall.textContent("#plan-badge")).trim() === "Trial");
+  await recall.fill("#q", "architectural implications");
+  await recall.waitForSelector("#results .r-item", { timeout: 5000 });
+  t("B11 recall page search works", /Test Page/.test(await recall.textContent("#results .r-item")));
+  t("B11 recall page shows archive stats",
+    /chats archived/.test(await recall.textContent("#stats")));
+
+  // 6) import a ChatGPT-format export (parser + batch import, fully local)
+  const fixture = [
+    {
+      title: "Zebra quantum fixture chat",
+      conversation_id: "fix-1",
+      create_time: 1735000000, update_time: 1735100000,
+      mapping: {
+        a: { message: { author: { role: "user" }, create_time: 1735000000,
+             content: { parts: ["How do I test the zebra-quantum-fixture import path?"] } } },
+        b: { message: { author: { role: "assistant" }, create_time: 1735000100,
+             content: { parts: ["You feed conversations.json to the importer and count results."] } } },
+        c: { message: { author: { role: "system" }, create_time: 1735000200,
+             content: { parts: ["system noise that must be skipped"] } } }
+      }
+    },
+    {
+      title: "Second fixture",
+      conversation_id: "fix-2",
+      create_time: 1736000000, update_time: 1736100000,
+      mapping: {
+        a: { message: { author: { role: "user" }, create_time: 1736000000,
+             content: { parts: ["Another zebra-quantum-fixture conversation"] } } },
+        b: { message: { author: { role: "assistant" }, create_time: 1736000100,
+             content: { parts: ["Yes, with two messages so it clears the minimum."] } } }
+      }
+    }
+  ];
+  const fixPath = join(SCRATCH, "conversations.json");
+  const { writeFileSync } = await import("node:fs");
+  writeFileSync(fixPath, JSON.stringify(fixture));
+  await recall.setInputFiles("#import-file", fixPath);
+  await recall.waitForSelector("#import-status.ok", { timeout: 10000 });
+  t("B11 import reports success", /Imported 2 chats/.test(await recall.textContent("#import-status")));
+  await recall.fill("#q", "zebra-quantum-fixture");
+  await recall.waitForFunction(() =>
+    /fixture/.test(document.getElementById("results").textContent), null, { timeout: 5000 });
+  const impRows = await recall.evaluate(() =>
+    [...document.querySelectorAll("#results .r-item")].map((el) => el.textContent).join(" || "));
+  t("B11 both imported chats searchable with ChatGPT identity",
+    /ChatGPT/.test(impRows) && /Zebra quantum/.test(impRows) && /Second fixture/.test(impRows),
+    impRows.slice(0, 140));
+  const statsAfter = await pop.evaluate(() =>
+    new Promise((res) => chrome.runtime.sendMessage({ type: "recall-stats" }, res)));
+  t("B11 archive grew by the imported chats", statsAfter.chats >= 3, `chats=${statsAfter.chats}`);
+  await recall.screenshot({ path: join(SHOTS, "recall-page.png"), fullPage: true });
+
+  // 7) wipe: two-click arm, archive empties
+  await recall.click("#wipe");
+  t("B11 wipe requires arming click", /Click again/.test(await recall.textContent("#wipe")));
+  await recall.click("#wipe");
+  await recall.waitForFunction(async () => {
+    const s = await new Promise((res) => chrome.runtime.sendMessage({ type: "recall-stats" }, res));
+    return s && s.chats === 0;
+  }, null, { timeout: 5000 });
+  t("B11 wipe empties the archive", true);
+
+  // 8) gating: no trial, no pro → overlay hotkey dead, page locked
+  await pop.evaluate(() => chrome.storage.local.remove("trial"));
+  await page.reload();
+  await page.waitForSelector("#lct-minimap", { timeout: 15000 });
+  await page.keyboard.press("Control+Shift+KeyK");
+  await page.waitForTimeout(600);
+  t("B11 overlay locked without pro/trial",
+    await page.evaluate(() => !document.querySelector("#lct-recall.lct-r-open")));
+  await recall.reload();
+  await recall.waitForSelector("#locked:not([hidden])", { timeout: 5000 });
+  t("B11 recall page shows upsell when locked", await recall.isVisible("#locked"));
+  t("B11 locked page still owns import + wipe (user's data)",
+    (await recall.isVisible("#import-file, .import-btn")) && (await recall.isVisible("#wipe")));
+  await pop.evaluate(() => chrome.storage.local.set({ trial: { startedAt: Date.now() } })); // restore
 
   /* ============ C. zero page errors across everything ============ */
   t("C1 zero page/console errors", pageErrors.length === 0, pageErrors.slice(0, 3).join(" | "));

@@ -8,6 +8,7 @@ Long conversations grind AI chat UIs to a halt — every message stays fully ren
 
 ## Features
 
+- **🧠 Total Recall (Pro)** — one search box for every AI conversation you've ever had, across all platforms (`⌘⇧K` / `Ctrl+Shift+K`). Chats archive automatically as you open them; import your official ChatGPT/Claude data export to cover your whole history. 100% local (zero network permissions — the archive *cannot* leave your machine), one-click delete.
 - **⚡ Speed engine** — off-screen messages are windowed with native CSS `content-visibility`, so the browser stops paying for what you can't see. Messages wake instantly when scrolled to. Nothing is removed or mutated.
 - **🕒 Message timestamps** — AI chat sites don't show *when* anything was said; hover any message to see its time. ChatGPT: real send times for the entire history (read locally from the app's own state by a tiny read-only page-world script). Claude/Gemini: honest "first seen on this device" times from the moment you install — never faked as send times.
 - **🗺️ Minimap** — a VS Code–style strip of the whole conversation. Your messages, AI messages, code blocks. Hover for previews and times, click anywhere to jump.
@@ -21,7 +22,7 @@ Long conversations grind AI chat UIs to a halt — every message stays fully ren
 
 ## Pricing
 
-The speed engine is **free everywhere, forever**. All tools are free on ChatGPT (and on Perplexity, DeepSeek & Grok while support is experimental). A **7-day free trial** — one click in the popup, no signup — unlocks everything on every platform. **Pro — $9 once, no subscription** — keeps the tools unlocked on Claude & Gemini forever.
+The speed engine is **free everywhere, forever**. All tools are free on ChatGPT (and on Perplexity, DeepSeek & Grok while support is experimental). A **7-day free trial** — one click in the popup, no signup — unlocks everything on every platform. **Pro — $9 once, no subscription** — Total Recall on every platform (including ChatGPT) + all tools on Claude & Gemini, forever.
 
 ## 🔒 Privacy — provable, not promised
 

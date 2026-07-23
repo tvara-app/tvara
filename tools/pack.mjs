@@ -12,7 +12,8 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const staging = join(root, "dist", "staging");
-const SHIP = ["manifest.json", "icons", "lib", "content", "popup"];
+const SHIP = ["manifest.json", "icons", "lib", "content", "popup",
+              "bg.js", "recall.html", "recall.css", "recall-page.js"];
 
 rmSync(join(root, "dist"), { recursive: true, force: true });
 mkdirSync(staging, { recursive: true });

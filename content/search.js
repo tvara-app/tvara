@@ -117,11 +117,15 @@
     setTimeout(() => { if (lastHit === el) { el.classList.remove("lct-hit"); lastHit = null; } }, 1600);
   }
 
-  function open() {
+  function open(prefill) {
     ensureBar();
     buildCache();
     bar.classList.add("lct-s-open");
     isOpen = true;
+    if (typeof prefill === "string" && prefill) {
+      input.value = prefill; // Total Recall hands off its query on arrival
+      runQuery();
+    }
     input.focus();
     input.select();
   }

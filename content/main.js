@@ -64,6 +64,7 @@
     self.LCTTimeline.update(messages);
     self.LCTOutline.update(messages);
     self.LCTChatCard.update(messages);
+    self.LCTRecall.update(messages);
     pushStats(windowedCount, messages.length);
     injectExportButtons();
     updateCountPill(windowedCount);
@@ -407,6 +408,10 @@
   self.LCTSearch.init(adapter);
   self.LCTOutline.init(adapter);
   self.LCTChatCard.init(adapter, store);
+  // Total Recall is Pro/trial on EVERY platform (the golden feature) — but
+  // indexing always runs: a user who upgrades later gets their history, and
+  // the data never leaves the machine either way.
+  self.LCTRecall.init(adapter, () => state.enabled && (state.pro || trialActive()));
   document.addEventListener(
     "keydown",
     (e) => {

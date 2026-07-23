@@ -188,6 +188,10 @@
     }
   }
 
+  $("open-recall").addEventListener("click", () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL("recall.html") });
+  });
+
   $("license-activate").addEventListener("click", activate);
   $("license-input").addEventListener("keydown", (e) => {
     if (e.key === "Enter") activate();
