@@ -3,8 +3,13 @@
   "name": "Long Chat Toolkit",
   "version": "0.5.0",
   "description": "Fix slow, laggy AI chats. Speed engine, minimap, search & backup for ChatGPT, Claude, Gemini, DeepSeek, Grok. 100% local, $0 data.",
-  "permissions": ["storage", "unlimitedStorage"],
-  "background": { "service_worker": "bg.js" },
+  "permissions": [
+    "storage",
+    "unlimitedStorage"
+  ],
+  "background": {
+    "service_worker": "bg.js"
+  },
   "minimum_chrome_version": "111",
   "browser_specific_settings": {
     "gecko": {
@@ -46,15 +51,23 @@
         "content/timeline.js",
         "content/outline.js",
         "content/chatcard.js",
+        "content/recall-sync.js",
         "content/recall.js",
         "content/main.js"
       ],
-      "css": ["content/styles.css"],
+      "css": [
+        "content/styles.css"
+      ],
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
-      "js": ["content/inject/fiber-times.js"],
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*"
+      ],
+      "js": [
+        "content/inject/fiber-times.js"
+      ],
       "world": "MAIN",
       "run_at": "document_idle"
     }

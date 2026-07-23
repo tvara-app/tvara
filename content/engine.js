@@ -33,6 +33,15 @@
   let windowedCount = 0;
   let onUpdate = null;          // callback(messages, windowedCount)
 
+  // Before a message sleeps, freeze its REAL height into contain-intrinsic-size.
+  // The stylesheet's 320px guess makes scroll math drift on long chats — jumps
+  // land short and the scrollbar lies. Measured heights make both exact.
+  function sleep(el) {
+    const h = el.offsetHeight;
+    if (h > 0) el.style.containIntrinsicSize = "auto " + h + "px";
+    el.classList.add(CLASS);
+  }
+
   let nearSet = new WeakSet();       // messages near the viewport (never window)
   let tailSet = new WeakSet();       // newest messages (never window)
   let observedSet = new WeakSet();   // messages already registered with the IO
@@ -53,7 +62,7 @@
             en.target.classList.remove(CLASS);
           } else {
             nearSet.delete(en.target);
-            if (!tailSet.has(en.target) && enabled) en.target.classList.add(CLASS);
+            if (!tailSet.has(en.target) && enabled) sleep(en.target);
           }
         }
         // newly classified messages change the windowed count — refresh it
@@ -96,7 +105,7 @@
       if (tailSet.has(el) || nearSet.has(el)) {
         el.classList.remove(CLASS);
       } else if (classifiedSet.has(el)) {
-        el.classList.add(CLASS);
+        if (!el.classList.contains(CLASS)) sleep(el);
         count++;
       }
       // not yet classified by the IO → leave it live. Windowing a message the

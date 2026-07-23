@@ -213,6 +213,16 @@ try {
   }, null, { timeout: 10000 });
   t("B2 count pill shows plain number (no emoji)", true);
 
+  // B2b — minimap jump: ONE click must land, even across sleeping regions
+  // (real bug: smooth-scroll + estimated heights crawled and landed short)
+  const scrollBefore = await page.evaluate(() => window.scrollY);
+  await page.locator("#lct-mm-canvas").click({ position: { x: 5, y: 4 } });
+  await page.waitForFunction((was) => window.scrollY < was / 10, scrollBefore, { timeout: 3000 });
+  t("B2b minimap click jumps across the whole chat in one go", true);
+  t("B2b jump target pulses", (await page.locator(".lct-hit").count()) >= 1);
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  await page.waitForTimeout(600);
+
   t("B3 export bar with 3 SVG buttons (outline + md + json)",
     (await page.locator("#lct-export-bar button svg").count()) === 3);
 
@@ -244,6 +254,22 @@ try {
   await page.screenshot({ path: join(SHOTS, "synthetic-page.png") });
 
   /* ============ B7. outline panel ============ */
+  // media-only prompts (the ChatGPT empty-row bug): image-only + file-only
+  await page.evaluate(() => {
+    const chat = document.getElementById("chat");
+    const mk = (id, inner) => {
+      const div = document.createElement("div");
+      div.className = "msg user";
+      div.setAttribute("data-lct-message", "");
+      div.setAttribute("data-lct-role", "user");
+      div.id = id;
+      div.innerHTML = inner; // no text content on purpose
+      chat.appendChild(div);
+    };
+    mk("t-img-msg", '<img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="40" height="40">');
+    mk("t-file-msg", '<span class="chip"></span>');
+  });
+  await page.waitForTimeout(1200); // engine + outline notice the new messages
   await page.click('#lct-export-bar button[data-act="outline"]');
   await page.waitForSelector("#lct-outline.lct-o-open");
   t("B7 outline opens from the minimap bar", true);
@@ -251,6 +277,10 @@ try {
   t("B7 outline capped at 400 entries", entryCount === 400, `${entryCount} entries`);
   t("B7 truncation honestly disclosed",
     (await page.textContent("#lct-outline .lct-o-note")).includes("first 400"));
+  t("B7 user entries carry #n sequence IDs",
+    /^#\d+ · /.test(await page.textContent("#lct-outline .lct-o-user")));
+  // media-label rendering is asserted in B8 via the starred tab (the 400-cap
+  // lists the FIRST 400 entries, and the media fixtures sit at the end)
   await page.locator("#lct-outline .lct-o-item").nth(5).click();
   await page.waitForSelector(".lct-hit", { timeout: 5000 });
   t("B7 clicking an entry jumps + pulses the message", true);
@@ -261,13 +291,17 @@ try {
   await page.waitForSelector("#lct-outline.lct-o-open", { state: "detached", timeout: 5000 }).catch(() => {});
   await page.evaluate(() => {
     const msgs = [...document.querySelectorAll("[data-lct-message]")];
-    msgs[msgs.length - 2].id = "t-msg";
-    msgs[msgs.length - 2].scrollIntoView({ block: "center" });
+    // length-2 would hit the B7 media fixtures — take a TEXT message
+    msgs[msgs.length - 4].id = "t-msg";
+    msgs[msgs.length - 4].scrollIntoView({ block: "center" });
   });
   await page.waitForTimeout(400); // let scroll settle (scroll hides the star btn)
   await page.locator("#t-msg").dispatchEvent("mouseover"); // deterministic hover
   await page.waitForSelector("#lct-star", { state: "visible" });
   t("B8 star button appears on hover", true);
+  // hover tag carries the "#n" sequence ID
+  t("B8 hover tag shows the message's #n ID",
+    /^#\d+ · /.test((await page.textContent("#lct-time-tag").catch(() => "")) || ""));
   // the ChatGPT overlap bug: the button must sit OUTSIDE the message text
   t("B8 star button outside the message text column",
     await page.evaluate(() => {
@@ -275,6 +309,16 @@ try {
       const msg = document.getElementById("t-msg").getBoundingClientRect();
       return star.left >= msg.right - 4;
     }));
+  // the corridor bug: cursor crosses dead ground between message and button —
+  // the button must survive the trip (grace delay), not vanish mid-way
+  await page.locator("body").dispatchEvent("mouseover");
+  await page.waitForTimeout(250); // inside the grace window
+  t("B8 star survives the hover corridor",
+    await page.locator("#lct-star").isVisible());
+  await page.locator("#lct-star").dispatchEvent("mouseover"); // arriving cancels the hide
+  await page.waitForTimeout(600); // well past the grace window
+  t("B8 star stays while the cursor rests on it",
+    await page.locator("#lct-star").isVisible());
   await page.click("#lct-star");
   await page.waitForFunction(() => document.getElementById("t-msg").classList.contains("lct-starred"));
   t("B8 message gets starred marker", true);
@@ -288,6 +332,23 @@ try {
   await page.waitForSelector("#lct-outline .lct-o-star");
   t("B8 starred tab lists the starred message",
     (await page.locator("#lct-outline .lct-o-star").count()) === 1);
+  // an image-only message stars with a typed label, not an empty row
+  await page.click("#lct-outline .lct-o-close");
+  await page.evaluate(() => document.getElementById("t-img-msg").scrollIntoView({ block: "center" }));
+  await page.waitForTimeout(500);
+  for (let i = 0; i < 10; i++) {
+    await page.locator("#t-img-msg").dispatchEvent("mouseover");
+    await page.waitForTimeout(250);
+    if (await page.locator("#lct-star").isVisible()) break;
+  }
+  await page.click("#lct-star");
+  await page.click('#lct-export-bar button[data-act="outline"]');
+  await page.waitForSelector("#lct-outline.lct-o-open");
+  await page.click('#lct-outline [data-mode="star"]');
+  await page.waitForFunction(() =>
+    document.querySelectorAll("#lct-outline .lct-o-star").length === 2);
+  t("B8 image-only message stars as '[Image]' (empty-row bug)",
+    /\[Image\]/.test(await page.textContent("#lct-outline .lct-o-list")));
   await page.reload();
   await page.waitForSelector("#lct-minimap", { timeout: 15000 });
   await page.waitForSelector(".lct-starred", { timeout: 15000 });
@@ -296,14 +357,14 @@ try {
   /* ============ B9. honest metrics ============ */
   await pop.waitForFunction(async () => {
     const s = (await chrome.storage.local.get("stats:127.0.0.1"))["stats:127.0.0.1"];
-    return s && s.total === 1500 && s.windowed > 100;
+    return s && s.total >= 1500 && s.windowed > 100;
   }, null, { timeout: 10000 });
   t("B9 stats carry honest total (windowed of 1500)", true);
   await pop.reload();
   // the popup live-repaints on storage changes, so a stats write landing
   // after popup-open still shows up — this wait covers that path too
   await pop.waitForFunction(() => document.querySelector("#stat-hosts .host-row"), null, { timeout: 20000 });
-  t("B9 popup shows 'N of 1500'", (await pop.textContent("#stat-hosts")).includes("of 1500"));
+  t("B9 popup shows 'N of 150x'", /of 150\d/.test(await pop.textContent("#stat-hosts")));
   t("B9 popup repaints live from storage changes", true); // reaching here proves it
 
   /* ============ B10. Chat Card (sidebar hover insights) ============ */
@@ -333,7 +394,7 @@ try {
   t("B10 card shows questions asked", /questions asked/.test(cardText));
   t("B10 card is honest about time source",
     /First seen .+ this device/.test(cardText) && !/Created/.test(cardText));
-  t("B10 card shows starred count from B8", /1 starred message/.test(cardText));
+  t("B10 card shows starred count from B8", /\d starred message/.test(cardText));
   t("B10 no longest badge with a single record", !/longest/i.test(cardText));
 
   // untracked chat → honest "not tracked" card
@@ -361,6 +422,27 @@ try {
   const cardText2 = await page.evaluate(() => document.getElementById("lct-chatcard").textContent);
   t("B10 badge says 'visited' (never claims full history)", /longest visited/.test(cardText2));
   await page.screenshot({ path: join(SHOTS, "synthetic-chatcard.png") });
+
+  // synced meta record (size unknown): card must show dates + sync note,
+  // never "null messages", and never claim the longest badge
+  await pop.evaluate(async () => {
+    const key = "chats:127.0.0.1";
+    const r = (await chrome.storage.local.get(key))[key];
+    r["/test/other-synthetic.html"] =
+      { c: null, u: null, f: 1735000000000, o: 1736000000000, e: 1735000000, ti: "Synced fixture chat", sy: 1 };
+    await chrome.storage.local.set({ [key]: r });
+  });
+  await page.waitForTimeout(400);
+  await page.locator("#t-conv-external").dispatchEvent("mouseover"); // reset hover
+  await page.waitForTimeout(400);
+  await page.locator("#t-conv-other").dispatchEvent("mouseover");
+  await page.waitForFunction(() =>
+    /Synced from your history/.test(document.getElementById("lct-chatcard")?.textContent || ""),
+    null, { timeout: 5000 });
+  const metaCard = await page.evaluate(() => document.getElementById("lct-chatcard").textContent);
+  t("B10 synced meta card shows title + dates + sync note",
+    /Synced fixture chat/.test(metaCard) && /Created/.test(metaCard) && !/null/.test(metaCard));
+  t("B10 meta card never claims longest", !/longest/i.test(metaCard));
 
   // cross-origin link with a matching path must NOT get a card
   await page.keyboard.press("Escape");
@@ -479,6 +561,40 @@ try {
     new Promise((res) => chrome.runtime.sendMessage({ type: "recall-stats" }, res)));
   t("B11 archive grew by the imported chats", statsAfter.chats >= 3, `chats=${statsAfter.chats}`);
   await recall.screenshot({ path: join(SHOTS, "recall-page.png"), fullPage: true });
+
+  // 6b) sync building blocks. The mapConversation() logic is identical to the
+  // export-file parser already covered by the import test above; the live
+  // network sweep needs a real ChatGPT session (user-verified). What IS
+  // testable here is the archive contract the sync depends on:
+  //   meta upsert: title-searchable, and it must never erase archived text
+  await pop.evaluate(() => new Promise((res) => chrome.runtime.sendMessage({
+    type: "recall-import",
+    chats: [{ id: "chatgpt.com/c/meta-1", host: "chatgpt.com", path: "/c/meta-1",
+      platform: "ChatGPT", title: "Kanban migration planning", createdAt: 1735000000000,
+      updatedAt: 1735100000000, msgs: [], meta: true }]
+  }, res)));
+  const metaSearch = await pop.evaluate(() => new Promise((res) =>
+    chrome.runtime.sendMessage({ type: "recall-search", q: "kanban migration" }, res)));
+  t("B11 meta chat findable by title", metaSearch.results.length === 1 &&
+    metaSearch.results[0].n === 0 && /Synced from your history/.test(metaSearch.results[0].snippet));
+  await pop.evaluate(() => new Promise((res) => chrome.runtime.sendMessage({
+    type: "recall-import",
+    chats: [{ id: "chatgpt.com/c/meta-1", host: "chatgpt.com", path: "/c/meta-1",
+      platform: "ChatGPT", title: "Kanban migration planning", createdAt: 1735000000000,
+      updatedAt: 1735200000000,
+      msgs: [{ r: "user", t: "kanban question", ts: 0 }, { r: "assistant", t: "kanban answer", ts: 0 }] }]
+  }, res)));
+  await pop.evaluate(() => new Promise((res) => chrome.runtime.sendMessage({
+    type: "recall-import",
+    chats: [{ id: "chatgpt.com/c/meta-1", host: "chatgpt.com", path: "/c/meta-1",
+      platform: "ChatGPT", title: "Kanban migration planning", createdAt: 1735000000000,
+      updatedAt: 1735300000000, msgs: [], meta: true }] // meta AFTER full text
+  }, res)));
+  const checkRes = await pop.evaluate(() => new Promise((res) =>
+    chrome.runtime.sendMessage({ type: "recall-check", ids: ["chatgpt.com/c/meta-1"] }, res)));
+  t("B11 meta upsert never erases archived text (recall-check confirms)",
+    checkRes["chatgpt.com/c/meta-1"] && checkRes["chatgpt.com/c/meta-1"].n === 2,
+    JSON.stringify(checkRes));
 
   // 7) wipe: two-click arm, archive empties
   await recall.click("#wipe");

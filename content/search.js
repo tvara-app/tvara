@@ -110,7 +110,17 @@
 
   function jumpTo(el) {
     if (!el || !el.isConnected) return;
-    el.scrollIntoView({ behavior: "auto", block: "center" });
+    // settle loop: first scroll estimate lands short across sleeping regions
+    let tries = 0;
+    const step = () => {
+      el.scrollIntoView({ behavior: "auto", block: "center" });
+      const r = el.getBoundingClientRect();
+      const centered =
+        r.height > 0 &&
+        Math.abs(r.top + r.height / 2 - innerHeight / 2) <= Math.max(80, r.height / 2);
+      if (!centered && ++tries < 8) requestAnimationFrame(step);
+    };
+    step();
     if (lastHit) lastHit.classList.remove("lct-hit");
     el.classList.add("lct-hit");
     lastHit = el;

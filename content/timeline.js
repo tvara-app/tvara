@@ -40,6 +40,7 @@
   let exactListenerOn = false;
   let msgSet = new WeakSet();   // current message elements (for hover delegation)
   let keyCache = new WeakMap(); // el -> { k, len }
+  let indexMap = new WeakMap(); // el -> message index (for the "#n" ID)
   let tag = null;               // the floating hover label
 
   const now = () => Math.floor(Date.now() / 1000);
@@ -133,6 +134,8 @@
   }
 
   async function update(messages) {
+    indexMap = new WeakMap(); // el -> position in conversation (1-based via +1)
+    for (let i = 0; i < messages.length; i++) indexMap.set(messages[i], i);
     const id = location.hostname + location.pathname;
     if (id !== convId) {
       resetConversation(id);
@@ -212,11 +215,15 @@
   /** Human label for a message's time — "" when display is off. */
   function label(el) {
     if (!display) return "";
+    // "#n" — the message's stable position in the conversation, so users can
+    // reference "my #57" and find it again in the outline
+    const ix = indexMap.get(el);
+    const id = ix === undefined ? "" : "#" + (ix + 1) + " · ";
     const inf = info(el);
-    if (!inf) return "Time unknown (sent before install)";
+    if (!inf) return id + "Time unknown (sent before install)";
     return inf.kind === "exact"
-      ? "Sent " + fmt(inf.t)
-      : "First seen " + fmt(inf.t) + " · this device";
+      ? id + "Sent " + fmt(inf.t)
+      : id + "First seen " + fmt(inf.t) + " · this device";
   }
 
   /* ---------- hover label UI ---------- */

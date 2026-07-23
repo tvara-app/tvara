@@ -63,9 +63,7 @@
 
     canvas.addEventListener("click", (e) => {
       const idx = yToIndex(e.offsetY);
-      if (idx >= 0 && messages[idx]) {
-        messages[idx].el.scrollIntoView({ behavior: "smooth", block: "center" });
-      }
+      if (idx >= 0 && messages[idx]) jumpTo(messages[idx].el);
     });
     canvas.addEventListener("mousemove", (e) => {
       const idx = yToIndex(e.offsetY);
@@ -199,6 +197,27 @@
     if (root) { root.remove(); root = null; canvas = null; ctx = null; }
     if (tooltip) { tooltip.remove(); tooltip = null; }
     messages = []; scroller = null;
+  }
+
+    // Instant jump with settle: across content-visibility regions the browser's
+  // first scroll estimate is wrong (regions materialize with their real height
+  // as they wake). Re-aim for a few frames until the target is truly centered
+  // — one click, one landing. Smooth-scroll animation made this crawl.
+  function jumpTo(el) {
+    let tries = 0;
+    const step = () => {
+      el.scrollIntoView({ behavior: "auto", block: "center" });
+      const r = el.getBoundingClientRect();
+      const centered =
+        r.height > 0 &&
+        Math.abs(r.top + r.height / 2 - innerHeight / 2) <= Math.max(80, r.height / 2);
+      if (!centered && ++tries < 8) requestAnimationFrame(step);
+      else {
+        el.classList.add("lct-hit");
+        setTimeout(() => el.classList.remove("lct-hit"), 1500);
+      }
+    };
+    step();
   }
 
   self.LCTMinimap = { update, destroy };

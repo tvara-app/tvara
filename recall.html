@@ -44,11 +44,11 @@
     </section>
 
     <section class="card">
-      <h2>Import your full history</h2>
-      <p class="dim">Don't wait to re-open old chats — import the official data export and your entire history becomes searchable in a minute, locally:</p>
+      <h2>Get your full history in</h2>
       <ol class="dim">
-        <li><b>ChatGPT:</b> Settings → Data controls → Export data → you get an email with a .zip</li>
-        <li><b>Claude:</b> Settings → Privacy → Export data</li>
+        <li><b>ChatGPT — automatic:</b> open chatgpt.com, press <kbd>⌘⇧K</kbd> and hit <b>Sync full ChatGPT history</b>. Every chat's title, dates and text sync straight from your own account into the local archive — after the first run it keeps itself up to date.</li>
+        <li><b>Claude — import file:</b> Settings → Privacy → Export data, then drop the file below.</li>
+        <li><b>Gemini, DeepSeek, Grok, Perplexity:</b> no export or usable history API — chats are archived automatically as you open them.</li>
       </ol>
       <label class="import-btn" for="import-file">Choose export file (.zip or conversations.json)</label>
       <input id="import-file" type="file" accept=".zip,.json" hidden />

@@ -55,15 +55,34 @@
     }, 1500);
   }
 
+  // Content signature: engine updates fire constantly while SCROLLING (the
+  // windowing classes flip), but the conversation content rarely changes.
+  // Heavy per-message passes (timeline keys, outline, minimap data, recall
+  // text extraction) only run when content actually changed — this is what
+  // keeps a 1,500-message chat smooth during the initial mount storm too.
+  let contentSig = "";
+  function sigOf(messages) {
+    const first = messages[0], last = messages[messages.length - 1];
+    return messages.length + ":" +
+      (first ? (first.textContent || "").length : 0) + ":" +
+      (last ? (last.textContent || "").length : 0);
+  }
+
   function onEngineUpdate(messages, windowedCount) {
     lastMessages = messages;
     if (location.href !== currentHref) onChatSwitch();
-    if (state.minimap && toolsUnlocked()) self.LCTMinimap.update(messages, adapter);
-    else self.LCTMinimap.destroy();
-    self.LCTTimeline.update(messages);
-    self.LCTOutline.update(messages);
-    self.LCTChatCard.update(messages);
-    self.LCTRecall.update(messages);
+    const sig = sigOf(messages) + "|" + location.pathname;
+    if (sig !== contentSig) {
+      contentSig = sig;
+      if (state.minimap && toolsUnlocked()) self.LCTMinimap.update(messages, adapter);
+      else self.LCTMinimap.destroy();
+      self.LCTTimeline.update(messages);
+      self.LCTOutline.update(messages);
+      self.LCTChatCard.update(messages);
+      self.LCTRecall.update(messages);
+    } else if (!(state.minimap && toolsUnlocked())) {
+      self.LCTMinimap.destroy();
+    }
     pushStats(windowedCount, messages.length);
     injectExportButtons();
     updateCountPill(windowedCount);
@@ -357,6 +376,7 @@
   }
 
   function applyState() {
+    contentSig = ""; // settings changed → next engine update repaints everything
     self.LCTTimeline.setDisplay(state.enabled && state.time && toolsUnlocked());
     self.LCTOutline.setEnabled(state.enabled && toolsUnlocked());
     self.LCTChatCard.setEnabled(state.enabled && toolsUnlocked());
@@ -394,6 +414,7 @@
   // indexing always runs: a user who upgrades later gets their history, and
   // the data never leaves the machine either way.
   self.LCTRecall.init(adapter, () => state.enabled && (state.pro || trialActive()));
+  self.LCTRecallSync.init(adapter);
   document.addEventListener(
     "keydown",
     (e) => {

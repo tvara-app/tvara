@@ -19,6 +19,7 @@
   let latest = null;
   let writeTimer = null;
   let lastSig = "";
+  let lastPreSig = "";
 
   /* ---------- indexer ---------- */
 
@@ -66,6 +67,10 @@
     writeTimer = null;
     const msgs = latest;
     if (!msgs || msgs.length < 2) return;
+    // cheap pre-check BEFORE the expensive full-text extraction
+    const preSig = msgs.length + ":" + ((msgs[msgs.length - 1].textContent || "").length);
+    if (preSig === lastPreSig) return;
+    lastPreSig = preSig;
     if (!adapter.convPath || !adapter.convPath.test(location.pathname)) {
       // not a conversation URL (home page, settings…) — index nothing
       if (adapter.id !== "synthetic") return;
@@ -130,7 +135,22 @@
     list.className = "lct-r-list";
     const foot = document.createElement("div");
     foot.className = "lct-r-foot";
-    foot.textContent = "Total Recall searches chats you've opened (or imported) — all stored on this device only.";
+    const footNote = document.createElement("span");
+    footNote.textContent = "Total Recall searches chats you've opened (or imported) — all stored on this device only.";
+    foot.appendChild(footNote);
+    // ChatGPT: full-history sync from the platform's own same-origin API —
+    // the user's own data, landing only in the local archive.
+    if (self.LCTRecallSync && self.LCTRecallSync.available) {
+      const syncBtn = document.createElement("button");
+      syncBtn.id = "lct-r-sync";
+      syncBtn.textContent = "Sync full ChatGPT history";
+      syncBtn.addEventListener("click", () => {
+        syncBtn.disabled = true;
+        self.LCTRecallSync.syncAll((p) => { footNote.textContent = p; }, true)
+          .then(() => { syncBtn.disabled = false; runQuery(); });
+      });
+      foot.appendChild(syncBtn);
+    }
     panel.append(head, list, foot);
     document.documentElement.appendChild(panel);
 

@@ -461,3 +461,35 @@
   #lct-recall .lct-r-snip { color: rgba(26, 26, 30, 0.6); }
   #lct-recall .lct-r-info { color: rgba(26, 26, 30, 0.45); }
 }
+
+/* invisible hover bridge: covers the gap between the message edge and the
+   star button so the cursor never crosses "dead" ground on the way over */
+#lct-star::after {
+  content: "";
+  position: absolute;
+  left: -48px;
+  top: -12px;
+  bottom: -12px;
+  right: -6px;
+}
+
+/* ===== Total Recall sync button (ChatGPT overlay foot) ===== */
+#lct-r-sync {
+  margin-left: 12px;
+  flex: none;
+  padding: 4px 10px;
+  border: 1px solid rgba(122, 162, 255, 0.4);
+  border-radius: 999px;
+  background: rgba(122, 162, 255, 0.12);
+  color: #7aa2ff;
+  font: 600 11px/1 -apple-system, "Segoe UI", sans-serif;
+  cursor: pointer;
+}
+#lct-r-sync:hover { background: rgba(122, 162, 255, 0.22); }
+#lct-r-sync:disabled { opacity: 0.5; cursor: default; }
+#lct-recall .lct-r-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}

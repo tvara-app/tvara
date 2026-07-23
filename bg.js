@@ -62,11 +62,24 @@ function clampChat(chat) {
 }
 
 async function upsert(chat) {
-  if (!chat || !chat.id || !Array.isArray(chat.msgs) || chat.msgs.length < 2) return { ok: false };
+  if (!chat || !chat.id || !Array.isArray(chat.msgs)) return { ok: false };
+  const isMeta = chat.meta === true && chat.msgs.length === 0;
+  if (!isMeta && chat.msgs.length < 2) return { ok: false };
   const d = await db();
+  if (isMeta) {
+    // a meta record (title+dates from sync) must never ERASE archived text
+    const existing = await reqP(tx(d, "readonly").get(String(chat.id).slice(0, 600)));
+    if (existing && existing.n > 0) {
+      if (chat.title && !existing.title) {
+        existing.title = String(chat.title).slice(0, 200);
+        await reqP(tx(d, "readwrite").put(existing));
+      }
+      return { ok: true };
+    }
+  }
   const clamped = clampChat(chat);
-  // imports carry their own updatedAt (the chat's real last activity) — keep it
-  if (chat.keepTimes && chat.updatedAt) clamped.updatedAt = chat.updatedAt;
+  // imports/sync carry the chat's real last-activity time — keep it
+  if ((chat.keepTimes || isMeta) && chat.updatedAt) clamped.updatedAt = chat.updatedAt;
   await reqP(tx(d, "readwrite").put(clamped));
   return { ok: true };
 }
@@ -98,6 +111,8 @@ function score(chat, words) {
     if (title.includes(w)) hits += 3;
     if (!hits) return 0; // AND semantics
     total += hits;
+    // meta-only chats (synced titles, text not archived yet) rank below
+    // full-text matches naturally: they can only ever score title hits
   }
   return total;
 }
@@ -116,7 +131,10 @@ function snippetFor(chat, words) {
       };
     }
   }
-  return { text: chat.msgs[0] ? chat.msgs[0].t.slice(0, 160) : "", msgIndex: 0, role: "user" };
+  if (!chat.msgs.length) {
+    return { text: "Synced from your history — open once (or run full sync) to archive the text.", msgIndex: 0, role: "user" };
+  }
+  return { text: chat.msgs[0].t.slice(0, 160), msgIndex: 0, role: "user" };
 }
 
 async function search(query) {
@@ -147,6 +165,20 @@ async function search(query) {
   });
   results.sort((a, b) => b.score - a.score || b.updatedAt - a.updatedAt);
   return { results: results.slice(0, MAX_RESULTS), scanned };
+}
+
+/* ---------- freshness check (sync skips already-archived chats) ---------- */
+
+async function check(ids) {
+  const d = await db();
+  const out = {};
+  for (const id of Array.isArray(ids) ? ids : []) {
+    try {
+      const v = await reqP(tx(d, "readonly").get(String(id).slice(0, 600)));
+      if (v) out[id] = { n: v.n, updatedAt: v.updatedAt };
+    } catch { /* skip */ }
+  }
+  return out;
 }
 
 /* ---------- stats / wipe ---------- */
@@ -185,6 +217,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       case "recall-upsert": return upsert(msg.chat);
       case "recall-import": return importBatch(msg.chats);
       case "recall-search": return search(msg.q);
+      case "recall-check":  return check(msg.ids);
       case "recall-stats":  return stats();
       case "recall-wipe":   return wipe();
       default: return { err: "unknown" };

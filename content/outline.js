@@ -35,6 +35,15 @@
     return text.trim().slice(0, SNIPPET_LEN);
   }
 
+  // A prompt with no text still deserves a real row: say WHAT it was.
+  function snippetOrMedia(el) {
+    const s = snippet(el);
+    if (s) return s;
+    if (el.querySelector("img, canvas, video")) return "[Image]";
+    if (el.querySelector("audio")) return "[Audio]";
+    return "[Attachment]";
+  }
+
   /* ---------- stars persistence ---------- */
 
   async function loadStars() {
@@ -62,7 +71,7 @@
       if (!hoverMsg) return;
       const k = keyOf(hoverMsg);
       if (stars[k]) delete stars[k];
-      else stars[k] = { t: Date.now(), s: snippet(hoverMsg) };
+      else stars[k] = { t: Date.now(), s: snippetOrMedia(hoverMsg) };
       saveStars();
       paintStar(hoverMsg, !!stars[k]);
       positionStarBtn(hoverMsg); // repaint fill state
@@ -87,19 +96,31 @@
     starBtn.classList.toggle("lct-star-on", !!stars[keyOf(m)]);
   }
 
+  let starHideTimer = null;
+
   function onHover(e) {
     if (!enabled) return;
-    if (starBtn && (e.target === starBtn || starBtn.contains(e.target))) return;
+    if (starBtn && (e.target === starBtn || starBtn.contains(e.target))) {
+      clearTimeout(starHideTimer); // resting on the button keeps it alive
+      return;
+    }
     let n = e.target;
     for (let i = 0; n && i < 25; i++, n = n.parentElement) {
       if (msgSet.has(n)) {
+        clearTimeout(starHideTimer);
         hoverMsg = n;
         positionStarBtn(n);
         return;
       }
     }
-    hoverMsg = null;
-    if (starBtn) starBtn.style.display = "none";
+    // The cursor is in the corridor between the message and the button (the
+    // button sits OUTSIDE the text column). Hiding instantly here made the
+    // star unreachable — grace-delay instead; reaching the button cancels.
+    clearTimeout(starHideTimer);
+    starHideTimer = setTimeout(() => {
+      hoverMsg = null;
+      if (starBtn) starBtn.style.display = "none";
+    }, 450);
   }
 
   /* ---------- panel ---------- */
@@ -154,7 +175,18 @@
 
   function jumpTo(el) {
     if (!el || !el.isConnected) return;
-    el.scrollIntoView({ behavior: "auto", block: "center" });
+    // settle loop: content-visibility regions materialize while scrolling, so
+    // the first estimate lands short — re-aim until the target is centered
+    let tries = 0;
+    const step = () => {
+      el.scrollIntoView({ behavior: "auto", block: "center" });
+      const r = el.getBoundingClientRect();
+      const centered =
+        r.height > 0 &&
+        Math.abs(r.top + r.height / 2 - innerHeight / 2) <= Math.max(80, r.height / 2);
+      if (!centered && ++tries < 8) requestAnimationFrame(step);
+    };
+    step();
     el.classList.add("lct-hit");
     setTimeout(() => el.classList.remove("lct-hit"), 1600);
   }
@@ -170,12 +202,16 @@
     let truncated = false;
 
     if (mode === "all") {
-      for (const el of messages) {
+      for (let mi = 0; mi < messages.length; mi++) {
+        const el = messages[mi];
         if (rows.length >= MAX_ENTRIES) { truncated = true; break; }
         let role = "assistant";
         try { role = adapter.role(el); } catch (_) {}
         if (role === "user") {
-          rows.push(entryRow(snippet(el), "lct-o-user", () => jumpTo(el)));
+          // "#n" = the message's position in the whole conversation — a stable
+          // ID users can reference ("see my #57"). Media-only prompts (image/
+          // file, no text) get a typed label instead of a blank row.
+          rows.push(entryRow("#" + (mi + 1) + " · " + snippetOrMedia(el), "lct-o-user", () => jumpTo(el)));
         } else {
           const heads = el.querySelectorAll("h1, h2, h3");
           for (let i = 0; i < heads.length && i < 10; i++) {
@@ -227,7 +263,11 @@
     msgSet = new WeakSet();
     for (const el of msgs) msgSet.add(el);
     if (starsConv !== convId()) await loadStars();
-    for (const el of msgs) paintStar(el, !!stars[keyOf(el)]);
+    // keyOf hashes message text — skip the whole pass when nothing is starred
+    // (the common case) instead of hashing 1,500 messages per update
+    if (Object.keys(stars).length) {
+      for (const el of msgs) paintStar(el, !!stars[keyOf(el)]);
+    }
     if (isOpen) render();
   }
 

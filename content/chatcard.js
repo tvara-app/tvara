@@ -110,10 +110,11 @@
   }
 
   function isLongest(path) {
-    const paths = Object.keys(records);
-    if (paths.length < 2) return false; // "longest of 1" is meaningless
+    const sized = Object.keys(records).filter((p) => records[p].c != null);
+    if (sized.length < 2) return false; // "longest of 1" is meaningless
     const mine = records[path].c;
-    return paths.every((p) => records[p].c <= mine);
+    if (mine == null) return false;
+    return sized.every((p) => records[p].c <= mine);
   }
 
   function renderCard(path, anchorRect) {
@@ -125,6 +126,13 @@
       card.appendChild(line("Not tracked yet", "lct-cc-title"));
       card.appendChild(line("Open this chat once and Long Chat Toolkit will remember its size and dates.", "lct-cc-dim"));
     } else {
+      if (rec.c == null) {
+        // synced meta record: real dates from the platform, size not yet known
+        card.appendChild(line(rec.ti || "Synced chat", "lct-cc-title"));
+        if (rec.e) card.appendChild(line("Created " + fmt(rec.e * 1000)));
+        card.appendChild(line("Last active " + fmt(rec.o), "lct-cc-dim"));
+        card.appendChild(line("Synced from your history — open once for message counts.", "lct-cc-dim"));
+      } else {
       card.appendChild(line(
         `${rec.c.toLocaleString()} messages · ${rec.u.toLocaleString()} questions asked`,
         "lct-cc-title"
@@ -134,6 +142,7 @@
       card.appendChild(line("Last opened " + fmt(rec.o), "lct-cc-dim"));
       if (isLongest(path)) {
         card.appendChild(line("Your longest visited chat on " + adapter.label, "lct-cc-badge"));
+      }
       }
       // stars live under their own per-conversation key — fetch and append
       store.get("stars:" + location.hostname + path).then((res) => {
