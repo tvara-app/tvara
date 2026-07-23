@@ -378,3 +378,38 @@
   opacity: 1;
   transform: translateX(-50%) translateY(0);
 }
+
+/* ===== Chat Card (sidebar hover insights) ===== */
+#lct-chatcard {
+  position: fixed;
+  z-index: 2147483647;
+  display: none;
+  max-width: 280px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(18, 19, 24, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.45);
+  color: #ececf1;
+  font: 400 12.5px/1.5 -apple-system, "Segoe UI", sans-serif;
+  pointer-events: none; /* never trap the cursor on the way to the link */
+}
+#lct-chatcard .lct-cc-title { font-weight: 600; font-size: 13px; margin-bottom: 3px; }
+#lct-chatcard .lct-cc-dim { opacity: 0.62; }
+#lct-chatcard .lct-cc-star { color: #ffd45e; }
+#lct-chatcard .lct-cc-badge {
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid rgba(255, 255, 255, 0.09);
+  color: #7aa2ff;
+  font-weight: 600;
+}
+@media (prefers-color-scheme: light) {
+  #lct-chatcard {
+    background: rgba(255, 255, 255, 0.98);
+    border-color: rgba(0, 0, 0, 0.12);
+    box-shadow: 0 10px 32px rgba(0, 0, 0, 0.18);
+    color: #1a1a1e;
+  }
+  #lct-chatcard .lct-cc-badge { border-top-color: rgba(0, 0, 0, 0.1); color: #3b5bdb; }
+}

@@ -99,7 +99,7 @@ try {
 
   // A1 — free state renders correctly
   t("A1 badge shows Free", (await pop.textContent("#plan-badge")).trim() === "Free");
-  t("A1 version shown", (await pop.textContent("#version")).trim() === "v0.3.0");
+  t("A1 version shown", (await pop.textContent("#version")).trim() === "v0.4.0");
   t("A1 upsell visible / active card hidden",
     (await pop.isVisible("#pro-upsell")) && !(await pop.isVisible("#pro-active")));
   t("A1 speed/minimap/time toggles on by default",
@@ -321,6 +321,72 @@ try {
   await pop.reload();
   await pop.waitForFunction(() => document.querySelector("#stat-hosts .host-row"));
   t("B9 popup shows 'N of 1500'", (await pop.textContent("#stat-hosts")).includes("of 1500"));
+
+  /* ============ B10. Chat Card (sidebar hover insights) ============ */
+  // record written for this conversation (throttled 2s)
+  let chatRec = null;
+  for (let i = 0; i < 40 && !chatRec; i++) {
+    chatRec = await pop.evaluate(async () => {
+      const r = (await chrome.storage.local.get("chats:127.0.0.1"))["chats:127.0.0.1"];
+      return (r && r["/test/synthetic.html"]) || null;
+    });
+    if (!chatRec) await new Promise((r) => setTimeout(r, 500));
+  }
+  if (!chatRec) {
+    console.log("DEBUG storage keys:", await pop.evaluate(async () =>
+      Object.keys(await chrome.storage.local.get(null)).join(", ")));
+  }
+  t("B10 record: message count tracked", chatRec.c >= 1500, `c=${chatRec.c}`);
+  t("B10 record: questions (user msgs) tracked", chatRec.u >= 700, `u=${chatRec.u}`);
+  t("B10 record: firstSeen + lastOpened stamped", chatRec.f > 0 && chatRec.o >= chatRec.f);
+  t("B10 record: no fake creation time (non-ChatGPT)", !chatRec.e);
+
+  // hover the sidebar link for THIS chat → card with real numbers
+  await page.locator("#t-conv-this").dispatchEvent("mouseover");
+  await page.waitForSelector("#lct-chatcard", { state: "visible", timeout: 5000 });
+  const cardText = await page.textContent("#lct-chatcard");
+  t("B10 card shows message count", /1,?5\d\d messages/.test(cardText), cardText.slice(0, 60));
+  t("B10 card shows questions asked", /questions asked/.test(cardText));
+  t("B10 card is honest about time source",
+    /First seen .+ this device/.test(cardText) && !/Created/.test(cardText));
+  t("B10 card shows starred count from B8", /1 starred message/.test(cardText));
+  t("B10 no longest badge with a single record", !/longest/i.test(cardText));
+
+  // untracked chat → honest "not tracked" card
+  await page.locator("#t-conv-other").dispatchEvent("mouseover");
+  await page.waitForFunction(() =>
+    /Not tracked yet/.test(document.getElementById("lct-chatcard")?.textContent || ""),
+    null, { timeout: 5000 });
+  t("B10 unknown chat says 'Not tracked yet'", true);
+
+  // longest badge appears once a SECOND (smaller) record exists
+  await pop.evaluate(async () => {
+    const key = "chats:127.0.0.1";
+    const r = (await chrome.storage.local.get(key))[key];
+    r["/test/other-synthetic.html"] = { c: 40, u: 20, f: Date.now(), o: Date.now(), e: 0 };
+    await chrome.storage.local.set({ [key]: r });
+  });
+  await page.waitForTimeout(400); // storage.onChanged propagates
+  await page.locator("#t-conv-external").dispatchEvent("mouseover"); // reset hover state
+  await page.waitForTimeout(400);
+  await page.locator("#t-conv-this").dispatchEvent("mouseover");
+  await page.waitForFunction(() =>
+    /longest visited chat/i.test(document.getElementById("lct-chatcard")?.textContent || ""),
+    null, { timeout: 5000 });
+  t("B10 longest-visited badge with 2+ records", true);
+  const cardText2 = await page.evaluate(() => document.getElementById("lct-chatcard").textContent);
+  t("B10 badge says 'visited' (never claims full history)", /longest visited/.test(cardText2));
+  await page.screenshot({ path: join(SHOTS, "synthetic-chatcard.png") });
+
+  // cross-origin link with a matching path must NOT get a card
+  await page.keyboard.press("Escape");
+  await page.locator("#t-conv-external").dispatchEvent("mouseover");
+  await page.waitForTimeout(700);
+  t("B10 external link never gets a card",
+    await page.evaluate(() => {
+      const c = document.getElementById("lct-chatcard");
+      return !c || c.style.display === "none";
+    }));
 
   /* ============ C. zero page errors across everything ============ */
   t("C1 zero page/console errors", pageErrors.length === 0, pageErrors.slice(0, 3).join(" | "));

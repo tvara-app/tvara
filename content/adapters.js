@@ -47,6 +47,7 @@
   const ADAPTERS = [
     {
       id: "chatgpt",
+      convPath: /^\/c\//,
       label: "ChatGPT",
       hostRe: /(^|\.)chatgpt\.com$|(^|\.)chat\.openai\.com$/,
       messages() {
@@ -66,6 +67,7 @@
     },
     {
       id: "claude",
+      convPath: /^\/chat\//,
       label: "Claude",
       hostRe: /(^|\.)claude\.ai$/,
       messages() {
@@ -83,6 +85,7 @@
     },
     {
       id: "gemini",
+      convPath: /^\/app\/./,
       label: "Gemini",
       hostRe: /(^|\.)gemini\.google\.com$/,
       messages() {
@@ -94,6 +97,7 @@
     },
     {
       id: "perplexity",
+      convPath: /^\/search\/./,
       label: "Perplexity",
       hostRe: /(^|\.)perplexity\.ai$/,
       // Best-effort: Perplexity's DOM shifts often; degrade gracefully to nothing.
@@ -107,6 +111,7 @@
     },
     {
       id: "deepseek",
+      convPath: /^\/(a\/)?chat\/./,
       label: "DeepSeek",
       hostRe: /(^|\.)chat\.deepseek\.com$/,
       // Experimental: DeepSeek hashes its class names per deploy. Semantic
@@ -124,6 +129,7 @@
     },
     {
       id: "grok",
+      convPath: /^\/(c|chat)\/./,
       label: "Grok",
       hostRe: /(^|\.)grok\.com$/,
       // Experimental: Grok's standalone app. Bubble selectors first, shared
@@ -142,6 +148,7 @@
     },
     {
       id: "synthetic",
+      convPath: /(synthetic|demo)\.html$/,
       label: "Test Page",
       hostRe: /^(localhost|127\.0\.0\.1)$/,
       messages() {

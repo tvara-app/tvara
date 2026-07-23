@@ -1,6 +1,6 @@
 # Long Chat Toolkit — Complete User Guide
 
-**Version 0.3.0 · Chrome / Edge (Manifest V3)**
+**Version 0.4.0 · Chrome / Edge (Manifest V3)**
 
 Long Chat Toolkit fixes the thing every heavy AI user hits eventually: after a
 few hundred messages, ChatGPT, Claude and the rest grind to a halt — typing
@@ -128,6 +128,25 @@ This folds **every code block to a single line** with an "expand" pill.
 **How to use it:** popup → *Collapse code blocks* toggle (off by default).
 Click any folded block to expand it; double-click an expanded block to fold
 it back.
+
+### 🪪 Chat Card — sidebar hover insights
+**What it does:** hover any conversation in the site's sidebar and a small
+card tells you about that chat before you open it: how many messages it has,
+how many questions you asked, how many messages you starred, when it was
+created or first seen, when you last opened it — and whether it's your
+longest chat on that site.
+**How to use it:** just hover a chat in the sidebar for a moment. No clicks.
+**The honesty rules (read this):**
+- The card only knows chats you've **opened at least once** since installing —
+  the sites don't put other chats' data in the page, and this extension has no
+  network access to ask their servers. Unopened chats say "Not tracked yet."
+- On **ChatGPT** the card shows the chat's **real creation time** (from the
+  app's own local state). On other sites it says "First seen … · this device" —
+  we never dress a first-seen date up as a creation date.
+- "Your longest **visited** chat" means exactly that — longest among chats
+  we've seen, never a claim about your whole history.
+- Counts are from the last time you opened the chat, so a chat that grew since
+  then shows its last-known size.
 
 ### ⤵ Resume where you left off
 **What it does:** remembers the exact message you were reading in each long

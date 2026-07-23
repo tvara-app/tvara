@@ -265,5 +265,14 @@
     if (!display) hideTag();
   }
 
-  self.LCTTimeline = { init, update, keyOf, info, label, setDisplay };
+  /** Earliest EXACT (platform-recorded) time in this conversation, unix
+   *  seconds — on ChatGPT this is the real creation time. null elsewhere:
+   *  a first-seen time must never be passed off as a creation time. */
+  function earliest() {
+    let min = null;
+    for (const k in exact) if (min === null || exact[k] < min) min = exact[k];
+    return min;
+  }
+
+  self.LCTTimeline = { init, update, keyOf, info, label, setDisplay, earliest };
 })();

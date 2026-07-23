@@ -63,6 +63,7 @@
     else self.LCTMinimap.destroy();
     self.LCTTimeline.update(messages);
     self.LCTOutline.update(messages);
+    self.LCTChatCard.update(messages);
     pushStats(windowedCount, messages.length);
     injectExportButtons();
     updateCountPill(windowedCount);
@@ -359,6 +360,7 @@
   function applyState() {
     self.LCTTimeline.setDisplay(state.enabled && state.time && toolsUnlocked());
     self.LCTOutline.setEnabled(state.enabled && toolsUnlocked());
+    self.LCTChatCard.setEnabled(state.enabled && toolsUnlocked());
     document.documentElement.classList.toggle("lct-fold-code", state.enabled && state.fold);
     if (state.enabled) {
       if (!self.LCTEngine.enabled) self.LCTEngine.start(adapter, onEngineUpdate);
@@ -404,6 +406,7 @@
   self.LCTTimeline.init(adapter);
   self.LCTSearch.init(adapter);
   self.LCTOutline.init(adapter);
+  self.LCTChatCard.init(adapter, store);
   document.addEventListener(
     "keydown",
     (e) => {

@@ -26,6 +26,12 @@
     <span>🧪 <b>LCT Torture Test</b> — 1,500 messages, heavy code blocks.</span>
     <span id="hint">Type below with the extension OFF, then ON. Feel the difference.</span>
   </header>
+  <!-- fake sidebar for Chat Card tests: links shaped like conversation URLs -->
+  <nav id="t-sidebar" style="position:fixed;left:0;top:60px;width:180px;z-index:5;background:#17181c;padding:8px;font-size:12px">
+    <a id="t-conv-this" href="/test/synthetic.html" style="display:block;color:#ececf1;padding:6px">This chat</a>
+    <a id="t-conv-other" href="/test/other-synthetic.html" style="display:block;color:#ececf1;padding:6px">Another chat</a>
+    <a id="t-conv-external" href="https://example.com/test/synthetic.html" style="display:block;color:#ececf1;padding:6px">External link</a>
+  </nav>
   <div id="chat"></div>
   <footer>
     <input id="box" placeholder="Type here to feel input lag… (this is the test)" />
