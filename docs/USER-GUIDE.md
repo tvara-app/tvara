@@ -145,7 +145,7 @@ before install)"**. A first-seen time is never dressed up as a send time.
 
 ### 📦 Collapse code blocks
 **What it does:** in coding sessions, walls of code make chats unscrollable.
-This folds **every code block to a single line** with an "expand" pill.
+This folds **every long code block to a single line** with an "expand" pill — short one-liners are left alone.
 **How to use it:** popup → *Collapse code blocks* toggle (off by default).
 Click any folded block to expand it; double-click an expanded block to fold
 it back.

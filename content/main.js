@@ -56,6 +56,32 @@
     }, 1500);
   }
 
+  // Measure-then-tag: only genuinely tall code blocks fold. A one-line
+  // command folded to one line with an "expand" pill is pure noise (real bug
+  // seen on ChatGPT). scrollHeight sees the full content even when clipped.
+  const FOLD_MIN_PX = 170; // ~8+ lines
+  const foldExamined = new WeakSet(); // measured once; tail re-measures (streaming)
+  function tagFoldables(messages) {
+    if (!state.fold || !state.enabled) return;
+    const tailFrom = messages.length - 8; // last messages may still be growing
+    for (let i = 0; i < messages.length; i++) {
+      // sleeping messages have no layout — scrollHeight would read 0 and
+      // mis-tag every block in them. Measure when they wake instead.
+      if (messages[i].classList.contains("lct-cv")) continue;
+      for (const pre of messages[i].querySelectorAll("pre")) {
+        if (i < tailFrom && foldExamined.has(pre)) continue;
+        if (pre.closest('[id^="lct-"]')) continue;
+        if (pre.parentElement && pre.parentElement.closest("pre")) continue; // nested
+        foldExamined.add(pre);
+        const foldable = pre.classList.contains("lct-foldable");
+        if (!foldable && pre.scrollHeight > FOLD_MIN_PX) pre.classList.add("lct-foldable");
+        else if (foldable && pre.scrollHeight <= FOLD_MIN_PX && !pre.classList.contains("lct-pre-open")) {
+          pre.classList.remove("lct-foldable");
+        }
+      }
+    }
+  }
+
   function onEngineUpdate(messages, windowedCount) {
     lastMessages = messages;
     if (location.href !== currentHref) onChatSwitch();
@@ -65,6 +91,7 @@
     self.LCTOutline.update(messages);
     self.LCTChatCard.update(messages);
     self.LCTRecall.update(messages);
+    tagFoldables(messages);
     pushStats(windowedCount, messages.length);
     injectExportButtons();
     updateCountPill(windowedCount);
@@ -379,7 +406,7 @@
      double-click an expanded one to fold it back */
   document.addEventListener("click", (e) => {
     if (!state.fold || !state.enabled) return;
-    const pre = e.target.closest("pre");
+    const pre = e.target.closest("pre.lct-foldable");
     if (!pre || pre.classList.contains("lct-pre-open")) return;
     if (pre.closest('[id^="lct-"]')) return;
     pre.classList.add("lct-pre-open");

@@ -79,7 +79,11 @@
     const r = m.getBoundingClientRect();
     starBtn.style.display = "flex";
     starBtn.style.top = Math.max(4, r.top + 6) + "px";
-    starBtn.style.right = Math.max(8, innerWidth - r.right + 6) + "px";
+    // OUTSIDE the message's right edge — floating it inside covers the text
+    // (real bug seen on ChatGPT: the button sat on the last words of a line).
+    // Falls back to just-inside only when the layout leaves no room.
+    const outside = innerWidth - r.right - 34;
+    starBtn.style.right = (outside >= 8 ? outside : Math.max(2, innerWidth - r.right + 4)) + "px";
     starBtn.classList.toggle("lct-star-on", !!stars[keyOf(m)]);
   }
 
