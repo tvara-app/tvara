@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>AI Chat — demo conversation (1,500 messages)</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font: 15px/1.65 -apple-system, "Segoe UI", sans-serif; background: #1b1c20; color: #ececf1; }
+    header { position: fixed; top: 0; left: 0; right: 0; height: 52px; padding: 0 20px;
+             background: #141519; display: flex; gap: 12px; align-items: center; z-index: 10;
+             border-bottom: 1px solid #26272c; }
+    header .dot { width: 10px; height: 10px; border-radius: 50%; background: #4ade80; }
+    header b { font-size: 14px; }
+    header span.sub { font-size: 12px; opacity: 0.55; }
+    #chat { max-width: 720px; margin: 72px auto 110px; padding: 0 16px; }
+    .msg { padding: 16px 18px; margin: 12px 0; border-radius: 14px; }
+    .msg.user { background: #2c2e35; margin-left: 60px; }
+    .msg.assistant { background: #222327; margin-right: 24px; }
+    .msg .who { font-size: 11.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+                opacity: 0.5; margin-bottom: 7px; }
+    .msg h3 { font-size: 15.5px; margin: 12px 0 6px; color: #b7c7ff; }
+    .msg ul { margin: 6px 0 6px 20px; }
+    .msg p { margin: 6px 0; }
+    pre { background: #101114; border: 1px solid #24252b; border-radius: 10px; padding: 12px 14px;
+          overflow-x: auto; font: 12.5px/1.55 ui-monospace, Menlo, monospace; margin: 10px 0 4px;
+          color: #a5d6ff; }
+    code { font: 13px ui-monospace, Menlo, monospace; color: #ffd28e; }
+    footer { position: fixed; bottom: 0; left: 0; right: 0; padding: 16px 20px 20px; background: #141519;
+             border-top: 1px solid #26272c; }
+    footer .box { max-width: 688px; margin: 0 auto; padding: 13px 16px; border-radius: 12px;
+                  border: 1px solid #33353c; background: #222327; color: #7d7f88; font-size: 15px; }
+  </style>
+</head>
+<body>
+  <header>
+    <span class="dot"></span>
+    <b>AI Assistant</b>
+    <span class="sub">Project: budget-tracker · 1,500 messages</span>
+  </header>
+  <div id="chat"></div>
+  <footer><div class="box">Message the assistant…</div></footer>
+
+  <script>
+    // A realistic long developer conversation: pairs cycle to reach 1,500
+    // messages, and the FINAL pairs (what the viewport shows) are the richest.
+    const PAIRS = [
+      ["Can you help me structure the database for the budget tracker? I want accounts, transactions and monthly budgets.",
+       `<h3>Schema design</h3><p>Three tables cover it. Keep amounts in integer cents — never floats for money:</p><pre>CREATE TABLE accounts (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  currency TEXT DEFAULT 'USD'
+);
+
+CREATE TABLE transactions (
+  id INTEGER PRIMARY KEY,
+  account_id INTEGER REFERENCES accounts(id),
+  amount_cents INTEGER NOT NULL,
+  category TEXT,
+  posted_at TEXT NOT NULL
+);</pre><p>Budgets then become a simple monthly rollup per category.</p>`],
+      ["The monthly summary endpoint is slow once I imported two years of data. How do I fix it?",
+       `<h3>Fixing the slow rollup</h3><p>Two things, in order of impact:</p><ul><li>Add a covering index for the group-by</li><li>Stop summing in JavaScript — push it into SQL</li></ul><pre>CREATE INDEX idx_tx_month
+  ON transactions (account_id, posted_at, category);
+
+SELECT category,
+       SUM(amount_cents) AS total
+FROM   transactions
+WHERE  posted_at BETWEEN ? AND ?
+GROUP  BY category;</pre><p>That took my test set from 1.8&nbsp;s to 11&nbsp;ms.</p>`],
+      ["Nice, that worked. Now the chart — I want spending per category as a donut chart on the dashboard.",
+       `<h3>Donut chart without a library</h3><p>You can do this with a conic-gradient — zero dependencies:</p><pre>.donut {
+  width: 180px; aspect-ratio: 1;
+  border-radius: 50%;
+  background: conic-gradient(
+    #7aa2ff 0 38%,
+    #4ade80 38% 61%,
+    #ffd28e 61% 83%,
+    #f87171 83% 100%);
+  mask: radial-gradient(circle 55px, transparent 98%, #000);
+}</pre><p>Feed the percentages from the SQL rollup above.</p>`],
+      ["How should I handle recurring transactions like rent and subscriptions?",
+       `<h3>Recurring transactions</h3><p>Store the <em>rule</em>, not future rows. Materialize on read:</p><ul><li>A <code>recurring_rules</code> table: amount, category, RRULE-style cadence</li><li>On dashboard load, expand rules into virtual rows for the visible month</li><li>Only write a real row once the date passes</li></ul><p>This keeps history factual and the future editable.</p>`],
+      ["Can you write the CSV import? My bank exports date, description, amount with commas inside quoted descriptions.",
+       `<h3>CSV import that survives real bank files</h3><p>Don't split on commas — quoted fields will break. Tiny state machine:</p><pre>function parseCSV(text) {
+  const rows = [[""]]; let q = false;
+  for (const ch of text) {
+    const row = rows[rows.length - 1];
+    if (ch === '"') q = !q;
+    else if (ch === ',' && !q) row.push("");
+    else if (ch === '\\n' && !q) rows.push([""]);
+    else row[row.length - 1] += ch;
+  }
+  return rows.filter(r => r.length > 1);
+}</pre><p>Then map <code>amount</code> → integer cents with <code>Math.round(parseFloat(a) * 100)</code>.</p>`],
+      ["Last thing for today — how do I make the whole dashboard load feel instant?",
+       `<h3>Making it feel instant</h3><p>Three wins, cheapest first:</p><ul><li><b>Cache the last render</b> in localStorage and paint it before fetching — the app appears in one frame</li><li><b>One query per view</b>, not per widget — the rollup above already returns everything</li><li><b>Defer the chart</b> until the numbers are painted; users read digits first</li></ul><p>Measured on my machine: first paint 1.4&nbsp;s → 90&nbsp;ms.</p>`]
+    ];
+
+    const chat = document.getElementById("chat");
+    const N = 1500;
+    const frag = document.createDocumentFragment();
+    for (let i = 0; i < N; i++) {
+      const user = i % 2 === 0;
+      const pair = PAIRS[Math.floor(i / 2) % PAIRS.length];
+      const div = document.createElement("div");
+      div.className = "msg " + (user ? "user" : "assistant");
+      div.setAttribute("data-lct-message", "");
+      div.setAttribute("data-lct-role", user ? "user" : "assistant");
+      div.innerHTML =
+        `<div class="who">${user ? "You" : "Assistant"}</div>` +
+        (user ? `<p>${pair[0]}</p>` : pair[1]);
+      frag.appendChild(div);
+    }
+    chat.appendChild(frag);
+    window.scrollTo(0, document.body.scrollHeight);
+  </script>
+</body>
+</html>

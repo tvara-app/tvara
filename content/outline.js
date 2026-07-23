@@ -26,7 +26,14 @@
   const convId = () => location.hostname + location.pathname;
   const storeKey = () => "stars:" + convId();
   const keyOf = (el) => self.LCTTimeline.keyOf(el);
-  const snippet = (el) => (el.textContent || "").trim().slice(0, SNIPPET_LEN);
+  // First real content block beats raw textContent: chat sites prepend
+  // hidden/role labels ("You said:", sr-only headers) that would otherwise
+  // pollute every entry ("YouCan you help me…").
+  function snippet(el) {
+    const block = el.querySelector("p, h1, h2, h3, li");
+    const text = (block ? block.textContent : el.textContent) || "";
+    return text.trim().slice(0, SNIPPET_LEN);
+  }
 
   /* ---------- stars persistence ---------- */
 
