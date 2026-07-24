@@ -256,6 +256,89 @@
     e.target.value = "";
   });
 
+  /* ---------- sync all history (storage-bus orchestration) ----------
+     This page can't fetch chatgpt.com / claude.ai (wrong origin), so it asks
+     the open app tabs to do it: writes a request to storage, each app's
+     content script runs its same-origin sync and streams progress back
+     through storage. Apps with no open tab get an "Open & sync" link. */
+
+  const APPS = [
+    { id: "chatgpt", label: "ChatGPT", url: "https://chatgpt.com/" },
+    { id: "claude", label: "Claude", url: "https://claude.ai/" }
+  ];
+  const progKey = (id) => "recall-sync-progress:" + id;
+  const respondedAt = {}; // id -> ms of last progress update this run
+  let syncRunAt = 0;
+
+  function pct(p) {
+    if (!p || !p.total) return "";
+    return " (" + Math.min(100, Math.round((p.done / p.total) * 100)) + "%)";
+  }
+
+  function renderRow(app) {
+    let row = document.getElementById("sync-row-" + app.id);
+    if (!row) {
+      row = document.createElement("div");
+      row.id = "sync-row-" + app.id;
+      row.className = "sync-row";
+      $("sync-rows").appendChild(row);
+    }
+    return row;
+  }
+
+  function paintRow(app, p, waiting) {
+    const row = renderRow(app);
+    row.replaceChildren();
+    const name = document.createElement("b");
+    name.textContent = app.label;
+    const status = document.createElement("span");
+    status.className = "sync-status";
+    if (p && p.state === "error") { status.textContent = p.msg; status.classList.add("err"); }
+    else if (p && p.state === "locked") { status.textContent = p.msg; }
+    else if (p && p.state === "done") { status.textContent = p.msg; status.classList.add("ok"); }
+    else if (p) { status.textContent = (p.msg || "Syncing…") + pct(p); }
+    else if (waiting) { status.textContent = "Waiting for the app…"; }
+    row.append(name, status);
+    // no live tab responded → offer to open it (it auto-syncs on load)
+    if (waiting && (!p || Date.now() - (p.at || 0) > 3500)) {
+      const open = document.createElement("button");
+      open.className = "sync-open";
+      open.textContent = "Open & sync";
+      open.addEventListener("click", () => window.open(app.url, "_blank", "noopener"));
+      row.appendChild(open);
+    }
+  }
+
+  async function refreshSyncRows() {
+    const keys = APPS.map((a) => progKey(a.id));
+    const store = await chrome.storage.local.get(keys);
+    for (const app of APPS) {
+      const p = store[progKey(app.id)];
+      const fresh = p && p.at >= syncRunAt;
+      paintRow(app, fresh ? p : null, true);
+    }
+  }
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local" || !syncRunAt) return;
+    if (APPS.some((a) => changes[progKey(a.id)])) {
+      refreshSyncRows();
+      loadStats(); // numbers climb live as chats land
+    }
+  });
+
+  $("sync-all").addEventListener("click", async () => {
+    syncRunAt = Date.now();
+    await chrome.storage.local.set({
+      "recall-sync-request": { at: syncRunAt, apps: ["all"], full: true }
+    });
+    $("sync-rows").replaceChildren();
+    for (const app of APPS) paintRow(app, null, true);
+    // re-check after the grace window so "Open & sync" appears for closed apps
+    setTimeout(refreshSyncRows, 3800);
+    setTimeout(loadStats, 4000);
+  });
+
   /* ---------- wipe (two clicks — no confirm() popups) ---------- */
 
   let armed = false;

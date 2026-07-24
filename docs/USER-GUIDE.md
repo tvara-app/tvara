@@ -75,16 +75,18 @@ Recall page from the popup) → one search box across **every archived chat on
 every platform** → click a result and land in that chat with the in-chat
 search already open on your words.
 **How the archive builds:**
-- **ChatGPT — automatic full sync:** open the Recall search (⌘⇧K) and click
-  "Sync full ChatGPT history". Every chat's title, dates and text come
-  straight from your own ChatGPT account into the local archive, and after
-  the first run it quietly keeps itself up to date. No file, no waiting.
-- **Every platform:** any chat you open is archived automatically as you read
-  it — so your archive fills itself just by using AI normally.
-- **Claude — import file:** Settings → Privacy → Export data, then drop the
-  file on the Recall page. Parsed 100% on your device.
-- **Gemini/DeepSeek/Grok/Perplexity:** these have no export or usable history
-  API, so they rely on the automatic open-and-archive path above.
+- **One button, all history:** open the Recall page → **Sync all history**. It
+  asks your open ChatGPT and Claude tabs to pull every conversation — titles,
+  dates and full text — straight from your own account, showing live progress
+  per app. Apps that aren't open get a one-click **Open & sync**. Big
+  histories take a while and keep going in that tab; you can walk away.
+- **Automatic forever after:** once synced, ChatGPT and Claude quietly keep
+  themselves current every time you visit — no button, no thought.
+- **Every platform, always:** any chat you open on any site is archived as you
+  read it. Gemini, Grok, DeepSeek and Perplexity have no history API (their own
+  platforms don't expose one), so they rely on this open-and-archive path — or
+  a Claude/ChatGPT export file you drop on the Recall page.
+
 **Privacy, provable:** the archive lives in your browser's local extension
 storage. This extension has **no network permissions**, so the archive
 physically cannot be uploaded anywhere. The Recall page shows exactly what's

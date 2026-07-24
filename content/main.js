@@ -413,8 +413,9 @@
   // Total Recall is Pro/trial on EVERY platform (the golden feature) — but
   // indexing always runs: a user who upgrades later gets their history, and
   // the data never leaves the machine either way.
-  self.LCTRecall.init(adapter, () => state.enabled && (state.pro || trialActive()));
-  self.LCTRecallSync.init(adapter);
+  const recallUnlocked = () => state.enabled && (state.pro || trialActive());
+  self.LCTRecall.init(adapter, recallUnlocked);
+  self.LCTRecallSync.init(adapter, recallUnlocked);
   document.addEventListener(
     "keydown",
     (e) => {

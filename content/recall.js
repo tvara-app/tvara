@@ -138,16 +138,21 @@
     const footNote = document.createElement("span");
     footNote.textContent = "Total Recall searches chats you've opened (or imported) — all stored on this device only.";
     foot.appendChild(footNote);
-    // ChatGPT: full-history sync from the platform's own same-origin API —
-    // the user's own data, landing only in the local archive.
+    // On a supported app page: sync THIS app's full history from its own
+    // same-origin API (the user's data, landing only in the local archive).
     if (self.LCTRecallSync && self.LCTRecallSync.available) {
       const syncBtn = document.createElement("button");
       syncBtn.id = "lct-r-sync";
-      syncBtn.textContent = "Sync full ChatGPT history";
+      const label = self.LCTRecallSync.platformId === "claude" ? "Claude" : "ChatGPT";
+      syncBtn.textContent = "Sync full " + label + " history";
       syncBtn.addEventListener("click", () => {
         syncBtn.disabled = true;
-        self.LCTRecallSync.syncAll((p) => { footNote.textContent = p; }, true)
-          .then(() => { syncBtn.disabled = false; runQuery(); });
+        footNote.textContent = "Syncing… you can keep working.";
+        self.LCTRecallSync.syncNow(true).then((r) => {
+          syncBtn.disabled = false;
+          footNote.textContent = r && r.ok ? `Synced ${r.count} chats — all local.` : (r && r.err) || "Sync finished.";
+          runQuery();
+        });
       });
       foot.appendChild(syncBtn);
     }

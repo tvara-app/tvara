@@ -516,6 +516,39 @@ try {
   t("B11 recall page shows archive stats",
     /chats archived/.test(await recall.textContent("#stats")));
 
+  // 5b) "Sync all history" — storage-bus orchestration. The real network sync
+  // needs a logged-in ChatGPT/Claude tab (user-verified); what's testable here
+  // is the bus: the button writes a request, and live progress from an app's
+  // content script paints into the rows + climbs the stats.
+  await recall.click("#sync-all");
+  const req = await recall.evaluate(async () =>
+    (await chrome.storage.local.get("recall-sync-request"))["recall-sync-request"]);
+  t("B11 Sync-all writes an 'all' request", req && req.apps.includes("all") && req.full === true);
+  await recall.waitForSelector("#sync-row-chatgpt");
+  await recall.waitForSelector("#sync-row-claude");
+  t("B11 sync rows render for ChatGPT + Claude", true);
+  // simulate an app content script reporting live progress via storage
+  await recall.evaluate((at) => chrome.storage.local.set({
+    "recall-sync-progress:chatgpt": { state: "full", done: 42, total: 100, msg: "Archiving full text…", at: at + 1 }
+  }), req.at);
+  await recall.waitForFunction(() =>
+    /42\/100|Archiving/.test(document.getElementById("sync-row-chatgpt")?.textContent || "") &&
+    /%/.test(document.getElementById("sync-row-chatgpt")?.textContent || ""),
+    null, { timeout: 5000 });
+  t("B11 live sync progress paints into the row with a %", true);
+  await recall.evaluate((at) => chrome.storage.local.set({
+    "recall-sync-progress:chatgpt": { state: "done", done: 100, total: 100, msg: "Done — 100 chats, all on this device.", at: at + 2 }
+  }), req.at);
+  await recall.waitForFunction(() =>
+    /Done/.test(document.getElementById("sync-row-chatgpt")?.textContent || ""),
+    null, { timeout: 5000 });
+  t("B11 sync row shows done state", true);
+  // an app with no live tab: after the grace window, offer "Open & sync"
+  await recall.waitForFunction(() =>
+    /Open . sync|Waiting/.test(document.getElementById("sync-row-claude")?.textContent || ""),
+    null, { timeout: 6000 });
+  t("B11 unopened app offers Open & sync (or waiting)", true);
+
   // 6) import a ChatGPT-format export (parser + batch import, fully local)
   const fixture = [
     {

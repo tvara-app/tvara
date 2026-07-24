@@ -85,6 +85,26 @@ kbd {
 #import-status.ok { color: #2f9e44; }
 #import-status.err { color: var(--danger); }
 
+/* sync all */
+#sync-all {
+  display: inline-block; padding: 9px 16px; border-radius: 10px; cursor: pointer;
+  background: var(--accent); color: #fff; font-weight: 600; font-size: 13px; border: none;
+}
+#sync-all:hover { background: var(--accent-2); }
+#sync-rows { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.sync-row {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 12px; border-radius: 10px; background: var(--bg); border: 1px solid var(--line);
+}
+.sync-row b { min-width: 72px; }
+.sync-status { color: var(--dim); font-size: 13px; flex: 1; }
+.sync-status.ok { color: #2f9e44; }
+.sync-status.err { color: var(--danger); }
+.sync-open {
+  padding: 4px 10px; border-radius: 8px; cursor: pointer; font-size: 12px; font-weight: 600;
+  border: 1px solid var(--accent); background: transparent; color: var(--accent);
+}
+
 /* danger */
 .danger h2 { color: var(--danger); }
 #wipe {

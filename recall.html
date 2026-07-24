@@ -44,13 +44,12 @@
     </section>
 
     <section class="card">
-      <h2>Get your full history in</h2>
-      <ol class="dim">
-        <li><b>ChatGPT — automatic:</b> open chatgpt.com, press <kbd>⌘⇧K</kbd> and hit <b>Sync full ChatGPT history</b>. Every chat's title, dates and text sync straight from your own account into the local archive — after the first run it keeps itself up to date.</li>
-        <li><b>Claude — import file:</b> Settings → Privacy → Export data, then drop the file below.</li>
-        <li><b>Gemini, DeepSeek, Grok, Perplexity:</b> no export or usable history API — chats are archived automatically as you open them.</li>
-      </ol>
-      <label class="import-btn" for="import-file">Choose export file (.zip or conversations.json)</label>
+      <h2>Sync your full history</h2>
+      <p class="dim">Pulls every conversation — titles, dates and text — straight from your own account into this local archive. It reads only the same data the app itself loads, and nothing leaves your machine. Big histories take a while; you can close this and it keeps going in that app's tab.</p>
+      <button id="sync-all">Sync all history</button>
+      <div id="sync-rows"></div>
+      <p class="dim" style="margin-top:10px">ChatGPT and Claude sync automatically. Gemini, Grok, DeepSeek and Perplexity have no history API, so their chats are archived as you open them — or import a file below.</p>
+      <label class="import-btn" for="import-file">Import an export file (.zip or conversations.json)</label>
       <input id="import-file" type="file" accept=".zip,.json" hidden />
       <p id="import-status" role="status"></p>
     </section>
