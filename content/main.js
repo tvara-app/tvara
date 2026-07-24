@@ -55,34 +55,21 @@
     }, 1500);
   }
 
-  // Content signature: engine updates fire constantly while SCROLLING (the
-  // windowing classes flip), but the conversation content rarely changes.
-  // Heavy per-message passes (timeline keys, outline, minimap data, recall
-  // text extraction) only run when content actually changed — this is what
-  // keeps a 1,500-message chat smooth during the initial mount storm too.
-  let contentSig = "";
-  function sigOf(messages) {
-    const first = messages[0], last = messages[messages.length - 1];
-    return messages.length + ":" +
-      (first ? (first.textContent || "").length : 0) + ":" +
-      (last ? (last.textContent || "").length : 0);
-  }
-
+  // Every module here self-throttles internally (minimap caches per-element
+  // meta + rAF-batches its draw; chatcard/recall/stats debounce their writes;
+  // outline only re-renders while open). So we call them every tick — crucially
+  // the minimap MUST run each time to RE-INJECT itself when the host app tears
+  // our node out during its own re-renders. (A prior "only-on-content-change"
+  // gate here made the minimap vanish on some chats — never again.)
   function onEngineUpdate(messages, windowedCount) {
     lastMessages = messages;
     if (location.href !== currentHref) onChatSwitch();
-    const sig = sigOf(messages) + "|" + location.pathname;
-    if (sig !== contentSig) {
-      contentSig = sig;
-      if (state.minimap && toolsUnlocked()) self.LCTMinimap.update(messages, adapter);
-      else self.LCTMinimap.destroy();
-      self.LCTTimeline.update(messages);
-      self.LCTOutline.update(messages);
-      self.LCTChatCard.update(messages);
-      self.LCTRecall.update(messages);
-    } else if (!(state.minimap && toolsUnlocked())) {
-      self.LCTMinimap.destroy();
-    }
+    if (state.minimap && toolsUnlocked()) self.LCTMinimap.update(messages, adapter);
+    else self.LCTMinimap.destroy();
+    self.LCTTimeline.update(messages);
+    self.LCTOutline.update(messages);
+    self.LCTChatCard.update(messages);
+    self.LCTRecall.update(messages);
     pushStats(windowedCount, messages.length);
     injectExportButtons();
     updateCountPill(windowedCount);
@@ -376,7 +363,6 @@
   }
 
   function applyState() {
-    contentSig = ""; // settings changed → next engine update repaints everything
     self.LCTTimeline.setDisplay(state.enabled && state.time && toolsUnlocked());
     self.LCTOutline.setEnabled(state.enabled && toolsUnlocked());
     self.LCTChatCard.setEnabled(state.enabled && toolsUnlocked());

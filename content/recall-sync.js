@@ -21,7 +21,8 @@
   "use strict";
 
   const LIST_PAGE = 100;
-  const FULL_DELAY_MS = 350;          // polite pacing on their API
+  const FULL_CONCURRENCY = 3;         // conversations fetched in parallel
+  const FULL_DELAY_MS = 150;          // per-worker pacing (polite, but ~7x faster)
   const AUTO_STALE_MS = 30 * 60 * 1000;
   const REQ_KEY = "recall-sync-request";           // { at, apps:[ids|"all"], full }
   const progKey = (p) => "recall-sync-progress:" + p;
@@ -211,10 +212,20 @@
       // Phase B — full text, newest first, skip already-fresh
       if (fullText && metas.length) {
         const check = await send({ type: "recall-check", ids: metas.map((m) => idOf(m.id)) });
-        let done = 0;
-        for (const m of metas) {
-          const have = check && check[idOf(m.id)];
-          if (!(have && have.n > 0 && have.updatedAt >= m.updatedAt)) {
+        const total = metas.length;
+        let done = 0, cursor = 0, pauseUntil = 0, fatal = null;
+        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+        // Concurrency pool: fetch several conversations at once instead of one
+        // at a time — many-times faster. A 429 pauses ALL workers briefly; on
+        // any per-chat error we skip and the next delta sync catches it.
+        const worker = async () => {
+          while (!fatal) {
+            const i = cursor++;
+            if (i >= total) return;
+            const m = metas[i];
+            const have = check && check[idOf(m.id)];
+            if (have && have.n > 0 && have.updatedAt >= m.updatedAt) { done++; continue; }
+            if (pauseUntil > Date.now()) await sleep(pauseUntil - Date.now());
             try {
               const d = await plat.detail(ctx, m.id);
               if (d.msgs.length >= 2) {
@@ -227,17 +238,17 @@
               }
             } catch (e) {
               const em = String(e.message || e);
-              if (em.includes("rate-limited")) {
-                await writeProgress("full", done, metas.length, "Rate-limited — pausing 30s…");
-                await new Promise((r) => setTimeout(r, 30000));
-              } else if (em.includes("unauthorized")) { throw e; }
-              // other per-chat errors: skip and keep going
+              if (em.includes("unauthorized")) { fatal = e; return; }
+              if (em.includes("rate-limited")) { pauseUntil = Date.now() + 20000; }
+              // else: transient/per-chat error → skip; delta sync retries later
             }
+            done++;
+            await writeProgress("full", done, total, `Archiving full text… ${done}/${total}`);
+            await sleep(FULL_DELAY_MS);
           }
-          done++;
-          await writeProgress("full", done, metas.length, `Archiving full text… ${done}/${metas.length}`);
-          await new Promise((r) => setTimeout(r, FULL_DELAY_MS));
-        }
+        };
+        await Promise.all(Array.from({ length: Math.min(FULL_CONCURRENCY, total) }, worker));
+        if (fatal) throw fatal;
         await chrome.storage.local.set({ [cardKey]: records });
       }
 

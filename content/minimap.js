@@ -40,7 +40,14 @@
   };
 
   function build() {
-    if (root) return;
+    if (root && root.isConnected) return;
+    if (root && !root.isConnected) {
+      // The host app tore our node out during its own re-render. Re-attach the
+      // SAME element (listeners intact) instead of leaving the minimap gone.
+      document.documentElement.appendChild(root);
+      if (tooltip && !tooltip.isConnected) document.documentElement.appendChild(tooltip);
+      return;
+    }
     root = document.createElement("div");
     root.id = "lct-minimap";
     root.innerHTML = `

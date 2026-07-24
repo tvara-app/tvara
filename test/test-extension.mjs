@@ -218,6 +218,17 @@ try {
   const asleep = await page.evaluate(() => document.querySelectorAll(".lct-cv").length);
   t("B1 speed engine sleeping messages", asleep > 100, `${asleep} asleep`);
 
+  // B1b — REGRESSION: the host app tears our nodes out on its own re-renders;
+  // the minimap must re-inject itself on the next engine tick. (A content-sig
+  // optimization once gated this and the minimap vanished on some chats.)
+  await page.evaluate(() => document.getElementById("lct-minimap").remove());
+  await page.evaluate(() => { // nudge the DOM so the engine's observer fires
+    const c = document.getElementById("chat");
+    const n = document.createTextNode(""); c.appendChild(n); n.remove();
+  });
+  await page.waitForSelector("#lct-minimap", { timeout: 8000 });
+  t("B1b minimap re-injects after the host removes it", true);
+
   await page.waitForFunction(() => {
     const p = document.getElementById("lct-mm-count");
     return p && p.style.display !== "none" && /^\d+$/.test(p.textContent);
