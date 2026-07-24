@@ -653,6 +653,8 @@ try {
   await page.waitForTimeout(300);
   t("B12 Context Bridge locked without pro/trial",
     await page.evaluate(() => !document.querySelector("#lct-bridge.lct-b-open")));
+  t("B12 locked hotkey explains why (not a silent no-op)",
+    /Context Bridge is a Pro feature/.test(await page.textContent("#lct-b-toast").catch(() => "")));
   await recall.reload();
   await recall.waitForSelector("#locked:not([hidden])", { timeout: 5000 });
   t("B11 recall page shows upsell when locked", await recall.isVisible("#locked"));

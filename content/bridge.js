@@ -251,11 +251,16 @@
   }
 
   function onKey(e) {
-    const k = (e.key || "").toLowerCase();
-    if ((e.metaKey || e.ctrlKey) && e.shiftKey && k === "u") {
-      if (!unlocked()) return; // locked: the popup sells the Bridge
+    // match the PHYSICAL key (layout/dead-key independent) OR the produced key
+    const hit = e.code === "KeyU" || (e.key || "").toLowerCase() === "u";
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey && hit) {
       e.preventDefault();
       e.stopPropagation();
+      // never a silent no-op: if locked, say why instead of doing nothing
+      if (!unlocked()) {
+        flash("Context Bridge is a Pro feature — start the free 7-day trial in the extension popup.");
+        return;
+      }
       isOpen ? close() : open();
     }
   }
