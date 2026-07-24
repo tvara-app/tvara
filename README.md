@@ -8,6 +8,7 @@ Long conversations grind AI chat UIs to a halt — every message stays fully ren
 
 ## Features
 
+- **🌉 Context Bridge (Pro)** — the memory layer for all your AI. Composing a prompt on any site? Press `⌘⇧J` / `Ctrl+Shift+J`: Recall finds relevant passages from your entire cross-platform history, you pick, and it injects them into your prompt — so the model you're already using answers *with* your accumulated knowledge. No servers, no API keys (it feeds context to the model you're already in), all local. Fails safe to the clipboard if the prompt box can't be found.
 - **🧠 Total Recall (Pro)** — one search box for every AI conversation you've ever had, across all platforms (`⌘⇧K` / `Ctrl+Shift+K`). One 'Sync all history' button pulls your full ChatGPT & Claude history from your own accounts (live progress, then auto-current); other apps archive as you open them. 100% local (zero network permissions — the archive *cannot* leave your machine), one-click delete.
 - **⚡ Speed engine** — off-screen messages are windowed with native CSS `content-visibility`, so the browser stops paying for what you can't see. Messages wake instantly when scrolled to. Nothing is removed or mutated.
 - **🕒 Message timestamps** — AI chat sites don't show *when* anything was said; hover any message to see its time. ChatGPT: real send times for the entire history (read locally from the app's own state by a tiny read-only page-world script). Claude/Gemini: honest "first seen on this device" times from the moment you install — never faked as send times.

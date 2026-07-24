@@ -61,6 +61,8 @@ const ctx = await chromium.launchPersistentContext(PROFILE, {
   viewport: { width: 900, height: 800 }
 });
 await new Promise((r) => setTimeout(r, 1500)); // let Chrome register the extension
+// Context Bridge's clipboard fallback is asserted deterministically
+try { await ctx.grantPermissions(["clipboard-read", "clipboard-write"], { origin: "http://127.0.0.1:8917" }); } catch {}
 const POPUP = `chrome-extension://${idFromProfile() || computedId}/popup/popup.html`;
 
 const pageErrors = [];
@@ -99,7 +101,7 @@ try {
 
   // A1 — free state renders correctly
   t("A1 badge shows Free", (await pop.textContent("#plan-badge")).trim() === "Free");
-  t("A1 version shown", (await pop.textContent("#version")).trim() === "v0.5.0");
+  t("A1 version shown", (await pop.textContent("#version")).trim() === "v0.6.0");
   t("A1 upsell visible / active card hidden",
     (await pop.isVisible("#pro-upsell")) && !(await pop.isVisible("#pro-active")));
   t("A1 speed/minimap/time toggles on by default",
@@ -647,12 +649,94 @@ try {
   await page.waitForTimeout(600);
   t("B11 overlay locked without pro/trial",
     await page.evaluate(() => !document.querySelector("#lct-recall.lct-r-open")));
+  await page.keyboard.press("Control+Shift+KeyJ");
+  await page.waitForTimeout(300);
+  t("B12 Context Bridge locked without pro/trial",
+    await page.evaluate(() => !document.querySelector("#lct-bridge.lct-b-open")));
   await recall.reload();
   await recall.waitForSelector("#locked:not([hidden])", { timeout: 5000 });
   t("B11 recall page shows upsell when locked", await recall.isVisible("#locked"));
   t("B11 locked page still owns import + wipe (user's data)",
     (await recall.isVisible("#import-file, .import-btn")) && (await recall.isVisible("#wipe")));
   await pop.evaluate(() => chrome.storage.local.set({ trial: { startedAt: Date.now() } })); // restore
+
+  /* ============ B12. Context Bridge (cross-platform prompt injection) ====== */
+  await page.reload(); // pick up the restored trial
+  await page.waitForSelector("#lct-minimap", { timeout: 15000 });
+  // B11's wipe emptied the archive; the indexer re-archives this chat ~3s after
+  // load. Poll (from the extension page) until the background actually has it.
+  for (let i = 0; i < 30; i++) {
+    const hit = await pop.evaluate(() => new Promise((res) =>
+      chrome.runtime.sendMessage({ type: "recall-search", q: "architectural", long: true },
+        (r) => res(!!(r && r.results && r.results.length)))));
+    if (hit) break;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+
+  // seed the composer with a draft; ⌘⇧J opens the Bridge pre-searched on it
+  await page.fill("#t-composer", "architectural");
+  await page.focus("#t-composer");
+  await page.keyboard.press("Control+Shift+KeyJ");
+  await page.waitForSelector("#lct-bridge.lct-b-open", { timeout: 5000 });
+  t("B12 Bridge opens with Ctrl+Shift+J (trial active)", true);
+  t("B12 search seeded from the composer draft",
+    (await page.inputValue("#lct-bridge input")) === "architectural");
+  await page.waitForSelector("#lct-bridge .lct-b-item", { timeout: 5000 });
+  t("B12 finds relevant passages from the archive",
+    (await page.locator("#lct-bridge .lct-b-item").count()) >= 1);
+  t("B12 insert disabled until a passage is picked",
+    await page.locator(".lct-b-insert").isDisabled());
+
+  // pick one passage → insert → the textarea composer gets the context block,
+  // prepended, with the user's own draft preserved
+  await page.locator("#lct-bridge .lct-b-item input[type=checkbox]").first().check();
+  t("B12 insert enabled after a pick", !(await page.locator(".lct-b-insert").isDisabled()));
+  await page.click(".lct-b-insert");
+  await page.waitForFunction(() =>
+    /^Context from my earlier AI chats:/.test(document.getElementById("t-composer").value), null, { timeout: 5000 });
+  const composerVal = await page.inputValue("#t-composer");
+  t("B12 context injected into textarea, draft preserved",
+    /^Context from my earlier AI chats:/.test(composerVal) && composerVal.includes("architectural"),
+    composerVal.slice(0, 50));
+  t("B12 injected block tags the source platform",
+    /\[Test Page/.test(composerVal), composerVal.slice(0, 120));
+  t("B12 Bridge closed after insert",
+    await page.evaluate(() => !document.querySelector("#lct-bridge.lct-b-open")));
+
+  // contenteditable injection path: remove the textarea so the resolver falls
+  // to the contenteditable composer
+  await page.evaluate(() => document.getElementById("t-composer").remove());
+  await page.focus("#t-composer-ce");
+  await page.keyboard.press("Control+Shift+KeyJ");
+  await page.waitForSelector("#lct-bridge.lct-b-open", { timeout: 5000 });
+  await page.fill("#lct-bridge input", "distributed");
+  await page.waitForSelector("#lct-bridge .lct-b-item", { timeout: 5000 });
+  await page.locator("#lct-bridge .lct-b-item input[type=checkbox]").first().check();
+  await page.click(".lct-b-insert");
+  await page.waitForFunction(() =>
+    /Context from my earlier AI chats:/.test(document.getElementById("t-composer-ce").textContent), null, { timeout: 5000 });
+  t("B12 context injected into a contenteditable composer",
+    /Context from my earlier AI chats:/.test(await page.textContent("#t-composer-ce")));
+
+  // fail-safe: no composer at all → clipboard fallback + honest toast.
+  // (#box is a plain <input>, which the resolver intentionally won't hijack.)
+  await page.evaluate(() => document.getElementById("t-composer-ce").remove());
+  await page.keyboard.press("Control+Shift+KeyJ");
+  await page.waitForSelector("#lct-bridge.lct-b-open", { timeout: 5000 });
+  await page.fill("#lct-bridge input", "architectural");
+  await page.waitForSelector("#lct-bridge .lct-b-item", { timeout: 5000 });
+  await page.locator("#lct-bridge .lct-b-item input[type=checkbox]").first().check();
+  // clear any lingering toast from the previous insert so we read the NEW one
+  await page.evaluate(() => document.getElementById("lct-b-toast")?.remove());
+  await page.click(".lct-b-insert");
+  await page.waitForSelector("#lct-b-toast.lct-b-toast-show", { timeout: 5000 });
+  const toastTxt = await page.textContent("#lct-b-toast");
+  t("B12 no composer → clipboard fallback, honest toast",
+    /copied, just paste it|Couldn't insert/.test(toastTxt), toastTxt);
+  const clip = await page.evaluate(() => navigator.clipboard.readText().catch(() => ""));
+  t("B12 fallback actually put the context on the clipboard",
+    /Context from my earlier AI chats:/.test(clip) || /Couldn't insert/.test(toastTxt));
+  await page.keyboard.press("Escape");
 
   /* ============ C. zero page errors across everything ============ */
   t("C1 zero page/console errors", pageErrors.length === 0, pageErrors.slice(0, 3).join(" | "));

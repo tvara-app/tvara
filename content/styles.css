@@ -462,6 +462,88 @@
   #lct-recall .lct-r-info { color: rgba(26, 26, 30, 0.45); }
 }
 
+/* ===== Context Bridge (cross-platform prompt injection) ===== */
+#lct-bridge {
+  position: fixed;
+  top: 12vh;
+  left: 50%;
+  transform: translateX(-50%) translateY(-8px);
+  z-index: 2147483647;
+  width: min(660px, calc(100vw - 32px));
+  border-radius: 14px;
+  background: rgba(18, 19, 24, 0.98);
+  border: 1px solid rgba(122, 162, 255, 0.28);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
+  color: #ececf1;
+  font: 400 13.5px/1.5 -apple-system, "Segoe UI", sans-serif;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+#lct-bridge.lct-b-open { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0); }
+#lct-bridge .lct-b-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 16px; border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+#lct-bridge input[type="text"] {
+  flex: 1; border: none; outline: none; background: transparent; color: #ececf1; font-size: 15.5px;
+}
+#lct-bridge input[type="text"]::placeholder { color: rgba(236, 236, 241, 0.4); }
+#lct-bridge .lct-b-meta { color: rgba(236, 236, 241, 0.5); font-size: 12px; white-space: nowrap; }
+#lct-bridge .lct-b-list { max-height: 44vh; overflow-y: auto; padding: 6px; }
+#lct-bridge .lct-b-item {
+  display: flex; gap: 10px; align-items: flex-start;
+  padding: 9px 11px; border-radius: 10px; cursor: pointer;
+}
+#lct-bridge .lct-b-item:hover { background: rgba(122, 162, 255, 0.08); }
+#lct-bridge .lct-b-item input[type="checkbox"] { margin-top: 3px; flex: none; width: 15px; height: 15px; accent-color: #7aa2ff; }
+#lct-bridge .lct-b-body { min-width: 0; }
+#lct-bridge .lct-b-title { display: flex; gap: 8px; align-items: baseline; font-weight: 600; font-size: 13px; }
+#lct-bridge .lct-b-title b {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+  color: #7aa2ff; flex: none;
+}
+#lct-bridge .lct-b-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#lct-bridge .lct-b-ex {
+  color: rgba(236, 236, 241, 0.62); font-size: 12.5px; margin-top: 3px;
+  overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+}
+#lct-bridge .lct-b-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 16px; border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+#lct-bridge .lct-b-note { color: rgba(236, 236, 241, 0.45); font-size: 11.5px; }
+#lct-bridge .lct-b-insert {
+  flex: none; padding: 7px 14px; border: none; border-radius: 9px; cursor: pointer;
+  background: #5b7fff; color: #fff; font: 600 12.5px/1 -apple-system, "Segoe UI", sans-serif;
+}
+#lct-bridge .lct-b-insert:hover { background: #6f8fff; }
+#lct-bridge .lct-b-insert:disabled { opacity: 0.45; cursor: default; }
+
+#lct-b-toast {
+  position: fixed; left: 50%; bottom: 92px; transform: translateX(-50%) translateY(8px);
+  z-index: 2147483647; padding: 9px 16px; border-radius: 999px;
+  background: rgba(22, 24, 30, 0.97); color: #e8eaf0; border: 1px solid rgba(122, 162, 255, 0.35);
+  font: 600 12.5px/1 -apple-system, "Segoe UI", sans-serif;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
+  opacity: 0; pointer-events: none; transition: opacity 0.2s ease, transform 0.2s ease;
+}
+#lct-b-toast.lct-b-toast-show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+@media (prefers-color-scheme: light) {
+  #lct-bridge {
+    background: rgba(255, 255, 255, 0.99); border-color: rgba(79, 110, 247, 0.3);
+    box-shadow: 0 24px 70px rgba(0, 0, 0, 0.25); color: #1a1a1e;
+  }
+  #lct-bridge input[type="text"] { color: #1a1a1e; }
+  #lct-bridge input[type="text"]::placeholder { color: rgba(26, 26, 30, 0.4); }
+  #lct-bridge .lct-b-head, #lct-bridge .lct-b-foot { border-color: rgba(0, 0, 0, 0.08); }
+  #lct-bridge .lct-b-meta, #lct-bridge .lct-b-note { color: rgba(26, 26, 30, 0.5); }
+  #lct-bridge .lct-b-title b { color: #3b5bdb; }
+  #lct-bridge .lct-b-ex { color: rgba(26, 26, 30, 0.6); }
+  #lct-b-toast { background: rgba(255, 255, 255, 0.99); color: #1a1a1e; border-color: rgba(79, 110, 247, 0.35); }
+}
+
 /* invisible hover bridge: covers the gap between the message edge and the
    star button so the cursor never crosses "dead" ground on the way over */
 #lct-star::after {

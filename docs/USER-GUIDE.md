@@ -1,6 +1,6 @@
 # Long Chat Toolkit — Complete User Guide
 
-**Version 0.5.0 · Chrome / Edge (Manifest V3)**
+**Version 0.6.0 · Chrome / Edge (Manifest V3)**
 
 Long Chat Toolkit fixes the thing every heavy AI user hits eventually: after a
 few hundred messages, ChatGPT, Claude and the rest grind to a halt — typing
@@ -65,6 +65,22 @@ appear there, the extension safely does nothing rather than breaking the page.
 ---
 
 ## 4. The features, one by one
+
+### 🌉 Context Bridge — your AI's memory across every tool (Pro)
+**The problem it solves:** you figured something out with ChatGPT, now you're
+in Claude and it knows none of it — so you re-explain your whole project.
+Studies put this context-switching tax at 200+ hours a year.
+**What it does:** while composing a prompt on any site, press **⌘⇧J /
+Ctrl+Shift+J**. Recall searches your entire cross-platform archive, shows the
+most relevant passages, you tick the ones you want, and it inserts them into
+your prompt — so the model you're already using answers *with* your
+accumulated knowledge from every other tool.
+**How it stays private and free:** it doesn't call an API, use a key, or run a
+local model — it simply feeds the context to the model you're already signed
+into and paying for. The extension's zero network permissions are untouched.
+**Fail-safe:** you always pick before anything is inserted (no surprise
+noise), and if the prompt box can't be found it copies the context to your
+clipboard so you can paste it — it never touches the page it shouldn't.
 
 ### 🧠 Total Recall — search every chat, every platform (Pro)
 **The problem it solves:** "I solved this in *some* chat… ChatGPT? Claude?
@@ -277,6 +293,7 @@ safe.
 
 | Keys | Action |
 |---|---|
+| `⌘⇧J` / `Ctrl+Shift+J` | Context Bridge — inject past context into your prompt (Pro) |
 | `⌘⇧K` / `Ctrl+Shift+K` | Total Recall — search across ALL chats (Pro) |
 | `⌘⇧F` / `Ctrl+Shift+F` | Open in-chat search |
 | `Enter` / `Shift+Enter` | Next / previous match |

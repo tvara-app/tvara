@@ -173,6 +173,24 @@ await caption(page, "Total Recall: search EVERY chat on EVERY platform. 100% loc
 await shoot(page, "7-recall.png");
 await page.keyboard.press("Escape");
 
+/* ---------- shot 8: Context Bridge — the v0.6 headline ---------- */
+await page.waitForTimeout(300);
+await page.keyboard.press("Control+Shift+KeyJ");
+await page.waitForSelector("#lct-bridge.lct-b-open", { timeout: 8000 });
+await page.fill("#lct-bridge input", "database schema");
+await page.waitForFunction(() =>
+  document.querySelectorAll("#lct-bridge .lct-b-item").length >= 2, null, { timeout: 8000 });
+// pre-check two passages so the shot shows the pick-then-insert flow
+await page.evaluate(() => {
+  const boxes = document.querySelectorAll("#lct-bridge .lct-b-item input[type=checkbox]");
+  for (let i = 0; i < Math.min(2, boxes.length); i++) {
+    boxes[i].checked = true; boxes[i].dispatchEvent(new Event("change", { bubbles: true }));
+  }
+});
+await caption(page, "Context Bridge: pull past answers from any AI into your prompt.");
+await shoot(page, "8-bridge.png");
+await page.keyboard.press("Escape");
+
 /* ---------- shot 6: popup in trial state, composited ---------- */
 await pop.evaluate(() => new Promise((res) =>
   chrome.storage.local.set({ trial: { startedAt: Date.now() } }, res)));

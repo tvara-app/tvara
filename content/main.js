@@ -416,6 +416,7 @@
   const recallUnlocked = () => state.enabled && (state.pro || trialActive());
   self.LCTRecall.init(adapter, recallUnlocked);
   self.LCTRecallSync.init(adapter, recallUnlocked);
+  self.LCTBridge.init(adapter, recallUnlocked);
   document.addEventListener(
     "keydown",
     (e) => {

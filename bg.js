@@ -117,15 +117,16 @@ function score(chat, words) {
   return total;
 }
 
-function snippetFor(chat, words) {
+function snippetFor(chat, words, long) {
+  const back = long ? 120 : 60, fwd = long ? 520 : 160;
   for (let i = 0; i < chat.msgs.length; i++) {
     const t = chat.msgs[i].t;
     const low = t.toLowerCase();
     const at = low.indexOf(words[0]);
     if (at !== -1) {
-      const start = Math.max(0, at - 60);
+      const start = Math.max(0, at - back);
       return {
-        text: (start ? "…" : "") + t.slice(start, at + 160),
+        text: (start ? "…" : "") + t.slice(start, at + fwd),
         msgIndex: i,
         role: chat.msgs[i].r
       };
@@ -137,7 +138,7 @@ function snippetFor(chat, words) {
   return { text: chat.msgs[0].t.slice(0, 160), msgIndex: 0, role: "user" };
 }
 
-async function search(query) {
+async function search(query, long) {
   const words = String(query || "").toLowerCase().split(/\s+/).filter((w) => w.length >= 2).slice(0, 8);
   if (!words.length) return { results: [], scanned: 0 };
   const d = await db();
@@ -153,7 +154,7 @@ async function search(query) {
       const chat = c.value;
       const s = score(chat, words);
       if (s > 0) {
-        const snip = snippetFor(chat, words);
+        const snip = snippetFor(chat, words, long);
         results.push({
           id: chat.id, host: chat.host, path: chat.path, platform: chat.platform,
           title: chat.title, n: chat.n, createdAt: chat.createdAt,
@@ -216,7 +217,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     switch (msg && msg.type) {
       case "recall-upsert": return upsert(msg.chat);
       case "recall-import": return importBatch(msg.chats);
-      case "recall-search": return search(msg.q);
+      case "recall-search": return search(msg.q, msg.long);
       case "recall-check":  return check(msg.ids);
       case "recall-stats":  return stats();
       case "recall-wipe":   return wipe();

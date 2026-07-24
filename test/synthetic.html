@@ -35,6 +35,9 @@
   <div id="chat"></div>
   <footer>
     <input id="box" placeholder="Type here to feel input lag… (this is the test)" />
+    <!-- Context Bridge fixtures: a textarea composer + a contenteditable one -->
+    <textarea id="t-composer" style="position:fixed;bottom:60px;left:40%;width:300px;height:60px" placeholder="composer"></textarea>
+    <div id="t-composer-ce" contenteditable="true" style="position:fixed;bottom:130px;left:40%;width:300px;min-height:40px;border:1px solid #444"></div>
   </footer>
 
   <script>

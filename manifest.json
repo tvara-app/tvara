@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Long Chat Toolkit",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Fix slow, laggy AI chats. Speed engine, minimap, search & backup for ChatGPT, Claude, Gemini, DeepSeek, Grok. 100% local, $0 data.",
   "permissions": [
     "storage",
@@ -53,6 +53,7 @@
         "content/chatcard.js",
         "content/recall-sync.js",
         "content/recall.js",
+        "content/bridge.js",
         "content/main.js"
       ],
       "css": [
