@@ -21,9 +21,11 @@
   "use strict";
 
   const LIST_PAGE = 100;
-  const FULL_CONCURRENCY = 3;         // conversations fetched in parallel
-  const FULL_DELAY_MS = 150;          // per-worker pacing (polite, but ~7x faster)
-  const AUTO_STALE_MS = 30 * 60 * 1000;
+  const FULL_CONCURRENCY = 6;         // conversations fetched in parallel
+  const FULL_DELAY_MS = 60;           // per-worker pacing (polite, fast)
+  const AUTO_STALE_MS = 2 * 60 * 60 * 1000;  // 2 hours — don't re-sync unless stale
+  const PERIODIC_SYNC_MS = 30 * 60 * 1000;    // check for new chats every 30 min
+  const IMPORT_BATCH_SIZE = 10;       // batch recall-import messages to reduce IPC
   const REQ_KEY = "recall-sync-request";           // { at, apps:[ids|"all"], full }
   const progKey = (p) => "recall-sync-progress:" + p;
   const flagKey = (p) => "recall-sync-" + p;        // { lastFull: ms }
@@ -146,7 +148,101 @@
     }
   };
 
-  const BY_ID = { chatgpt: CHATGPT, claude: CLAUDE };
+  const DEEPSEEK = {
+    id: "deepseek", host: "chat.deepseek.com", label: "DeepSeek", convPrefix: "/chat/",
+    async prepare() {
+      const r = await fetch("/api/v0/chat/list?count=1", { credentials: "include" });
+      if (r.status === 401 || r.status === 403) throw new Error("not signed in");
+      if (!r.ok) throw new Error("session " + r.status);
+      return {};
+    },
+    async get(ctx, path) {
+      const r = await fetch(path, { credentials: "include" });
+      if (r.status === 429) throw new Error("rate-limited");
+      if (r.status === 401 || r.status === 403) throw new Error("unauthorized");
+      if (!r.ok) throw new Error("http " + r.status);
+      return r.json();
+    },
+    async list(ctx, sinceMs, progress) {
+      const metas = [];
+      const data = await this.get(ctx, "/api/v0/chat/list?count=500");
+      const items = data.data?.list || data.list || (Array.isArray(data) ? data : []);
+      for (const it of items) {
+        const upd = it.updated_at ? new Date(it.updated_at).getTime() : (it.update_time || 0);
+        if (sinceMs && upd && upd <= sinceMs) continue;
+        metas.push({
+          id: it.id || it.session_id,
+          title: it.title || it.topic || "",
+          createdAt: it.created_at ? new Date(it.created_at).getTime() : (it.create_time || 0),
+          updatedAt: upd || Date.now()
+        });
+      }
+      metas.sort((a, b) => b.updatedAt - a.updatedAt);
+      progress("listing", metas.length, metas.length);
+      return { metas, total: metas.length };
+    },
+    async detail(ctx, id) {
+      const data = await this.get(ctx, "/api/v0/chat/history/" + id);
+      const msgs = [];
+      const items = data.data?.messages || data.messages || [];
+      for (const m of items) {
+        const role = /user|human/i.test(m.role) ? "user" : "assistant";
+        const text = (m.content || m.text || "").trim();
+        if (!text) continue;
+        msgs.push({ r: role, t: text, ts: m.created_at ? Math.floor(new Date(m.created_at).getTime() / 1000) : 0 });
+      }
+      return { msgs };
+    }
+  };
+
+  const GROK = {
+    id: "grok", host: "grok.com", label: "Grok", convPrefix: "/chat/",
+    async prepare() {
+      const r = await fetch("/rest/app-chat/conversations?limit=1", { credentials: "include" });
+      if (r.status === 401 || r.status === 403) throw new Error("not signed in");
+      if (!r.ok) throw new Error("session " + r.status);
+      return {};
+    },
+    async get(ctx, path) {
+      const r = await fetch(path, { credentials: "include" });
+      if (r.status === 429) throw new Error("rate-limited");
+      if (r.status === 401 || r.status === 403) throw new Error("unauthorized");
+      if (!r.ok) throw new Error("http " + r.status);
+      return r.json();
+    },
+    async list(ctx, sinceMs, progress) {
+      const metas = [];
+      const data = await this.get(ctx, "/rest/app-chat/conversations?limit=500");
+      const items = data.conversations || data.items || (Array.isArray(data) ? data : []);
+      for (const it of items) {
+        const upd = it.updated_at ? new Date(it.updated_at).getTime() : 0;
+        if (sinceMs && upd && upd <= sinceMs) continue;
+        metas.push({
+          id: it.id || it.conversation_id,
+          title: it.title || it.name || "",
+          createdAt: it.created_at ? new Date(it.created_at).getTime() : 0,
+          updatedAt: upd || Date.now()
+        });
+      }
+      metas.sort((a, b) => b.updatedAt - a.updatedAt);
+      progress("listing", metas.length, metas.length);
+      return { metas, total: metas.length };
+    },
+    async detail(ctx, id) {
+      const data = await this.get(ctx, "/rest/app-chat/conversations/" + id);
+      const msgs = [];
+      const items = data.messages || data.turns || [];
+      for (const m of items) {
+        const role = /user|human/i.test(m.role || m.sender || "") ? "user" : "assistant";
+        const text = (m.content || m.text || m.message || "").trim();
+        if (!text) continue;
+        msgs.push({ r: role, t: text, ts: m.created_at ? Math.floor(new Date(m.created_at).getTime() / 1000) : 0 });
+      }
+      return { msgs };
+    }
+  };
+
+  const BY_ID = { chatgpt: CHATGPT, claude: CLAUDE, deepseek: DEEPSEEK, grok: GROK };
   const SUPPORTED = Object.keys(BY_ID);
 
   /* ================= shared engine ================= */
@@ -218,6 +314,13 @@
         // Concurrency pool: fetch several conversations at once instead of one
         // at a time — many-times faster. A 429 pauses ALL workers briefly; on
         // any per-chat error we skip and the next delta sync catches it.
+        // Batch accumulator: flush imports in groups to reduce IPC overhead
+        const importQueue = [];
+        const flushImports = async () => {
+          if (!importQueue.length) return;
+          const batch = importQueue.splice(0);
+          await send({ type: "recall-import", chats: batch });
+        };
         const worker = async () => {
           while (!fatal) {
             const i = cursor++;
@@ -229,12 +332,13 @@
             try {
               const d = await plat.detail(ctx, m.id);
               if (d.msgs.length >= 2) {
-                await send({ type: "recall-import", chats: [{
+                importQueue.push({
                   id: idOf(m.id), host, path: pre + m.id, platform: plat.label,
                   title: m.title, createdAt: m.createdAt, updatedAt: m.updatedAt, msgs: d.msgs
-                }] });
+                });
                 const r2 = records[pre + m.id];
                 if (r2) { r2.c = d.msgs.length; r2.u = d.msgs.filter((x) => x.r === "user").length; }
+                if (importQueue.length >= IMPORT_BATCH_SIZE) await flushImports();
               }
             } catch (e) {
               const em = String(e.message || e);
@@ -248,6 +352,7 @@
           }
         };
         await Promise.all(Array.from({ length: Math.min(FULL_CONCURRENCY, total) }, worker));
+        await flushImports(); // flush any remaining batched imports
         if (fatal) throw fatal;
         await chrome.storage.local.set({ [cardKey]: records });
       }
@@ -275,15 +380,15 @@
     lastReqAt = req.at;
     const apps = req.apps || [];
     if (!(apps.includes("all") || apps.includes(plat.id))) return;
-    if (!unlocked()) { await writeProgress("locked", 0, 0, "Total Recall is Pro — start the trial to sync."); return; }
+    // Always sync — archive data never leaves the machine
     runSync(req.full !== false);
   }
 
-  // Silent auto-sync on visit: keeps the archive current with no interaction,
-  // once Recall is unlocked. First visit does a full pass; later visits delta.
+  // Silent auto-sync: keeps the archive current with no interaction.
+  // Runs on every visit (if stale) and periodically while the tab is open.
   async function maybeAutoSync() {
     try {
-      if (!plat || !unlocked()) return;
+      if (!plat) return;
       const { [flagKey(plat.id)]: flag } = await chrome.storage.local.get(flagKey(plat.id));
       if (flag && flag.lastFull && Date.now() - flag.lastFull < AUTO_STALE_MS) return;
       runSync(true); // full first time (flag empty), delta after
@@ -302,8 +407,18 @@
           onRequest(changes[REQ_KEY].newValue);
         }
       });
+      // Check for any pending sync request that was written BEFORE this
+      // content script loaded (e.g. tab was auto-opened for sync).
+      chrome.storage.local.get(REQ_KEY, (result) => {
+        const req = result && result[REQ_KEY];
+        if (req && req.at && Date.now() - req.at < 30000) {
+          onRequest(req);
+        }
+      });
     } catch { /* storage API unavailable */ }
-    setTimeout(maybeAutoSync, 12000); // long after page settle
+    // Auto-sync on page load (after settle) and periodically while open
+    setTimeout(maybeAutoSync, 5000);
+    setInterval(maybeAutoSync, PERIODIC_SYNC_MS);
   }
 
   self.LCTRecallSync = {

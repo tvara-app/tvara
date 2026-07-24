@@ -40,16 +40,16 @@
     <section class="card" id="archive">
       <h2>Your archive</h2>
       <div id="stats" class="stats-row"></div>
-      <p class="dim">Chats are archived automatically as you open them. The archive lives in this browser's local extension storage — it never touches any server, because this extension has no network permissions.</p>
+      <p class="dim">Chats are archived automatically as you open them. The archive lives in this browser's local extension storage — it never touches any server.</p>
     </section>
 
     <section class="card">
       <h2>Sync your full history</h2>
-      <p class="dim">Pulls every conversation — titles, dates and text — straight from your own account into this local archive. It reads only the same data the app itself loads, and nothing leaves your machine. Big histories take a while; you can close this and it keeps going in that app's tab.</p>
+      <p class="dim">Pulls every conversation — titles, dates and text — straight from your own account into this local archive. It reads only the same data the app itself loads, and nothing leaves your machine. Syncing runs entirely in the background — no tabs are opened.</p>
       <button id="sync-all">Sync all history</button>
       <div id="sync-rows"></div>
-      <p class="dim" style="margin-top:10px">ChatGPT and Claude sync automatically. Gemini, Grok, DeepSeek and Perplexity have no history API, so their chats are archived as you open them — or import a file below.</p>
-      <label class="import-btn" for="import-file">Import an export file (.zip or conversations.json)</label>
+      <p class="dim" style="margin-top:10px">ChatGPT, Claude, DeepSeek and Grok sync full conversation text directly in the background.</p>
+      <label class="import-btn" for="import-file">Import an export file (.zip or .json — ChatGPT, Claude, or Gemini Takeout)</label>
       <input id="import-file" type="file" accept=".zip,.json" hidden />
       <p id="import-status" role="status"></p>
     </section>

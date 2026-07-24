@@ -213,11 +213,120 @@
     saveCache({ pro: false, masked: null });
   });
 
+  /* ---------- Sync History ---------- */
+
+  const PLAT_IDS = ["chatgpt", "claude", "deepseek", "grok"];
+  const syncProgKey = (id) => "recall-sync-progress:" + id;
+  const syncFlagKey = (id) => "recall-sync-" + id;
+  const FRESH_MS = 2 * 60 * 60 * 1000; // 2 hours — matches bg.js stale time
+  let isSyncing = false;
+
+  function updateSyncStatus(text, cls) {
+    const el = $("sync-status");
+    el.textContent = text;
+    el.className = "row-sub" + (cls ? " sync-status-" + cls : "");
+  }
+
+  function timeAgo(ms) {
+    const sec = Math.floor((Date.now() - ms) / 1000);
+    if (sec < 60) return "just now";
+    const min = Math.floor(sec / 60);
+    if (min < 60) return min + " min ago";
+    const hr = Math.floor(min / 60);
+    return hr + "h ago";
+  }
+
+  async function checkFreshness() {
+    // Ask bg.js for current sync status
+    const status = await new Promise((res) =>
+      chrome.runtime.sendMessage({ type: "recall-sync-status" }, res));
+
+    if (status && status.running) {
+      isSyncing = true;
+      $("sync-history").classList.add("syncing");
+      updateSyncStatus("Syncing in background…");
+      return;
+    }
+
+    if (!status || !status.platforms) {
+      updateSyncStatus("Click to sync all chats");
+      return;
+    }
+
+    // Check if all platforms have synced recently
+    let allFresh = true, oldestSync = Date.now(), anySync = false;
+    let activeMsg = "";
+    for (const id of PLAT_IDS) {
+      const p = status.platforms[id];
+      if (!p) { allFresh = false; continue; }
+
+      // Check if currently syncing
+      if (p.progress && p.progress.state === "syncing") {
+        isSyncing = true;
+        $("sync-history").classList.add("syncing");
+        activeMsg = p.progress.msg || "Syncing…";
+      }
+
+      const last = p.flag && p.flag.lastFull;
+      if (!last || Date.now() - last > FRESH_MS) {
+        allFresh = false;
+      } else {
+        anySync = true;
+        if (last < oldestSync) oldestSync = last;
+      }
+    }
+
+    if (isSyncing) {
+      updateSyncStatus(activeMsg || "Syncing in background…");
+      return;
+    }
+
+    if (allFresh) {
+      updateSyncStatus("All chats synced ✓ • " + timeAgo(oldestSync), "ok");
+    } else if (anySync) {
+      updateSyncStatus("Partially synced • " + timeAgo(oldestSync) + " — click to sync");
+    } else {
+      updateSyncStatus("Click to sync all chats");
+    }
+  }
+
+  async function triggerSync() {
+    if (isSyncing) return;
+    isSyncing = true;
+    $("sync-history").classList.add("syncing");
+    updateSyncStatus("Starting background sync…");
+
+    // Send to bg.js — runs entirely in the service worker, no tabs needed
+    chrome.runtime.sendMessage({ type: "recall-bg-sync" });
+  }
+
+  async function refreshSyncUI() {
+    const keys = PLAT_IDS.map(syncProgKey);
+    const store = await chrome.storage.local.get(keys);
+    let doneCount = 0, latestMsg = "";
+    for (const id of PLAT_IDS) {
+      const p = store[syncProgKey(id)];
+      if (!p) continue;
+      if (p.state === "done") doneCount++;
+      if (p.state === "syncing" && p.msg) latestMsg = p.msg;
+    }
+    if (doneCount >= PLAT_IDS.length) {
+      updateSyncStatus("All chats synced ✓", "ok");
+      $("sync-history").classList.remove("syncing");
+      isSyncing = false;
+    } else if (latestMsg) {
+      updateSyncStatus(latestMsg);
+    }
+  }
+
+  $("sync-history").addEventListener("click", triggerSync);
+
+  // On popup open: check freshness instead of auto-syncing
+  checkFreshness();
+
   load();
 
-  // Live repaint: content scripts keep writing stats (throttled) while the
-  // popup is open — without this, opening the popup a beat too early shows
-  // empty per-site rows until the next manual reopen.
+  // Live repaint
   try {
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== "local") return;
@@ -225,6 +334,10 @@
         k.startsWith("stats:") || k === "settings" || k === "license" || k === "trial")) {
         load();
       }
+      // Track sync progress live
+      if (PLAT_IDS.some((id) => changes[syncProgKey(id)])) {
+        refreshSyncUI();
+      }
     });
-  } catch { /* storage unavailable — static popup is still correct */ }
+  } catch { /* storage unavailable */ }
 })();

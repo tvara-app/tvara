@@ -5,7 +5,15 @@
   "description": "Fix slow, laggy AI chats. Speed engine, minimap, search & backup for ChatGPT, Claude, Gemini, DeepSeek, Grok. 100% local, $0 data.",
   "permissions": [
     "storage",
-    "unlimitedStorage"
+    "unlimitedStorage",
+    "cookies"
+  ],
+  "host_permissions": [
+    "https://chatgpt.com/*",
+    "https://chat.openai.com/*",
+    "https://claude.ai/*",
+    "https://chat.deepseek.com/*",
+    "https://grok.com/*"
   ],
   "background": {
     "service_worker": "bg.js"

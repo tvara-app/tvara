@@ -9,26 +9,40 @@
 
   const dedupe = (els) => Array.from(new Set(els.filter(Boolean)));
 
+  /** Recursively search through open shadow roots for matching elements. */
+  function queryShadowAll(root, selector) {
+    const results = [];
+    try { results.push(...root.querySelectorAll(selector)); } catch {}
+    const walk = (node) => {
+      if (node.shadowRoot) {
+        try { results.push(...node.shadowRoot.querySelectorAll(selector)); } catch {}
+        node.shadowRoot.querySelectorAll("*").forEach(walk);
+      }
+    };
+    root.querySelectorAll("*").forEach(walk);
+    return dedupe(results);
+  }
+
   /**
    * Shared fallback for platforms with build-hashed class names (DeepSeek,
-   * Grok): the message list is the element with the most text-bearing
-   * children. Conservative: under 25 children we return nothing — the engine
-   * ignores short chats anyway, and guessing wrong on someone's app is worse
-   * than doing nothing.
+   * Grok, Perplexity): the message list is the element with the most
+   * text-bearing children. Lowered threshold to 6 children with a stricter
+   * text-length filter (>20 chars) to avoid false positives on nav/sidebar
+   * elements while still catching shorter conversations.
    */
   function heuristicMessages() {
     let best = null;
     for (const el of document.querySelectorAll("div, section, ol, ul")) {
       const n = el.childElementCount;
-      if (n < 25 || n > 2000) continue;
+      if (n < 6 || n > 2000) continue;
       if (el.closest("nav, aside, header, footer")) continue;
       if (!best || n > best.childElementCount) best = el;
     }
     if (!best) return [];
     const kids = Array.from(best.children).filter(
-      (c) => (c.textContent || "").trim().length > 0
+      (c) => (c.textContent || "").trim().length > 20
     );
-    return kids.length >= 25 ? kids : [];
+    return kids.length >= 4 ? kids : [];
   }
 
   /* ---------- composer resolution (Context Bridge) ----------
@@ -95,18 +109,74 @@
       label: "ChatGPT",
       hostRe: /(^|\.)chatgpt\.com$|(^|\.)chat\.openai\.com$/,
       messages() {
-        let els = Array.from(
+        // Layer 1 (current, stable): div elements with data-message-id
+        // As of 2025–2026, ChatGPT wraps each message in a div with
+        // data-message-id and data-message-author-role attributes.
+        let els = dedupe(Array.from(
+          document.querySelectorAll('[data-message-id]')
+        ));
+        if (els.length) return els;
+
+        // Layer 2: data-message-author-role without data-message-id
+        // (in case the id attribute is dropped but role remains)
+        els = dedupe(Array.from(
+          document.querySelectorAll('[data-message-author-role]')
+        ));
+        if (els.length) return els;
+
+        // Layer 3 (legacy): article-based conversation turns
+        els = dedupe(Array.from(
           document.querySelectorAll('article[data-testid^="conversation-turn"]')
-        );
-        if (!els.length) {
-          els = Array.from(document.querySelectorAll("main [data-message-author-role]"))
-            .map((el) => el.closest("article") || el.parentElement || el);
+        ));
+        if (els.length) return els;
+
+        // Layer 4 (legacy variant): div-based conversation turns
+        els = dedupe(Array.from(
+          document.querySelectorAll('div[data-testid^="conversation-turn"]')
+        ));
+        if (els.length) return els;
+
+        // Layer 5: structural — largest child-list with text content
+        const root = document.querySelector("main") || document.body;
+        let best = null, bestN = 0;
+        for (const el of root.querySelectorAll("div")) {
+          const n = el.childElementCount;
+          if (n < 4 || n > 2000) continue;
+          if (el.closest("nav, aside, header, footer")) continue;
+          const textKids = Array.from(el.children).filter(
+            (c) => (c.textContent || "").trim().length > 20
+          );
+          if (textKids.length > bestN && textKids.length >= 4) {
+            bestN = textKids.length;
+            best = el;
+          }
         }
-        return dedupe(els);
+        if (best) {
+          els = Array.from(best.children).filter(
+            (c) => (c.textContent || "").trim().length > 20
+          );
+          if (els.length >= 4) return els;
+        }
+
+        // Layer 6: shared heuristic (last resort)
+        return heuristicMessages();
       },
       role(el) {
+        // Check the element itself first (current ChatGPT puts role on the message div)
+        if (el.hasAttribute("data-message-author-role")) {
+          return el.getAttribute("data-message-author-role") === "user" ? "user" : "assistant";
+        }
+        // Check descendants
         const r = el.querySelector("[data-message-author-role]");
-        return r && r.getAttribute("data-message-author-role") === "user" ? "user" : "assistant";
+        if (r) return r.getAttribute("data-message-author-role") === "user" ? "user" : "assistant";
+        // data-testid may encode the role (legacy)
+        const tid = el.getAttribute("data-testid") || "";
+        if (/user/i.test(tid)) return "user";
+        // Structural heuristics
+        if (el.querySelector('.markdown, .prose, pre, code, [class*="markdown"]')) return "assistant";
+        const text = (el.textContent || "").trim();
+        if (text.length < 300 && !el.querySelector("pre, ol, ul, table")) return "user";
+        return "assistant";
       },
       composer() { return pickComposer(["#prompt-textarea", 'textarea[data-id]', 'div[contenteditable="true"]']); }
     },
@@ -134,26 +204,112 @@
       convPath: /^\/app\/./,
       label: "Gemini",
       hostRe: /(^|\.)gemini\.google\.com$/,
+      // Gemini uses Shadow DOM + custom elements that Google changes often.
+      // Five fallback layers: custom elements → ARIA/data attrs → structural
+      // class partials → shadow DOM piercing → shared heuristic.
       messages() {
-        return dedupe(Array.from(document.querySelectorAll("user-query, model-response")));
+        // Layer 1: original custom elements (still work on some builds)
+        let els = dedupe(Array.from(document.querySelectorAll("user-query, model-response")));
+        if (els.length) return els;
+
+        // Layer 2: ARIA / data-attribute based selectors
+        els = dedupe(Array.from(document.querySelectorAll(
+          '[data-message-id], [role="listitem"][data-content-type], message-content'
+        )));
+        if (els.length) return els;
+
+        // Layer 3: structural class-name partials for conversation turns
+        els = dedupe(Array.from(document.querySelectorAll(
+          '.conversation-container > div, [class*="turn-container"], [class*="response-container"]'
+        )));
+        if (els.length >= 2) return els;
+
+        // Layer 4: shadow DOM piercing — search open shadow roots
+        els = queryShadowAll(document.body, 'message-content, [data-message-id], model-response, user-query');
+        if (els.length) return els;
+
+        // Layer 5: shared heuristic (last resort)
+        return heuristicMessages();
       },
       role(el) {
-        return el.tagName.toLowerCase() === "user-query" ? "user" : "assistant";
+        const tag = el.tagName.toLowerCase();
+        if (tag === "user-query") return "user";
+        if (tag === "model-response") return "assistant";
+        // Check for common user-message indicators
+        if (el.querySelector('[data-message-author="user"]') ||
+            /user|human|query/i.test(el.className) ||
+            el.closest('[data-content-type="user"]')) return "user";
+        return "assistant";
       },
-      composer() { return pickComposer(['.ql-editor[contenteditable="true"]', 'rich-textarea .textarea', 'div[contenteditable="true"]']); }
+      composer() {
+        return pickComposer([
+          '.ql-editor[contenteditable="true"]',
+          'rich-textarea .textarea',
+          '.text-input-field_input-box [contenteditable="true"]',
+          'div[contenteditable="true"][role="textbox"]',
+          'div[contenteditable="true"]'
+        ]);
+      }
     },
     {
       id: "perplexity",
-      convPath: /^\/search\/./,
+      convPath: /^\/(search|thread)\//, // Perplexity uses both /search/ and /thread/
       label: "Perplexity",
       hostRe: /(^|\.)perplexity\.ai$/,
-      // Best-effort: Perplexity's DOM shifts often; degrade gracefully to nothing.
+      // Best-effort: Perplexity's React DOM shifts often with hashed class names.
+      // Five fallback layers: data attrs → class partials → prose containers
+      // → structural thread children → shared heuristic.
       messages() {
-        return dedupe(Array.from(document.querySelectorAll('[data-lct-message], div[class*="PromptBlock"], div[class*="AnswerBlock"]')));
+        // Layer 1: data attributes (stable if present)
+        let els = dedupe(Array.from(document.querySelectorAll(
+          '[data-lct-message], [data-testid*="message"], [data-testid*="answer"], [data-testid*="query"]'
+        )));
+        if (els.length) return els;
+
+        // Layer 2: original class-name partials (may still work on some deploys)
+        els = dedupe(Array.from(document.querySelectorAll(
+          'div[class*="PromptBlock"], div[class*="AnswerBlock"], div[class*="ConversationBlock"]'
+        )));
+        if (els.length) return els;
+
+        // Layer 3: prose/markdown container pattern
+        els = dedupe(Array.from(document.querySelectorAll(
+          '[class*="prose"], [class*="markdown"]'
+        )).map(el => el.closest('[class*="Block"]') || el.parentElement || el));
+        if (els.length >= 2) return els;
+
+        // Layer 4: structural — thread area's direct children with substantial content
+        const thread = document.querySelector('[class*="thread"], [class*="Thread"], main > div > div');
+        if (thread) {
+          els = Array.from(thread.children).filter(
+            c => (c.textContent || "").trim().length > 20 && !c.closest("nav, aside, header, footer")
+          );
+          if (els.length >= 2) return els;
+        }
+
+        // Layer 5: shared heuristic (last resort)
+        return heuristicMessages();
       },
       role(el) {
         if (el.hasAttribute("data-lct-message")) return el.getAttribute("data-lct-role") || "assistant";
-        return /Prompt/i.test(el.className) ? "user" : "assistant";
+        if (el.hasAttribute("data-testid")) {
+          const tid = el.getAttribute("data-testid");
+          if (/query|question|user|prompt/i.test(tid)) return "user";
+        }
+        if (/Prompt|Query|question|user/i.test(el.className)) return "user";
+        // Heuristic: short text without prose structure is likely a user question
+        const text = (el.textContent || "").trim();
+        const hasProse = !!el.querySelector('[class*="prose"], [class*="markdown"], pre, ol, ul, table');
+        if (!hasProse && text.length < 500) return "user";
+        return "assistant";
+      },
+      composer() {
+        return pickComposer([
+          'textarea[placeholder*="Ask"]',
+          'textarea[placeholder*="follow"]',
+          'textarea',
+          'div[contenteditable="true"][role="textbox"]'
+        ]);
       }
     },
     {
@@ -179,18 +335,51 @@
       convPath: /^\/(c|chat)\/./,
       label: "Grok",
       hostRe: /(^|\.)grok\.com$/,
-      // Experimental: Grok's standalone app. Bubble selectors first, shared
-      // heuristic second, nothing third.
+      // Experimental: Grok's React app with hashed/Tailwind classes.
+      // Four fallback layers: data/ARIA attrs → class partials → semantic
+      // HTML → shared heuristic.
       messages() {
-        let els = dedupe(
-          Array.from(document.querySelectorAll('[class*="message-bubble"], [class*="message-row"]')).map(
-            (el) => el.closest('[class*="message-row"]') || el
-          )
+        // Layer 1: data attributes / ARIA roles
+        let els = dedupe(Array.from(document.querySelectorAll(
+          '[data-testid*="message"], [role="listitem"], [data-message-id]'
+        )));
+        if (els.length >= 2) return els;
+
+        // Layer 2: original class-name partials
+        els = dedupe(
+          Array.from(document.querySelectorAll(
+            '[class*="message-bubble"], [class*="message-row"], [class*="chat-message"], [class*="MessageBubble"]'
+          )).map(el => el.closest('[class*="message-row"], [class*="chat-message"]') || el)
         );
-        return els.length >= 10 ? els : heuristicMessages();
+        if (els.length >= 2) return els;
+
+        // Layer 3: semantic HTML elements inside main
+        els = dedupe(Array.from(document.querySelectorAll('main article, main section > div > div')));
+        if (els.length >= 2) return els;
+
+        // Layer 4: shared heuristic (last resort)
+        return heuristicMessages();
       },
       role(el) {
-        return /user|items-end|justify-end/i.test(String(el.className)) ? "user" : "assistant";
+        // Check for data attributes first
+        const role = el.getAttribute("data-role") || el.getAttribute("data-message-role") || "";
+        if (/user/i.test(role)) return "user";
+        // Class-based detection
+        if (/user|items-end|justify-end|human/i.test(String(el.className))) return "user";
+        // Structural: user messages are typically right-aligned
+        try {
+          const style = getComputedStyle(el);
+          if (style.justifyContent === "flex-end" || style.alignSelf === "flex-end") return "user";
+        } catch {}
+        return "assistant";
+      },
+      composer() {
+        return pickComposer([
+          'textarea[placeholder*="Ask"]',
+          'textarea[placeholder*="message"]',
+          'textarea',
+          'div[contenteditable="true"]'
+        ]);
       }
     },
     {

@@ -2,15 +2,12 @@
 /* Long Chat Toolkit — store screenshot generator.
    Captures the 6 listing shots (1280×800, captions baked in) from the REAL
    extension running on test/demo.html. Output: test/.work/store/            */
-import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { readFileSync, mkdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
-
-const require = createRequire("/Users/andhetharuntej/Pixxel/package.json");
-const { chromium } = require("playwright");
+import { chromium } from "playwright";
 
 const EXT = join(homedir(), "long-chat-toolkit");
 const WORK = join(EXT, "test", ".work");

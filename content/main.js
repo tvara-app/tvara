@@ -396,12 +396,12 @@
   self.LCTSearch.init(adapter);
   self.LCTOutline.init(adapter);
   self.LCTChatCard.init(adapter, store);
-  // Total Recall is Pro/trial on EVERY platform (the golden feature) — but
-  // indexing always runs: a user who upgrades later gets their history, and
-  // the data never leaves the machine either way.
+  // Total Recall search + Context Bridge are Pro/trial features, but sync
+  // (background indexing) always runs — data never leaves the machine, and
+  // a user who upgrades later gets their full history immediately.
   const recallUnlocked = () => state.enabled && (state.pro || trialActive());
   self.LCTRecall.init(adapter, recallUnlocked);
-  self.LCTRecallSync.init(adapter, recallUnlocked);
+  self.LCTRecallSync.init(adapter, () => state.enabled); // sync always active
   self.LCTBridge.init(adapter, recallUnlocked);
 
   // Keyboard shortcuts come from the browser's commands API (remappable at

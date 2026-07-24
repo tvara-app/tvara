@@ -3,15 +3,12 @@
    Loads the real unpacked extension into Chromium, tests the popup UI state
    machine, license activation (incl. "key must never appear in the DOM"),
    storage persistence, and the speed engine on the 1,500-message torture page. */
-import { createRequire } from "node:module";
 import { createHash, createPrivateKey, sign } from "node:crypto";
 import { readFileSync, mkdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
-
-const require = createRequire("/Users/andhetharuntej/Pixxel/package.json");
-const { chromium } = require("playwright");
+import { chromium } from "playwright";
 
 const EXT = join(homedir(), "long-chat-toolkit");
 // Work dirs live under the OS temp dir — never committed (test/.gitignore).

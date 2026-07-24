@@ -376,8 +376,9 @@ footer svg { width: 12px; height: 12px; flex: none; }
 footer a { color: var(--muted); text-decoration: underline; text-underline-offset: 2px; }
 footer a:hover { color: var(--fg); }
 
-/* Total Recall entry row */
-.recall-row {
+/* Total Recall + Sync — consistent action rows */
+.recall-row,
+.sync-row-btn {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -386,12 +387,35 @@ footer a:hover { color: var(--fg); }
   cursor: pointer;
   font: inherit;
   color: inherit;
+  padding: 12px 14px;
+  transition: border-color 0.2s ease, background 0.2s ease, transform 0.1s ease;
 }
-.recall-row:hover { border-color: var(--accent); }
-.recall-row .chev { color: var(--dim); font-size: 18px; }
+.recall-row .row-text,
+.sync-row-btn .row-text { flex: 1; min-width: 0; }
+.recall-row:hover,
+.sync-row-btn:hover { border-color: var(--accent); background: var(--accent-soft); }
+.recall-row:active,
+.sync-row-btn:active { transform: scale(0.98); }
+.recall-row .chev { margin-left: auto; color: var(--muted); font-size: 18px; flex: none; }
 .recall-row kbd {
   font: 600 10px ui-monospace, Menlo, monospace;
-  padding: 0 4px;
-  border: 1px solid var(--line);
+  padding: 1px 5px;
+  border: 1px solid var(--border);
   border-radius: 4px;
+}
+
+/* Syncing state */
+.sync-row-btn.syncing { pointer-events: none; border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+.sync-row-btn.syncing .sync-icon {
+  animation: lct-spin 1s linear infinite;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #fff;
+}
+
+/* Status text colors */
+.sync-status-ok { color: var(--ok) !important; }
+.sync-status-err { color: var(--err) !important; }
+
+@keyframes lct-spin {
+  to { transform: rotate(360deg); }
 }

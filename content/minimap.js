@@ -126,7 +126,7 @@
     const dlg = document.querySelector('dialog[open], [aria-modal="true"]');
     const modalOpen = !!(dlg && dlg.getBoundingClientRect().width > 0);
     const roomy = innerWidth > 640 && innerHeight > 320;
-    root.style.display = !modalOpen && roomy && messages.length >= 10 ? "flex" : "none";
+    root.style.display = !modalOpen && roomy && messages.length >= 4 ? "flex" : "none";
     scheduleDraw();
   }
 

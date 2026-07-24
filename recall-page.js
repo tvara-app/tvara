@@ -150,6 +150,15 @@
     throw new Error(wantName + " not found in zip");
   }
 
+  /** Try multiple known filenames inside a ZIP, return first match. */
+  async function unzipFindJson(buf) {
+    const candidates = ["conversations.json", "MyActivity.json", "My Activity.json"];
+    for (const name of candidates) {
+      try { return await unzipEntry(buf, name); } catch {}
+    }
+    throw new Error("No recognized export file found in ZIP. Expected conversations.json (ChatGPT/Claude) or MyActivity.json (Gemini Takeout).");
+  }
+
   // ChatGPT export: conversations.json = [{title, create_time, update_time,
   // mapping: {id: {message: {author:{role}, create_time, content:{parts}}}}, id}]
   function parseChatGPT(arr) {
@@ -214,13 +223,67 @@
     return chats;
   }
 
+  // Gemini Takeout: MyActivity.json = [{title, titleUrl, time, products, ...}]
+  // Each entry is a single interaction event; group by conversation ID from titleUrl.
+  function parseGeminiTakeout(arr) {
+    const byConv = {};
+    for (const entry of arr) {
+      try {
+        // Extract conversation ID from titleUrl (e.g., "https://gemini.google.com/app/c/<id>")
+        const url = entry.titleUrl || "";
+        const m = url.match(/\/app(?:\/c)?\/([0-9a-f-]+)/i);
+        if (!m) continue;
+        const cid = m[1];
+        if (!byConv[cid]) byConv[cid] = { id: cid, title: "", ts: [], texts: [] };
+        const conv = byConv[cid];
+        // Use the first entry's title as the conversation title
+        if (!conv.title && entry.title) conv.title = entry.title.replace(/^Gemini - /, "").trim();
+        // Parse timestamp
+        if (entry.time) conv.ts.push(new Date(entry.time).getTime());
+        // Extract text content from subtitles or header
+        const subs = entry.subtitles || [];
+        for (const s of subs) {
+          if (s.name && s.name.trim()) conv.texts.push({ r: "user", t: s.name.trim() });
+        }
+        if (entry.header && entry.header.trim()) {
+          conv.texts.push({ r: "user", t: entry.header.trim() });
+        }
+      } catch {}
+    }
+    const chats = [];
+    for (const [cid, conv] of Object.entries(byConv)) {
+      const timestamps = conv.ts.sort((a, b) => a - b);
+      const createdAt = timestamps[0] || 0;
+      const updatedAt = timestamps[timestamps.length - 1] || Date.now();
+      // Build messages — Takeout only has prompts, not full responses
+      const msgs = conv.texts.map((t, i) => ({
+        r: t.r, t: t.t, ts: Math.floor((timestamps[i] || createdAt) / 1000)
+      })).filter(m => m.t);
+      chats.push({
+        id: "gemini.google.com/app/" + cid,
+        host: "gemini.google.com",
+        path: "/app/" + cid,
+        platform: "Gemini",
+        title: conv.title || "Untitled",
+        createdAt, updatedAt,
+        msgs: msgs.length >= 1 ? msgs : [],
+        meta: msgs.length < 2  // if only prompts (no responses), store as meta-only
+      });
+    }
+    return chats;
+  }
+
   function detectAndParse(text) {
     const arr = JSON.parse(text);
     if (!Array.isArray(arr)) throw new Error("unexpected format");
     if (!arr.length) return [];
     if (arr[0] && arr[0].mapping) return parseChatGPT(arr);
     if (arr[0] && arr[0].chat_messages) return parseClaude(arr);
-    throw new Error("unrecognized export format");
+    // Gemini Takeout: each entry has a titleUrl pointing to gemini.google.com
+    if (arr[0] && (arr[0].titleUrl || arr[0].header) && arr.some(e => (e.titleUrl || "").includes("gemini"))) {
+      return parseGeminiTakeout(arr);
+    }
+    throw new Error("unrecognized export format — expected ChatGPT, Claude, or Gemini Takeout");
   }
 
   $("import-file").addEventListener("change", async (e) => {
@@ -232,7 +295,7 @@
     try {
       let text;
       if (file.name.endsWith(".zip")) {
-        text = await unzipEntry(await file.arrayBuffer(), "conversations.json");
+        text = await unzipFindJson(await file.arrayBuffer());
       } else {
         text = await file.text();
       }
@@ -251,7 +314,7 @@
     } catch (err) {
       status.className = "err";
       status.textContent = "Import failed: " + err.message +
-        " — expected a ChatGPT or Claude data export (.zip or conversations.json).";
+        " — expected a ChatGPT, Claude, or Gemini Takeout export (.zip or .json).";
     }
     e.target.value = "";
   });
@@ -260,19 +323,30 @@
      This page can't fetch chatgpt.com / claude.ai (wrong origin), so it asks
      the open app tabs to do it: writes a request to storage, each app's
      content script runs its same-origin sync and streams progress back
-     through storage. Apps with no open tab get an "Open & sync" link. */
+     through storage. Sync runs in the background service worker. */
 
   const APPS = [
-    { id: "chatgpt", label: "ChatGPT", url: "https://chatgpt.com/" },
-    { id: "claude", label: "Claude", url: "https://claude.ai/" }
+    { id: "chatgpt", label: "ChatGPT" },
+    { id: "claude", label: "Claude" },
+    { id: "deepseek", label: "DeepSeek" },
+    { id: "grok", label: "Grok" }
   ];
   const progKey = (id) => "recall-sync-progress:" + id;
-  const respondedAt = {}; // id -> ms of last progress update this run
-  let syncRunAt = 0;
+  const flagKey = (id) => "recall-sync-" + id;
 
   function pct(p) {
     if (!p || !p.total) return "";
     return " (" + Math.min(100, Math.round((p.done / p.total) * 100)) + "%)";
+  }
+
+  function timeAgo(ms) {
+    if (!ms) return "";
+    const sec = Math.floor((Date.now() - ms) / 1000);
+    if (sec < 60) return "just now";
+    const min = Math.floor(sec / 60);
+    if (min < 60) return min + " min ago";
+    const hr = Math.floor(min / 60);
+    return hr + "h ago";
   }
 
   function renderRow(app) {
@@ -286,7 +360,7 @@
     return row;
   }
 
-  function paintRow(app, p, waiting) {
+  function paintRow(app, p) {
     const row = renderRow(app);
     row.replaceChildren();
     const name = document.createElement("b");
@@ -294,49 +368,94 @@
     const status = document.createElement("span");
     status.className = "sync-status";
     if (p && p.state === "error") { status.textContent = p.msg; status.classList.add("err"); }
-    else if (p && p.state === "locked") { status.textContent = p.msg; }
     else if (p && p.state === "done") { status.textContent = p.msg; status.classList.add("ok"); }
-    else if (p) { status.textContent = (p.msg || "Syncing…") + pct(p); }
-    else if (waiting) { status.textContent = "Waiting for the app…"; }
+    else if (p && p.state === "syncing") { status.textContent = (p.msg || "Syncing…") + pct(p); }
+    else { status.textContent = "—"; }
     row.append(name, status);
-    // no live tab responded → offer to open it (it auto-syncs on load)
-    if (waiting && (!p || Date.now() - (p.at || 0) > 3500)) {
-      const open = document.createElement("button");
-      open.className = "sync-open";
-      open.textContent = "Open & sync";
-      open.addEventListener("click", () => window.open(app.url, "_blank", "noopener"));
-      row.appendChild(open);
+  }
+
+  function updateSyncButton(syncing) {
+    const btn = $("sync-all");
+    if (syncing) {
+      btn.textContent = "Syncing…";
+      btn.disabled = true;
+      btn.classList.add("syncing");
+    } else {
+      btn.textContent = "Sync all history";
+      btn.disabled = false;
+      btn.classList.remove("syncing");
     }
   }
 
   async function refreshSyncRows() {
     const keys = APPS.map((a) => progKey(a.id));
     const store = await chrome.storage.local.get(keys);
+    let anySyncing = false;
     for (const app of APPS) {
       const p = store[progKey(app.id)];
-      const fresh = p && p.at >= syncRunAt;
-      paintRow(app, fresh ? p : null, true);
+      paintRow(app, p);
+      if (p && p.state === "syncing") anySyncing = true;
+    }
+    updateSyncButton(anySyncing);
+  }
+
+  // On page load: check if sync is already running and show progress
+  async function initSyncUI() {
+    const status = await new Promise((res) =>
+      chrome.runtime.sendMessage({ type: "recall-sync-status" }, res));
+
+    if (status && status.running) {
+      // Sync is already running — show progress rows
+      $("sync-rows").replaceChildren();
+      for (const app of APPS) {
+        const p = status.platforms[app.id];
+        paintRow(app, p ? p.progress : null);
+      }
+      updateSyncButton(true);
+    } else if (status && status.platforms) {
+      // Show last sync results
+      let allDone = true;
+      for (const app of APPS) {
+        const p = status.platforms[app.id];
+        if (p && p.flag && p.flag.lastFull) {
+          const prog = p.progress;
+          if (prog && prog.state === "done") {
+            paintRow(app, { state: "done", msg: prog.msg + " • " + timeAgo(p.flag.lastFull) });
+          } else {
+            paintRow(app, { state: "done", msg: "Synced " + timeAgo(p.flag.lastFull) });
+          }
+        } else {
+          allDone = false;
+        }
+      }
+      updateSyncButton(false);
     }
   }
 
+  initSyncUI();
+
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== "local" || !syncRunAt) return;
+    if (area !== "local") return;
     if (APPS.some((a) => changes[progKey(a.id)])) {
       refreshSyncRows();
-      loadStats(); // numbers climb live as chats land
+      loadStats();
     }
   });
 
   $("sync-all").addEventListener("click", async () => {
-    syncRunAt = Date.now();
-    await chrome.storage.local.set({
-      "recall-sync-request": { at: syncRunAt, apps: ["all"], full: true }
-    });
+    // Check if already running first
+    const status = await new Promise((res) =>
+      chrome.runtime.sendMessage({ type: "recall-sync-status" }, res));
+    if (status && status.running) {
+      // Already running — just refresh the UI
+      refreshSyncRows();
+      return;
+    }
     $("sync-rows").replaceChildren();
-    for (const app of APPS) paintRow(app, null, true);
-    // re-check after the grace window so "Open & sync" appears for closed apps
-    setTimeout(refreshSyncRows, 3800);
-    setTimeout(loadStats, 4000);
+    for (const app of APPS) paintRow(app, { state: "syncing", msg: "Starting…" });
+    updateSyncButton(true);
+    // Run sync in background worker — no tabs needed
+    chrome.runtime.sendMessage({ type: "recall-bg-sync" });
   });
 
   /* ---------- wipe (two clicks — no confirm() popups) ---------- */
