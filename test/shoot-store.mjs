@@ -175,7 +175,7 @@ await page.keyboard.press("Escape");
 
 /* ---------- shot 8: Context Bridge — the v0.6 headline ---------- */
 await page.waitForTimeout(300);
-await page.keyboard.press("Control+Shift+KeyJ");
+await page.keyboard.press("Control+Shift+KeyU");
 await page.waitForSelector("#lct-bridge.lct-b-open", { timeout: 8000 });
 await page.fill("#lct-bridge input", "database schema");
 await page.waitForFunction(() =>

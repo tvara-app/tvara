@@ -2,7 +2,7 @@
  * Long Chat Toolkit — Context Bridge (Pro).
  *
  * The memory layer for all your AI tools. While composing a prompt in ANY
- * app, press ⌘⇧J / Ctrl+Shift+J: Recall searches your entire cross-platform
+ * app, press ⌘⇧U / Ctrl+Shift+U: Recall searches your entire cross-platform
  * local archive, you pick the relevant passages, and it injects them into
  * your prompt — so the model you're already using answers WITH your
  * accumulated knowledge from every other tool.
@@ -252,7 +252,7 @@
 
   function onKey(e) {
     const k = (e.key || "").toLowerCase();
-    if ((e.metaKey || e.ctrlKey) && e.shiftKey && k === "j") {
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey && k === "u") {
       if (!unlocked()) return; // locked: the popup sells the Bridge
       e.preventDefault();
       e.stopPropagation();

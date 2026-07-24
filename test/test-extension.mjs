@@ -649,7 +649,7 @@ try {
   await page.waitForTimeout(600);
   t("B11 overlay locked without pro/trial",
     await page.evaluate(() => !document.querySelector("#lct-recall.lct-r-open")));
-  await page.keyboard.press("Control+Shift+KeyJ");
+  await page.keyboard.press("Control+Shift+KeyU");
   await page.waitForTimeout(300);
   t("B12 Context Bridge locked without pro/trial",
     await page.evaluate(() => !document.querySelector("#lct-bridge.lct-b-open")));
@@ -673,12 +673,12 @@ try {
     await new Promise((r) => setTimeout(r, 500));
   }
 
-  // seed the composer with a draft; ⌘⇧J opens the Bridge pre-searched on it
+  // seed the composer with a draft; ⌘⇧U opens the Bridge pre-searched on it
   await page.fill("#t-composer", "architectural");
   await page.focus("#t-composer");
-  await page.keyboard.press("Control+Shift+KeyJ");
+  await page.keyboard.press("Control+Shift+KeyU");
   await page.waitForSelector("#lct-bridge.lct-b-open", { timeout: 5000 });
-  t("B12 Bridge opens with Ctrl+Shift+J (trial active)", true);
+  t("B12 Bridge opens with Ctrl+Shift+U (trial active)", true);
   t("B12 search seeded from the composer draft",
     (await page.inputValue("#lct-bridge input")) === "architectural");
   await page.waitForSelector("#lct-bridge .lct-b-item", { timeout: 5000 });
@@ -707,7 +707,7 @@ try {
   // to the contenteditable composer
   await page.evaluate(() => document.getElementById("t-composer").remove());
   await page.focus("#t-composer-ce");
-  await page.keyboard.press("Control+Shift+KeyJ");
+  await page.keyboard.press("Control+Shift+KeyU");
   await page.waitForSelector("#lct-bridge.lct-b-open", { timeout: 5000 });
   await page.fill("#lct-bridge input", "distributed");
   await page.waitForSelector("#lct-bridge .lct-b-item", { timeout: 5000 });
@@ -721,7 +721,7 @@ try {
   // fail-safe: no composer at all → clipboard fallback + honest toast.
   // (#box is a plain <input>, which the resolver intentionally won't hijack.)
   await page.evaluate(() => document.getElementById("t-composer-ce").remove());
-  await page.keyboard.press("Control+Shift+KeyJ");
+  await page.keyboard.press("Control+Shift+KeyU");
   await page.waitForSelector("#lct-bridge.lct-b-open", { timeout: 5000 });
   await page.fill("#lct-bridge input", "architectural");
   await page.waitForSelector("#lct-bridge .lct-b-item", { timeout: 5000 });
