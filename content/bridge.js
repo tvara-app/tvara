@@ -250,25 +250,11 @@
     input.blur();
   }
 
-  function onKey(e) {
-    // match the PHYSICAL key (layout/dead-key independent) OR the produced key
-    const hit = e.code === "KeyU" || (e.key || "").toLowerCase() === "u";
-    if ((e.metaKey || e.ctrlKey) && e.shiftKey && hit) {
-      e.preventDefault();
-      e.stopPropagation();
-      // never a silent no-op: if locked, say why instead of doing nothing
-      if (!unlocked()) {
-        flash("Context Bridge is a Pro feature — start the free 7-day trial in the extension popup.");
-        return;
-      }
-      isOpen ? close() : open();
-    }
-  }
-
   function init(theAdapter, isUnlocked) {
     adapter = theAdapter;
     unlocked = isUnlocked || (() => false);
-    addEventListener("keydown", onKey, true);
+    // opening is driven by the browser commands API (see main.js) — no
+    // content-script hotkey, so no OS/browser reserved-combo clashes
   }
 
   self.LCTBridge = { init, open, close, get isOpen() { return isOpen; } };

@@ -212,6 +212,17 @@ async function wipe() {
 
 /* ---------- message router ---------- */
 
+// Keyboard shortcuts (commands API) are browser-level and user-remappable at
+// chrome://extensions/shortcuts — the cross-platform way that avoids each
+// OS/browser's reserved-combo clashes. We can't message a content script
+// without host/tabs permissions, so we relay via storage: the content script
+// in the user's ACTIVE tab reacts. Zero new permissions.
+try {
+  chrome.commands.onCommand.addListener((name) => {
+    chrome.storage.local.set({ "lct-cmd": { name, at: Date.now() } });
+  });
+} catch (_) { /* commands API unavailable (very old browser) */ }
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   const run = async () => {
     switch (msg && msg.type) {

@@ -291,20 +291,10 @@
     input.blur();
   }
 
-  function onKey(e) {
-    const k = (e.key || "").toLowerCase();
-    if ((e.metaKey || e.ctrlKey) && e.shiftKey && k === "k") {
-      if (!unlocked()) return; // locked: the popup explains Total Recall
-      e.preventDefault();
-      e.stopPropagation();
-      isOpen ? close() : open();
-    }
-  }
-
   function init(theAdapter, isUnlocked) {
     adapter = theAdapter;
     unlocked = isUnlocked;
-    addEventListener("keydown", onKey, true);
+    // opening is driven by the browser commands API (see main.js)
     completeJump();
   }
 

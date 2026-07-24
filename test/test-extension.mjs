@@ -205,6 +205,15 @@ try {
   await page.waitForSelector("#lct-minimap", { timeout: 15000 });
   t("B1 minimap injected", true);
 
+  // Shortcuts now come from the browser commands API → background → storage
+  // signal → the active (visible) tab. We can't press a browser-level command
+  // headlessly, so we drive the exact relay the browser uses: make `page` the
+  // visible tab, then write the signal from an extension page.
+  const fireCmd = async (name) => {
+    await page.bringToFront();
+    await pop.evaluate((n) => chrome.storage.local.set({ "lct-cmd": { name: n, at: Date.now() } }), name);
+  };
+
   await page.waitForFunction(() => document.querySelectorAll(".lct-cv").length > 100, null, { timeout: 15000 });
   const asleep = await page.evaluate(() => document.querySelectorAll(".lct-cv").length);
   t("B1 speed engine sleeping messages", asleep > 100, `${asleep} asleep`);
@@ -228,10 +237,10 @@ try {
   t("B3 export bar with 3 SVG buttons (outline + md + json)",
     (await page.locator("#lct-export-bar button svg").count()) === 3);
 
-  // B4 — in-chat search via hotkey
-  await page.keyboard.press("Meta+Shift+KeyF");
+  // B4 — in-chat search via the in-chat-search command
+  await fireCmd("in-chat-search");
   await page.waitForSelector("#lct-search.lct-s-open", { timeout: 5000 });
-  t("B4 search opens on ⌘⇧F", true);
+  t("B4 search opens on the in-chat-search command", true);
   t("B4 search icon is SVG", (await page.locator("#lct-search .lct-s-icon svg").count()) === 1);
   await page.fill("#lct-search input", "architectural");
   await page.waitForFunction(() => {
@@ -478,10 +487,10 @@ try {
     JSON.stringify(sRes && sRes.results[0] || null).slice(0, 120));
   t("B11 result carries platform + count", sRes.results[0].platform === "Test Page" && sRes.results[0].n >= 1500);
 
-  // 3) overlay: hotkey opens, searches, jumps into in-chat search
-  await page.keyboard.press("Control+Shift+KeyK");
+  // 3) overlay: command opens, searches, jumps into in-chat search
+  await fireCmd("open-recall");
   await page.waitForSelector("#lct-recall.lct-r-open", { timeout: 5000 });
-  t("B11 overlay opens with Ctrl+Shift+K (trial active)", true);
+  t("B11 overlay opens via the open-recall command (trial active)", true);
   await page.fill("#lct-recall input", "architectural implications");
   await page.waitForSelector("#lct-recall .lct-r-item", { timeout: 5000 });
   const overlayRow = await page.textContent("#lct-recall .lct-r-item");
@@ -641,20 +650,27 @@ try {
   }, null, { timeout: 5000 });
   t("B11 wipe empties the archive", true);
 
-  // 8) gating: no trial, no pro → overlay hotkey dead, page locked
+  // 8) gating: no trial, no pro → commands don't open, and say why
   await pop.evaluate(() => chrome.storage.local.remove("trial"));
   await page.reload();
   await page.waitForSelector("#lct-minimap", { timeout: 15000 });
-  await page.keyboard.press("Control+Shift+KeyK");
-  await page.waitForTimeout(600);
+  await fireCmd("open-recall");
+  await page.waitForFunction(() =>
+    /Total Recall is a Pro feature/.test(document.getElementById("lct-note")?.textContent || ""),
+    null, { timeout: 5000 }).catch(() => {});
   t("B11 overlay locked without pro/trial",
     await page.evaluate(() => !document.querySelector("#lct-recall.lct-r-open")));
-  await page.keyboard.press("Control+Shift+KeyU");
-  await page.waitForTimeout(300);
+  t("B11 locked open-recall explains why (not silent)",
+    /Total Recall is a Pro feature/.test(await page.textContent("#lct-note").catch(() => "")),
+    await page.textContent("#lct-note").catch(() => "NO NOTE"));
+  await fireCmd("open-bridge");
+  await page.waitForFunction(() =>
+    /Context Bridge is a Pro feature/.test(document.getElementById("lct-note")?.textContent || ""),
+    null, { timeout: 5000 }).catch(() => {});
   t("B12 Context Bridge locked without pro/trial",
     await page.evaluate(() => !document.querySelector("#lct-bridge.lct-b-open")));
-  t("B12 locked hotkey explains why (not a silent no-op)",
-    /Context Bridge is a Pro feature/.test(await page.textContent("#lct-b-toast").catch(() => "")));
+  t("B12 locked command explains why (not a silent no-op)",
+    /Context Bridge is a Pro feature/.test(await page.textContent("#lct-note").catch(() => "")));
   await recall.reload();
   await recall.waitForSelector("#locked:not([hidden])", { timeout: 5000 });
   t("B11 recall page shows upsell when locked", await recall.isVisible("#locked"));
@@ -675,12 +691,12 @@ try {
     await new Promise((r) => setTimeout(r, 500));
   }
 
-  // seed the composer with a draft; ⌘⇧U opens the Bridge pre-searched on it
+  // seed the composer with a draft; the Bridge opens pre-searched on it
   await page.fill("#t-composer", "architectural");
   await page.focus("#t-composer");
-  await page.keyboard.press("Control+Shift+KeyU");
+  await fireCmd("open-bridge");
   await page.waitForSelector("#lct-bridge.lct-b-open", { timeout: 5000 });
-  t("B12 Bridge opens with Ctrl+Shift+U (trial active)", true);
+  t("B12 Bridge opens via the open-bridge command (trial active)", true);
   t("B12 search seeded from the composer draft",
     (await page.inputValue("#lct-bridge input")) === "architectural");
   await page.waitForSelector("#lct-bridge .lct-b-item", { timeout: 5000 });
@@ -709,7 +725,7 @@ try {
   // to the contenteditable composer
   await page.evaluate(() => document.getElementById("t-composer").remove());
   await page.focus("#t-composer-ce");
-  await page.keyboard.press("Control+Shift+KeyU");
+  await fireCmd("open-bridge");
   await page.waitForSelector("#lct-bridge.lct-b-open", { timeout: 5000 });
   await page.fill("#lct-bridge input", "distributed");
   await page.waitForSelector("#lct-bridge .lct-b-item", { timeout: 5000 });
@@ -723,7 +739,7 @@ try {
   // fail-safe: no composer at all → clipboard fallback + honest toast.
   // (#box is a plain <input>, which the resolver intentionally won't hijack.)
   await page.evaluate(() => document.getElementById("t-composer-ce").remove());
-  await page.keyboard.press("Control+Shift+KeyU");
+  await fireCmd("open-bridge");
   await page.waitForSelector("#lct-bridge.lct-b-open", { timeout: 5000 });
   await page.fill("#lct-bridge input", "architectural");
   await page.waitForSelector("#lct-bridge .lct-b-item", { timeout: 5000 });

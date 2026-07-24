@@ -72,5 +72,28 @@
       "world": "MAIN",
       "run_at": "document_idle"
     }
-  ]
+  ],
+  "commands": {
+    "in-chat-search": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+F",
+        "mac": "Command+Shift+F"
+      },
+      "description": "Search the current conversation"
+    },
+    "open-recall": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+K",
+        "mac": "Command+Shift+K"
+      },
+      "description": "Total Recall \u2014 search every chat, every platform"
+    },
+    "open-bridge": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+U",
+        "mac": "Command+Shift+U"
+      },
+      "description": "Context Bridge \u2014 inject past context into your prompt"
+    }
+  }
 }

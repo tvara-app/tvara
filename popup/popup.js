@@ -190,6 +190,16 @@
     chrome.tabs.create({ url: chrome.runtime.getURL("recall.html") });
   });
 
+  // Shortcuts are the browser's (remappable per device/OS/browser) — send the
+  // user straight to the page where they can view or change them.
+  $("shortcuts-link").addEventListener("click", (e) => {
+    e.preventDefault();
+    const url = navigator.userAgent.includes("Edg/")
+      ? "edge://extensions/shortcuts"
+      : "chrome://extensions/shortcuts";
+    chrome.tabs.create({ url });
+  });
+
   $("license-activate").addEventListener("click", activate);
   $("license-input").addEventListener("keydown", (e) => {
     if (e.key === "Enter") activate();

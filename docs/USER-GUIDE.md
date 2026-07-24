@@ -291,11 +291,17 @@ safe.
 
 ## 9. Keyboard reference
 
+The three Pro shortcuts are registered as **browser shortcuts**, so they work
+the same on Windows, macOS and Linux and in Chrome, Edge and Firefox. If a
+default combo clashes with something on your system, **remap it**: extension
+popup → *Keyboard shortcuts* (or visit `chrome://extensions/shortcuts`).
+
+
 | Keys | Action |
 |---|---|
-| `⌘⇧U` / `Ctrl+Shift+U` | Context Bridge — inject past context into your prompt (Pro) |
-| `⌘⇧K` / `Ctrl+Shift+K` | Total Recall — search across ALL chats (Pro) |
-| `⌘⇧F` / `Ctrl+Shift+F` | Open in-chat search |
+| `⌘⇧U` / `Ctrl+Shift+U` | Context Bridge — inject past context into your prompt (Pro, remappable) |
+| `⌘⇧K` / `Ctrl+Shift+K` | Total Recall — search across ALL chats (Pro, remappable) |
+| `⌘⇧F` / `Ctrl+Shift+F` | Open in-chat search (remappable) |
 | `Enter` / `Shift+Enter` | Next / previous match |
 | `Esc` | Close search or outline panel |
 

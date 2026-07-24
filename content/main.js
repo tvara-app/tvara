@@ -417,19 +417,34 @@
   self.LCTRecall.init(adapter, recallUnlocked);
   self.LCTRecallSync.init(adapter, recallUnlocked);
   self.LCTBridge.init(adapter, recallUnlocked);
-  document.addEventListener(
-    "keydown",
-    (e) => {
-      // e.code, not e.key: keeps working on non-Latin keyboard layouts
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.code === "KeyF") {
-        if (!toolsUnlocked()) return; // never eat a keystroke we won't serve
-        e.preventDefault();
-        e.stopPropagation();
-        self.LCTSearch.toggle();
-      }
-    },
-    true
-  );
+
+  // Keyboard shortcuts come from the browser's commands API (remappable at
+  // chrome://extensions/shortcuts — the only cross-OS/cross-browser-safe way).
+  // The background relays the pressed command through storage; the ACTIVE tab
+  // (the one the user is looking at) handles it. Gating + locked-feedback here.
+  const TRIAL_NUDGE = "start the free 7-day trial in the extension popup.";
+  function dispatchCommand(name) {
+    if (!state.enabled) return;
+    if (name === "in-chat-search") {
+      if (!toolsUnlocked()) { flashNote("In-chat search is Pro here — " + TRIAL_NUDGE); return; }
+      self.LCTSearch.toggle();
+    } else if (name === "open-recall") {
+      if (!recallUnlocked()) { flashNote("Total Recall is a Pro feature — " + TRIAL_NUDGE); return; }
+      self.LCTRecall.isOpen ? self.LCTRecall.close() : self.LCTRecall.open();
+    } else if (name === "open-bridge") {
+      if (!recallUnlocked()) { flashNote("Context Bridge is a Pro feature — " + TRIAL_NUDGE); return; }
+      self.LCTBridge.isOpen ? self.LCTBridge.close() : self.LCTBridge.open();
+    }
+  }
+  try {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== "local" || !changes["lct-cmd"] || !changes["lct-cmd"].newValue) return;
+      const sig = changes["lct-cmd"].newValue;
+      if (Date.now() - sig.at > 4000) return;              // stale
+      if (document.visibilityState !== "visible") return;  // only the active tab
+      dispatchCommand(sig.name);
+    });
+  } catch (_) { /* storage API unavailable */ }
 
   loadState().then(applyState);
 })();
