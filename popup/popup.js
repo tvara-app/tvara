@@ -22,9 +22,11 @@
     const trialActive = !pro && trialUntil > Date.now();
     badge.textContent = pro ? "Pro" : trialActive ? "Trial" : "Free";
     badge.className = "badge " + (pro ? "pro" : trialActive ? "trial" : "free");
-    $("pro-upsell").hidden = pro;
+    $("pro-upsell").hidden = pro || trialActive;
     $("pro-active").hidden = !pro;
+    $("trial-active").hidden = !trialActive;
     if (pro) $("licensed-to").textContent = "Licensed to " + (maskedEmail || "you");
+    paintRecallAccess(pro || trialActive);
 
     const startBtn = $("trial-start");
     const note = $("trial-note");
@@ -34,15 +36,26 @@
       startBtn.hidden = true;
       note.hidden = false;
       note.className = "pro-note active";
-      note.textContent = `Trial active — ${days} day${days === 1 ? "" : "s"} left, everything unlocked`;
+      note.textContent = `Trial active: ${days} day${days === 1 ? "" : "s"} left, everything unlocked`;
+      $("trial-status").textContent = `${days} day${days === 1 ? "" : "s"} left in your free trial`;
     } else if (trialUntil > 0) {
       startBtn.hidden = true;
       note.hidden = false;
       note.className = "pro-note";
-      note.textContent = "Trial ended — $9 once keeps everything forever.";
+      note.textContent = "Trial ended. $9 once keeps everything forever.";
     } else {
       startBtn.hidden = false;
       note.hidden = true;
+    }
+  }
+
+  function paintRecallAccess(unlocked) {
+    $("recall-searchbox").hidden = !unlocked;
+    $("recall-locked").hidden = unlocked;
+    if (!unlocked) {
+      $("recall-query").value = "";
+      $("recall-query-meta").textContent = "";
+      $("recall-results").replaceChildren();
     }
   }
 
@@ -190,6 +203,83 @@
     chrome.tabs.create({ url: chrome.runtime.getURL("recall.html") });
   });
 
+  /* ---------- Total Recall in the popup ---------- */
+
+  let recallQueryTimer = null;
+
+  function recallWhen(ms) {
+    if (!ms) return "";
+    const date = new Date(ms);
+    const opts = { month: "short", day: "numeric" };
+    if (date.getFullYear() !== new Date().getFullYear()) opts.year = "numeric";
+    return date.toLocaleDateString(undefined, opts);
+  }
+
+  function recallResult(res) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "recall-result";
+    const title = document.createElement("div");
+    title.className = "recall-result-title";
+    const platform = document.createElement("span");
+    platform.className = "recall-result-platform";
+    platform.textContent = res.platform || res.host;
+    const name = document.createElement("span");
+    name.textContent = res.title || "Untitled chat";
+    title.append(platform, name);
+    const snippet = document.createElement("div");
+    snippet.className = "recall-result-snippet";
+    snippet.textContent = res.snippet || "Synced from your history";
+    const info = document.createElement("div");
+    info.className = "recall-result-info";
+    info.textContent = `${res.n} messages${res.updatedAt ? ` · ${recallWhen(res.updatedAt)}` : ""}`;
+    button.append(title, snippet, info);
+    button.addEventListener("click", async () => {
+      const q = $("recall-query").value.trim();
+      await chrome.storage.local.set({
+        "recall-jump": { host: res.host, path: res.path, q, at: Date.now() }
+      });
+      chrome.tabs.create({ url: "https://" + res.host + res.path });
+    });
+    return button;
+  }
+
+  async function runRecallQuery() {
+    const q = $("recall-query").value.trim();
+    if (q.length < 2) {
+      $("recall-results").replaceChildren();
+      $("recall-results").removeAttribute("aria-busy");
+      $("recall-query-meta").textContent = "";
+      return;
+    }
+    $("recall-query-meta").textContent = "Searching…";
+    $("recall-results").setAttribute("aria-busy", "true");
+    const res = await new Promise((resolve) =>
+      chrome.runtime.sendMessage({ type: "recall-search", q }, resolve));
+    $("recall-results").removeAttribute("aria-busy");
+    if (!res || res.err || q !== $("recall-query").value.trim()) return;
+    const results = res.results || [];
+    // The popup is a fixed-size command surface. It previews the strongest
+    // matches; the adjacent open button leads to the full archive workspace.
+    $("recall-results").replaceChildren(...results.slice(0, 1).map(recallResult));
+    $("recall-query-meta").textContent = results.length
+      ? `${results.length} chat${results.length === 1 ? "" : "s"}`
+      : `no matches`;
+  }
+
+  $("recall-query").addEventListener("input", () => {
+    clearTimeout(recallQueryTimer);
+    recallQueryTimer = setTimeout(runRecallQuery, 180);
+  });
+  $("recall-query").addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    $("recall-query").value = "";
+    $("recall-query-meta").textContent = "";
+    $("recall-results").replaceChildren();
+    $("recall-query").blur();
+  });
+
   // Shortcuts are the browser's (remappable per device/OS/browser) — send the
   // user straight to the page where they can view or change them.
   $("shortcuts-link").addEventListener("click", (e) => {
@@ -217,14 +307,26 @@
 
   const PLAT_IDS = ["chatgpt", "claude", "deepseek", "grok"];
   const syncProgKey = (id) => "recall-sync-progress:" + id;
-  const syncFlagKey = (id) => "recall-sync-" + id;
-  const FRESH_MS = 2 * 60 * 60 * 1000; // 2 hours — matches bg.js stale time
+  const activeAccountKey = "lct-recall-active-account-v1";
   let isSyncing = false;
+
+  function readableSyncMessage(text) {
+    const value = String(text || "");
+    return /unexpected token\s*['"]?<?|doctype|valid json|unexpected provider response|invalid provider response/i.test(value)
+      ? "A chat provider returned an unexpected page. Open it, then try again."
+      : value;
+  }
 
   function updateSyncStatus(text, cls) {
     const el = $("sync-status");
-    el.textContent = text;
+    el.textContent = readableSyncMessage(text);
     el.className = "row-sub" + (cls ? " sync-status-" + cls : "");
+  }
+
+  function setSyncBusy(busy) {
+    const button = $("sync-history");
+    button.disabled = busy;
+    button.classList.toggle("syncing", busy);
   }
 
   function timeAgo(ms) {
@@ -237,86 +339,70 @@
   }
 
   async function checkFreshness() {
-    // Ask bg.js for current sync status
     const status = await new Promise((res) =>
       chrome.runtime.sendMessage({ type: "recall-sync-status" }, res));
-
-    if (status && status.running) {
-      isSyncing = true;
-      $("sync-history").classList.add("syncing");
-      updateSyncStatus("Syncing in background…");
-      return;
-    }
-
+    isSyncing = false;
     if (!status || !status.platforms) {
-      updateSyncStatus("Click to sync all chats");
+      setSyncBusy(false);
+      updateSyncStatus("Open Total Recall to check your archive");
       return;
     }
-
-    // Check if all platforms have synced recently
-    let allFresh = true, oldestSync = Date.now(), anySync = false;
-    let activeMsg = "";
+    if (status.recovery && status.recovery.state === "restore-required") {
+      setSyncBusy(false);
+      updateSyncStatus("Restore your archive before checking the gap", "err");
+      return;
+    }
+    if (status.running) {
+      isSyncing = true;
+      setSyncBusy(true);
+      updateSyncStatus("Checking archive in background…");
+      return;
+    }
+    let allCurrent = true, oldest = Date.now(), anyCheckpoint = false, error = "";
     for (const id of PLAT_IDS) {
       const p = status.platforms[id];
-      if (!p) { allFresh = false; continue; }
-
-      // Check if currently syncing
+      if (!p) { allCurrent = false; continue; }
       if (p.progress && p.progress.state === "syncing") {
         isSyncing = true;
-        $("sync-history").classList.add("syncing");
-        activeMsg = p.progress.msg || "Syncing…";
+        setSyncBusy(true);
+        updateSyncStatus(p.progress.msg || "Checking archive…");
+        return;
       }
-
-      const last = p.flag && p.flag.lastFull;
-      if (!last || Date.now() - last > FRESH_MS) {
-        allFresh = false;
-      } else {
-        anySync = true;
-        if (last < oldestSync) oldestSync = last;
+      if (p.progress && (p.progress.state === "error" || p.progress.state === "interrupted")) {
+        error = p.progress.msg || "One archive check needs attention";
       }
+      if (p.phase !== "up-to-date") allCurrent = false;
+      const completed = p.checkpoint && p.checkpoint.completedAt;
+      if (completed) { anyCheckpoint = true; oldest = Math.min(oldest, completed); }
     }
-
-    if (isSyncing) {
-      updateSyncStatus(activeMsg || "Syncing in background…");
-      return;
-    }
-
-    if (allFresh) {
-      updateSyncStatus("All chats synced ✓ • " + timeAgo(oldestSync), "ok");
-    } else if (anySync) {
-      updateSyncStatus("Partially synced • " + timeAgo(oldestSync) + " — click to sync");
+    setSyncBusy(false);
+    if (error) {
+      updateSyncStatus(error, "err");
+    } else if (allCurrent && anyCheckpoint) {
+      updateSyncStatus("Everything is already backed up · " + timeAgo(oldest), "ok");
+    } else if (anyCheckpoint) {
+      updateSyncStatus("Archive checkpoint ready. Check for new chats.");
     } else {
-      updateSyncStatus("Click to sync all chats");
+      updateSyncStatus("Check your chat history for the first time");
     }
   }
 
   async function triggerSync() {
     if (isSyncing) return;
+    const status = await new Promise((res) =>
+      chrome.runtime.sendMessage({ type: "recall-sync-status" }, res));
+    if (status && status.recovery && status.recovery.state === "restore-required") {
+      updateSyncStatus("Restore your archive in Total Recall first", "err");
+      return;
+    }
     isSyncing = true;
-    $("sync-history").classList.add("syncing");
-    updateSyncStatus("Starting background sync…");
-
-    // Send to bg.js — runs entirely in the service worker, no tabs needed
-    chrome.runtime.sendMessage({ type: "recall-bg-sync" });
+    setSyncBusy(true);
+    updateSyncStatus("Checking archive in background…");
+    chrome.runtime.sendMessage({ type: "recall-bg-sync" }, () => checkFreshness());
   }
 
   async function refreshSyncUI() {
-    const keys = PLAT_IDS.map(syncProgKey);
-    const store = await chrome.storage.local.get(keys);
-    let doneCount = 0, latestMsg = "";
-    for (const id of PLAT_IDS) {
-      const p = store[syncProgKey(id)];
-      if (!p) continue;
-      if (p.state === "done") doneCount++;
-      if (p.state === "syncing" && p.msg) latestMsg = p.msg;
-    }
-    if (doneCount >= PLAT_IDS.length) {
-      updateSyncStatus("All chats synced ✓", "ok");
-      $("sync-history").classList.remove("syncing");
-      isSyncing = false;
-    } else if (latestMsg) {
-      updateSyncStatus(latestMsg);
-    }
+    await checkFreshness();
   }
 
   $("sync-history").addEventListener("click", triggerSync);
@@ -329,13 +415,13 @@
   // Live repaint
   try {
     chrome.storage.onChanged.addListener((changes, area) => {
-      if (area !== "local") return;
-      if (Object.keys(changes).some((k) =>
+      if (area === "local" && Object.keys(changes).some((k) =>
         k.startsWith("stats:") || k === "settings" || k === "license" || k === "trial")) {
         load();
       }
-      // Track sync progress live
-      if (PLAT_IDS.some((id) => changes[syncProgKey(id)])) {
+      if ((area === "local" && PLAT_IDS.some((id) => changes[syncProgKey(id)])) ||
+          (area === "local" && changes[activeAccountKey]) ||
+          (area === "sync" && changes["lct-recall-sync-ledger-v2"])) {
         refreshSyncUI();
       }
     });

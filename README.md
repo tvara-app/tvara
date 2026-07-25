@@ -9,7 +9,7 @@ Long conversations grind AI chat UIs to a halt — every message stays fully ren
 ## Features
 
 - **🌉 Context Bridge (Pro)** — the memory layer for all your AI. Composing a prompt on any site? Press `⌘⇧U` / `Ctrl+Shift+U`: Recall finds relevant passages from your entire cross-platform history, you pick, and it injects them into your prompt — so the model you're already using answers *with* your accumulated knowledge. No servers, no API keys (it feeds context to the model you're already in), all local. Fails safe to the clipboard if the prompt box can't be found. Shortcut is a browser-native, remappable command (works across Chrome/Edge/Firefox and every OS).
-- **🧠 Total Recall (Pro)** — one search box for every AI conversation you've ever had, across all platforms (`⌘⇧K` / `Ctrl+Shift+K`). One 'Sync all history' button pulls your full ChatGPT & Claude history from your own accounts (live progress, then auto-current); other apps archive as you open them. 100% local (zero network permissions — the archive *cannot* leave your machine), one-click delete.
+- **🧠 Total Recall (Pro)** — one search box for every AI conversation you've ever had, across all platforms (`⌘⇧K` / `Ctrl+Shift+K`). Its background archive worker checks only the new gap in your own ChatGPT, Claude, DeepSeek or Grok history, with account-scoped checkpoints and no full resync on reload. Archive text stays local; there is no Long Chat Toolkit server or telemetry.
 - **⚡ Speed engine** — off-screen messages are windowed with native CSS `content-visibility`, so the browser stops paying for what you can't see. Messages wake instantly when scrolled to. Nothing is removed or mutated.
 - **🕒 Message timestamps** — AI chat sites don't show *when* anything was said; hover any message to see its time. ChatGPT: real send times for the entire history (read locally from the app's own state by a tiny read-only page-world script). Claude/Gemini: honest "first seen on this device" times from the moment you install — never faked as send times.
 - **🗺️ Minimap** — a VS Code–style strip of the whole conversation. Your messages, AI messages, code blocks. Hover for previews and times, click anywhere to jump.
@@ -26,7 +26,7 @@ The speed engine is **free everywhere, forever**. All tools are free on ChatGPT 
 
 ## 🔒 Privacy — provable, not promised
 
-- **Zero network permissions.** Check `manifest.json`: this extension *cannot* make network requests. Your chats never leave your machine — not because we promise, but because the browser won't let us.
+- **No Long Chat Toolkit server or telemetry.** The only network-capable paths are the declared first-party AI-provider endpoints used when you explicitly check history. Archive text is kept in local extension storage; the only portable copy is the encrypted backup file you choose to download.
 - **Offline licensing.** Pro keys are verified cryptographically (ECDSA P-256) inside the extension. No account, no server, no phone-home. Ever.
 - **Open source.** Read every line.
 

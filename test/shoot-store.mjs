@@ -210,7 +210,7 @@ await comp.setContent(`<!DOCTYPE html><html><body style="margin:0;width:1280px;h
               padding:0 28px;background:#0b0c10;border-top:2px solid #7aa2ff;color:#fff;
               font-weight:600;font-size:24px">
     <span style="font-size:14px;font-weight:700;color:#7aa2ff;flex:1 0 0">⚡ Long Chat Toolkit</span>
-    <span style="flex:0 1 auto;text-align:center">7-day free trial. $9 once. Zero network permissions.</span>
+    <span style="flex:0 1 auto;text-align:center">7-day free trial. $9 once. Local archive, no telemetry.</span>
     <span style="flex:1 0 0"></span>
   </div></body></html>`);
 await comp.waitForTimeout(400);

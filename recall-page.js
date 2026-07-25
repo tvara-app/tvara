@@ -1,12 +1,68 @@
 /* Total Recall page — search the archive, import official exports, wipe.
-   Runs as an extension page: talks to the background worker's IndexedDB via
-   messages. No network anywhere (the extension has no network permissions). */
+   Runs as an extension page: writes stay in the background worker's IndexedDB;
+   only its scoped provider-history checks use the declared host permissions. */
 (() => {
   "use strict";
 
   const $ = (id) => document.getElementById(id);
   const send = (msg) => new Promise((res) => chrome.runtime.sendMessage(msg, res));
   const TRIAL_MS = 7 * 864e5;
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  const BACKUP_ITERATIONS = 600000;
+
+  const setStatus = (id, text, kind = "") => {
+    const node = $(id);
+    node.className = "status-copy" + (kind ? " " + kind : "");
+    node.textContent = text || "";
+  };
+
+  function bytesToBase64(bytes) {
+    const parts = [];
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+      parts.push(String.fromCharCode(...bytes.subarray(i, i + 0x8000)));
+    }
+    return btoa(parts.join(""));
+  }
+
+  function base64ToBytes(value) {
+    const raw = atob(String(value || ""));
+    const bytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+    return bytes;
+  }
+
+  async function deriveBackupKey(passphrase, salt) {
+    const material = await crypto.subtle.importKey("raw", encoder.encode(passphrase), "PBKDF2", false, ["deriveKey"]);
+    return crypto.subtle.deriveKey({
+      name: "PBKDF2", hash: "SHA-256", salt, iterations: BACKUP_ITERATIONS
+    }, material, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+  }
+
+  async function compressBackup(bytes) {
+    if (!("CompressionStream" in self)) return { compression: "none", bytes };
+    const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream("gzip"));
+    return { compression: "gzip", bytes: new Uint8Array(await new Response(stream).arrayBuffer()) };
+  }
+
+  async function decompressBackup(bytes, compression) {
+    if (compression === "none") return bytes;
+    if (compression !== "gzip" || !("DecompressionStream" in self)) throw new Error("This browser cannot read this backup compression format");
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+
+  function download(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.hidden = true;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
 
   /* ---------- plan gating (search is Pro/trial; archive + import are not) */
 
@@ -319,11 +375,141 @@
     e.target.value = "";
   });
 
-  /* ---------- sync all history (storage-bus orchestration) ----------
-     This page can't fetch chatgpt.com / claude.ai (wrong origin), so it asks
-     the open app tabs to do it: writes a request to storage, each app's
-     content script runs its same-origin sync and streams progress back
-     through storage. Sync runs in the background service worker. */
+  /* ---------- encrypted reinstall backup ---------- */
+
+  let restoreFile = null;
+
+  async function createReinstallBackup() {
+    const passphrase = $("backup-passphrase").value;
+    const confirmation = $("backup-passphrase-confirm").value;
+    if (passphrase.length < 12) throw new Error("Use a passphrase with at least 12 characters");
+    if (passphrase !== confirmation) throw new Error("The passphrases do not match");
+    if (!self.LCTRecallDB || !self.LCTRecallDB.getAll) throw new Error("Archive storage is unavailable");
+
+    const state = await send({ type: "recall-sync-status" });
+    if (state && state.running) throw new Error("Wait for the current sync to finish before creating a backup");
+    const [chats, durable] = await Promise.all([
+      self.LCTRecallDB.getAll(),
+      send({ type: "recall-backup-state" })
+    ]);
+    if (!durable || durable.err) throw new Error("Could not read the sync checkpoint");
+
+    const payload = {
+      format: "lct-backup-payload",
+      version: 1,
+      createdAt: Date.now(),
+      chats,
+      ledger: durable.ledger || { version: 2, checkpoints: {} },
+      // The random salt is not secret. Keeping it inside the encrypted
+      // payload lets a fresh browser derive the same opaque account key and
+      // safely resume from this backup's checkpoint even without Chrome Sync.
+      profile: durable.profile || null
+    };
+    const packed = await compressBackup(encoder.encode(JSON.stringify(payload)));
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const key = await deriveBackupKey(passphrase, salt);
+    const cipher = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, packed.bytes);
+    const envelope = {
+      format: "lct-backup",
+      version: 1,
+      createdAt: payload.createdAt,
+      kdf: { name: "PBKDF2", hash: "SHA-256", iterations: BACKUP_ITERATIONS, salt: bytesToBase64(salt) },
+      cipher: { name: "AES-GCM", iv: bytesToBase64(iv) },
+      compression: packed.compression,
+      payload: bytesToBase64(new Uint8Array(cipher))
+    };
+    const stamp = new Date().toISOString().slice(0, 10);
+    const filename = `long-chat-toolkit-${stamp}.lctbackup`;
+    download(new Blob([JSON.stringify(envelope)], { type: "application/json" }), filename);
+    await send({ type: "recall-backup-mark", meta: { chats: chats.length, filename } });
+    $("backup-passphrase").value = "";
+    $("backup-passphrase-confirm").value = "";
+    setStatus("backup-status", `${chats.length.toLocaleString()} chats encrypted in ${filename}`, "ok");
+  }
+
+  $("create-backup").addEventListener("click", async () => {
+    const button = $("create-backup");
+    button.disabled = true;
+    setStatus("backup-status", "Encrypting your local archive…");
+    try { await createReinstallBackup(); }
+    catch (error) { setStatus("backup-status", String(error.message || error), "err"); }
+    finally { button.disabled = false; }
+  });
+
+  $("restore-file").addEventListener("change", (event) => {
+    restoreFile = event.target.files && event.target.files[0];
+    $("restore-file-name").textContent = restoreFile ? restoreFile.name : "No backup selected";
+    $("restore-run").disabled = !restoreFile;
+    setStatus("restore-status", "");
+  });
+
+  async function restoreReinstallBackup() {
+    if (!restoreFile) throw new Error("Choose an encrypted backup file first");
+    const passphrase = $("restore-passphrase").value;
+    if (!passphrase) throw new Error("Enter the backup passphrase");
+    let envelope;
+    try { envelope = JSON.parse(await restoreFile.text()); }
+    catch { throw new Error("This is not a valid Long Chat Toolkit backup"); }
+    if (!envelope || envelope.format !== "lct-backup" || envelope.version !== 1 || !envelope.kdf || !envelope.cipher) {
+      throw new Error("This backup format is not supported");
+    }
+    if (envelope.kdf.name !== "PBKDF2" || envelope.kdf.hash !== "SHA-256" || envelope.cipher.name !== "AES-GCM") {
+      throw new Error("This backup uses unsupported encryption");
+    }
+    const key = await deriveBackupKey(passphrase, base64ToBytes(envelope.kdf.salt));
+    let plaintext;
+    try {
+      plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv: base64ToBytes(envelope.cipher.iv) }, key,
+        base64ToBytes(envelope.payload));
+    } catch { throw new Error("The passphrase is incorrect or the backup was changed"); }
+    let snapshot;
+    try { snapshot = JSON.parse(decoder.decode(await decompressBackup(new Uint8Array(plaintext), envelope.compression))); }
+    catch { throw new Error("The encrypted backup could not be read"); }
+    if (!snapshot || snapshot.format !== "lct-backup-payload" || snapshot.version !== 1 || !Array.isArray(snapshot.chats)) {
+      throw new Error("The backup contents are incomplete");
+    }
+
+    let imported = 0, skipped = 0;
+    for (let i = 0; i < snapshot.chats.length; i += 15) {
+      setStatus("restore-status", `Restoring ${Math.min(i + 15, snapshot.chats.length)} of ${snapshot.chats.length} chats…`);
+      const result = await send({ type: "recall-import", chats: snapshot.chats.slice(i, i + 15) });
+      imported += (result && result.ok) || 0;
+      skipped += (result && result.skipped) || 0;
+    }
+    const meta = { version: 1, createdAt: envelope.createdAt || snapshot.createdAt || Date.now(), chats: snapshot.chats.length,
+      filename: restoreFile.name };
+    const restored = await send({
+      type: "recall-restore-ledger", ledger: snapshot.ledger,
+      profile: snapshot.profile, meta
+    });
+    if (!restored || restored.err) throw new Error("Chats were restored, but the sync checkpoint could not be restored");
+    $("restore-passphrase").value = "";
+    $("restore-file").value = "";
+    restoreFile = null;
+    $("restore-file-name").textContent = "No backup selected";
+    $("restore-run").disabled = true;
+    setStatus("restore-status", `${imported.toLocaleString()} chats restored${skipped ? `, ${skipped} skipped` : ""}. Checking only the gap…`, "ok");
+    await loadStats();
+    await initSyncUI();
+    chrome.runtime.sendMessage({ type: "recall-bg-sync" });
+  }
+
+  $("restore-run").addEventListener("click", async () => {
+    const button = $("restore-run");
+    button.disabled = true;
+    try { await restoreReinstallBackup(); }
+    catch (error) { setStatus("restore-status", String(error.message || error), "err"); }
+    finally { button.disabled = !restoreFile; }
+  });
+
+  $("recovery-skip").addEventListener("click", async () => {
+    await send({ type: "recall-recovery-skip" });
+    setStatus("restore-status", "The old archive will not be restored. A future sync checks only chats after the saved checkpoint.", "ok");
+    await initSyncUI();
+  });
+
+  /* ---------- background-owned history sync ---------- */
 
   const APPS = [
     { id: "chatgpt", label: "ChatGPT" },
@@ -332,7 +518,7 @@
     { id: "grok", label: "Grok" }
   ];
   const progKey = (id) => "recall-sync-progress:" + id;
-  const flagKey = (id) => "recall-sync-" + id;
+  const activeAccountKey = "lct-recall-active-account-v1";
 
   function pct(p) {
     if (!p || !p.total) return "";
@@ -360,102 +546,88 @@
     return row;
   }
 
-  function paintRow(app, p) {
+  function paintRow(app, platform) {
     const row = renderRow(app);
     row.replaceChildren();
+    const p = platform && platform.progress;
     const name = document.createElement("b");
     name.textContent = app.label;
     const status = document.createElement("span");
     status.className = "sync-status";
+    row.dataset.phase = (platform && platform.phase) || (p && p.phase) || "needs-sync";
     if (p && p.state === "error") { status.textContent = p.msg; status.classList.add("err"); }
-    else if (p && p.state === "done") { status.textContent = p.msg; status.classList.add("ok"); }
-    else if (p && p.state === "syncing") { status.textContent = (p.msg || "Syncing…") + pct(p); }
-    else { status.textContent = "—"; }
+    else if (p && p.state === "interrupted") { status.textContent = p.msg; status.classList.add("err"); }
+    else if (p && p.state === "syncing") { status.textContent = (p.msg || "Checking archive…") + pct(p); }
+    else if (platform && platform.phase === "up-to-date") {
+      const checkedAt = platform.checkpoint?.completedAt || p?.at || 0;
+      status.textContent = "Everything is already backed up" + (checkedAt ? " · " + timeAgo(checkedAt) : "");
+      status.classList.add("ok");
+    } else { status.textContent = "Ready to check for new chats"; }
     row.append(name, status);
   }
 
   function updateSyncButton(syncing) {
     const btn = $("sync-all");
     if (syncing) {
-      btn.textContent = "Syncing…";
+      btn.textContent = "Checking archive…";
       btn.disabled = true;
       btn.classList.add("syncing");
     } else {
-      btn.textContent = "Sync all history";
+      btn.textContent = "Check for new chats";
       btn.disabled = false;
       btn.classList.remove("syncing");
     }
   }
 
-  async function refreshSyncRows() {
-    const keys = APPS.map((a) => progKey(a.id));
-    const store = await chrome.storage.local.get(keys);
-    let anySyncing = false;
-    for (const app of APPS) {
-      const p = store[progKey(app.id)];
-      paintRow(app, p);
-      if (p && p.state === "syncing") anySyncing = true;
-    }
-    updateSyncButton(anySyncing);
-  }
+  async function refreshSyncRows() { await initSyncUI(); }
 
-  // On page load: check if sync is already running and show progress
   async function initSyncUI() {
-    const status = await new Promise((res) =>
-      chrome.runtime.sendMessage({ type: "recall-sync-status" }, res));
-
-    if (status && status.running) {
-      // Sync is already running — show progress rows
-      $("sync-rows").replaceChildren();
-      for (const app of APPS) {
-        const p = status.platforms[app.id];
-        paintRow(app, p ? p.progress : null);
-      }
-      updateSyncButton(true);
-    } else if (status && status.platforms) {
-      // Show last sync results
-      let allDone = true;
-      for (const app of APPS) {
-        const p = status.platforms[app.id];
-        if (p && p.flag && p.flag.lastFull) {
-          const prog = p.progress;
-          if (prog && prog.state === "done") {
-            paintRow(app, { state: "done", msg: prog.msg + " • " + timeAgo(p.flag.lastFull) });
-          } else {
-            paintRow(app, { state: "done", msg: "Synced " + timeAgo(p.flag.lastFull) });
-          }
-        } else {
-          allDone = false;
-        }
-      }
-      updateSyncButton(false);
+    const status = await send({ type: "recall-sync-status" });
+    if (!status || status.err) return;
+    const recovery = status.recovery || { state: "ready" };
+    const needsRestore = recovery.state === "restore-required";
+    $("recovery").hidden = false;
+    $("recovery-title").textContent = needsRestore ? "Restore your archive before syncing" : "Restore an existing archive";
+    $("recovery-skip").hidden = !needsRestore;
+    if (needsRestore && recovery.backup) {
+      $("recovery-copy").textContent = `A ${Number(recovery.backup.chats || 0).toLocaleString()}-chat encrypted backup was created before this install. Restore it first so only the gap is checked.`;
+    } else {
+      $("recovery-copy").textContent = "Choose an encrypted Long Chat Toolkit backup to restore it into this browser. Restoring merges safely and only checks the later gap.";
+    }
+    $("sync-rows").replaceChildren();
+    for (const app of APPS) paintRow(app, status.platforms && status.platforms[app.id]);
+    updateSyncButton(!!status.running);
+    if (needsRestore) {
+      $("sync-all").disabled = true;
+      $("sync-all").textContent = "Restore archive first";
     }
   }
 
   initSyncUI();
 
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== "local") return;
-    if (APPS.some((a) => changes[progKey(a.id)])) {
+    if ((area === "local" && APPS.some((a) => changes[progKey(a.id)])) ||
+        (area === "local" && changes[activeAccountKey]) ||
+        (area === "sync" && changes["lct-recall-sync-ledger-v2"])) {
       refreshSyncRows();
       loadStats();
     }
   });
 
   $("sync-all").addEventListener("click", async () => {
-    // Check if already running first
-    const status = await new Promise((res) =>
-      chrome.runtime.sendMessage({ type: "recall-sync-status" }, res));
+    const status = await send({ type: "recall-sync-status" });
     if (status && status.running) {
-      // Already running — just refresh the UI
       refreshSyncRows();
       return;
     }
+    if (status && status.recovery && status.recovery.state === "restore-required") {
+      await initSyncUI();
+      return;
+    }
     $("sync-rows").replaceChildren();
-    for (const app of APPS) paintRow(app, { state: "syncing", msg: "Starting…" });
+    for (const app of APPS) paintRow(app, { progress: { state: "syncing", msg: "Starting…" }, phase: "checking" });
     updateSyncButton(true);
-    // Run sync in background worker — no tabs needed
-    chrome.runtime.sendMessage({ type: "recall-bg-sync" });
+    send({ type: "recall-bg-sync" }).then(initSyncUI);
   });
 
   /* ---------- wipe (two clicks — no confirm() popups) ---------- */
@@ -479,6 +651,7 @@
     btn.classList.remove("armed");
     btn.textContent = "Delete my archive";
     loadStats();
+    initSyncUI();
     $("results").replaceChildren();
     $("q-meta").textContent = "";
   });

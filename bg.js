@@ -6,9 +6,10 @@
  * cannot share a database, so they send their conversation text here and this
  * worker owns storage + search.
  *
- * Privacy: this file has no network access (the extension holds no network
- * permissions) — the archive physically cannot leave the machine. Everything
- * is deletable in one click from the Recall page.
+ * Privacy: the worker may make scoped, authenticated requests only to the AI
+ * providers declared in manifest host permissions to copy history into this
+ * local archive. It has no Long Chat Toolkit server, telemetry, or upload
+ * path; everything is deletable in one click from the Recall page.
  */
 "use strict";
 
@@ -56,6 +57,13 @@ function clampChat(chat) {
     title: String(chat.title || "").slice(0, 200),
     createdAt: typeof chat.createdAt === "number" ? chat.createdAt : 0,
     updatedAt: Date.now(),
+    // Provider-wide sync uses this timestamp as its dedupe contract. Keep it
+    // separate from the local write time so opening a chat cannot falsely
+    // make an older provider revision look synchronized.
+    sourceUpdatedAt: Number.isFinite(Number(chat.sourceUpdatedAt)) && Number(chat.sourceUpdatedAt) > 0
+      ? Number(chat.sourceUpdatedAt)
+      : ((chat.keepTimes || chat.meta) && Number.isFinite(Number(chat.updatedAt)) && Number(chat.updatedAt) > 0
+        ? Number(chat.updatedAt) : 0),
     n: msgs.length,
     msgs
   };
@@ -121,6 +129,15 @@ async function importBatch(chats) {
           }
           ok++; continue;
         }
+      }
+      const previous = existing.get(id);
+      const candidateSource = Number(chat.sourceUpdatedAt || chat.updatedAt || 0);
+      const previousSource = Number(previous && (previous.sourceUpdatedAt || previous.updatedAt) || 0);
+      // Restores and retries are merge operations: a stale snapshot must not
+      // overwrite a newer local conversation that arrived in the meantime.
+      if (previous && previous.n > 0 && candidateSource > 0 && previousSource > candidateSource) {
+        ok++;
+        continue;
       }
       const clamped = clampChat(chat);
       if ((chat.keepTimes || isMeta) && chat.updatedAt) clamped.updatedAt = chat.updatedAt;
@@ -216,7 +233,7 @@ async function check(ids) {
   for (const id of arr) {
     try {
       const v = await reqP(store.get(String(id).slice(0, 600)));
-      if (v) out[id] = { n: v.n, updatedAt: v.updatedAt };
+      if (v) out[id] = { n: v.n, updatedAt: v.updatedAt, sourceUpdatedAt: v.sourceUpdatedAt || 0 };
     } catch { /* skip */ }
   }
   return out;
@@ -258,12 +275,237 @@ const BG_SYNC_CONCURRENCY = 8;
 const BG_SYNC_DELAY = 40;
 const BG_SYNC_LIST_PAGE = 100;
 const BG_SYNC_BATCH = 15;
+const BG_SYNC_OVERLAP_MS = 5 * 60 * 1000;
+const BG_RUN_STALE_MS = 90 * 1000;
+const BG_PLATFORM_IDS = new Set(["chatgpt", "claude", "deepseek", "grok"]);
 const BG_SYNC_FLAG = (p) => "recall-sync-" + p;     // { lastFull: ms } — chrome.storage.local
 const BG_SYNC_PROG = (p) => "recall-sync-progress:" + p;
-const BG_SYNC_WM   = (p) => "recall-wm-" + p;        // { at: ms } — chrome.storage.sync (survives uninstall)
-const BG_SYNC_STALE_MS = 2 * 60 * 60 * 1000; // 2 hours — don't re-sync unless stale
+const BG_SYNC_LEDGER = "lct-recall-sync-ledger-v2";
+const BG_SYNC_PROFILE = "lct-recall-sync-profile-v1";
+const BG_BACKUP_MARKER = "lct-recall-backup-marker-v1";
+const BG_RECOVERY = "lct-recall-recovery-v1";
+const BG_INSTALL = "lct-recall-install-v1";
+const BG_RUN = "lct-recall-sync-run-v1";
+const BG_ACTIVE_ACCOUNT = "lct-recall-active-account-v1";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let ledgerWrite = Promise.resolve();
+let activeAccountWrite = Promise.resolve();
+let profileSaltPromise = null;
+
+const randomId = () => {
+  try { return crypto.randomUUID(); }
+  catch { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
+};
+const thisWorkerId = randomId();
+
+function cleanCheckpoint(value) {
+  if (!value || typeof value !== "object") return null;
+  const platform = String(value.platform || "");
+  const safeWatermark = Number(value.safeWatermark);
+  const completedAt = Number(value.completedAt);
+  if (!BG_PLATFORM_IDS.has(platform) || !Number.isFinite(safeWatermark) || safeWatermark <= 0 ||
+      !Number.isFinite(completedAt) || completedAt <= 0) return null;
+  return {
+    version: 2,
+    platform,
+    safeWatermark,
+    completedAt,
+    lastResult: String(value.lastResult || "delta").slice(0, 32),
+    archived: Math.max(0, Math.floor(Number(value.archived) || 0))
+  };
+}
+
+function cleanProfile(value) {
+  const salt = String(value && value.salt || "");
+  return value && value.version === 1 && /^[a-f0-9]{32}$/i.test(salt)
+    ? { version: 1, salt: salt.toLowerCase() } : null;
+}
+
+function cleanLedger(value) {
+  if (!value || value.version !== 2 || !value.checkpoints || typeof value.checkpoints !== "object" ||
+      Array.isArray(value.checkpoints)) return { version: 2, checkpoints: {} };
+  const checkpoints = {};
+  for (const [key, raw] of Object.entries(value.checkpoints).slice(0, 64)) {
+    const checkpoint = cleanCheckpoint(raw);
+    if (checkpoint) checkpoints[String(key).slice(0, 200)] = checkpoint;
+  }
+  return { version: 2, checkpoints };
+}
+
+async function getDurable(keys) {
+  try { return { data: await chrome.storage.sync.get(keys), synced: true }; }
+  catch { return { data: await chrome.storage.local.get(keys), synced: false }; }
+}
+
+async function setDurable(value) {
+  try { await chrome.storage.sync.set(value); return true; }
+  catch { await chrome.storage.local.set(value); return false; }
+}
+
+async function readLedger() {
+  const { data } = await getDurable(BG_SYNC_LEDGER);
+  return cleanLedger(data[BG_SYNC_LEDGER]);
+}
+
+async function mutateLedger(mutator) {
+  const work = async () => {
+    const ledger = await readLedger();
+    const next = cleanLedger(await mutator({ ...ledger, checkpoints: { ...ledger.checkpoints } }));
+    await setDurable({ [BG_SYNC_LEDGER]: next });
+    return next;
+  };
+  ledgerWrite = ledgerWrite.then(work, work);
+  return ledgerWrite;
+}
+
+async function profileSalt() {
+  if (profileSaltPromise) return profileSaltPromise;
+  profileSaltPromise = (async () => {
+    const { data } = await getDurable(BG_SYNC_PROFILE);
+    const profile = cleanProfile(data[BG_SYNC_PROFILE]);
+    if (profile) return profile.salt;
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    const salt = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+    await setDurable({ [BG_SYNC_PROFILE]: { version: 1, salt } });
+    return salt;
+  })();
+  try { return await profileSaltPromise; }
+  catch (error) { profileSaltPromise = null; throw error; }
+}
+
+async function digest(text) {
+  const value = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(value), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function accountCheckpointKey(adapter, ctx) {
+  // Never persist raw account identifiers or cookies. The provider identity is
+  // salted and hashed so a checkpoint cannot leak the user's account value.
+  const identity = ctx.account || await getCookieHeader(adapter.base) || "unknown";
+  return adapter.id + ":" + await digest((await profileSalt()) + "|" + adapter.id + "|" + identity);
+}
+
+async function readCheckpoint(adapter, ctx) {
+  const key = await accountCheckpointKey(adapter, ctx);
+  const ledger = await readLedger();
+  return { key, checkpoint: ledger.checkpoints[key] || null };
+}
+
+async function saveCheckpoint(key, checkpoint) {
+  return mutateLedger((ledger) => {
+    ledger.checkpoints[key] = checkpoint;
+    return ledger;
+  });
+}
+
+async function setActiveAccount(adapter, checkpointKey) {
+  const work = async () => {
+    const current = await chrome.storage.local.get(BG_ACTIVE_ACCOUNT);
+    const active = current[BG_ACTIVE_ACCOUNT] && typeof current[BG_ACTIVE_ACCOUNT] === "object"
+      ? current[BG_ACTIVE_ACCOUNT] : {};
+    await chrome.storage.local.set({
+      [BG_ACTIVE_ACCOUNT]: { ...active, [adapter.id]: String(checkpointKey).slice(0, 200) }
+    });
+  };
+  activeAccountWrite = activeAccountWrite.then(work, work);
+  return activeAccountWrite;
+}
+
+async function markBackup(meta) {
+  const marker = {
+    version: 1,
+    createdAt: Date.now(),
+    chats: Math.max(0, Number(meta && meta.chats) || 0),
+    filename: String((meta && meta.filename) || "archive.lctbackup").slice(0, 160)
+  };
+  await setDurable({ [BG_BACKUP_MARKER]: marker });
+  await chrome.storage.local.set({ [BG_RECOVERY]: { state: "ready", backup: marker } });
+  return marker;
+}
+
+async function ensureRecoveryState() {
+  const local = await chrome.storage.local.get([BG_INSTALL, BG_RECOVERY]);
+  if (local[BG_INSTALL]) return local[BG_RECOVERY] || { state: "ready" };
+  const { data } = await getDurable(BG_BACKUP_MARKER);
+  const marker = data[BG_BACKUP_MARKER] || null;
+  const recovery = marker ? { state: "restore-required", backup: marker } : { state: "ready" };
+  await chrome.storage.local.set({ [BG_INSTALL]: { at: Date.now() }, [BG_RECOVERY]: recovery });
+  return recovery;
+}
+
+async function restoreLedger(backupLedger, backupMeta, backupProfile) {
+  const incoming = cleanLedger(backupLedger);
+  const current = await readLedger();
+  const profile = cleanProfile(backupProfile);
+  // A fresh install may have generated an empty local salt while the restore
+  // page was opening. Reuse the backup's salt before the gap check so its
+  // hashed account key resolves to the backed-up checkpoint. Never replace a
+  // profile that already owns live checkpoints in this browser.
+  if (profile && !Object.keys(current.checkpoints).length) {
+    await setDurable({ [BG_SYNC_PROFILE]: profile });
+    profileSaltPromise = Promise.resolve(profile.salt);
+  }
+  await mutateLedger((ledger) => {
+    for (const [key, candidate] of Object.entries(incoming.checkpoints)) {
+      const current = ledger.checkpoints[key];
+      if (!current || (candidate.completedAt || 0) > (current.completedAt || 0)) {
+        ledger.checkpoints[key] = candidate;
+      }
+    }
+    return ledger;
+  });
+  if (backupMeta) await setDurable({ [BG_BACKUP_MARKER]: backupMeta });
+  await chrome.storage.local.set({
+    [BG_INSTALL]: { at: Date.now() },
+    [BG_RECOVERY]: { state: "ready", restoredAt: Date.now(), backup: backupMeta || null }
+  });
+  return { ok: true };
+}
+
+async function skipRecovery() {
+  await chrome.storage.local.set({ [BG_RECOVERY]: { state: "skipped", at: Date.now() } });
+  return { ok: true };
+}
+
+async function workerId() {
+  // A service-worker reload creates a new module instance. Keeping the id in
+  // memory (rather than storage.session) lets the durable run journal mark a
+  // half-finished pass as interrupted immediately, without ever auto-starting
+  // another historical sweep.
+  return thisWorkerId;
+}
+
+async function normalizeRun() {
+  const { [BG_RUN]: run } = await chrome.storage.local.get(BG_RUN);
+  if (!run || run.state !== "running") return run || null;
+  const stale = Date.now() - (run.heartbeatAt || run.startedAt || 0) > BG_RUN_STALE_MS;
+  const replaced = run.workerId !== await workerId();
+  if (!stale && !replaced) return run;
+  const interrupted = { ...run, state: "interrupted", interruptedAt: Date.now() };
+  const update = { [BG_RUN]: interrupted };
+  for (const id of run.platforms || []) {
+    update[BG_SYNC_PROG(id)] = { state: "interrupted", phase: "interrupted", done: 0, total: 0,
+      msg: "Sync paused. Resume safely from the last checkpoint.", at: Date.now() };
+  }
+  await chrome.storage.local.set(update);
+  return interrupted;
+}
+
+async function beginRun() {
+  const existing = await normalizeRun();
+  if (existing && existing.state === "running") return null;
+  const run = { id: randomId(), state: "running", workerId: await workerId(), startedAt: Date.now(),
+    heartbeatAt: Date.now(), platforms: BG_ADAPTERS.map((a) => a.id) };
+  await chrome.storage.local.set({ [BG_RUN]: run });
+  return run;
+}
+
+async function beat(run, platformId) {
+  if (!run) return;
+  await chrome.storage.local.set({ [BG_RUN]: { ...run, heartbeatAt: Date.now(), platform: platformId } });
+}
 
 async function getCookieHeader(url) {
   try {
@@ -274,12 +516,27 @@ async function getCookieHeader(url) {
 
 async function bgFetch(url, opts = {}) {
   const cookieHeader = await getCookieHeader(url);
-  const headers = { ...(opts.headers || {}), Cookie: cookieHeader };
+  const headers = {
+    Accept: "application/json, text/plain, */*",
+    ...(opts.headers || {}),
+    Cookie: cookieHeader
+  };
   const r = await fetch(url, { ...opts, headers, credentials: "include" });
   if (r.status === 429) throw new Error("rate-limited");
   if (r.status === 401 || r.status === 403) throw new Error("unauthorized");
   if (!r.ok) throw new Error("http " + r.status);
   return r;
+}
+
+async function bgJson(response) {
+  // Providers occasionally return their HTML application shell or sign-in
+  // page from an otherwise successful request. Parse the body ourselves so
+  // the sync UI receives a useful provider error, never a raw JSON exception.
+  const text = await response.text();
+  try { return JSON.parse(text); }
+  catch {
+    throw new Error(/^\s*</.test(text) ? "unexpected provider response" : "invalid provider response");
+  }
 }
 
 const BG_ADAPTERS = [
@@ -288,15 +545,18 @@ const BG_ADAPTERS = [
     host: "chatgpt.com", prefix: "/c/",
     async prepare() {
       const r = await bgFetch(this.base + "/api/auth/session");
-      const j = await r.json();
+      const j = await bgJson(r);
       if (!j || !j.accessToken) throw new Error("not signed in");
-      return { tok: j.accessToken };
+      return {
+        tok: j.accessToken,
+        account: j.user?.id || j.user?.email || j.account?.id || ""
+      };
     },
     async get(ctx, path) {
       const r = await bgFetch(this.base + path, {
         headers: { Authorization: "Bearer " + ctx.tok }
       });
-      return r.json();
+      return bgJson(r);
     },
     async list(ctx, sinceMs, progress) {
       const metas = [];
@@ -340,12 +600,12 @@ const BG_ADAPTERS = [
     host: "claude.ai", prefix: "/chat/",
     async prepare() {
       const r = await bgFetch(this.base + "/api/organizations");
-      const orgs = await r.json();
+      const orgs = await bgJson(r);
       const org = Array.isArray(orgs) ? (orgs.find((o) => o && o.uuid) || orgs[0]) : null;
       if (!org || !org.uuid) throw new Error("not signed in");
-      return { org: org.uuid };
+      return { org: org.uuid, account: org.uuid };
     },
-    async get(ctx, path) { return (await bgFetch(this.base + path)).json(); },
+    async get(ctx, path) { return bgJson(await bgFetch(this.base + path)); },
     async list(ctx, sinceMs, progress) {
       const arr = await this.get(ctx, `/api/organizations/${ctx.org}/chat_conversations`);
       const metas = [];
@@ -383,7 +643,7 @@ const BG_ADAPTERS = [
       await bgFetch(this.base + "/api/v0/chat/list?count=1");
       return {};
     },
-    async get(ctx, path) { return (await bgFetch(this.base + path)).json(); },
+    async get(ctx, path) { return bgJson(await bgFetch(this.base + path)); },
     async list(ctx, sinceMs, progress) {
       const data = await this.get(ctx, "/api/v0/chat/list?count=500");
       const items = data.data?.list || data.list || (Array.isArray(data) ? data : []);
@@ -419,7 +679,7 @@ const BG_ADAPTERS = [
       await bgFetch(this.base + "/rest/app-chat/conversations?limit=1");
       return {};
     },
-    async get(ctx, path) { return (await bgFetch(this.base + path)).json(); },
+    async get(ctx, path) { return bgJson(await bgFetch(this.base + path)); },
     async list(ctx, sinceMs, progress) {
       const data = await this.get(ctx, "/rest/app-chat/conversations?limit=500");
       const items = data.conversations || data.items || (Array.isArray(data) ? data : []);
@@ -452,148 +712,227 @@ const BG_ADAPTERS = [
 
 let bgSyncRunning = false;
 
-async function bgSyncPlatform(adapter) {
-  const prog = (done, total, msg) =>
-    chrome.storage.local.set({ [BG_SYNC_PROG(adapter.id)]: { state: "syncing", done, total, msg, at: Date.now() } });
+async function writeProgress(adapter, run, done, total, msg, phase = "syncing") {
+  await chrome.storage.local.set({
+    [BG_SYNC_PROG(adapter.id)]: { state: "syncing", phase, done, total, msg, at: Date.now(), runId: run.id }
+  });
+  await beat(run, adapter.id);
+}
 
+async function finishPlatform(adapter, checkpointKey, scanStartedAt, result, done, total, archived, message) {
+  const completedAt = Date.now();
+  await saveCheckpoint(checkpointKey, {
+    version: 2,
+    platform: adapter.id,
+    safeWatermark: scanStartedAt,
+    completedAt,
+    lastResult: result,
+    archived
+  });
+  await chrome.storage.local.set({
+    [BG_SYNC_PROG(adapter.id)]: {
+      state: "done", phase: "up-to-date", done, total, result, archived, msg: message, at: completedAt
+    },
+    [BG_SYNC_FLAG(adapter.id)]: { lastFull: completedAt }
+  });
+}
+
+async function bgSyncPlatform(adapter, run) {
+  let done = 0, total = 0;
   try {
-    // Phase 0: Check if already fresh — skip entirely if synced recently
-    try {
-      const { [BG_SYNC_FLAG(adapter.id)]: flag } = await chrome.storage.local.get(BG_SYNC_FLAG(adapter.id));
-      if (flag && flag.lastFull && Date.now() - flag.lastFull < BG_SYNC_STALE_MS) {
-        await chrome.storage.local.set({
-          [BG_SYNC_PROG(adapter.id)]: { state: "done", done: 0, total: 0, msg: "Already synced ✓", at: Date.now() }
-        });
-        return;
-      }
-    } catch {}
-
-    await prog(0, 0, "Preparing…");
+    await writeProgress(adapter, run, 0, 0, "Connecting to archive…", "checking");
     const ctx = await adapter.prepare();
+    const { key: checkpointKey, checkpoint } = await readCheckpoint(adapter, ctx);
+    await setActiveAccount(adapter, checkpointKey);
+    // A small overlap covers API ordering and timestamp-boundary differences.
+    // Existing records in that overlap are deduplicated before detail fetches.
+    const sinceMs = checkpoint && checkpoint.safeWatermark
+      ? Math.max(0, checkpoint.safeWatermark - BG_SYNC_OVERLAP_MS) : 0;
+    const scanStartedAt = Date.now();
+    const progress = (count, listedTotal, msg) =>
+      writeProgress(adapter, run, count || 0, listedTotal || 0, msg || "Checking for new chats…", "checking");
 
-    // Phase A: Read watermark from chrome.storage.sync (survives uninstall)
-    let sinceMs = 0;
-    try {
-      const wm = await chrome.storage.sync.get(BG_SYNC_WM(adapter.id));
-      const mark = wm[BG_SYNC_WM(adapter.id)];
-      if (mark && mark.at) sinceMs = mark.at;
-    } catch {}
-
-    // Phase A.1: List conversations (skips anything older than watermark)
-    await prog(0, 0, sinceMs ? "Checking for new chats…" : "Listing chats…");
-    const metas = await adapter.list(ctx, sinceMs, prog);
+    await writeProgress(adapter, run, 0, 0,
+      sinceMs ? "Checking for new chats…" : "Building the first archive index…", "checking");
+    const metas = await adapter.list(ctx, sinceMs, progress);
     if (!metas.length) {
-      await chrome.storage.local.set({
-        [BG_SYNC_PROG(adapter.id)]: { state: "done", done: 0, total: 0, msg: "All chats synced ✓", at: Date.now() },
-        [BG_SYNC_FLAG(adapter.id)]: { lastFull: Date.now() }
-      });
-      return;
+      await finishPlatform(adapter, checkpointKey, scanStartedAt, "up-to-date", 0, 0, 0,
+        "Everything is already backed up");
+      return { ok: true, result: "up-to-date" };
     }
 
-    // Phase A.5: Deduplicate against IndexedDB (handles re-install + still-fresh local data)
     const allIds = metas.map((m) => adapter.host + adapter.prefix + m.id);
     const existing = await check(allIds);
     const toFetch = metas.filter((m) => {
       const have = existing[adapter.host + adapter.prefix + m.id];
-      return !have || have.n === 0 || have.updatedAt < m.updatedAt;
+      const syncedAt = have && Number(have.sourceUpdatedAt || have.updatedAt || 0);
+      // A chat is a duplicate only when it is the same provider revision. The
+      // five-minute list overlap can therefore be safely retried after an
+      // interrupted worker without requesting its detail text again.
+      return !have || syncedAt < m.updatedAt;
     });
-
     if (!toFetch.length) {
-      await chrome.storage.local.set({
-        [BG_SYNC_PROG(adapter.id)]: { state: "done", done: metas.length, total: metas.length, msg: `All ${metas.length} chats synced ✓`, at: Date.now() },
-        [BG_SYNC_FLAG(adapter.id)]: { lastFull: Date.now() }
-      });
-      // Update watermark
-      try { await chrome.storage.sync.set({ [BG_SYNC_WM(adapter.id)]: { at: Date.now() } }); } catch {}
-      return;
+      await finishPlatform(adapter, checkpointKey, scanStartedAt, "up-to-date", metas.length, metas.length, 0,
+        "Everything is already backed up");
+      return { ok: true, result: "up-to-date" };
     }
 
-    // Phase B: fetch full text with high concurrency
-    let cursor = 0, done = 0, fatal = null, pauseUntil = 0;
-    const total = toFetch.length;
+    let cursor = 0, archived = 0, retryCount = 0, fatal = null, pauseUntil = 0;
+    total = toFetch.length;
     const importQueue = [];
-
     const flushQueue = async () => {
       if (!importQueue.length) return;
       const batch = importQueue.splice(0);
-      await importBatch(batch);
+      const result = await importBatch(batch);
+      archived += result.ok;
+      retryCount += result.skipped;
     };
-
     const worker = async () => {
       while (!fatal) {
-        const i = cursor++;
-        if (i >= total) return;
-        const m = toFetch[i];
+        const index = cursor++;
+        if (index >= total) return;
+        const meta = toFetch[index];
         if (pauseUntil > Date.now()) await sleep(pauseUntil - Date.now());
         try {
-          const msgs = await adapter.detail(ctx, m.id);
+          const msgs = await adapter.detail(ctx, meta.id);
           if (msgs.length >= 2) {
             importQueue.push({
-              id: adapter.host + adapter.prefix + m.id,
-              host: adapter.host, path: adapter.prefix + m.id,
-              platform: adapter.label, title: m.title,
-              createdAt: m.createdAt, updatedAt: m.updatedAt, msgs
+              id: adapter.host + adapter.prefix + meta.id,
+              host: adapter.host, path: adapter.prefix + meta.id,
+              platform: adapter.label, title: meta.title,
+              createdAt: meta.createdAt, updatedAt: meta.updatedAt,
+              sourceUpdatedAt: meta.updatedAt, msgs
             });
             if (importQueue.length >= BG_SYNC_BATCH) await flushQueue();
+          } else if (msgs.length === 1) {
+            // A legitimately one-message conversation has no searchable
+            // dialogue, but its provider revision is still fully accounted
+            // for. Store a metadata record so it does not block every later
+            // checkpoint retry forever.
+            importQueue.push({
+              id: adapter.host + adapter.prefix + meta.id,
+              host: adapter.host, path: adapter.prefix + meta.id,
+              platform: adapter.label, title: meta.title,
+              createdAt: meta.createdAt, updatedAt: meta.updatedAt,
+              sourceUpdatedAt: meta.updatedAt, msgs: [], meta: true
+            });
+            if (importQueue.length >= BG_SYNC_BATCH) await flushQueue();
+          } else {
+            retryCount++;
           }
-        } catch (e) {
-          const em = String(e.message || e);
-          if (em.includes("unauthorized")) { fatal = e; return; }
-          if (em.includes("rate-limited")) { pauseUntil = Date.now() + 15000; }
+        } catch (error) {
+          const reason = String(error && error.message || error);
+          if (reason.includes("unauthorized")) { fatal = error; return; }
+          if (reason.includes("rate-limited")) pauseUntil = Date.now() + 15000;
+          retryCount++;
         }
         done++;
-        await prog(done, total, `Archiving… ${done}/${total}`);
+        await writeProgress(adapter, run, done, total, `Capturing ${done} of ${total} new chats…`, "syncing");
         await sleep(BG_SYNC_DELAY);
       }
     };
 
     await Promise.all(Array.from({ length: Math.min(BG_SYNC_CONCURRENCY, total) }, worker));
     await flushQueue();
-
-    if (fatal) {
+    if (fatal) throw fatal;
+    if (retryCount) {
+      // Retain the preceding safe watermark. The next run requests the same
+      // small delta and skips the records that were successfully imported.
       await chrome.storage.local.set({
-        [BG_SYNC_PROG(adapter.id)]: { state: "error", done, total, msg: String(fatal.message || fatal), at: Date.now() }
+        [BG_SYNC_PROG(adapter.id)]: {
+          state: "error", phase: "error", done, total,
+          msg: `${archived} chats saved; ${retryCount} will retry safely`, at: Date.now()
+        }
       });
-    } else {
-      await chrome.storage.local.set({
-        [BG_SYNC_PROG(adapter.id)]: { state: "done", done, total, msg: `${done} new chats synced ✓`, at: Date.now() },
-        [BG_SYNC_FLAG(adapter.id)]: { lastFull: Date.now() }
-      });
-      // Save watermark to chrome.storage.sync — persists across uninstall/reinstall
-      try { await chrome.storage.sync.set({ [BG_SYNC_WM(adapter.id)]: { at: Date.now() } }); } catch {}
+      return { ok: false, retryCount };
     }
-  } catch (e) {
+    await finishPlatform(adapter, checkpointKey, scanStartedAt, "delta", done, total, archived,
+      archived ? `${archived} new chats backed up` : "Everything is already backed up");
+    return { ok: true, result: "delta", archived };
+  } catch (error) {
+    const reason = String(error && error.message || error);
+    const message = reason.includes("unauthorized") || reason.includes("not signed in")
+      ? `Sign in to ${adapter.label} to sync.`
+      : /unexpected token\s*['"]?<?|valid json|json\.parse|unexpected provider response|invalid provider response/i.test(reason)
+        ? `${adapter.label} needs an active session. Open it, then try again.`
+        : `Sync failed. Try ${adapter.label} again.`;
     await chrome.storage.local.set({
-      [BG_SYNC_PROG(adapter.id)]: { state: "error", done: 0, total: 0, msg: String(e.message || e), at: Date.now() }
+      [BG_SYNC_PROG(adapter.id)]: { state: "error", phase: "error", done, total, msg: message, at: Date.now() }
     });
+    return { ok: false, error: reason };
   }
 }
 
 async function bgSyncAll() {
+  const recovery = await ensureRecoveryState();
+  if (recovery.state === "restore-required") return { status: "restore-required", recovery };
   if (bgSyncRunning) return { status: "already-running" };
+  const run = await beginRun();
+  if (!run) return { status: "already-running" };
   bgSyncRunning = true;
   try {
-    // Run all platforms in parallel
-    await Promise.all(BG_ADAPTERS.map((a) => bgSyncPlatform(a)));
-    return { status: "done" };
+    const results = await Promise.all(BG_ADAPTERS.map((adapter) => bgSyncPlatform(adapter, run)));
+    await chrome.storage.local.set({ [BG_RUN]: { ...run, state: "done", finishedAt: Date.now() } });
+    return { status: "done", results };
   } finally {
     bgSyncRunning = false;
   }
 }
 
 async function bgSyncStatus() {
+  const recovery = await ensureRecoveryState();
+  const run = await normalizeRun();
+  const ledger = await readLedger();
   const keys = BG_ADAPTERS.map((a) => BG_SYNC_PROG(a.id))
-    .concat(BG_ADAPTERS.map((a) => BG_SYNC_FLAG(a.id)));
+    .concat(BG_ADAPTERS.map((a) => BG_SYNC_FLAG(a.id)), BG_ACTIVE_ACCOUNT);
   const store = await chrome.storage.local.get(keys);
+  const activeAccounts = store[BG_ACTIVE_ACCOUNT] && typeof store[BG_ACTIVE_ACCOUNT] === "object"
+    ? store[BG_ACTIVE_ACCOUNT] : {};
   const platforms = {};
-  for (const a of BG_ADAPTERS) {
-    platforms[a.id] = {
-      label: a.label,
-      progress: store[BG_SYNC_PROG(a.id)] || null,
-      flag: store[BG_SYNC_FLAG(a.id)] || null
+  for (const adapter of BG_ADAPTERS) {
+    // Do not show another signed-in account's checkpoint as this account's
+    // state. A platform becomes "ready to check" until this browser has
+    // identified the currently active account during a background check.
+    const activeKey = String(activeAccounts[adapter.id] || "");
+    const checkpoint = activeKey ? ledger.checkpoints[activeKey] || null : null;
+    const progress = store[BG_SYNC_PROG(adapter.id)] || null;
+    const phase = progress?.phase || (checkpoint ? "up-to-date" : "needs-sync");
+    platforms[adapter.id] = {
+      label: adapter.label,
+      progress,
+      flag: store[BG_SYNC_FLAG(adapter.id)] || null,
+      checkpoint,
+      phase
     };
   }
-  return { platforms, running: bgSyncRunning };
+  return {
+    platforms,
+    running: !!(run && run.state === "running"),
+    recovery,
+    run: run ? { state: run.state, startedAt: run.startedAt, interruptedAt: run.interruptedAt || 0 } : null
+  };
+}
+
+async function backupState() {
+  const ledger = await readLedger();
+  const { data } = await getDurable([BG_BACKUP_MARKER, BG_SYNC_PROFILE]);
+  return {
+    ledger,
+    marker: data[BG_BACKUP_MARKER] || null,
+    profile: cleanProfile(data[BG_SYNC_PROFILE])
+  };
+}
+
+async function wipeRecall() {
+  await wipe();
+  profileSaltPromise = null;
+  const localKeys = [BG_RUN, BG_RECOVERY, BG_ACTIVE_ACCOUNT]
+    .concat(BG_ADAPTERS.map((adapter) => BG_SYNC_PROG(adapter.id)))
+    .concat(BG_ADAPTERS.map((adapter) => BG_SYNC_FLAG(adapter.id)));
+  await chrome.storage.local.remove(localKeys);
+  try { await chrome.storage.sync.remove([BG_SYNC_LEDGER, BG_BACKUP_MARKER, BG_SYNC_PROFILE]); }
+  catch { await chrome.storage.local.remove([BG_SYNC_LEDGER, BG_BACKUP_MARKER, BG_SYNC_PROFILE]); }
+  return { ok: true };
 }
 
 /* ---------- message router ---------- */
@@ -613,9 +952,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       case "recall-search":      return search(msg.q, msg.long);
       case "recall-check":       return check(msg.ids);
       case "recall-stats":       return stats();
-      case "recall-wipe":        return wipe();
+      case "recall-wipe":        return wipeRecall();
       case "recall-bg-sync":     return bgSyncAll();
       case "recall-sync-status": return bgSyncStatus();
+      case "recall-backup-state": return backupState();
+      case "recall-backup-mark": return markBackup(msg.meta);
+      case "recall-restore-ledger": return restoreLedger(msg.ledger, msg.meta, msg.profile);
+      case "recall-recovery-skip": return skipRecovery();
       default: return { err: "unknown" };
     }
   };

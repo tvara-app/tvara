@@ -138,19 +138,22 @@
     const footNote = document.createElement("span");
     footNote.textContent = "Total Recall searches chats you've opened (or imported) — all stored on this device only.";
     foot.appendChild(footNote);
-    // On a supported app page: sync THIS app's full history from its own
-    // same-origin API (the user's data, landing only in the local archive).
-    if (self.LCTRecallSync && self.LCTRecallSync.available) {
+    // The worker owns full-history sync. This control only asks it to check
+    // the durable delta, so opening or reloading a chat tab cannot duplicate
+    // a provider-wide sweep.
+    if (["chatgpt", "claude", "deepseek", "grok"].includes(adapter && adapter.id)) {
       const syncBtn = document.createElement("button");
       syncBtn.id = "lct-r-sync";
-      const label = self.LCTRecallSync.platformId === "claude" ? "Claude" : "ChatGPT";
-      syncBtn.textContent = "Sync full " + label + " history";
+      syncBtn.textContent = "Check archive";
       syncBtn.addEventListener("click", () => {
         syncBtn.disabled = true;
-        footNote.textContent = "Syncing… you can keep working.";
-        self.LCTRecallSync.syncNow(true).then((r) => {
+        footNote.textContent = "Checking for new chats…";
+        chrome.runtime.sendMessage({ type: "recall-bg-sync" }, (r) => {
+          void chrome.runtime.lastError;
           syncBtn.disabled = false;
-          footNote.textContent = r && r.ok ? `Synced ${r.count} chats — all local.` : (r && r.err) || "Sync finished.";
+          footNote.textContent = r && r.status === "restore-required"
+            ? "Restore your encrypted archive in Total Recall before checking the gap."
+            : "Archive check is running in the background.";
           runQuery();
         });
       });
