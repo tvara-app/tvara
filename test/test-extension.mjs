@@ -66,8 +66,9 @@ const pageErrors = [];
 const trackErrors = (p) => {
   p.on("pageerror", (e) => pageErrors.push(`${p.url()}: ${e.message}`));
   p.on("console", (m) => {
-    // the bare python static server has no favicon — that 404 is not an app error
-    if (m.type() === "error" && !/favicon|Failed to load resource.*404/.test(m.text()))
+    // "Failed to load resource" is Chrome's network log, not an app exception:
+    // the static server has no favicon, and A9 serves deliberate 4xx/5xx bodies.
+    if (m.type() === "error" && !/favicon|Failed to load resource/.test(m.text()))
       pageErrors.push(`console ${p.url()}: ${m.text()}`);
   });
 };
@@ -98,7 +99,7 @@ try {
 
   // A1 — free state renders correctly
   t("A1 badge shows Free", (await pop.textContent("#plan-badge")).trim() === "Free");
-  t("A1 version shown", (await pop.textContent("#version")).trim() === "v0.6.0");
+  t("A1 version shown", (await pop.textContent("#version")).trim() === "v0.7.0");
   t("A1 upsell visible / active card hidden",
     (await pop.isVisible("#pro-upsell")) && !(await pop.isVisible("#pro-active")));
   t("A1 speed/minimap/time toggles on by default",
@@ -153,9 +154,9 @@ try {
   const domReload = await pop.evaluate(() =>
     document.documentElement.outerHTML + [...document.querySelectorAll("input")].map((i) => i.value).join("|"));
   t("A5 key not re-injected into DOM on reload", !domReload.includes(KEY.slice(5, 40)));
-  const uiCache = await pop.evaluate(() => localStorage.getItem("lct-ui-v1") || "");
-  t("A5 first-paint cache holds NO key and NO full email",
-    !uiCache.includes("LCT1.") && !uiCache.includes("test@example.com"));
+  const uiCache = await pop.evaluate(() => localStorage.getItem("lct-ui-v3") || "");
+  t("A5 first-paint cache is present and holds NO key, NO full email",
+    uiCache.length > 2 && !uiCache.includes("LCT1.") && !uiCache.includes("test@example.com"));
 
   // A5b — a query must never expand the fixed popup surface. Results replace
   // the archive-check row and are deliberately a compact preview.
@@ -177,8 +178,12 @@ try {
     bodyScroll: document.body.scrollHeight,
     bodyClient: document.body.clientHeight
   }));
+  // The root is the real scroller and stays strict. body is allowed one pixel:
+  // its height lands on a fractional boundary and rounds either way between
+  // runs. A genuine regression here is tens of pixels, not one.
   t("A5b popup search keeps its fixed panel height",
-    popupMetrics.rootScroll <= popupMetrics.rootClient && popupMetrics.bodyScroll <= popupMetrics.bodyClient,
+    popupMetrics.rootScroll <= popupMetrics.rootClient &&
+    popupMetrics.bodyScroll <= popupMetrics.bodyClient + 1,
     JSON.stringify(popupMetrics));
   await pop.fill("#recall-query", "");
   await pop.setViewportSize({ width: 900, height: 800 });
@@ -220,6 +225,364 @@ try {
   await pop.screenshot({ path: join(SHOTS, "popup-free-dark.png"), fullPage: true });
   await pop.emulateMedia({ colorScheme: "light" });
   await pop.screenshot({ path: join(SHOTS, "popup-free-light.png"), fullPage: true });
+
+
+  /* ============ A9. Dodo activation + 5-device seats ============
+     Every branch is driven through page.route — the real licence server is
+     never contacted. Routes survive pop.reload(), which A9p-A9t rely on. */
+
+  const dodo = { calls: [], queue: [] };
+  const dodoReset = (...queue) => { dodo.calls.length = 0; dodo.queue = queue; };
+  await pop.route("https://*.dodopayments.com/**", async (route) => {
+    const req = route.request();
+    dodo.calls.push({
+      path: new URL(req.url()).pathname,
+      method: req.method(),
+      headers: req.headers(),
+      body: req.postDataJSON()
+    });
+    const next = dodo.queue.shift();
+    if (!next) return route.abort("failed");
+    await route.fulfill({
+      status: next.status,
+      contentType: next.raw ? "text/html" : "application/json",
+      body: next.raw || JSON.stringify(next.body || {})
+    });
+  });
+  const DKEY = "DODO-TEST-KEY-0001";
+  const OK201 = { status: 201, body: { id: "lki_new", license_key_id: "lk_1", customer: { email: "buyer@example.com" } } };
+  const seedSeats = (seats, keyFp) => pop.evaluate(async ([seats, keyFp]) => {
+    await chrome.storage.sync.set({ "lct-seats-v1": { version: 1, keyFp, seats } });
+  }, [seats, keyFp]);
+  const readSeats = () => pop.evaluate(async () =>
+    (await chrome.storage.sync.get("lct-seats-v1"))["lct-seats-v1"]);
+  const licenseOf = () => pop.evaluate(async () => (await chrome.storage.local.get("license")).license);
+  const clearLicense = () => pop.evaluate(async () => {
+    await chrome.storage.local.remove(["license", "lct-license-state-v1", "trial"]);
+    await chrome.storage.sync.remove(["lct-seats-v1", "lct-device-id-v1"]);
+  });
+  const doActivate = async (key) => {
+    await pop.fill("#license-input", key);
+    await pop.click("#license-activate");
+    await pop.waitForFunction(() => !document.getElementById("license-activate").disabled);
+  };
+
+  // A9a — an LCT1 key must never touch the network. The regression guard for
+  // every customer who bought before Dodo existed.
+  await clearLicense();
+  await pop.reload();
+  await pop.waitForSelector("#pro-upsell:not([hidden])");
+  dodoReset();
+  await doActivate(KEY);
+  await pop.waitForSelector("#pro-active:not([hidden])");
+  t("A9a LCT1 key activates with ZERO network calls", dodo.calls.length === 0, JSON.stringify(dodo.calls.map((c) => c.path)));
+  await pop.evaluate(() => chrome.storage.local.remove("license"));
+
+  // A9b — happy path
+  await clearLicense();
+  await pop.reload();
+  await pop.waitForSelector("#pro-upsell:not([hidden])");
+  dodoReset(OK201);
+  await doActivate(DKEY);
+  await pop.waitForSelector("#pro-active:not([hidden])");
+  const licB = await licenseOf();
+  const seatsB = await readSeats();
+  t("A9b Dodo key activates to Pro", (await pop.textContent("#plan-badge")).trim() === "Pro");
+  t("A9b masked email from the activation response",
+    (await pop.textContent("#licensed-to")).includes("bu•••@example.com"));
+  t("A9b licence record carries the activation receipt",
+    licB && licB.kind === "dodo" && licB.instanceId === "lki_new" && licB.key === DKEY);
+  t("A9b input cleared and key absent from the DOM", (await pop.inputValue("#license-input")) === "" &&
+    !(await pop.evaluate(() => document.documentElement.outerHTML)).includes(DKEY));
+  t("A9b exactly one seat registered, key never written to sync",
+    Object.keys(seatsB.seats).length === 1 && !JSON.stringify(seatsB).includes(DKEY));
+
+  // A9d — request hygiene: no cookies, and only the two documented fields
+  const act = dodo.calls.find((c) => c.path === "/licenses/activate");
+  t("A9d request carries no cookie header", act && !act.headers.cookie && !act.headers.Cookie);
+  t("A9d body is exactly {license_key, name}",
+    act && JSON.stringify(Object.keys(act.body).sort()) === '["license_key","name"]');
+  const devId = await pop.evaluate(async () => (await chrome.storage.sync.get("lct-device-id-v1"))["lct-device-id-v1"].id);
+  t("A9d instance name is a coarse label, not identity",
+    act && act.body.name.length <= 60 && !act.body.name.includes("@") && !act.body.name.includes(devId));
+  t("A9c deviceId was minted and stored in sync", /^[0-9a-f-]{20,}$/i.test(devId));
+
+  // A9e — 422 evicts the OLDEST seat, retries exactly once, and succeeds
+  await clearLicense();
+  const fp = await pop.evaluate(async (k) => self.LCTDodo.fingerprint(k), DKEY);
+  await pop.evaluate(async (id) => chrome.storage.sync.set({ "lct-device-id-v1": { id, mintedAt: 1 } }), devId);
+  await seedSeats({
+    old: { instanceId: "lki_old", label: "Old laptop", activatedAt: 1000 },
+    mid: { instanceId: "lki_mid", label: "Tablet", activatedAt: 5000 },
+    a: { instanceId: "lki_a", label: "A", activatedAt: 9000 },
+    b: { instanceId: "lki_b", label: "B", activatedAt: 9500 },
+    c: { instanceId: "lki_c", label: "C", activatedAt: 9900 }
+  }, fp);
+  await pop.reload();
+  await pop.waitForSelector("#pro-upsell:not([hidden])");
+  dodoReset({ status: 422, body: { code: "LIMIT" } }, { status: 200, body: {} }, OK201);
+  await doActivate(DKEY);
+  await pop.waitForSelector("#pro-active:not([hidden])");
+  const seatsE = await readSeats();
+  t("A9e three calls, in order activate/deactivate/activate",
+    dodo.calls.length === 3 &&
+    dodo.calls.map((c) => c.path).join(",") === "/licenses/activate,/licenses/deactivate,/licenses/activate",
+    JSON.stringify(dodo.calls.map((c) => c.path)));
+  t("A9e the OLDEST seat was the one released",
+    dodo.calls[1].body.license_key_instance_id === "lki_old");
+  t("A9e oldest pruned, this device added, still 5 seats",
+    !seatsE.seats.old && Object.keys(seatsE.seats).length === 5);
+  t("A9e status names the freed device", (await pop.textContent("#license-status")).includes("Old laptop"));
+
+  // A9f — a second 422 stops. Never a third activate, never a loop.
+  await clearLicense();
+  await pop.evaluate(async (id) => chrome.storage.sync.set({ "lct-device-id-v1": { id, mintedAt: 1 } }), devId);
+  await seedSeats({ old: { instanceId: "lki_old", label: "Old laptop", activatedAt: 1000 } }, fp);
+  await pop.reload();
+  await pop.waitForSelector("#pro-upsell:not([hidden])");
+  dodoReset({ status: 422, body: {} }, { status: 200, body: {} }, { status: 422, body: {} });
+  await doActivate(DKEY);
+  await pop.waitForSelector("#device-manager:not([hidden])");
+  t("A9f exactly 3 calls — eviction is attempted once, never looped", dodo.calls.length === 3,
+    String(dodo.calls.length));
+  t("A9f device screen shown, still Free", (await pop.textContent("#plan-badge")).trim() === "Free");
+  t("A9f never says the key is invalid",
+    !(await pop.textContent("#license-status")).toLowerCase().includes("invalid"));
+
+  // A9g/A9h — a dead key and an unknown key read differently, and write nothing
+  for (const [code, label, needle] of [[403, "A9g", "no longer active"], [404, "A9h", "couldn't find"]]) {
+    await clearLicense();
+    await pop.reload();
+    await pop.waitForSelector("#pro-upsell:not([hidden])");
+    dodoReset({ status: code, body: { code: "X" } });
+    await doActivate(DKEY);
+    const txt = (await pop.textContent("#license-status")).toLowerCase();
+    t(`${label} HTTP ${code} has its own copy, never "invalid"`,
+      txt.includes(needle) && !txt.includes("invalid"), txt);
+    t(`${label} nothing written to storage on ${code}`, (await licenseOf()) === undefined);
+  }
+
+  // A9i — an outage must never disturb an activation the user already holds
+  await clearLicense();
+  await pop.reload();
+  await pop.waitForSelector("#pro-upsell:not([hidden])");
+  dodoReset(OK201);
+  await doActivate(DKEY);
+  await pop.waitForSelector("#pro-active:not([hidden])");
+  // The UI hides the key field once Pro, so drive the layer directly: an
+  // outage must report "network" and leave every stored byte alone.
+  const licBefore = JSON.stringify(await licenseOf());
+  const seatsBefore = JSON.stringify(await readSeats());
+  dodoReset(); // queue empty → route.abort → network branch
+  const outage = await pop.evaluate((k) => self.LCTDodo.activateWithSeats(k), DKEY);
+  t("A9i an outage reports network, never a key problem",
+    outage.ok === false && outage.branch === "network", JSON.stringify(outage));
+  t("A9i an outage writes nothing and keeps Pro",
+    JSON.stringify(await licenseOf()) === licBefore &&
+    JSON.stringify(await readSeats()) === seatsBefore &&
+    (await pop.textContent("#plan-badge")).trim() === "Pro");
+
+  // A9j — the second Chrome on a synced profile re-uses its seat
+  const fiveWithSelf = async () => {
+    await pop.evaluate(async (id) => chrome.storage.sync.set({ "lct-device-id-v1": { id, mintedAt: 1 } }), devId);
+    await seedSeats({
+      [devId]: { instanceId: "lki_mine", label: "This one", activatedAt: 2000 },
+      a: { instanceId: "lki_a", label: "A", activatedAt: 3000 }, b: { instanceId: "lki_b", label: "B", activatedAt: 4000 },
+      c: { instanceId: "lki_c", label: "C", activatedAt: 5000 }, d: { instanceId: "lki_d", label: "D", activatedAt: 6000 }
+    }, fp);
+  };
+  await pop.evaluate(() => chrome.storage.local.remove(["license", "lct-license-state-v1"]));
+  await fiveWithSelf();
+  await pop.reload();
+  await pop.waitForSelector("#pro-upsell:not([hidden])");
+  dodoReset({ status: 200, body: { valid: true } });
+  await doActivate(DKEY);
+  await pop.waitForSelector("#pro-active:not([hidden])");
+  const licJ = await licenseOf();
+  t("A9j re-paste on a synced profile validates instead of activating",
+    dodo.calls.length === 1 && dodo.calls[0].path === "/licenses/validate" &&
+    dodo.calls[0].body.license_key_instance_id === "lki_mine",
+    JSON.stringify(dodo.calls.map((c) => c.path)));
+  t("A9j no second seat burned", Object.keys((await readSeats()).seats).length === 5);
+  t("A9j the existing instance is adopted", licJ && licJ.instanceId === "lki_mine");
+
+  // A9k — a seat the server no longer recognises is replaced, not doubled
+  await pop.evaluate(() => chrome.storage.local.remove(["license", "lct-license-state-v1"]));
+  await fiveWithSelf();
+  await pop.reload();
+  await pop.waitForSelector("#pro-upsell:not([hidden])");
+  dodoReset({ status: 200, body: { valid: false } }, OK201);
+  await doActivate(DKEY);
+  await pop.waitForSelector("#pro-active:not([hidden])");
+  t("A9k stale seat validated, pruned, then re-activated",
+    dodo.calls.length === 2 && (await readSeats()).seats[devId].instanceId === "lki_new" &&
+    Object.keys((await readSeats()).seats).length === 5);
+
+  // A9l — terminate: 200 prunes, and so does 403 (the registry was just stale)
+  await pop.click("#license-devices");
+  await pop.waitForSelector("#device-manager:not([hidden])");
+  t("A9l device screen lists every seat and marks this one",
+    (await pop.locator(".device-row").count()) === 5 &&
+    (await pop.locator(".device-row.is-self").count()) === 1);
+  // A9o — five rows must not widen the fixed 380px popup
+  const dmBox = await pop.evaluate(() => ({
+    w: document.documentElement.scrollWidth, c: document.documentElement.clientWidth
+  }));
+  t("A9o five device rows do not widen the popup", dmBox.w <= dmBox.c + 1, JSON.stringify(dmBox));
+  dodoReset({ status: 200, body: {} });
+  await pop.locator(".device-row:not(.is-self) button").first().click();
+  await pop.waitForFunction(() => document.querySelectorAll(".device-row").length === 4);
+  t("A9l terminate on 200 prunes the row", Object.keys((await readSeats()).seats).length === 4);
+  dodoReset({ status: 403, body: {} });
+  await pop.locator(".device-row:not(.is-self) button").first().click();
+  await pop.waitForFunction(() => document.querySelectorAll(".device-row").length === 3);
+  t("A9l terminate on 403 also prunes — the network answer wins",
+    Object.keys((await readSeats()).seats).length === 3);
+
+  // A9m — releasing this device gives up Pro here
+  dodoReset({ status: 200, body: {} });
+  await pop.locator(".device-row.is-self button").click();
+  await pop.waitForFunction(() => document.getElementById("plan-badge").textContent.trim() !== "Pro");
+  t("A9m releasing this device drops to Free and frees the slot",
+    (await licenseOf()) === undefined && !(await readSeats()).seats[devId]);
+
+  // A9n — Remove with no reach still removes locally, and flags the held slot
+  await clearLicense();
+  await pop.reload();
+  await pop.waitForSelector("#pro-upsell:not([hidden])");
+  dodoReset(OK201);
+  await doActivate(DKEY);
+  await pop.waitForSelector("#pro-active:not([hidden])");
+  dodoReset(); // abort → deactivate fails
+  await pop.click("#license-remove");
+  await pop.waitForSelector("#pro-upsell:not([hidden])");
+  const seatsN = await readSeats();
+  const orphaned = Object.values(seatsN.seats).filter((x) => x.orphan === true);
+  t("A9n Remove without reach still removes locally", (await licenseOf()) === undefined);
+  t("A9n the un-released slot is flagged orphan, not silently lost",
+    orphaned.length === 1, JSON.stringify(seatsN.seats));
+
+  // A9p-A9t — lazy re-validation, fail-open
+  const seedDodoPro = async (state) => {
+    await pop.evaluate(async ([key, state]) => {
+      await chrome.storage.local.set({
+        license: { key, email: "buyer@example.com", plan: "pro", kind: "dodo", instanceId: "lki_1", activatedAt: Date.now() - 60 * 864e5 },
+        "lct-license-state-v1": state
+      });
+    }, [DKEY, state]);
+  };
+  const stateOf = () => pop.evaluate(async () => (await chrome.storage.local.get("lct-license-state-v1"))["lct-license-state-v1"]);
+  const NOW = Date.now();
+
+  dodoReset({ status: 200, body: { valid: true } });
+  await seedDodoPro({ lastValidatedAt: NOW - 2 * 864e5, lastAttemptAt: 0, strikes: [] });
+  await pop.waitForSelector("#pro-active:not([hidden])");
+  await pop.waitForTimeout(500);
+  t("A9p no re-validation inside the 30-day window", dodo.calls.length === 0,
+    JSON.stringify(dodo.calls.map((c) => c.path)));
+
+  dodoReset({ status: 200, body: { valid: true } });
+  await seedDodoPro({ lastValidatedAt: NOW - 31 * 864e5, lastAttemptAt: 0, strikes: [] });
+  // Wait for the CALL, not for a storage side-effect: a state-based wait can be
+  // satisfied by a straggler and then assert against a request that never came.
+  for (let i = 0; i < 60 && dodo.calls.length === 0; i++) await pop.waitForTimeout(100);
+  await pop.waitForFunction(async () => {
+    const st = (await chrome.storage.local.get("lct-license-state-v1"))["lct-license-state-v1"] || {};
+    return st.lastValidatedAt > Date.now() - 60000;
+  });
+  t("A9q re-validates at 30 days and stays Pro",
+    dodo.calls.length === 1 && dodo.calls[0].path === "/licenses/validate" &&
+    (await stateOf()).strikes.length === 0 &&
+    (await pop.textContent("#plan-badge")).trim() === "Pro",
+    JSON.stringify(dodo.calls.map((c) => c.path)));
+
+  dodoReset({ status: 200, body: { valid: false } });
+  await seedDodoPro({ lastValidatedAt: NOW - 31 * 864e5, lastAttemptAt: 0, strikes: [] });
+  await pop.waitForFunction(async () =>
+    (((await chrome.storage.local.get("lct-license-state-v1"))["lct-license-state-v1"] || {}).strikes || []).length === 1);
+  t("A9r one refusal does not withdraw Pro",
+    (await pop.textContent("#plan-badge")).trim() === "Pro" && (await licenseOf()).revokedAt === undefined);
+
+  dodoReset({ status: 200, body: { valid: false } });
+  await seedDodoPro({ lastValidatedAt: NOW - 31 * 864e5, lastAttemptAt: 0, strikes: [NOW - 40 * 864e5] });
+  await pop.waitForSelector("#pro-upsell:not([hidden])");
+  const licS = await licenseOf();
+  t("A9s two refusals 7+ days apart withdraw Pro",
+    (await pop.textContent("#plan-badge")).trim() === "Free" && licS && typeof licS.revokedAt === "number");
+  t("A9s the key is kept, not deleted — support can still fix it", licS.key === DKEY);
+  t("A9s the copy says deactivated, never invalid",
+    (await pop.textContent("#license-status")).toLowerCase().includes("deactivated"));
+
+  // A9t — the fail-open contract, in all three failure shapes.
+  // Driven directly rather than through storage.onChanged: the auto path races
+  // its own writes across rounds, and what matters here is the rule, not the
+  // trigger (A9q already proves load() fires it).
+  await pop.evaluate(async ([key]) => chrome.storage.local.set({
+    license: {
+      key, email: "buyer@example.com", plan: "pro", kind: "dodo",
+      instanceId: "lki_1", activatedAt: Date.now() - 60 * 864e5
+    }
+  }), [DKEY]);
+  await pop.waitForSelector("#pro-active:not([hidden])");
+  await pop.waitForTimeout(400);   // let the load()-triggered attempt drain
+
+  for (const [label, queued] of [
+    ["network abort", null],
+    ["HTTP 500", { status: 500, body: {} }],
+    ["an HTML body", { status: 200, raw: "<html>maintenance</html>" }]
+  ]) {
+    // writing only the state key does not trigger load() — it is not watched
+    await pop.evaluate((st) => chrome.storage.local.set({ "lct-license-state-v1": st }),
+      { lastValidatedAt: NOW - 31 * 864e5, lastAttemptAt: 0, strikes: [NOW - 40 * 864e5] });
+    dodoReset(...(queued ? [queued] : []));
+    const out = await pop.evaluate(async () => {
+      const { license } = await chrome.storage.local.get("license");
+      return self.LCTDodo.maybeRevalidate(license);
+    });
+    const st = await stateOf();
+    t(`A9t ${label} never counts as a strike`,
+      out.outcome === "inconclusive" &&
+      st.strikes.length === 1 &&                       // the pre-existing strike, unchanged
+      st.lastValidatedAt === NOW - 31 * 864e5 &&       // the 30-day clock does NOT restart
+      st.lastAttemptAt > 0 &&                          // but the retry floor does
+      (await licenseOf()).revokedAt === undefined &&
+      (await pop.textContent("#plan-badge")).trim() === "Pro",
+      JSON.stringify({ out, st }));
+  }
+
+  // A9x — nothing secret reaches the synchronous first-paint cache
+  await clearLicense();
+  await pop.reload();
+  await pop.waitForSelector("#pro-upsell:not([hidden])");
+  dodoReset(OK201);
+  await doActivate(DKEY);
+  await pop.waitForSelector("#pro-active:not([hidden])");
+  await pop.reload();
+  await pop.waitForSelector("#pro-active:not([hidden])");
+  const cacheX = await pop.evaluate(() => localStorage.getItem("lct-ui-v3") || "");
+  t("A9x first-paint cache holds no key, no instance id, no full email, no device id",
+    !cacheX.includes(DKEY) && !cacheX.includes("lki_") &&
+    !cacheX.includes("buyer@example.com") && !cacheX.includes(devId));
+
+  // A3b — a typo must not be called invalid, and must not hit the network
+  await clearLicense();
+  await pop.reload();
+  await pop.waitForSelector("#pro-upsell:not([hidden])");
+  dodoReset();
+  await pop.fill("#license-input", "hello");
+  await pop.click("#license-activate");
+  await pop.waitForSelector("#license-status.err");
+  t("A3b a short typo is caught locally, with no network call",
+    dodo.calls.length === 0 &&
+    (await pop.textContent("#license-status")).includes("doesn't look like"));
+
+  // leave the suite in the state the later sections expect: no licence, trial
+  // running again (B11 asserts Total Recall is reachable under trial)
+  await clearLicense();
+  await pop.unroute("https://*.dodopayments.com/**");
+  await pop.evaluate(() => chrome.storage.local.set({ trial: { startedAt: Date.now() } }));
+  await pop.reload();
+  await pop.waitForSelector("#trial-active:not([hidden])");
 
   /* ============ B. CONTENT — 1,500-message torture page ============ */
   const page = await ctx.newPage();
@@ -409,7 +772,8 @@ try {
   // the popup live-repaints on storage changes, so a stats write landing
   // after popup-open still shows up — this wait covers that path too
   await pop.waitForFunction(() => document.querySelector("#stat-hosts .host-row"), null, { timeout: 20000 });
-  t("B9 popup shows 'N of 150x'", /of 150\d/.test(await pop.textContent("#stat-hosts")));
+  // the popup groups thousands (toLocaleString), so "1500" paints as "1,500"
+  t("B9 popup shows 'N of 150x'", /of 1\D?50\d/.test(await pop.textContent("#stat-hosts")));
   t("B9 popup repaints live from storage changes", true); // reaching here proves it
 
   /* ============ B10. Chat Card (sidebar hover insights) ============ */
@@ -617,8 +981,13 @@ try {
       msg: "Everything is already backed up", at: at + 2
     }
   }), syncAt);
+  // A row states what it holds and when it last looked; the one verdict for the
+  // whole archive is the headline (#sync-summary), so both are asserted here.
   await recall.waitForFunction(() =>
-    /Everything is already backed up/.test(document.getElementById("sync-row-chatgpt")?.textContent || ""),
+    /Up to date|chats archived/.test(document.getElementById("sync-row-chatgpt")?.textContent || ""),
+    null, { timeout: 5000 });
+  await recall.waitForFunction(() =>
+    /Everything is already backed up/.test(document.getElementById("sync-summary")?.textContent || ""),
     null, { timeout: 5000 });
   t("B11 empty delta reports everything already backed up", true);
   await pop.waitForFunction(() =>
@@ -635,8 +1004,73 @@ try {
     chrome.runtime.sendMessage({ type: "recall-sync-status" }, res)));
   t("B11 service-worker restart preserves the safe checkpoint and reports interruption",
     interrupted && interrupted.run?.state === "interrupted" &&
-    interrupted.platforms.chatgpt.progress?.state === "interrupted" &&
-    interrupted.platforms.chatgpt.checkpoint?.completedAt === syncAt);
+    // only the platform still mid-flight is paused…
+    interrupted.platforms.claude.progress?.state === "interrupted" &&
+    // …a platform that already finished keeps its backed-up state
+    interrupted.platforms.chatgpt.progress?.state !== "interrupted" &&
+    interrupted.platforms.chatgpt.checkpoint?.completedAt === syncAt,
+    JSON.stringify({ run: interrupted?.run?.state,
+                     chatgpt: interrupted?.platforms?.chatgpt?.progress?.state,
+                     claude: interrupted?.platforms?.claude?.progress?.state }));
+  /* ---- B11b. automatic background sync ---- */
+
+  // The alarm is what wakes a terminated MV3 worker. Without it, "background
+  // sync" would only ever mean "sync while a page happens to be open".
+  const alarm = await recall.evaluate(() => chrome.alarms.get("lct-auto-sync"));
+  t("B11b an auto-sync alarm is registered", !!alarm, JSON.stringify(alarm));
+  t("B11b it repeats rather than firing once", alarm && alarm.periodInMinutes === 360,
+    JSON.stringify(alarm));
+  t("B11b the first tick is delayed, not on startup",
+    alarm && alarm.scheduledTime > Date.now() + 60000, JSON.stringify(alarm));
+
+  // The toggle must actually gate it — an automatic authenticated request is
+  // the one thing a privacy-first extension may not do behind the user's back.
+  await recall.evaluate(async () => {
+    const { settings } = await chrome.storage.local.get("settings");
+    await chrome.storage.local.set({ settings: { ...(settings || {}), autoSync: false } });
+    await chrome.storage.local.remove("lct-recall-sync-run-v1");
+  });
+  const offTick = await recall.evaluate(() => new Promise((res) =>
+    chrome.runtime.sendMessage({ type: "recall-auto-tick" }, res)));
+  const runAfterOff = await recall.evaluate(async () =>
+    (await chrome.storage.local.get("lct-recall-sync-run-v1"))["lct-recall-sync-run-v1"]);
+  t("B11b a tick with the setting off does nothing at all",
+    offTick && offTick.status === "disabled" && runAfterOff === undefined,
+    JSON.stringify({ offTick, runAfterOff }));
+
+  // ...and with it on, a tick is exactly the manual button's code path.
+  await recall.evaluate(async () => {
+    const { settings } = await chrome.storage.local.get("settings");
+    await chrome.storage.local.set({ settings: { ...(settings || {}), autoSync: true } });
+  });
+  const onTick = await recall.evaluate(() => new Promise((res) =>
+    chrome.runtime.sendMessage({ type: "recall-auto-tick" }, res)));
+  t("B11b a tick with the setting on runs the same pass as the button",
+    onTick && onTick.status !== "disabled", JSON.stringify(onTick));
+  t("B11b the toggle reflects the stored setting",
+    await recall.isChecked("#auto-sync"));
+
+  // The percentage must describe the whole pass. Reporting one platform's
+  // numbers made four providers look like they kept restarting at 0%.
+  // No run record: a seeded one carries a foreign workerId, which normalizeRun
+  // rightly treats as an interrupted pass and rewrites the progress rows.
+  await recall.evaluate((at) => chrome.storage.local.set({
+    "recall-sync-progress:chatgpt": { state: "syncing", phase: "syncing", done: 30, total: 100, msg: "Capturing…", at },
+    "recall-sync-progress:claude": { state: "syncing", phase: "syncing", done: 10, total: 100, msg: "Capturing…", at }
+  }), Date.now());
+  const agg = await recall.evaluate(() => new Promise((res) =>
+    chrome.runtime.sendMessage({ type: "recall-sync-status" }, res)));
+  t("B11b the percentage covers every platform in the pass",
+    agg.summary.state === "syncing" && agg.summary.done === 40 && agg.summary.total === 200,
+    JSON.stringify(agg.summary));
+  t("B11b the message names the number of platforms, not just one",
+    /2 platforms/.test(agg.summary.message), agg.summary.message);
+  await recall.waitForFunction(() =>
+    /20%/.test(document.getElementById("sync-summary")?.textContent || ""),
+    null, { timeout: 5000 });
+  t("B11b the aggregate percentage is painted for the user", true);
+  await recall.evaluate(() => chrome.storage.local.remove("lct-recall-sync-run-v1"));
+
   await recall.evaluate(() => chrome.storage.local.remove([
     "lct-recall-sync-run-v1", "recall-sync-progress:chatgpt", "recall-sync-progress:claude",
     "recall-sync-progress:deepseek", "recall-sync-progress:grok"
@@ -815,10 +1249,11 @@ try {
   t("B12 locked command explains why (not a silent no-op)",
     /Context Bridge is a Pro feature/.test(await page.textContent("#lct-note").catch(() => "")));
   await recall.reload();
-  await recall.waitForSelector("#locked:not([hidden])", { timeout: 5000 });
-  t("B11 recall page shows upsell when locked", await recall.isVisible("#locked"));
+  await recall.waitForSelector("#core-locked:not([hidden])", { timeout: 5000 });
+  t("B11 recall page shows upsell when locked", await recall.isVisible("#core-locked"));
+  // the file input itself is hidden by design — its label is the control
   t("B11 locked page still owns import + wipe (user's data)",
-    (await recall.isVisible("#import-file, .import-btn")) && (await recall.isVisible("#wipe")));
+    (await recall.isVisible('label[for="import-file"]')) && (await recall.isVisible("#wipe")));
   await pop.evaluate(() => chrome.storage.local.set({ trial: { startedAt: Date.now() } })); // restore
 
   /* ============ B12. Context Bridge (cross-platform prompt injection) ====== */

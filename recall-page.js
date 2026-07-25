@@ -71,15 +71,36 @@
   async function loadPlan() {
     const { license, trial } = await chrome.storage.local.get(["license", "trial"]);
     let pro = false;
-    if (license && license.key) pro = (await self.LCTLicense.verify(license.key)).valid;
+    if (license && license.key) pro = (await self.LCTLicense.evaluate(license)).pro;
+    // a monthly re-check, at most; never blocks paint, never downgrades on a network error
+    if (license && license.key && self.LCTDodo) self.LCTDodo.maybeRevalidate(license);
     const trialOn = !pro && trial && trial.startedAt && Date.now() < trial.startedAt + TRIAL_MS;
+    const trialSpent = !pro && !trialOn && trial && trial.startedAt;
     unlocked = pro || trialOn;
     const badge = $("plan-badge");
     badge.textContent = pro ? "Pro" : trialOn ? "Trial" : "Free";
     badge.className = "badge " + (pro ? "pro" : trialOn ? "trial" : "");
-    $("locked").hidden = unlocked;
+    // The lock lives inside the archive core rather than replacing it: the
+    // stats below stay visible so a locked archive still looks alive, and the
+    // trial can be started here instead of only from the popup.
+    $("core-locked").hidden = unlocked;
     $("searchbox").hidden = !unlocked;
+    $("trial-start").hidden = !!trialSpent;
+    if (trialSpent) {
+      $("core-locked").querySelector(".locked-title").textContent = "Your trial has ended";
+      $("core-locked").querySelector(".locked-copy").textContent =
+        "The archive kept building the whole time — nothing was lost. $9 once, from the extension popup, unlocks search again forever.";
+    }
+    paintArchiveState();
   }
+
+  $("trial-start").addEventListener("click", async () => {
+    const { trial } = await chrome.storage.local.get("trial");
+    if (trial && trial.startedAt) return;
+    await chrome.storage.local.set({ trial: { startedAt: Date.now() } });
+    await loadPlan();
+    $("q").focus();
+  });
 
   /* ---------- search ---------- */
 
@@ -102,14 +123,17 @@
     badge.textContent = res.platform || res.host;
     const title = document.createElement("span");
     title.textContent = res.title || "Untitled chat"; // data, never markup
-    top.append(badge, title);
+    const when = document.createElement("time");
+    when.className = "r-when";
+    when.textContent = fmtWhen(res.updatedAt);
+    top.append(badge, title, when);
     const snip = document.createElement("div");
     snip.className = "r-snip";
     snip.textContent = res.snippet;
     const info = document.createElement("div");
     info.className = "r-info";
-    info.textContent = `${res.n} messages · ${fmtWhen(res.updatedAt)}` +
-      (res.createdAt ? ` · created ${fmtWhen(res.createdAt)}` : "");
+    info.textContent = `${res.n} message${res.n === 1 ? "" : "s"}` +
+      (res.createdAt ? ` · started ${fmtWhen(res.createdAt)}` : "");
     div.append(top, snip, info);
     div.addEventListener("click", async () => {
       // stash the query so the destination chat opens its in-chat search on it
@@ -123,25 +147,53 @@
 
   async function runQuery() {
     const q = $("q").value.trim();
-    if (q.length < 2) { $("results").replaceChildren(); $("q-meta").textContent = ""; return; }
+    if (q.length < 2) {
+      $("results").replaceChildren();
+      $("q-meta").textContent = "";
+      paintArchiveState();
+      return;
+    }
+    $("q-meta").textContent = "searching…";
     const res = await send({ type: "recall-search", q });
-    if (!res || res.err) return;
+    // A slower earlier query must never repaint over a newer one.
+    if (!res || res.err || q !== $("q").value.trim()) return;
     $("results").replaceChildren(...res.results.map(row));
     $("q-meta").textContent = res.results.length
       ? `${res.results.length} chat${res.results.length === 1 ? "" : "s"}`
-      : `no matches in ${res.scanned} chats`;
+      : `no matches in ${res.scanned.toLocaleString()} chats`;
+    paintArchiveState();
   }
 
   $("q").addEventListener("input", () => {
     clearTimeout(queryTimer);
-    queryTimer = setTimeout(runQuery, 200);
+    queryTimer = setTimeout(runQuery, 180);
+  });
+  $("q").addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    $("q").value = "";
+    runQuery();
   });
 
   /* ---------- stats ---------- */
 
+  let archivedChats = null;
+
+  function paintArchiveState() {
+    const note = $("archive-empty");
+    const hasResults = $("results").childElementCount > 0;
+    if (archivedChats === null || archivedChats > 0 || hasResults) { note.hidden = true; return; }
+    note.hidden = false;
+    note.textContent = unlocked
+      ? "Your archive is empty. Run a check below to pull your signed-in history, or import an export file — either way it stays on this device."
+      : "Your archive is empty. Run a check below to start building it; search unlocks with the trial.";
+  }
+
   async function loadStats() {
     const s = await send({ type: "recall-stats" });
     if (!s || s.err) return;
+    archivedChats = s.chats;
+    paintArchiveState();
     const wrap = $("stats");
     wrap.replaceChildren();
     const mk = (num, label) => {
@@ -154,13 +206,14 @@
       d.append(b, sp);
       return d;
     };
+    if (!s.chats) return;
     wrap.append(
       mk(s.chats.toLocaleString(), "chats archived"),
       mk(s.msgs.toLocaleString(), "messages"),
       mk((s.bytes / 1048576).toFixed(1) + " MB", "on disk (text)")
     );
-    for (const [p, n] of Object.entries(s.byPlatform).sort((a, b) => b[1] - a[1]).slice(0, 6)) {
-      wrap.append(mk(String(n), p));
+    for (const [p, n] of Object.entries(s.byPlatform).sort((a, b) => b[1] - a[1]).slice(0, 5)) {
+      wrap.append(mk(String(n), p.toLowerCase()));
     }
   }
 
@@ -345,9 +398,7 @@
   $("import-file").addEventListener("change", async (e) => {
     const file = e.target.files && e.target.files[0];
     if (!file) return;
-    const status = $("import-status");
-    status.className = "";
-    status.textContent = "Reading " + file.name + "…";
+    setStatus("import-status", "Reading " + file.name + "…");
     try {
       let text;
       if (file.name.endsWith(".zip")) {
@@ -357,20 +408,19 @@
       }
       const chats = detectAndParse(text);
       if (!chats.length) throw new Error("no conversations found in the file");
-      status.textContent = `Importing ${chats.length} chats…`;
+      setStatus("import-status", `Importing ${chats.length.toLocaleString()} chats…`);
       let ok = 0, skipped = 0;
       for (let i = 0; i < chats.length; i += 25) { // chunk: keep messages small
         const r = await send({ type: "recall-import", chats: chats.slice(i, i + 25) });
         ok += (r && r.ok) || 0;
         skipped += (r && r.skipped) || 0;
       }
-      status.className = "ok";
-      status.textContent = `Imported ${ok} chats${skipped ? ` (${skipped} skipped)` : ""}. All local.`;
+      setStatus("import-status",
+        `Imported ${ok.toLocaleString()} chats${skipped ? ` · ${skipped} skipped` : ""}. All local.`, "ok");
       loadStats();
     } catch (err) {
-      status.className = "err";
-      status.textContent = "Import failed: " + err.message +
-        " — expected a ChatGPT, Claude, or Gemini Takeout export (.zip or .json).";
+      setStatus("import-status", "Import failed: " + err.message +
+        " — expected a ChatGPT, Claude, or Gemini Takeout export (.zip or .json).", "err");
     }
     e.target.value = "";
   });
@@ -554,22 +604,29 @@
     name.textContent = app.label;
     const status = document.createElement("span");
     status.className = "sync-status";
-    row.dataset.phase = (platform && platform.phase) || (p && p.phase) || "needs-sync";
-    if (p && p.state === "error") { status.textContent = p.msg; status.classList.add("err"); }
-    else if (p && p.state === "interrupted") { status.textContent = p.msg; status.classList.add("err"); }
-    else if (p && p.state === "syncing") { status.textContent = (p.msg || "Checking archive…") + pct(p); }
-    else if (platform && platform.phase === "up-to-date") {
+    row.dataset.phase = (p && p.state === "syncing" ? "syncing" : "") ||
+      (platform && platform.phase) || (p && p.phase) || "needs-sync";
+    if (p && p.state === "syncing") {
+      status.textContent = (p.msg || "Checking…") + pct(p);
+    } else if (p && (p.state === "error" || p.state === "interrupted")) {
+      status.textContent = p.msg;
+      status.classList.add("err");
+    } else if (platform && platform.phase === "up-to-date") {
       const checkedAt = platform.checkpoint?.completedAt || p?.at || 0;
-      status.textContent = "Everything is already backed up" + (checkedAt ? " · " + timeAgo(checkedAt) : "");
+      const coverage = platform.checkpoint?.coverage || 0;
+      // The headline verdict lives in the summary above; a row only has to say
+      // what it holds and when it last looked.
+      status.textContent = (coverage ? `${coverage.toLocaleString()} chats archived` : "Up to date") +
+        (checkedAt ? ` · checked ${timeAgo(checkedAt)}` : "");
       status.classList.add("ok");
-    } else { status.textContent = "Ready to check for new chats"; }
+    } else { status.textContent = "Ready to check"; }
     row.append(name, status);
   }
 
   function updateSyncButton(syncing) {
     const btn = $("sync-all");
     if (syncing) {
-      btn.textContent = "Checking archive…";
+      btn.textContent = "Checking…";
       btn.disabled = true;
       btn.classList.add("syncing");
     } else {
@@ -587,6 +644,7 @@
     const recovery = status.recovery || { state: "ready" };
     const needsRestore = recovery.state === "restore-required";
     $("recovery").hidden = false;
+    $("recovery").classList.toggle("urgent", needsRestore);
     $("recovery-title").textContent = needsRestore ? "Restore your archive before syncing" : "Restore an existing archive";
     $("recovery-skip").hidden = !needsRestore;
     if (needsRestore && recovery.backup) {
@@ -596,6 +654,7 @@
     }
     $("sync-rows").replaceChildren();
     for (const app of APPS) paintRow(app, status.platforms && status.platforms[app.id]);
+    paintSummary(status.summary);
     updateSyncButton(!!status.running);
     if (needsRestore) {
       $("sync-all").disabled = true;
@@ -603,15 +662,50 @@
     }
   }
 
+  function paintSummary(summary) {
+    const node = $("sync-summary");
+    if (!summary || summary.state === "never") { node.hidden = true; return; }
+    node.hidden = false;
+    node.dataset.state = summary.state;
+    if (summary.state === "current") {
+      node.textContent = summary.message +
+        (summary.checkedAt ? " · last checked " + timeAgo(summary.checkedAt) : "") +
+        (summary.connected ? ` · ${summary.connected} provider${summary.connected === 1 ? "" : "s"}` : "");
+    } else if (summary.state === "syncing" && summary.total) {
+      node.textContent = `${summary.message} (${Math.min(100, Math.round((summary.done / summary.total) * 100))}%)`;
+    } else {
+      node.textContent = summary.message;
+    }
+  }
+
   initSyncUI();
 
   chrome.storage.onChanged.addListener((changes, area) => {
+    // Plan changes have to land here too: without this an open Recall tab keeps
+    // its search box after a licence is removed or revoked, until a reload.
+    if (area === "local" && (changes.license || changes.trial)) loadPlan();
     if ((area === "local" && APPS.some((a) => changes[progKey(a.id)])) ||
         (area === "local" && changes[activeAccountKey]) ||
         (area === "sync" && changes["lct-recall-sync-ledger-v2"])) {
       refreshSyncRows();
       loadStats();
     }
+  });
+
+  // Automatic checks. The setting lives in the shared `settings` object, so it
+  // is merged rather than written whole — the popup owns the other keys.
+  (async () => {
+    try {
+      const { settings } = await chrome.storage.local.get("settings");
+      $("auto-sync").checked = !settings || settings.autoSync !== false;
+    } catch { /* storage unavailable */ }
+  })();
+
+  $("auto-sync").addEventListener("change", async () => {
+    const { settings } = await chrome.storage.local.get("settings");
+    await chrome.storage.local.set({
+      settings: { ...(settings || {}), autoSync: $("auto-sync").checked }
+    });
   });
 
   $("sync-all").addEventListener("click", async () => {

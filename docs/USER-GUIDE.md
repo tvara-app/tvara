@@ -92,6 +92,15 @@ Recall page from the popup) → one search box across **every archived chat on
 every platform** → click a result and land in that chat with the in-chat
 search already open on your words.
 **How the archive builds:**
+- **Automatic, in the background:** a check runs by itself roughly every 6
+  hours, and shortly after the browser starts — no tab open, no button. It
+  reads the history endpoints for your signed-in ChatGPT, Claude, DeepSeek and
+  Grok accounts and writes only what is missing. Turn it off with **Keep the
+  archive current by itself** on the Recall page, and it will only ever check
+  when you press **Check for new chats**.
+- **Progress is a real number:** while a pass runs, the popup and the Recall
+  page show one percentage covering every platform in that pass, not each
+  provider restarting from zero.
 - **One action, durable delta:** open the Recall page → **Check for new chats**.
   A background worker reads the history endpoints for your signed-in ChatGPT,
   Claude, DeepSeek and Grok accounts, then writes titles, dates and text into
@@ -99,7 +108,9 @@ search already open on your words.
 - **Checkpointed by account:** each successful pass records an account-scoped
   safe watermark. Later checks overlap the last five minutes and deduplicate by
   conversation ID plus provider update time. Reloading the extension restores
-  the state; it never starts another historical sweep by itself.
+  the state; a restart never re-downloads work an earlier pass already
+  finished, and the scheduled check only ever fetches the delta past each
+  account's checkpoint.
 - **Safe interruption:** if a worker restarts or a detail request fails, the
   preceding watermark remains in place. The next manual check retries only the
   unfinished delta and skips already archived revisions.
@@ -233,14 +244,27 @@ your own scripts).
   The popup counts down the days; when it ends, free platforms stay free and
   the speed engine stays on everywhere.
 - **Pro — $9, once, forever:** no subscription, no account. Buying gets you a
-  license key (`LCT1.…`) tied to your email.
-- **Activating:** popup → paste the key → **Activate**. Verification is
-  cryptographic (ECDSA P-256) and happens **entirely offline** — no server is
-  contacted, ever. After activation the key is stored locally and never
-  displayed again (so a screenshot or screen-share can't leak it); the popup
-  shows only a masked email like `te•••@gmail.com`.
-- **Moving to a new browser:** click **Remove** in the popup, then activate
-  on the new machine with the same key.
+  license key by email, tied to that address.
+- **Activating:** popup → paste the key → **Activate**. The extension asks the
+  payment provider's licence server to register this device, then stores the
+  receipt locally. Only your key and a coarse device label ("Chrome · macOS")
+  are sent — no cookies, no conversation text. After activation the key is
+  never displayed again (so a screenshot or screen-share can't leak it); the
+  popup shows only a masked email like `te•••@gmail.com`.
+- **5 devices:** one licence activates on five. A "device" is a signed-in
+  browser profile, so your laptop and desktop on the same Chrome profile share
+  a single slot — and Firefox or a second profile takes its own.
+- **Devices:** popup → **Devices** lists them, with **Release** for the one
+  you're on and **Terminate** for the rest. If all five are full when you
+  activate, the extension quietly frees your oldest device and carries on; it
+  only stops to ask when the slots belong to devices it doesn't recognise.
+- **Moving to a new browser:** click **Remove** (which hands the slot back)
+  and activate on the new machine with the same key.
+- **Re-checks:** at most once a month, and only if you're already online. Two
+  refusals a week apart are needed before Pro is withdrawn — an outage, a
+  timeout or a flight never costs you access.
+- **Keys bought before this (`LCT1.…`)** are unchanged: verified by signature
+  on your own machine, no network, no device limit.
 - **Lost your key:** contact support from your purchase email.
 
 ---
@@ -251,6 +275,10 @@ your own scripts).
   access only to supported AI providers so an explicit history check can read
   your own account. It does not grant a generic upload destination, and the
   extension contains no analytics or remote-code path.
+- **The one exception, stated plainly:** activating Pro contacts the payment
+  provider's licence server, and a licensed copy re-checks there at most once a
+  month. It sends your licence key and a device label — never conversation
+  text, never a cookie. The free tier never contacts it at all.
 - **No accounts, no analytics, no telemetry, no remote code.**
 - **Everything is stored locally:** settings, reading positions, stars,
   first-seen times, license key — in your browser's extension storage.

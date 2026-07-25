@@ -355,11 +355,7 @@
       state.time = settings.time !== false;
     }
     state.trialUntil = trial && trial.startedAt ? trial.startedAt + 7 * 864e5 : 0;
-    state.pro = false;
-    if (license && license.key) {
-      const res = await self.LCTLicense.verify(license.key);
-      state.pro = res.valid;
-    }
+    state.pro = (await self.LCTLicense.evaluate(license)).pro;
   }
 
   function applyState() {

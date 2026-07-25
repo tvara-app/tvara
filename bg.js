@@ -239,6 +239,43 @@ async function check(ids) {
   return out;
 }
 
+/**
+ * One cursor pass that returns what this browser already owns for a platform:
+ * chat id -> the provider revision that produced the archived copy.
+ *
+ * This index — not a timestamp — is the ground truth the sync engine diffs
+ * against. A watermark can be wrong (restored backup, clock skew, a provider
+ * that back-dates edits); the index cannot: a chat is either archived at the
+ * provider's current revision or it is not.
+ */
+async function archiveIndex(host, prefix) {
+  const d = await db();
+  const index = new Map();
+  const start = host + prefix;
+  await new Promise((resolve, reject) => {
+    const cur = tx(d, "readonly").openCursor();
+    cur.onerror = () => reject(cur.error);
+    cur.onsuccess = () => {
+      const c = cur.result;
+      if (!c) return resolve();
+      const v = c.value;
+      if (v && typeof v.id === "string" && v.id.startsWith(start)) {
+        index.set(v.id, Number(v.sourceUpdatedAt || v.updatedAt || 0));
+      }
+      c.continue();
+    };
+  });
+  return index;
+}
+
+/** Exact number of archived chats for one platform, via a keyed count — no
+ *  record bodies are read, so this stays cheap on a large archive. */
+async function platformCount(host, prefix) {
+  const d = await db();
+  const start = host + prefix;
+  return reqP(tx(d, "readonly").count(IDBKeyRange.bound(start, start + "￿")));
+}
+
 /* ---------- stats / wipe ---------- */
 
 async function stats() {
@@ -307,12 +344,18 @@ function cleanCheckpoint(value) {
   if (!BG_PLATFORM_IDS.has(platform) || !Number.isFinite(safeWatermark) || safeWatermark <= 0 ||
       !Number.isFinite(completedAt) || completedAt <= 0) return null;
   return {
-    version: 2,
+    version: 3,
     platform,
     safeWatermark,
     completedAt,
     lastResult: String(value.lastResult || "delta").slice(0, 32),
-    archived: Math.max(0, Math.floor(Number(value.archived) || 0))
+    archived: Math.max(0, Math.floor(Number(value.archived) || 0)),
+    // How many chats this browser held for the platform when the checkpoint was
+    // written. A watermark alone cannot tell a resumed browser from a wiped one;
+    // coverage can. If the archive now holds fewer chats than the checkpoint
+    // promised, the index was lost and the watermark must not be trusted.
+    coverage: Math.max(0, Math.floor(Number(value.coverage) || 0)),
+    coverageKnown: value.coverageKnown === true || Number(value.coverage) > 0
   };
 }
 
@@ -381,9 +424,16 @@ async function digest(text) {
 }
 
 async function accountCheckpointKey(adapter, ctx) {
-  // Never persist raw account identifiers or cookies. The provider identity is
-  // salted and hashed so a checkpoint cannot leak the user's account value.
-  const identity = ctx.account || await getCookieHeader(adapter.base) || "unknown";
+  // Never persist raw account identifiers. The provider identity is salted and
+  // hashed so a checkpoint cannot leak the user's account value.
+  //
+  // The identity MUST be stable across sessions. Earlier builds fell back to
+  // the raw cookie header when a provider exposed no account id — session
+  // cookies rotate, so every rotation minted a new checkpoint key and the whole
+  // history was swept again. Providers without an account id now share one
+  // per-browser key; a mismatched account is caught by the coverage diff, which
+  // compares against the archive itself rather than a timestamp.
+  const identity = String(ctx && ctx.account || "").trim() || "device";
   return adapter.id + ":" + await digest((await profileSalt()) + "|" + adapter.id + "|" + identity);
 }
 
@@ -485,9 +535,16 @@ async function normalizeRun() {
   if (!stale && !replaced) return run;
   const interrupted = { ...run, state: "interrupted", interruptedAt: Date.now() };
   const update = { [BG_RUN]: interrupted };
-  for (const id of run.platforms || []) {
+  // Only platforms that were still mid-flight are marked paused. A platform
+  // that already finished keeps its "everything is backed up" state, so
+  // reloading the extension never makes a completed archive look unfinished.
+  const ids = run.platforms || [];
+  const prog = await chrome.storage.local.get(ids.map(BG_SYNC_PROG));
+  for (const id of ids) {
+    const current = prog[BG_SYNC_PROG(id)];
+    if (current && current.state !== "syncing") continue;
     update[BG_SYNC_PROG(id)] = { state: "interrupted", phase: "interrupted", done: 0, total: 0,
-      msg: "Sync paused. Resume safely from the last checkpoint.", at: Date.now() };
+      msg: "Paused. Resumes from the last checkpoint — nothing is re-downloaded.", at: Date.now() };
   }
   await chrome.storage.local.set(update);
   return interrupted;
@@ -719,15 +776,17 @@ async function writeProgress(adapter, run, done, total, msg, phase = "syncing") 
   await beat(run, adapter.id);
 }
 
-async function finishPlatform(adapter, checkpointKey, scanStartedAt, result, done, total, archived, message) {
+async function finishPlatform(adapter, checkpointKey, scanStartedAt, result, done, total, archived, message, coverage) {
   const completedAt = Date.now();
   await saveCheckpoint(checkpointKey, {
-    version: 2,
+    version: 3,
     platform: adapter.id,
     safeWatermark: scanStartedAt,
     completedAt,
     lastResult: result,
-    archived
+    archived,
+    coverage: Math.max(0, Number(coverage) || 0),
+    coverageKnown: true
   });
   await chrome.storage.local.set({
     [BG_SYNC_PROG(adapter.id)]: {
@@ -737,44 +796,76 @@ async function finishPlatform(adapter, checkpointKey, scanStartedAt, result, don
   });
 }
 
+/**
+ * Reconcile one provider against the local archive.
+ *
+ * The contract, in order of authority:
+ *
+ *   1. The archive index (what this browser actually holds) decides what gets
+ *      downloaded. A chat is fetched only when it is absent, or when the
+ *      provider's revision is newer than the archived one.
+ *   2. The checkpoint watermark only decides how much metadata to LIST. It is
+ *      an optimisation, never a correctness guarantee.
+ *   3. The watermark is trusted only while coverage holds: the archive must
+ *      still contain at least as many chats as the checkpoint recorded. A
+ *      reinstall, a wipe, or a partial restore breaks coverage, and the pass
+ *      silently widens to a full listing — which still downloads nothing that
+ *      is already archived, because rule 1 outranks it.
+ *
+ * That is what makes the uninstall→reinstall gap work. Restore the encrypted
+ * backup and the archive holds every chat that existed at backup time; the
+ * chats created while the extension was gone are the only ids missing from the
+ * index, so they are the only ones fetched. Skip the restore and coverage is
+ * zero, so the pass rebuilds from scratch. Either way the answer is derived,
+ * never assumed.
+ */
 async function bgSyncPlatform(adapter, run) {
   let done = 0, total = 0;
   try {
-    await writeProgress(adapter, run, 0, 0, "Connecting to archive…", "checking");
+    await writeProgress(adapter, run, 0, 0, "Connecting…", "checking");
     const ctx = await adapter.prepare();
     const { key: checkpointKey, checkpoint } = await readCheckpoint(adapter, ctx);
     await setActiveAccount(adapter, checkpointKey);
-    // A small overlap covers API ordering and timestamp-boundary differences.
-    // Existing records in that overlap are deduplicated before detail fetches.
-    const sinceMs = checkpoint && checkpoint.safeWatermark
-      ? Math.max(0, checkpoint.safeWatermark - BG_SYNC_OVERLAP_MS) : 0;
+
+    await writeProgress(adapter, run, 0, 0, "Reading your local archive…", "checking");
+    const index = await archiveIndex(adapter.host, adapter.prefix);
+    const covered = checkpoint && checkpoint.coverageKnown ? Number(checkpoint.coverage) || 0 : -1;
+    // covered < 0  → checkpoint predates coverage tracking, so it is unproven
+    // index.size < covered → the archive lost chats the checkpoint promised
+    const trustWatermark = !!(checkpoint && checkpoint.safeWatermark && covered >= 0 && index.size >= covered);
+    const sinceMs = trustWatermark
+      ? Math.max(0, checkpoint.safeWatermark - BG_SYNC_OVERLAP_MS)
+      : 0;
+    const mode = trustWatermark ? "delta" : "reconcile";
     const scanStartedAt = Date.now();
     const progress = (count, listedTotal, msg) =>
       writeProgress(adapter, run, count || 0, listedTotal || 0, msg || "Checking for new chats…", "checking");
 
     await writeProgress(adapter, run, 0, 0,
-      sinceMs ? "Checking for new chats…" : "Building the first archive index…", "checking");
+      mode === "delta"
+        ? "Checking for new chats…"
+        : index.size
+          ? "Rebuilding the archive index…"
+          : "Building the first archive index…",
+      "checking");
     const metas = await adapter.list(ctx, sinceMs, progress);
     if (!metas.length) {
       await finishPlatform(adapter, checkpointKey, scanStartedAt, "up-to-date", 0, 0, 0,
-        "Everything is already backed up");
-      return { ok: true, result: "up-to-date" };
+        "Everything is already backed up", index.size);
+      return { ok: true, result: "up-to-date", mode };
     }
 
-    const allIds = metas.map((m) => adapter.host + adapter.prefix + m.id);
-    const existing = await check(allIds);
     const toFetch = metas.filter((m) => {
-      const have = existing[adapter.host + adapter.prefix + m.id];
-      const syncedAt = have && Number(have.sourceUpdatedAt || have.updatedAt || 0);
+      const archivedRevision = index.get(adapter.host + adapter.prefix + m.id);
       // A chat is a duplicate only when it is the same provider revision. The
-      // five-minute list overlap can therefore be safely retried after an
-      // interrupted worker without requesting its detail text again.
-      return !have || syncedAt < m.updatedAt;
+      // list overlap can therefore be safely retried after an interrupted
+      // worker without requesting its detail text again.
+      return archivedRevision === undefined || archivedRevision < m.updatedAt;
     });
     if (!toFetch.length) {
       await finishPlatform(adapter, checkpointKey, scanStartedAt, "up-to-date", metas.length, metas.length, 0,
-        "Everything is already backed up");
-      return { ok: true, result: "up-to-date" };
+        "Everything is already backed up", index.size);
+      return { ok: true, result: "up-to-date", mode };
     }
 
     let cursor = 0, archived = 0, retryCount = 0, fatal = null, pauseUntil = 0;
@@ -789,37 +880,26 @@ async function bgSyncPlatform(adapter, run) {
     };
     const worker = async () => {
       while (!fatal) {
-        const index = cursor++;
-        if (index >= total) return;
-        const meta = toFetch[index];
+        const slot = cursor++;
+        if (slot >= total) return;
+        const meta = toFetch[slot];
         if (pauseUntil > Date.now()) await sleep(pauseUntil - Date.now());
         try {
           const msgs = await adapter.detail(ctx, meta.id);
-          if (msgs.length >= 2) {
-            importQueue.push({
-              id: adapter.host + adapter.prefix + meta.id,
-              host: adapter.host, path: adapter.prefix + meta.id,
-              platform: adapter.label, title: meta.title,
-              createdAt: meta.createdAt, updatedAt: meta.updatedAt,
-              sourceUpdatedAt: meta.updatedAt, msgs
-            });
-            if (importQueue.length >= BG_SYNC_BATCH) await flushQueue();
-          } else if (msgs.length === 1) {
-            // A legitimately one-message conversation has no searchable
-            // dialogue, but its provider revision is still fully accounted
-            // for. Store a metadata record so it does not block every later
-            // checkpoint retry forever.
-            importQueue.push({
-              id: adapter.host + adapter.prefix + meta.id,
-              host: adapter.host, path: adapter.prefix + meta.id,
-              platform: adapter.label, title: meta.title,
-              createdAt: meta.createdAt, updatedAt: meta.updatedAt,
-              sourceUpdatedAt: meta.updatedAt, msgs: [], meta: true
-            });
-            if (importQueue.length >= BG_SYNC_BATCH) await flushQueue();
-          } else {
-            retryCount++;
-          }
+          const record = {
+            id: adapter.host + adapter.prefix + meta.id,
+            host: adapter.host, path: adapter.prefix + meta.id,
+            platform: adapter.label, title: meta.title,
+            createdAt: meta.createdAt, updatedAt: meta.updatedAt,
+            sourceUpdatedAt: meta.updatedAt, msgs
+          };
+          // A conversation with no usable dialogue (empty, or a single opening
+          // turn) still has its provider revision fully accounted for. It is
+          // archived as a metadata record so it can never keep a checkpoint
+          // pinned open and re-fetch itself on every future pass.
+          if (msgs.length < 2) { record.msgs = []; record.meta = true; }
+          importQueue.push(record);
+          if (importQueue.length >= BG_SYNC_BATCH) await flushQueue();
         } catch (error) {
           const reason = String(error && error.message || error);
           if (reason.includes("unauthorized")) { fatal = error; return; }
@@ -827,7 +907,8 @@ async function bgSyncPlatform(adapter, run) {
           retryCount++;
         }
         done++;
-        await writeProgress(adapter, run, done, total, `Capturing ${done} of ${total} new chats…`, "syncing");
+        await writeProgress(adapter, run, done, total,
+          `Capturing ${done} of ${total} new chat${total === 1 ? "" : "s"}…`, "syncing");
         await sleep(BG_SYNC_DELAY);
       }
     };
@@ -835,31 +916,47 @@ async function bgSyncPlatform(adapter, run) {
     await Promise.all(Array.from({ length: Math.min(BG_SYNC_CONCURRENCY, total) }, worker));
     await flushQueue();
     if (fatal) throw fatal;
+    // Counted from the database, never inferred from `archived`: an update to
+    // an already-archived chat adds no row, and an inflated coverage figure
+    // would fail its own trust check forever and pin the platform in
+    // full-reconcile mode.
+    const coverage = await platformCount(adapter.host, adapter.prefix);
     if (retryCount) {
-      // Retain the preceding safe watermark. The next run requests the same
-      // small delta and skips the records that were successfully imported.
+      // Retain the preceding safe watermark: the failed chats must stay inside
+      // the next listing window. Coverage is still recorded, so the retry pass
+      // re-lists the same range and downloads only what is genuinely missing.
+      if (checkpoint) {
+        await saveCheckpoint(checkpointKey, { ...checkpoint, coverage, coverageKnown: true });
+      }
       await chrome.storage.local.set({
         [BG_SYNC_PROG(adapter.id)]: {
-          state: "error", phase: "error", done, total,
-          msg: `${archived} chats saved; ${retryCount} will retry safely`, at: Date.now()
+          state: "error", phase: "error", done, total, archived,
+          msg: `${archived} saved · ${retryCount} will retry automatically`, at: Date.now()
         }
       });
       return { ok: false, retryCount };
     }
-    await finishPlatform(adapter, checkpointKey, scanStartedAt, "delta", done, total, archived,
-      archived ? `${archived} new chats backed up` : "Everything is already backed up");
-    return { ok: true, result: "delta", archived };
+    await finishPlatform(adapter, checkpointKey, scanStartedAt, mode, done, total, archived,
+      archived
+        ? `${archived} new chat${archived === 1 ? "" : "s"} backed up`
+        : "Everything is already backed up",
+      coverage);
+    return { ok: true, result: mode, archived };
   } catch (error) {
     const reason = String(error && error.message || error);
+    const signedOut = reason.includes("unauthorized") || reason.includes("not signed in") ||
+      /unexpected provider response|invalid provider response/i.test(reason);
     const message = reason.includes("unauthorized") || reason.includes("not signed in")
-      ? `Sign in to ${adapter.label} to sync.`
+      ? `Not signed in`
       : /unexpected token\s*['"]?<?|valid json|json\.parse|unexpected provider response|invalid provider response/i.test(reason)
-        ? `${adapter.label} needs an active session. Open it, then try again.`
-        : `Sync failed. Try ${adapter.label} again.`;
+        ? `Needs an active session`
+        : `Couldn't reach ${adapter.label}`;
     await chrome.storage.local.set({
-      [BG_SYNC_PROG(adapter.id)]: { state: "error", phase: "error", done, total, msg: message, at: Date.now() }
+      [BG_SYNC_PROG(adapter.id)]: {
+        state: "error", phase: "error", done, total, msg: message, signedOut, at: Date.now()
+      }
     });
-    return { ok: false, error: reason };
+    return { ok: false, error: reason, signedOut };
   }
 }
 
@@ -909,8 +1006,67 @@ async function bgSyncStatus() {
     platforms,
     running: !!(run && run.state === "running"),
     recovery,
+    summary: summarize(platforms, !!(run && run.state === "running"), recovery),
     run: run ? { state: run.state, startedAt: run.startedAt, interruptedAt: run.interruptedAt || 0 } : null
   };
+}
+
+/**
+ * One verdict for the whole archive, computed here so the popup and the Recall
+ * page can never disagree.
+ *
+ * Signed-out providers are deliberately excluded. Most people use two or three
+ * of the four; requiring all four to report "up to date" meant the reassuring
+ * message a fully-synced archive has earned could never appear.
+ */
+function summarize(platforms, running, recovery) {
+  if (recovery && recovery.state === "restore-required") {
+    return { state: "restore", message: "Restore your archive to continue", checkedAt: 0, connected: 0 };
+  }
+  const entries = Object.values(platforms);
+  if (running || entries.some((p) => p.progress && p.progress.state === "syncing")) {
+    const live = entries.filter((p) => p.progress && p.progress.state === "syncing");
+    // Sum the whole pass. Reporting only the loudest platform's numbers made a
+    // four-provider check look like it kept restarting at 0%.
+    let done = 0, total = 0;
+    for (const p of entries) {
+      const pr = p.progress;
+      if (!pr || !Number.isFinite(Number(pr.total)) || Number(pr.total) <= 0) continue;
+      if (pr.state !== "syncing" && pr.state !== "done") continue;
+      done += Math.min(Number(pr.done) || 0, Number(pr.total));
+      total += Number(pr.total);
+    }
+    const message = live.length > 1
+      ? `Checking ${live.length} platforms…`
+      : (live[0] && live[0].progress.msg) || "Checking for new chats…";
+    return { state: "syncing", message, done, total, syncing: live.length, checkedAt: 0, connected: 0 };
+  }
+
+  const connected = entries.filter((p) => !(p.progress && p.progress.signedOut));
+  const failing = connected.filter((p) => p.progress && p.progress.state === "error");
+  if (failing.length) {
+    return {
+      state: "error",
+      message: `${failing[0].label}: ${failing[0].progress.msg}`,
+      checkedAt: 0,
+      connected: connected.length
+    };
+  }
+  const paused = connected.filter((p) => p.progress && p.progress.state === "interrupted");
+  if (paused.length) {
+    return { state: "pending", message: "Paused — pick up where it stopped", checkedAt: 0, connected: connected.length };
+  }
+
+  const current = connected.filter((p) => p.phase === "up-to-date" && p.checkpoint);
+  if (current.length && current.length === connected.length) {
+    const oldest = current.reduce((min, p) => Math.min(min, p.checkpoint.completedAt || 0), Infinity);
+    const archived = current.reduce((sum, p) => sum + (p.checkpoint.coverage || 0), 0);
+    return { state: "current", message: "Everything is already backed up", checkedAt: oldest, archived, connected: connected.length };
+  }
+  if (current.length) {
+    return { state: "pending", message: `${connected.length - current.length} provider${connected.length - current.length === 1 ? "" : "s"} left to check`, checkedAt: 0, connected: connected.length };
+  }
+  return { state: "never", message: "Check your history for the first time", checkedAt: 0, connected: connected.length };
 }
 
 async function backupState() {
@@ -935,6 +1091,63 @@ async function wipeRecall() {
   return { ok: true };
 }
 
+/* ---------- automatic background sync ----------
+ * bgSyncAll() was always safe to call repeatedly: it refuses to overlap, it
+ * only fetches the delta past each account's checkpoint, and an interrupted
+ * pass keeps its previous watermark. So "run it on a schedule" needs no new
+ * sync logic — only a clock, which in MV3 means chrome.alarms (a terminated
+ * worker cannot hold a timer).
+ *
+ * The first tick is deliberately late: waking a browser with four
+ * authenticated history checks the instant it starts is rude, and it would
+ * race a user who is still signing in.
+ */
+const BG_AUTO_ALARM = "lct-auto-sync";
+const BG_AUTO_STATE = "lct-recall-auto-sync-v1";
+const BG_AUTO_FIRST_DELAY_MIN = 10;
+const BG_AUTO_PERIOD_MIN = 360;      // every 6 hours
+
+async function autoSyncEnabled() {
+  try {
+    const { settings } = await chrome.storage.local.get("settings");
+    return !settings || settings.autoSync !== false;   // on unless turned off
+  } catch { return false; }
+}
+
+async function ensureAutoSyncAlarm() {
+  try {
+    const existing = await chrome.alarms.get(BG_AUTO_ALARM);
+    // Re-creating would reset the schedule on every worker wake, so a browser
+    // that restarts often would never actually reach a tick.
+    if (existing) return;
+    await chrome.alarms.create(BG_AUTO_ALARM, {
+      delayInMinutes: BG_AUTO_FIRST_DELAY_MIN,
+      periodInMinutes: BG_AUTO_PERIOD_MIN
+    });
+  } catch { /* alarms unavailable */ }
+}
+
+async function autoSyncTick() {
+  if (!(await autoSyncEnabled())) return { status: "disabled" };
+  const started = Date.now();
+  const result = await bgSyncAll();       // owns the recovery gate and overlap guard
+  try {
+    await chrome.storage.local.set({
+      [BG_AUTO_STATE]: { at: started, status: result && result.status }
+    });
+  } catch { /* dead context */ }
+  return result;
+}
+
+try {
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm && alarm.name === BG_AUTO_ALARM) autoSyncTick();
+  });
+  chrome.runtime.onInstalled.addListener(() => { ensureAutoSyncAlarm(); });
+  chrome.runtime.onStartup.addListener(() => { ensureAutoSyncAlarm(); });
+  ensureAutoSyncAlarm();   // the worker is respawned constantly; keep it alive
+} catch (_) { /* alarms API unavailable */ }
+
 /* ---------- message router ---------- */
 
 // Keyboard shortcuts
@@ -954,6 +1167,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       case "recall-stats":       return stats();
       case "recall-wipe":        return wipeRecall();
       case "recall-bg-sync":     return bgSyncAll();
+      case "recall-auto-tick":   return autoSyncTick();
       case "recall-sync-status": return bgSyncStatus();
       case "recall-backup-state": return backupState();
       case "recall-backup-mark": return markBackup(msg.meta);

@@ -9,7 +9,7 @@ Long conversations grind AI chat UIs to a halt — every message stays fully ren
 ## Features
 
 - **🌉 Context Bridge (Pro)** — the memory layer for all your AI. Composing a prompt on any site? Press `⌘⇧U` / `Ctrl+Shift+U`: Recall finds relevant passages from your entire cross-platform history, you pick, and it injects them into your prompt — so the model you're already using answers *with* your accumulated knowledge. No servers, no API keys (it feeds context to the model you're already in), all local. Fails safe to the clipboard if the prompt box can't be found. Shortcut is a browser-native, remappable command (works across Chrome/Edge/Firefox and every OS).
-- **🧠 Total Recall (Pro)** — one search box for every AI conversation you've ever had, across all platforms (`⌘⇧K` / `Ctrl+Shift+K`). Its background archive worker checks only the new gap in your own ChatGPT, Claude, DeepSeek or Grok history, with account-scoped checkpoints and no full resync on reload. Archive text stays local; there is no Long Chat Toolkit server or telemetry.
+- **🧠 Total Recall (Pro)** — one search box for every AI conversation you've ever had, across all platforms (`⌘⇧K` / `Ctrl+Shift+K`). Its background archive worker keeps itself current — a check runs roughly every 6 hours and shortly after the browser starts (switchable off), reading only the new gap in your own ChatGPT, Claude, DeepSeek or Grok history, with account-scoped checkpoints and no full resync on reload. One percentage covers the whole pass. Archive text stays local; there is no Long Chat Toolkit server or telemetry.
 - **⚡ Speed engine** — off-screen messages are windowed with native CSS `content-visibility`, so the browser stops paying for what you can't see. Messages wake instantly when scrolled to. Nothing is removed or mutated.
 - **🕒 Message timestamps** — AI chat sites don't show *when* anything was said; hover any message to see its time. ChatGPT: real send times for the entire history (read locally from the app's own state by a tiny read-only page-world script). Claude/Gemini: honest "first seen on this device" times from the moment you install — never faked as send times.
 - **🗺️ Minimap** — a VS Code–style strip of the whole conversation. Your messages, AI messages, code blocks. Hover for previews and times, click anywhere to jump.
@@ -27,7 +27,7 @@ The speed engine is **free everywhere, forever**. All tools are free on ChatGPT 
 ## 🔒 Privacy — provable, not promised
 
 - **No Long Chat Toolkit server or telemetry.** The only network-capable paths are the declared first-party AI-provider endpoints used when you explicitly check history. Archive text is kept in local extension storage; the only portable copy is the encrypted backup file you choose to download.
-- **Offline licensing.** Pro keys are verified cryptographically (ECDSA P-256) inside the extension. No account, no server, no phone-home. Ever.
+- **Licensing without an account.** Pro works on **5 devices** — release one from the popup any time. Activation contacts the payment provider's licence server once; after that the extension re-checks at most monthly and never withdraws Pro because of a network error. Keys sold before this (`LCT1.…`) stay fully offline, verified by ECDSA P-256 inside the extension.
 - **Open source.** Read every line.
 
 ## Install (dev)
@@ -61,7 +61,8 @@ content/timeline.js          message times: first-seen clock + honest labeling +
 content/inject/fiber-times.js ChatGPT exact times — read-only, page-world, no network, auto-degrades
 content/main.js              orchestrator: settings/license/pricing wiring, anchor-based resume
 lib/store.js                 storage wrapper that survives extension reloads
-lib/license.js               offline ECDSA license verification (WebCrypto)
+lib/license.js               license verdict: offline ECDSA (LCT1) or an activation receipt
+lib/dodo.js                  Dodo Payments activation, 5-device seats, monthly re-check
 popup/                       settings UI
 ```
 

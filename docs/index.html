@@ -95,12 +95,26 @@
         <li>Everything in Free</li>
         <li>Minimap, search, timestamps &amp; backup on Claude</li>
         <li>Minimap, search, timestamps &amp; backup on Gemini</li>
-        <li>Offline license key — works without internet</li>
+        <li>Use it on 5 devices — release one any time from the popup</li>
         <li>All future Pro updates included</li>
+        <li>No account and no subscription — a key, not a login</li>
       </ul>
     </div>
   </div>
-  <p style="margin-top:14px;">Payments are processed by our merchant of record. After purchase you receive a license key by email; paste it into the extension popup to activate. The license never phones home — activation is verified cryptographically on your device.</p>
+  <p style="margin-top:14px;">Payments are processed by our merchant of record. After purchase you receive a license key by email; paste it into the extension popup to activate. Activating registers that device with the licence server — it sends your key and a device label such as &ldquo;Chrome &middot; macOS&rdquo;, never a cookie and never any conversation text. After that a licensed copy re-checks at most once a month, and it never withdraws Pro because a check failed to get through. See <a href="#devices">devices</a>.</p>
+</section>
+
+<section id="devices" class="legal">
+  <h2>Devices</h2>
+  <p>One Pro licence activates on <strong>5 devices</strong>.</p>
+  <ul>
+    <li>A &ldquo;device&rdquo; is a signed-in browser profile. Your laptop and desktop on the same Chrome profile share one slot; Firefox, Edge, or a second profile each take their own.</li>
+    <li>Open the extension popup and click <strong>Devices</strong> to see them. <strong>Release</strong> frees the one you're on; <strong>Terminate</strong> frees any other.</li>
+    <li>If every slot is full when you activate, the extension frees your <em>oldest</em> device automatically and carries on. It only stops to ask when the slots are held by devices this browser has never seen.</li>
+    <li>Clicking <strong>Remove</strong> in the popup hands the slot back, so do that before wiping a machine.</li>
+    <li>Lost a device without releasing it, or stuck at the limit? Email <a href="mailto:tharuntejandhe@gmail.com">tharuntejandhe@gmail.com</a> from your purchase address and we'll clear every slot on your licence — no questions.</li>
+  </ul>
+  <p>Licence keys issued before this change (they start <code>LCT1.</code>) are unaffected: they verify offline on your own machine and have no device limit.</p>
 </section>
 
 <section id="privacy" class="legal">
@@ -112,6 +126,7 @@
     <li><strong>No accounts, no analytics, no tracking</strong> — in the extension and on this website. This site is a static page with no cookies and no third-party scripts.</li>
     <li><strong>On ChatGPT only</strong>, a small read-only script runs in the page to read each message's timestamp from the app's own state. It makes no network requests and changes nothing on the page. All processing is local.</li>
     <li><strong>Purchases</strong> are handled by our payment provider (merchant of record). We receive your email address solely to issue your license key. We do not receive or store your card details.</li>
+    <li><strong>Licence activation is the one request that isn't to an AI site.</strong> Activating Pro sends your licence key and a coarse device label to the payment provider's licence server so it can enforce the 5-device limit; a licensed copy re-checks there at most once a month. That is the entire payload — no cookies, no conversation text, no identifiers beyond a random per-profile ID we generate. The free tier never contacts it, and the extension requests no additional host permission to do it.</li>
     <li>The extension's full source code is public at <a href="https://github.com/Tharuntejandhe/long-chat-toolkit">GitHub</a> — you can audit every line.</li>
   </ul>
   <p>Questions: <a href="mailto:tharuntejandhe@gmail.com">tharuntejandhe@gmail.com</a></p>

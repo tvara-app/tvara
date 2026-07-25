@@ -2,109 +2,131 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <meta name="color-scheme" content="light dark" />
-  <title>Total Recall - Long Chat Toolkit</title>
+  <meta name="color-scheme" content="dark" />
+  <title>Total Recall — Long Chat Toolkit</title>
   <link rel="stylesheet" href="recall.css" />
 </head>
 <body>
-  <header>
-    <div class="brand">
-      <div class="logo" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6h12M6 12h8M6 18h12"/><circle cx="17" cy="12" r="1.5" fill="currentColor" stroke="none"/></svg>
-      </div>
-      <div>
-        <h1>Total Recall</h1>
-        <p class="sub">Every AI conversation you've had in one search box. Stored on this device only.</p>
-      </div>
-    </div>
-    <span id="plan-badge" class="badge">…</span>
-  </header>
+  <div class="field" aria-hidden="true"></div>
+  <div class="grain" aria-hidden="true"></div>
 
-  <main>
-    <section id="recovery" class="continuity-card recovery-card" hidden aria-labelledby="recovery-title">
-      <div class="section-kicker">Archive continuity</div>
-      <h2 id="recovery-title">Restore your archive before syncing</h2>
-      <p id="recovery-copy" class="dim">This browser has a previous encrypted archive backup. Restore it first so only chats created after the backup are checked.</p>
-      <div class="recovery-grid">
-        <label class="file-control" for="restore-file">Choose encrypted backup</label>
-        <input id="restore-file" type="file" accept=".lctbackup,application/json" hidden />
-        <span id="restore-file-name" class="file-name" aria-live="polite">No backup selected</span>
-        <label class="field-label" for="restore-passphrase">Backup passphrase</label>
-        <input id="restore-passphrase" class="secure-input" type="password" autocomplete="current-password" />
-        <div class="recovery-actions">
-          <button id="restore-run" type="button" disabled>Restore and check gap</button>
-          <button id="recovery-skip" class="secondary-action" type="button">Continue without restoring</button>
+  <div class="shell">
+    <header>
+      <div class="brand">
+        <span class="mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M5 7h14M5 12h9M5 17h11"/><circle cx="18.5" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg>
+        </span>
+        <span class="brand-name">Long Chat Toolkit</span>
+      </div>
+      <span id="plan-badge" class="badge">…</span>
+    </header>
+
+    <main>
+      <section class="masthead">
+        <h1>Total&nbsp;Recall</h1>
+        <p class="lede">Every AI conversation you've had,<br />in one search box. Stored on this device only.</p>
+      </section>
+
+      <section id="archive-core" class="core" aria-label="Archive core">
+        <div id="searchbox" class="core-search">
+          <div class="s-row">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20.5 20.5-4-4"/></svg>
+            <input id="q" type="text" placeholder="Search every archived chat…" autocomplete="off" spellcheck="false" />
+            <span id="q-meta" aria-live="polite"></span>
+          </div>
         </div>
-      </div>
-      <p id="restore-status" class="status-copy" role="status"></p>
-    </section>
 
-    <section id="locked" class="card" hidden>
-      <h2>Total Recall is a Pro feature</h2>
-      <p>Search across every chat on ChatGPT, Claude, Gemini, DeepSeek, Grok and Perplexity. Everything stays local.</p>
-      <p><b>Start the 7-day free trial from the extension popup</b> (one click, no signup), or unlock forever for $9 once. Your archive is already being built locally either way. Nothing is lost by deciding later.</p>
-    </section>
-
-    <section id="archive-core" class="archive-core" aria-label="Archive core">
-      <section id="searchbox" class="core-search">
-        <div class="s-row">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
-          <input id="q" type="text" placeholder="Search every archived chat… (e.g. docker compose, database schema)" autocomplete="off" spellcheck="false" />
-          <span id="q-meta"></span>
+        <div id="core-locked" class="core-locked" hidden>
+          <p class="locked-title">Search is unlocked with the free trial</p>
+          <p class="locked-copy">Your archive is already being built locally — nothing is lost by deciding later. Seven days, one click, no signup.</p>
+          <div class="locked-actions">
+            <button id="trial-start" type="button">Start 7-day free trial</button>
+            <span class="locked-note">or $9 once, forever, from the extension popup</span>
+          </div>
         </div>
+
         <div id="results"></div>
-        <p class="hint">Tip: on any chat site, press <kbd>⌘⇧K</kbd> / <kbd>Ctrl+Shift+K</kbd> to search from right where you are.</p>
+        <p id="archive-empty" class="core-empty" hidden></p>
+
+        <div id="stats" class="stat-strip"></div>
       </section>
 
-      <section id="archive" class="core-stats">
-        <div class="core-copy">
-          <div class="section-kicker">Local archive</div>
-          <h2>Archive core</h2>
-          <p class="dim">Chats are archived automatically as you open them. This index stays in this browser unless you create an encrypted reinstall backup.</p>
+      <section id="recovery" class="panel" hidden aria-labelledby="recovery-title">
+        <div class="kicker">Archive continuity</div>
+        <h2 id="recovery-title">Restore your archive before syncing</h2>
+        <p id="recovery-copy" class="dim">This browser has a previous encrypted archive backup. Restore it first so only chats created after the backup are fetched.</p>
+        <div class="form-grid">
+          <label class="file-control" for="restore-file">Choose encrypted backup</label>
+          <input id="restore-file" type="file" accept=".lctbackup,application/json" hidden />
+          <span id="restore-file-name" class="file-name" aria-live="polite">No backup selected</span>
+          <label class="field-label" for="restore-passphrase">Backup passphrase</label>
+          <input id="restore-passphrase" class="secure-input" type="password" autocomplete="current-password" />
+          <div class="actions">
+            <button id="restore-run" type="button" disabled>Restore and check the gap</button>
+            <button id="recovery-skip" class="secondary" type="button">Continue without restoring</button>
+          </div>
         </div>
-        <div id="stats" class="stats-row"></div>
+        <p id="restore-status" class="status-copy" role="status"></p>
       </section>
-    </section>
 
-    <section class="card ops-rail" id="sync-panel">
-      <div class="section-kicker">Provider delta</div>
-      <h2>Archive operations</h2>
-      <p class="dim">Check your signed-in history for changes since its safe watermark. The worker runs in the background and never repeats a completed historical sweep on reload.</p>
-      <button id="sync-all">Check for new chats</button>
-      <div id="sync-rows"></div>
-      <p class="dim" style="margin-top:10px">ChatGPT, Claude, DeepSeek and Grok sync full conversation text directly in the background.</p>
-      <label class="import-btn" for="import-file">Import an export file (.zip or .json from ChatGPT, Claude, or Gemini Takeout)</label>
-      <input id="import-file" type="file" accept=".zip,.json" hidden />
-      <p id="import-status" role="status"></p>
-    </section>
+      <div class="rail">
+        <section class="panel" id="sync-panel">
+          <div class="panel-head">
+            <div>
+              <div class="kicker">Provider delta</div>
+              <h2>Archive operations</h2>
+            </div>
+            <button id="sync-all">Check for new chats</button>
+          </div>
+          <p class="dim">Each pass compares your signed-in history against what this browser already holds, then downloads only what is missing. Reloading the extension never repeats finished work.</p>
+          <label class="auto-sync" for="auto-sync">
+            <input type="checkbox" id="auto-sync" checked />
+            <span>Keep the archive current by itself — a check runs about every 6 hours, and shortly after the browser starts. Turn this off to check only when you press the button.</span>
+          </label>
+          <p id="sync-summary" class="sync-summary" role="status" hidden></p>
+          <div id="sync-rows"></div>
+          <label class="file-control wide" for="import-file">Import an export file — ChatGPT, Claude or Gemini Takeout (.zip / .json)</label>
+          <input id="import-file" type="file" accept=".zip,.json" hidden />
+          <p id="import-status" class="status-copy" role="status"></p>
+        </section>
 
-    <section class="continuity-card ops-rail" id="backup-panel" aria-labelledby="backup-title">
-      <div class="section-kicker">Reinstall backup</div>
-      <h2 id="backup-title">Carry this archive to a new install</h2>
-      <p class="dim">Create an encrypted local snapshot before uninstalling. The passphrase stays with you, never with this extension.</p>
-      <div class="backup-form">
-        <label class="field-label" for="backup-passphrase">New backup passphrase</label>
-        <input id="backup-passphrase" class="secure-input" type="password" autocomplete="new-password" />
-        <label class="field-label" for="backup-passphrase-confirm">Confirm passphrase</label>
-        <input id="backup-passphrase-confirm" class="secure-input" type="password" autocomplete="new-password" />
-        <button id="create-backup" type="button">Create reinstall backup</button>
+        <section class="panel" id="backup-panel" aria-labelledby="backup-title">
+          <div class="kicker">Reinstall backup</div>
+          <h2 id="backup-title">Carry this archive to a new install</h2>
+          <p class="dim">An encrypted snapshot taken before you uninstall. On the new install, restore it and only the chats you had in the gap are fetched. The passphrase stays with you.</p>
+          <div class="form-grid">
+            <label class="field-label" for="backup-passphrase">New backup passphrase</label>
+            <input id="backup-passphrase" class="secure-input" type="password" autocomplete="new-password" />
+            <label class="field-label" for="backup-passphrase-confirm">Confirm passphrase</label>
+            <input id="backup-passphrase-confirm" class="secure-input" type="password" autocomplete="new-password" />
+            <div class="actions">
+              <button id="create-backup" type="button">Create reinstall backup</button>
+            </div>
+          </div>
+          <p id="backup-status" class="status-copy" role="status"></p>
+        </section>
       </div>
-      <p id="backup-status" class="status-copy" role="status"></p>
-    </section>
 
-    <section class="card danger">
-      <h2>Delete everything</h2>
-      <p class="dim">Wipes the entire local archive from this browser. Backups you exported are untouched.</p>
-      <button id="wipe">Delete my archive</button>
-    </section>
-  </main>
+      <section class="panel danger">
+        <div class="panel-head">
+          <div>
+            <div class="kicker">Irreversible</div>
+            <h2>Delete everything</h2>
+          </div>
+          <button id="wipe">Delete my archive</button>
+        </div>
+        <p class="dim">Wipes the entire local archive from this browser. Backup files you exported are untouched.</p>
+      </section>
+    </main>
 
-  <footer>
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.7 8.9a1 1 0 0 1-.6 0C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.2-2.7a1.2 1.2 0 0 1 1.6 0C14.5 3.8 17 5 19 5a1 1 0 0 1 1 1z"/></svg>
-    <span>Local archive · no telemetry or Long Chat Toolkit server</span>
-  </footer>
+    <footer>
+      <span>Local archive · no telemetry, no Long Chat Toolkit server</span>
+      <span class="kbd-hint">Press <kbd>⌘⇧K</kbd> on any chat site to search from where you are</span>
+    </footer>
+  </div>
 
   <script src="lib/license.js"></script>
+  <script src="lib/dodo.js"></script>
   <script src="lib/recall-db.js"></script>
   <script src="recall-page.js"></script>
 </body>
