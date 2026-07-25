@@ -157,6 +157,32 @@ try {
   t("A5 first-paint cache holds NO key and NO full email",
     !uiCache.includes("LCT1.") && !uiCache.includes("test@example.com"));
 
+  // A5b — a query must never expand the fixed popup surface. Results replace
+  // the archive-check row and are deliberately a compact preview.
+  await pop.evaluate(() => new Promise((resolve) => chrome.runtime.sendMessage({
+    type: "recall-import",
+    chats: [{
+      id: "chatgpt.com/c/popup-layout", host: "chatgpt.com", path: "/c/popup-layout",
+      platform: "ChatGPT", title: "Popup layout regression", n: 2,
+      createdAt: Date.now(), updatedAt: Date.now(),
+      msgs: [{ r: "user", t: "fixed popup layout" }, { r: "assistant", t: "The popup must never grow when results appear." }]
+    }]
+  }, resolve)));
+  await pop.setViewportSize({ width: 380, height: 560 });
+  await pop.fill("#recall-query", "popup");
+  await pop.waitForSelector("#recall-results .recall-result");
+  const popupMetrics = await pop.evaluate(() => ({
+    rootScroll: document.documentElement.scrollHeight,
+    rootClient: document.documentElement.clientHeight,
+    bodyScroll: document.body.scrollHeight,
+    bodyClient: document.body.clientHeight
+  }));
+  t("A5b popup search keeps its fixed panel height",
+    popupMetrics.rootScroll <= popupMetrics.rootClient && popupMetrics.bodyScroll <= popupMetrics.bodyClient,
+    JSON.stringify(popupMetrics));
+  await pop.fill("#recall-query", "");
+  await pop.setViewportSize({ width: 900, height: 800 });
+
   // A6 — screenshots: pro state, dark + light
   await pop.emulateMedia({ colorScheme: "dark" });
   await pop.screenshot({ path: join(SHOTS, "popup-pro-dark.png"), fullPage: true });
@@ -535,38 +561,86 @@ try {
   t("B11 recall page shows archive stats",
     /chats archived/.test(await recall.textContent("#stats")));
 
-  // 5b) "Sync all history" — storage-bus orchestration. The real network sync
-  // needs a logged-in ChatGPT/Claude tab (user-verified); what's testable here
-  // is the bus: the button writes a request, and live progress from an app's
-  // content script paints into the rows + climbs the stats.
-  await recall.click("#sync-all");
-  const req = await recall.evaluate(async () =>
-    (await chrome.storage.local.get("recall-sync-request"))["recall-sync-request"]);
-  t("B11 Sync-all writes an 'all' request", req && req.apps.includes("all") && req.full === true);
+  // A fresh install with a durable migration marker must block history checks
+  // until the user restores or explicitly skips the encrypted archive.
+  await recall.evaluate(() => chrome.storage.local.set({
+    "lct-recall-install-v1": { at: Date.now() },
+    "lct-recall-recovery-v1": {
+      state: "restore-required", backup: { chats: 3, filename: "archive.lctbackup" }
+    }
+  }));
+  await recall.reload();
+  await recall.waitForFunction(() =>
+    /Restore your archive before syncing/.test(document.getElementById("recovery-title")?.textContent || "") &&
+    document.getElementById("sync-all")?.disabled,
+    null, { timeout: 5000 });
+  t("B11 recovery-required blocks automatic archive sync", true);
+  await recall.evaluate(() => chrome.storage.local.set({
+    "lct-recall-recovery-v1": { state: "ready" }
+  }));
+  await recall.reload();
+  await recall.waitForSelector("#searchbox:not([hidden])", { timeout: 5000 });
+
+  // 5b) Durable worker-owned sync state. The live network sweep needs real
+  // provider sessions; this covers the state contract the UI observes without
+  // kicking off a synthetic first-history request in a test profile.
   await recall.waitForSelector("#sync-row-chatgpt");
   await recall.waitForSelector("#sync-row-claude");
   t("B11 sync rows render for ChatGPT + Claude", true);
-  // simulate an app content script reporting live progress via storage
-  await recall.evaluate((at) => chrome.storage.local.set({
-    "recall-sync-progress:chatgpt": { state: "full", done: 42, total: 100, msg: "Archiving full text…", at: at + 1 }
-  }), req.at);
+  const syncAt = Date.now();
+  await recall.evaluate(async (at) => {
+    const ids = ["chatgpt", "claude", "deepseek", "grok"];
+    const checkpoints = Object.fromEntries(ids.map((id) => [id + ":test-account", {
+      version: 2, platform: id, safeWatermark: at - 300000,
+      completedAt: at, lastResult: "up-to-date", archived: 0
+    }]));
+    await chrome.storage.sync.set({
+      "lct-recall-sync-ledger-v2": { version: 2, checkpoints },
+      "lct-recall-sync-profile-v1": { version: 1, salt: "0123456789abcdef0123456789abcdef" }
+    });
+    await chrome.storage.local.set({
+      "lct-recall-active-account-v1": Object.fromEntries(ids.map((id) => [id, id + ":test-account"])),
+      "recall-sync-progress:chatgpt": {
+        state: "syncing", phase: "syncing", done: 42, total: 100,
+        msg: "Capturing 42 of 100 new chats…", at: at + 1
+      }
+    });
+  }, syncAt);
   await recall.waitForFunction(() =>
-    /42\/100|Archiving/.test(document.getElementById("sync-row-chatgpt")?.textContent || "") &&
+    /42\/100|Capturing/.test(document.getElementById("sync-row-chatgpt")?.textContent || "") &&
     /%/.test(document.getElementById("sync-row-chatgpt")?.textContent || ""),
     null, { timeout: 5000 });
   t("B11 live sync progress paints into the row with a %", true);
   await recall.evaluate((at) => chrome.storage.local.set({
-    "recall-sync-progress:chatgpt": { state: "done", done: 100, total: 100, msg: "Done — 100 chats, all on this device.", at: at + 2 }
-  }), req.at);
+    "recall-sync-progress:chatgpt": {
+      state: "done", phase: "up-to-date", done: 100, total: 100,
+      msg: "Everything is already backed up", at: at + 2
+    }
+  }), syncAt);
   await recall.waitForFunction(() =>
-    /Done/.test(document.getElementById("sync-row-chatgpt")?.textContent || ""),
+    /Everything is already backed up/.test(document.getElementById("sync-row-chatgpt")?.textContent || ""),
     null, { timeout: 5000 });
-  t("B11 sync row shows done state", true);
-  // an app with no live tab: after the grace window, offer "Open & sync"
-  await recall.waitForFunction(() =>
-    /Open . sync|Waiting/.test(document.getElementById("sync-row-claude")?.textContent || ""),
-    null, { timeout: 6000 });
-  t("B11 unopened app offers Open & sync (or waiting)", true);
+  t("B11 empty delta reports everything already backed up", true);
+  await pop.waitForFunction(() =>
+    /Everything is already backed up/.test(document.getElementById("sync-status")?.textContent || ""),
+    null, { timeout: 5000 });
+  t("B11 popup restores durable synchronized state without starting a sync", true);
+  await recall.evaluate((at) => chrome.storage.local.set({
+    "lct-recall-sync-run-v1": {
+      id: "interrupted-run", state: "running", workerId: "a-previous-worker",
+      startedAt: at, heartbeatAt: at, platforms: ["chatgpt", "claude"]
+    }
+  }), syncAt);
+  const interrupted = await pop.evaluate(() => new Promise((res) =>
+    chrome.runtime.sendMessage({ type: "recall-sync-status" }, res)));
+  t("B11 service-worker restart preserves the safe checkpoint and reports interruption",
+    interrupted && interrupted.run?.state === "interrupted" &&
+    interrupted.platforms.chatgpt.progress?.state === "interrupted" &&
+    interrupted.platforms.chatgpt.checkpoint?.completedAt === syncAt);
+  await recall.evaluate(() => chrome.storage.local.remove([
+    "lct-recall-sync-run-v1", "recall-sync-progress:chatgpt", "recall-sync-progress:claude",
+    "recall-sync-progress:deepseek", "recall-sync-progress:grok"
+  ]));
 
   // 6) import a ChatGPT-format export (parser + batch import, fully local)
   const fixture = [
@@ -613,6 +687,10 @@ try {
     new Promise((res) => chrome.runtime.sendMessage({ type: "recall-stats" }, res)));
   t("B11 archive grew by the imported chats", statsAfter.chats >= 3, `chats=${statsAfter.chats}`);
   await recall.screenshot({ path: join(SHOTS, "recall-page.png"), fullPage: true });
+  await recall.emulateMedia({ colorScheme: "dark" });
+  await recall.screenshot({ path: join(SHOTS, "recall-page-dark.png"), fullPage: true });
+  await recall.emulateMedia({ colorScheme: "light" });
+  await recall.screenshot({ path: join(SHOTS, "recall-page-light.png"), fullPage: true });
 
   // 6b) sync building blocks. The mapConversation() logic is identical to the
   // export-file parser already covered by the import test above; the live
@@ -648,7 +726,38 @@ try {
     checkRes["chatgpt.com/c/meta-1"] && checkRes["chatgpt.com/c/meta-1"].n === 2,
     JSON.stringify(checkRes));
 
-  // 7) wipe: two-click arm, archive empties
+  // 7) encrypted reinstall backup. It contains the archive plus compact
+  // checkpoint ledger, but never the passphrase itself.
+  const reinstallPassphrase = "test migration archive passphrase";
+  await recall.fill("#backup-passphrase", reinstallPassphrase);
+  await recall.fill("#backup-passphrase-confirm", reinstallPassphrase);
+  const backupDownloadEvent = recall.waitForEvent("download");
+  await recall.click("#create-backup");
+  const backupDownload = await backupDownloadEvent;
+  const backupPath = join(SCRATCH, "reinstall-archive.lctbackup");
+  await backupDownload.saveAs(backupPath);
+  await recall.waitForSelector("#backup-status.ok", { timeout: 20000 });
+  t("B11 reinstall backup is encrypted and downloaded",
+    /encrypted/.test(await recall.textContent("#backup-status")) && /\.lctbackup/.test(backupDownload.suggestedFilename()));
+
+  // The encrypted envelope must validate before it changes any archive data.
+  const corruptBackupPath = join(SCRATCH, "corrupt-reinstall-archive.lctbackup");
+  writeFileSync(corruptBackupPath, "{not valid backup json");
+  await recall.setInputFiles("#restore-file", corruptBackupPath);
+  await recall.fill("#restore-passphrase", reinstallPassphrase);
+  await recall.click("#restore-run");
+  await recall.waitForSelector("#restore-status.err", { timeout: 20000 });
+  t("B11 corrupted reinstall-backup envelope cannot change the archive",
+    /not a valid|not supported/.test(await recall.textContent("#restore-status")));
+  await recall.setInputFiles("#restore-file", backupPath);
+  await recall.fill("#restore-passphrase", "definitely the wrong passphrase");
+  await recall.click("#restore-run");
+  await recall.waitForSelector("#restore-status.err", { timeout: 20000 });
+  t("B11 wrong reinstall-backup passphrase cannot change the archive",
+    /incorrect|changed/.test(await recall.textContent("#restore-status")));
+
+  // 8) wipe then restore: this models the local-data half of an
+  // uninstall/reinstall handoff while keeping the encrypted file external.
   await recall.click("#wipe");
   t("B11 wipe requires arming click", /Click again/.test(await recall.textContent("#wipe")));
   await recall.click("#wipe");
@@ -657,8 +766,34 @@ try {
     return s && s.chats === 0;
   }, null, { timeout: 5000 });
   t("B11 wipe empties the archive", true);
+  await recall.fill("#restore-passphrase", reinstallPassphrase);
+  await recall.click("#restore-run");
+  await recall.waitForSelector("#restore-status.ok", { timeout: 30000 });
+  await recall.waitForFunction(async () => {
+    const s = await new Promise((res) => chrome.runtime.sendMessage({ type: "recall-stats" }, res));
+    return s && s.chats >= 3;
+  }, null, { timeout: 30000 });
+  t("B11 encrypted reinstall backup restores the archive in batches", true);
+  const restoredLedger = await recall.evaluate(async () =>
+    (await chrome.storage.sync.get("lct-recall-sync-ledger-v2"))["lct-recall-sync-ledger-v2"]);
+  t("B11 reinstall restore merges the durable gap checkpoint",
+    restoredLedger && Object.keys(restoredLedger.checkpoints || {}).length >= 4);
+  const restoredProfile = await recall.evaluate(async () =>
+    (await chrome.storage.sync.get("lct-recall-sync-profile-v1"))["lct-recall-sync-profile-v1"]);
+  t("B11 reinstall restore preserves the opaque account fingerprint salt",
+    restoredProfile && restoredProfile.salt === "0123456789abcdef0123456789abcdef");
+  await recall.evaluate(() => chrome.storage.local.set({
+    "lct-recall-active-account-v1": {
+      chatgpt: "chatgpt:different-account", claude: "claude:test-account",
+      deepseek: "deepseek:test-account", grok: "grok:test-account"
+    }
+  }));
+  const otherAccountStatus = await pop.evaluate(() => new Promise((res) =>
+    chrome.runtime.sendMessage({ type: "recall-sync-status" }, res)));
+  t("B11 a different provider account never inherits another checkpoint",
+    otherAccountStatus && otherAccountStatus.platforms.chatgpt.checkpoint === null);
 
-  // 8) gating: no trial, no pro → commands don't open, and say why
+  // 9) gating: no trial, no pro → commands don't open, and say why
   await pop.evaluate(() => chrome.storage.local.remove("trial"));
   await page.reload();
   await page.waitForSelector("#lct-minimap", { timeout: 15000 });

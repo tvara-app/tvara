@@ -59,7 +59,6 @@
         "content/timeline.js",
         "content/outline.js",
         "content/chatcard.js",
-        "content/recall-sync.js",
         "content/recall.js",
         "content/bridge.js",
         "content/main.js"

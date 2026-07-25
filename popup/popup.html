@@ -9,7 +9,7 @@
   <header>
     <div class="brand">
       <div class="logo" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6h12M6 12h8M6 18h12"/><circle cx="17" cy="12" r="1.5" fill="currentColor" stroke="none"/></svg>
       </div>
       <div class="brand-text">
         <h1>Long Chat Toolkit</h1>
@@ -59,26 +59,39 @@
       </label>
     </section>
 
-    <button class="card recall-row" id="open-recall" title="Total Recall — search every chat on every platform">
-      <span class="row-icon" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
-      </span>
-      <span class="row-text">
-        <span class="row-title">Total Recall</span>
-        <span class="row-sub">Search every chat, every platform — <kbd>⌘⇧K</kbd></span>
-      </span>
-      <span class="chev" aria-hidden="true">›</span>
-    </button>
+    <section class="card recall-card" aria-label="Total Recall">
+      <div class="recall-head">
+        <span class="row-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        </span>
+        <span class="row-text">
+          <span class="row-title">Total Recall</span>
+          <span class="row-sub">Search every chat, every platform</span>
+        </span>
+        <button class="recall-open" id="open-recall" type="button" aria-label="Open Total Recall in a new tab">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3h7v7"/><path d="m21 3-9 9"/><path d="M19 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h6"/></svg>
+        </button>
+      </div>
+      <div id="recall-locked" class="recall-locked" hidden>Start a free trial below to search your archive here.</div>
+      <div id="recall-searchbox" class="recall-searchbox" hidden>
+        <div class="recall-query-row">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+          <input id="recall-query" type="search" placeholder="Search your archived chats…" autocomplete="off" spellcheck="false" aria-label="Search archived chats" />
+          <span id="recall-query-meta" aria-live="polite"></span>
+        </div>
+        <div id="recall-results" aria-live="polite"></div>
+      </div>
 
-    <button class="card sync-row-btn" id="sync-history" title="Sync all chat history from every platform">
-      <span class="row-icon sync-icon" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
-      </span>
-      <span class="row-text">
-        <span class="row-title">Sync History</span>
-        <span class="row-sub" id="sync-status">Sync all chats from ChatGPT, Claude, DeepSeek &amp; Grok</span>
-      </span>
-    </button>
+      <button class="sync-row-btn recall-sync" id="sync-history">
+        <span class="row-icon sync-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
+        </span>
+        <span class="row-text">
+          <span class="row-title">Archive core</span>
+          <span class="row-sub" id="sync-status" aria-live="polite">Checking archive state…</span>
+        </span>
+      </button>
+    </section>
 
     <section class="card pro-card" id="pro-upsell" hidden>
       <div class="pro-head">
@@ -89,10 +102,10 @@
         <span class="price-pill">$9 · once, forever</span>
       </div>
       <ul class="pro-list">
-        <li><b>Total Recall</b> — search &amp; auto-sync every chat on every platform <kbd>⌘⇧K</kbd></li>
-        <li><b>Context Bridge</b> — pull past answers into any prompt <kbd>⌘⇧U</kbd></li>
+        <li><b>Total Recall</b>: search &amp; auto-sync every chat on every platform <kbd>⌘⇧K</kbd></li>
+        <li><b>Context Bridge</b>: pull past answers into any prompt <kbd>⌘⇧U</kbd></li>
         <li>All tools on Claude &amp; Gemini (minimap, outline, search, stars, backup)</li>
-        <li>Offline license — no account, no tracking</li>
+        <li>Offline license. No account or tracking.</li>
       </ul>
       <p class="pro-note">Speed engine free everywhere. Tools free on ChatGPT, Perplexity, DeepSeek &amp; Grok.</p>
       <div class="license-row">
@@ -100,8 +113,18 @@
         <button id="license-activate">Activate</button>
       </div>
       <p id="license-status" role="status"></p>
-      <button id="trial-start" hidden>Start 7-day free trial — no signup</button>
+      <button id="trial-start" hidden>Start 7-day free trial. No signup.</button>
       <p id="trial-note" class="pro-note" hidden></p>
+    </section>
+
+    <section class="card trial-active-card" id="trial-active" hidden>
+      <span class="ok-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>
+      </span>
+      <span class="active-text">
+        <span class="active-title">Everything is unlocked</span>
+        <span class="active-sub" id="trial-status" role="status"></span>
+      </span>
     </section>
 
     <section class="card active-card" id="pro-active" hidden>
@@ -112,13 +135,13 @@
         <span class="active-title">Pro active</span>
         <span class="active-sub" id="licensed-to"></span>
       </span>
-      <button id="license-remove" class="ghost" title="Remove the license from this browser">Remove</button>
+      <button id="license-remove" class="ghost">Remove</button>
     </section>
   </main>
 
   <footer>
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.7 8.9a1 1 0 0 1-.6 0C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.2-2.7a1.2 1.2 0 0 1 1.6 0C14.5 3.8 17 5 19 5a1 1 0 0 1 1 1z"/></svg>
-    <span>Zero network permissions · <a href="#" id="shortcuts-link">Keyboard shortcuts</a> · <a href="https://github.com/Tharuntejandhe/long-chat-toolkit" target="_blank" rel="noopener">Open source</a></span>
+    <span>Local archive · <a href="#" id="shortcuts-link">Keyboard shortcuts</a> · <a href="https://github.com/Tharuntejandhe/long-chat-toolkit" target="_blank" rel="noopener">Open source</a></span>
   </footer>
 
   <script src="../lib/license.js"></script>

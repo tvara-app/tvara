@@ -9,9 +9,10 @@ lags, scrolling stutters, the fan spins up. This extension makes a
 navigation tools those sites never built: a minimap, search, an auto table of
 contents, starred messages, timestamps, one-click backup — and Total Recall, one search box for every AI conversation you've ever had.
 
-Everything runs **100% on your device**. The extension has **zero network
-permissions** — it is technically incapable of sending your conversations
-anywhere. That's not a promise, it's enforced by the browser.
+Your archive, search index and backups stay **on your device**. When you ask
+Total Recall to check history, the background worker makes authenticated
+requests only to the AI providers listed in the extension's host permissions.
+There is no Long Chat Toolkit server, analytics pipeline or chat-data upload.
 
 ---
 
@@ -75,9 +76,9 @@ Ctrl+Shift+U**. Recall searches your entire cross-platform archive, shows the
 most relevant passages, you tick the ones you want, and it inserts them into
 your prompt — so the model you're already using answers *with* your
 accumulated knowledge from every other tool.
-**How it stays private and free:** it doesn't call an API, use a key, or run a
-local model — it simply feeds the context to the model you're already signed
-into and paying for. The extension's zero network permissions are untouched.
+**How it stays private and free:** it doesn't call a Long Chat Toolkit API,
+use a key, or run a local model — it simply feeds the context to the model
+you're already signed into and paying for.
 **Fail-safe:** you always pick before anything is inserted (no surprise
 noise), and if the prompt box can't be found it copies the context to your
 clipboard so you can paste it — it never touches the page it shouldn't.
@@ -91,22 +92,32 @@ Recall page from the popup) → one search box across **every archived chat on
 every platform** → click a result and land in that chat with the in-chat
 search already open on your words.
 **How the archive builds:**
-- **One button, all history:** open the Recall page → **Sync all history**. It
-  asks your open ChatGPT and Claude tabs to pull every conversation — titles,
-  dates and full text — straight from your own account, showing live progress
-  per app. Apps that aren't open get a one-click **Open & sync**. Big
-  histories take a while and keep going in that tab; you can walk away.
-- **Automatic forever after:** once synced, ChatGPT and Claude quietly keep
-  themselves current every time you visit — no button, no thought.
-- **Every platform, always:** any chat you open on any site is archived as you
-  read it. Gemini, Grok, DeepSeek and Perplexity have no history API (their own
-  platforms don't expose one), so they rely on this open-and-archive path — or
-  a Claude/ChatGPT export file you drop on the Recall page.
+- **One action, durable delta:** open the Recall page → **Check for new chats**.
+  A background worker reads the history endpoints for your signed-in ChatGPT,
+  Claude, DeepSeek and Grok accounts, then writes titles, dates and text into
+  the local archive. No chat tab needs to stay open.
+- **Checkpointed by account:** each successful pass records an account-scoped
+  safe watermark. Later checks overlap the last five minutes and deduplicate by
+  conversation ID plus provider update time. Reloading the extension restores
+  the state; it never starts another historical sweep by itself.
+- **Safe interruption:** if a worker restarts or a detail request fails, the
+  preceding watermark remains in place. The next manual check retries only the
+  unfinished delta and skips already archived revisions.
+- **Every platform, always:** any chat you open is also archived as you read
+  it. Gemini and Perplexity use this open-and-archive path, or an export file
+  you import into Recall.
+
+**Reinstall continuity:** while the archive is idle, choose **Create reinstall
+backup**. It saves a versioned `.lctbackup` file encrypted with AES-GCM; your
+passphrase is derived locally with PBKDF2-SHA-256 (600,000 iterations) and is
+never stored. After reinstalling, restore that file before checking history:
+Recall merges the newer checkpoint and checks only chats created in the gap.
 
 **Privacy, provable:** the archive lives in your browser's local extension
-storage. This extension has **no network permissions**, so the archive
-physically cannot be uploaded anywhere. The Recall page shows exactly what's
-stored (chats, messages, MB) and has a delete-everything button.
+storage. The only history network requests are scoped to the declared
+first-party AI-provider endpoints; Long Chat Toolkit has no server, telemetry
+or chat-data upload route. The Recall page shows exactly what's stored (chats,
+messages, MB) and has a delete-everything button.
 **Honesty note:** without an import, Recall only knows chats you've opened
 since installing — it says so rather than pretending otherwise.
 
@@ -236,9 +247,10 @@ your own scripts).
 
 ## 7. Privacy — provable, not promised
 
-- **Zero network permissions.** Open `manifest.json`: the only permission is
-  `storage`. The browser itself prevents this extension from making network
-  requests. Your conversations cannot leave your machine through it.
+- **No Long Chat Toolkit server or telemetry.** The manifest grants scoped host
+  access only to supported AI providers so an explicit history check can read
+  your own account. It does not grant a generic upload destination, and the
+  extension contains no analytics or remote-code path.
 - **No accounts, no analytics, no telemetry, no remote code.**
 - **Everything is stored locally:** settings, reading positions, stars,
   first-seen times, license key — in your browser's extension storage.
@@ -247,8 +259,10 @@ your own scripts).
   message times from ChatGPT's own in-page state and nothing else.
 - **Open source.** Read every line: the repo is public.
 
-**Uninstalling** removes all extension data. Backups you exported are
-ordinary files on your disk and stay yours.
+**Uninstalling** removes local extension data. Before uninstalling, create an
+encrypted reinstall backup; the `.lctbackup` file stays on your disk, and its
+small durable marker can prompt you to restore before a new install checks the
+post-backup gap.
 
 ---
 
