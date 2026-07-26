@@ -44,16 +44,45 @@
     return "[Attachment]";
   }
 
-  /* ---------- stars persistence ---------- */
+  /* ---------- stars persistence ----------
+     Stars follow the person, not the browser: they live in chrome.storage.sync
+     with a local mirror. Sync caps an item at 8KB, so the synced copy is the
+     most recent SYNC_MAX with short snippets while local keeps everything —
+     a chat with 300 stars degrades to "the recent ones travel", never to a
+     failed write that loses the lot. */
+
+  const SYNC_MAX = 60;
+  const SYNC_SNIPPET = 44;
+
+  function mergeStars(a, b) {
+    const out = { ...(a || {}) };
+    for (const k in (b || {})) {
+      const mine = out[k], theirs = b[k];
+      if (!mine || (theirs && theirs.t > mine.t)) out[k] = theirs;
+    }
+    return out;
+  }
+
+  function syncCopy(all) {
+    const keys = Object.keys(all).sort((x, y) => (all[y].t || 0) - (all[x].t || 0)).slice(0, SYNC_MAX);
+    const out = {};
+    for (const k of keys) out[k] = { t: all[k].t, s: String(all[k].s || "").slice(0, SYNC_SNIPPET) };
+    return out;
+  }
 
   async function loadStars() {
-    starsConv = convId();
-    const o = await self.LCTStore.get(storeKey());
-    stars = o[storeKey()] || {};
+    const conv = convId();
+    starsConv = conv;
+    const { synced, local } = await self.LCTStore.getBoth("stars:" + conv);
+    // A deletion on another device is indistinguishable from "not synced yet",
+    // so the merge is additive. Unstarring on THIS device writes both copies.
+    const merged = mergeStars(local, synced);
+    if (starsConv === conv) stars = merged;
+    return merged;
   }
 
   function saveStars() {
-    self.LCTStore.set({ [storeKey()]: stars });
+    self.LCTStore.setBoth(storeKey(), stars, syncCopy(stars));
   }
 
   /* ---------- star hover button ---------- */
@@ -69,14 +98,22 @@
     starBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       if (!hoverMsg) return;
-      const k = keyOf(hoverMsg);
-      if (stars[k]) delete stars[k];
-      else stars[k] = { t: Date.now(), s: snippetOrMedia(hoverMsg) };
-      saveStars();
-      paintStar(hoverMsg, !!stars[k]);
+      toggleStar(hoverMsg);
       positionStarBtn(hoverMsg); // repaint fill state
-      if (isOpen && mode === "star") render();
     });
+  }
+
+  /** The one place a star is set or cleared — hover button and outline rows. */
+  function toggleStar(el) {
+    const k = keyOf(el);
+    if (!k) return false;
+    const on = !stars[k];
+    if (on) stars[k] = { t: Date.now(), s: snippetOrMedia(el) };
+    else delete stars[k];
+    saveStars();
+    paintStar(el, on);
+    if (isOpen) render();
+    return on;
   }
 
   function paintStar(el, on) {
@@ -165,31 +202,51 @@
     );
   }
 
-  function entryRow(text, cls, onClick) {
-    const row = document.createElement("button");
-    row.className = "lct-o-item " + cls;
-    row.textContent = text; // storage/DOM data is not markup
-    row.addEventListener("click", onClick);
+  /**
+   * One outline row: the entry itself plus its own star toggle, so starring is
+   * something you can SEE and click, not a hover affordance you have to know
+   * about. `key` is the message the star belongs to (a heading stars the answer
+   * it lives in); omit it and the row carries no toggle.
+   */
+  function entryRow({ text, cls, i, onClick, key, el }) {
+    const row = document.createElement("div");
+    row.className = "lct-o-row";
+
+    const item = document.createElement("button");
+    item.className = "lct-o-item " + cls;
+    item.textContent = text; // storage/DOM data is not markup
+    item.style.setProperty("--i", i);
+    item.addEventListener("click", onClick);
+    row.appendChild(item);
+
+    if (key) {
+      const on = !!stars[key];
+      const fav = document.createElement("button");
+      fav.type = "button";
+      fav.className = "lct-o-fav" + (on ? " lct-o-fav-on" : "");
+      fav.textContent = on ? "★" : "☆";
+      fav.title = on ? "Remove star" : "Star this message";
+      fav.setAttribute("aria-label", fav.title);
+      fav.setAttribute("aria-pressed", String(on));
+      fav.addEventListener("click", (e) => {
+        e.stopPropagation();
+        starByKey(key, el);
+      });
+      row.appendChild(fav);
+    }
     return row;
   }
 
-  function jumpTo(el) {
-    if (!el || !el.isConnected) return;
-    // settle loop: content-visibility regions materialize while scrolling, so
-    // the first estimate lands short — re-aim until the target is centered
-    let tries = 0;
-    const step = () => {
-      el.scrollIntoView({ behavior: "auto", block: "center" });
-      const r = el.getBoundingClientRect();
-      const centered =
-        r.height > 0 &&
-        Math.abs(r.top + r.height / 2 - innerHeight / 2) <= Math.max(80, r.height / 2);
-      if (!centered && ++tries < 8) requestAnimationFrame(step);
-    };
-    step();
-    el.classList.add("lct-hit");
-    setTimeout(() => el.classList.remove("lct-hit"), 1600);
+  /** Unstarring must work even when the host has unmounted the message. */
+  function starByKey(key, el) {
+    if (el && el.isConnected) return toggleStar(el);
+    if (!stars[key]) return;
+    delete stars[key];
+    saveStars();
+    if (isOpen) render();
   }
+
+  const jumpTo = (el) => self.LCTNav.jumpTo(el, { block: "center" });
 
   function findByKey(k) {
     for (const el of messages) if (keyOf(el) === k) return el;
@@ -205,20 +262,30 @@
       for (let mi = 0; mi < messages.length; mi++) {
         const el = messages[mi];
         if (rows.length >= MAX_ENTRIES) { truncated = true; break; }
+        const key = keyOf(el);
         let role = "assistant";
         try { role = adapter.role(el); } catch (_) {}
         if (role === "user") {
           // "#n" = the message's position in the whole conversation — a stable
           // ID users can reference ("see my #57"). Media-only prompts (image/
           // file, no text) get a typed label instead of a blank row.
-          rows.push(entryRow("#" + (mi + 1) + " · " + snippetOrMedia(el), "lct-o-user", () => jumpTo(el)));
+          rows.push(entryRow({
+            text: "#" + (mi + 1) + " · " + snippetOrMedia(el),
+            cls: "lct-o-user", i: rows.length, key, el, onClick: () => jumpTo(el)
+          }));
         } else {
           const heads = el.querySelectorAll("h1, h2, h3");
           for (let i = 0; i < heads.length && i < 10; i++) {
             if (rows.length >= MAX_ENTRIES) { truncated = true; break; }
             const h = heads[i];
             const lvl = h.tagName === "H1" ? 1 : h.tagName === "H2" ? 2 : 3;
-            rows.push(entryRow(snippet(h), "lct-o-h lct-o-h" + lvl, () => jumpTo(el)));
+            // Jump to the HEADING, not to the message that contains it. A long
+            // answer holds a dozen of these; sending all twelve rows to the top
+            // of the same answer is why the outline felt like it ignored clicks.
+            rows.push(entryRow({
+              text: snippet(h), cls: "lct-o-h lct-o-h" + lvl, i: rows.length,
+              key, el, onClick: () => jumpTo(h)
+            }));
           }
         }
       }
@@ -228,17 +295,27 @@
     } else {
       const entries = Object.entries(stars).sort((a, b) => a[1].t - b[1].t);
       for (const [k, v] of entries) {
-        rows.push(
-          entryRow(v.s || "(starred message)", "lct-o-star", () => {
+        rows.push(entryRow({
+          text: v.s || "(starred message)", cls: "lct-o-star", i: rows.length,
+          key: k, el: findByKey(k),
+          onClick: () => {
             const el = findByKey(k);
-            if (el) jumpTo(el);
-            else noteEl.textContent = "Message not loaded on this page right now";
-          })
-        );
+            if (el) return jumpTo(el);
+            // Unmounted: the minimap's catalog still knows where this message
+            // sits, so let it seek the host back to that region.
+            if (self.LCTMinimap && self.LCTMinimap.jumpToKey(k)) {
+              noteEl.textContent = "Finding that message…";
+            } else {
+              noteEl.textContent = "That message isn't loaded on this page yet";
+            }
+          }
+        }));
       }
-      noteEl.textContent = rows.length ? "" : "Hover any message and hit the star";
+      noteEl.textContent = rows.length ? "" : "Star any message — hover it, or use the ☆ on an outline row";
     }
+    const at = listEl.scrollTop;   // starring must not throw away your place
     listEl.replaceChildren(...rows);
+    listEl.scrollTop = at;
   }
 
   function open() {
@@ -282,9 +359,19 @@
   function init(a) {
     adapter = a;
     document.addEventListener("mouseover", onHover, { passive: true });
+    // Hiding the star on every scroll event made it unusable: these hosts
+    // auto-scroll on open, while streaming, and on every jump, so the button
+    // was gone more often than not. Follow the message instead, and only give
+    // up once it has actually left the viewport.
     window.addEventListener(
       "scroll",
-      () => { if (starBtn) starBtn.style.display = "none"; },
+      () => {
+        if (!starBtn || !hoverMsg) return;
+        if (!hoverMsg.isConnected) { hoverMsg = null; starBtn.style.display = "none"; return; }
+        const r = hoverMsg.getBoundingClientRect();
+        if (r.bottom < 40 || r.top > innerHeight - 20) { starBtn.style.display = "none"; return; }
+        positionStarBtn(hoverMsg);
+      },
       { passive: true, capture: true }
     );
   }

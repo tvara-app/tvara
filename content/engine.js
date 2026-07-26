@@ -36,7 +36,10 @@
   // Before a message sleeps, freeze its REAL height into contain-intrinsic-size.
   // The stylesheet's 320px guess makes scroll math drift on long chats — jumps
   // land short and the scrollbar lies. Measured heights make both exact.
+  // A message the reader was just sent to stays awake regardless of distance —
+  // re-windowing the landing zone mid-jump is what made one click land short.
   function sleep(el) {
+    if (el.classList.contains("lct-awake")) return;
     const h = el.offsetHeight;
     if (h > 0) el.style.containIntrinsicSize = "auto " + h + "px";
     el.classList.add(CLASS);
@@ -102,7 +105,7 @@
         observedSet.add(el);
         io.observe(el); // initial IO callback will classify it
       }
-      if (tailSet.has(el) || nearSet.has(el)) {
+      if (tailSet.has(el) || nearSet.has(el) || el.classList.contains("lct-awake")) {
         el.classList.remove(CLASS);
       } else if (classifiedSet.has(el)) {
         if (!el.classList.contains(CLASS)) sleep(el);

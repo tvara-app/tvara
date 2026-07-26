@@ -11,18 +11,27 @@
   background: rgba(127, 127, 127, 0.055);
   border-radius: 12px;
 }
+/* A message we just sent the reader to. It must hold its real height for the
+   whole landing — re-windowing it mid-jump is what made one click land short. */
+.lct-awake {
+  content-visibility: visible !important;
+  contain-intrinsic-size: auto !important;
+  background: none !important;
+}
 
 /* ===== Minimap ===== */
 #lct-minimap {
   position: fixed;
   top: 70px;
-  right: 14px; /* clear of the native scrollbar's hit zone */
+  /* clear of the native scrollbar's hit zone, plus any rail the host owns */
+  right: calc(14px + var(--lct-rail-inset, 0px));
   bottom: 90px;
   width: 24px;
   z-index: 2147483000;
   display: flex;
   flex-direction: column;
   align-items: stretch;
+  overflow: hidden; /* nothing inside may resize the panel — see #lct-mm-canvas */
   border-radius: 8px;
   background: rgba(127, 127, 127, 0.07);
   backdrop-filter: blur(4px);
@@ -31,38 +40,49 @@
 }
 #lct-minimap:hover { opacity: 1; }
 #lct-minimap.lct-collapsed { width: 14px; }
-#lct-minimap.lct-collapsed #lct-mm-canvas { display: none; }
+#lct-minimap.lct-collapsed #lct-mm-canvas,
+#lct-minimap.lct-collapsed #lct-mm-count,
+#lct-minimap.lct-collapsed #lct-export-bar { display: none; }
 
 #lct-mm-canvas {
-  flex: 1;
+  /* min-height:0 is load-bearing: flex's auto minimum makes the canvas backing
+     store (CSS px × dpr) a layout floor, so each draw grew the box and the next
+     draw grew it again. */
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+  display: block;
   width: 100%;
   cursor: pointer;
   border-radius: 0 0 var(--lct-radius) var(--lct-radius);
 }
 
 #lct-mm-toggle {
+  flex: 0 0 auto;
   height: 20px;
   border: none;
   background: transparent;
   color: inherit;
   opacity: 0.6;
   font-size: 12px;
+  line-height: 1;
   cursor: pointer;
   border-radius: var(--lct-radius) var(--lct-radius) 0 0;
+  transition: background 0.15s ease, color 0.15s ease, opacity 0.15s ease;
 }
 #lct-mm-toggle:hover { opacity: 1; background: rgba(127,127,127,0.15); }
 
 #lct-mm-tooltip {
   display: none;
   position: fixed;
-  right: 36px;
+  right: calc(36px + var(--lct-rail-inset, 0px));
   max-width: 340px;
   padding: 6px 10px;
   z-index: 2147483001;
   font: 12px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   border-radius: 8px;
-  background: rgba(20, 22, 28, 0.94);
-  color: #e8eaf0;
+  background: rgba(33, 15, 23, 0.94);
+  color: #fbf6f8;
   box-shadow: 0 4px 18px rgba(0, 0, 0, 0.25);
   pointer-events: none;
   white-space: nowrap;
@@ -73,12 +93,13 @@
 /* ===== Windowed-count pill (messages asleep) ===== */
 #lct-mm-count {
   display: none;
+  flex: 0 0 auto;
   text-align: center;
   margin: 2px 2px 1px;
   padding: 2px 0 3px;
   font: 700 8.5px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  color: #7aa2ff;
-  background: rgba(122, 162, 255, 0.14);
+  color: #ff5d8a;
+  background: rgba(255, 93, 138, 0.14);
   border-radius: 6px;
   letter-spacing: -0.02em;
   cursor: default;
@@ -86,8 +107,12 @@
 }
 
 /* ===== Export bar ===== */
+/* Stacked: three 20px buttons in a row spilled past the 22px strip. */
 #lct-export-bar {
   display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: center;
   justify-content: center;
   gap: 2px;
   padding: 3px 0 5px;
@@ -102,23 +127,22 @@
   border: none;
   border-radius: 5px;
   background: transparent;
-  color: #8b93a5;
+  color: #cbb2ba;
   cursor: pointer;
   transition: transform 0.15s ease, color 0.15s ease, background 0.15s ease;
 }
 #lct-export-bar button svg { width: 13px; height: 13px; }
 #lct-export-bar button:hover {
-  color: #7aa2ff;
-  background: rgba(122, 162, 255, 0.14);
+  color: #ff5d8a;
+  background: rgba(255, 93, 138, 0.14);
   transform: scale(1.1);
 }
 /* standalone position when the minimap is turned off */
 #lct-export-bar.lct-floating {
   position: fixed;
-  right: 12px;
+  right: calc(12px + var(--lct-rail-inset, 0px));
   bottom: 44px;
   z-index: 2147483000;
-  flex-direction: column;
   padding: 5px 3px;
   border-radius: 8px;
   background: rgba(127, 127, 127, 0.08);
@@ -133,8 +157,8 @@
   padding: 3px 9px;
   font: 11.5px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   border-radius: 7px;
-  background: rgba(20, 22, 28, 0.92);
-  color: #cfd6e4;
+  background: rgba(33, 15, 23, 0.92);
+  color: #e8d0d8;
   box-shadow: 0 3px 12px rgba(0, 0, 0, 0.22);
   pointer-events: none;
   white-space: nowrap;
@@ -152,36 +176,36 @@
   gap: 6px;
   padding: 8px 10px;
   border-radius: 12px;
-  background: rgba(22, 24, 30, 0.97);
+  background: rgba(33, 15, 23, 0.97);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
   border: 1px solid rgba(255, 255, 255, 0.08);
   transition: transform 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.2);
   font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 #lct-search.lct-s-open { transform: translateX(-50%) translateY(0); }
-#lct-search .lct-s-icon { display: flex; opacity: 0.7; color: #cfd4de; }
+#lct-search .lct-s-icon { display: flex; opacity: 0.7; color: #e8d0d8; }
 #lct-search .lct-s-icon svg { width: 14px; height: 14px; }
 #lct-search input {
   width: 300px;
   border: none;
   outline: none;
   background: transparent;
-  color: #e8eaf0;
+  color: #fbf6f8;
   font-size: 13.5px;
 }
-#lct-search input::placeholder { color: #8a91a0; }
+#lct-search input::placeholder { color: #cbb2ba; }
 #lct-search .lct-s-count {
   min-width: 44px;
   text-align: center;
   font-size: 11.5px;
   font-weight: 700;
-  color: #7aa2ff;
+  color: #ff5d8a;
 }
-#lct-search .lct-s-count.lct-s-none { color: #ef6a6a; }
+#lct-search .lct-s-count.lct-s-none { color: #ff7a7a; }
 #lct-search button {
   border: none;
   background: rgba(255, 255, 255, 0.07);
-  color: #cfd4de;
+  color: #e8d0d8;
   width: 26px;
   height: 26px;
   border-radius: 7px;
@@ -197,8 +221,8 @@
   border-radius: 12px;
 }
 @keyframes lct-pulse {
-  0%   { box-shadow: 0 0 0 3px rgba(122, 162, 255, 0.95); }
-  100% { box-shadow: 0 0 0 3px rgba(122, 162, 255, 0); }
+  0%   { box-shadow: 0 0 0 3px rgba(255, 93, 138, 0.95); }
+  100% { box-shadow: 0 0 0 3px rgba(255, 93, 138, 0); }
 }
 
 /* ===== Resume chip ===== */
@@ -211,11 +235,11 @@
   padding: 9px 16px;
   border: none;
   border-radius: 999px;
-  background: rgba(22, 24, 30, 0.95);
-  color: #e8eaf0;
+  background: rgba(33, 15, 23, 0.95);
+  color: #fbf6f8;
   font: 600 12.5px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
-  border: 1px solid rgba(122, 162, 255, 0.35);
+  border: 1px solid rgba(255, 93, 138, 0.35);
   cursor: pointer;
   transition: transform 0.15s ease;
 }
@@ -232,8 +256,8 @@
   justify-content: center;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 8px;
-  background: rgba(20, 22, 28, 0.92);
-  color: #8b93a5;
+  background: rgba(33, 15, 23, 0.92);
+  color: #cbb2ba;
   cursor: pointer;
   box-shadow: 0 3px 12px rgba(0, 0, 0, 0.25);
   transition: color 0.12s ease, transform 0.12s ease;
@@ -249,20 +273,24 @@
 #lct-outline {
   position: fixed;
   top: 70px;
-  right: 46px;
+  right: calc(46px + var(--lct-rail-inset, 0px));
   bottom: 90px;
   width: 264px;
   z-index: 2147483002;
-  display: none;
+  display: flex;
   flex-direction: column;
   border-radius: 12px;
-  background: rgba(22, 24, 30, 0.97);
+  background: rgba(33, 15, 23, 0.97);
   border: 1px solid rgba(255, 255, 255, 0.08);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
   font: 12.5px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  color: #e8eaf0;
+  color: #fbf6f8;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-8px) scale(0.98);
+  transition: opacity 0.18s ease, transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
 }
-#lct-outline.lct-o-open { display: flex; }
+#lct-outline.lct-o-open { opacity: 1; pointer-events: auto; transform: translateY(0) scale(1); }
 
 .lct-o-head {
   display: flex;
@@ -274,19 +302,19 @@
 .lct-o-tab {
   border: none;
   background: transparent;
-  color: #8a91a0;
+  color: #cbb2ba;
   font: 600 12px/1 inherit;
   font-family: inherit;
   padding: 6px 10px;
   border-radius: 7px;
   cursor: pointer;
 }
-.lct-o-tab.lct-o-on { color: #e8eaf0; background: rgba(255, 255, 255, 0.09); }
+.lct-o-tab.lct-o-on { color: #fbf6f8; background: rgba(255, 255, 255, 0.09); }
 .lct-o-close {
   margin-left: auto;
   border: none;
   background: rgba(255, 255, 255, 0.07);
-  color: #cfd4de;
+  color: #e8d0d8;
   width: 24px;
   height: 24px;
   border-radius: 7px;
@@ -296,13 +324,38 @@
 .lct-o-close:hover { background: rgba(255, 255, 255, 0.16); }
 
 .lct-o-list { flex: 1; overflow-y: auto; padding: 6px; }
+.lct-o-row { display: flex; align-items: center; gap: 2px; }
+/* The star lives on the row, not just on message hover: an affordance you have
+   to discover by accident is one most people never find. */
+.lct-o-fav {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #7d6068;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .16s ease, color .16s ease, background .16s ease;
+}
+.lct-o-row:hover .lct-o-fav,
+.lct-o-fav:focus-visible,
+.lct-o-fav.lct-o-fav-on { opacity: 1; }
+.lct-o-fav:hover { background: rgba(255, 212, 94, .16); color: #ffd45e; }
+.lct-o-fav-on { color: #ffd45e; }
 .lct-o-item {
   display: block;
+  min-width: 0;
+  flex: 1 1 auto;
   width: 100%;
   text-align: left;
   border: none;
   background: transparent;
-  color: #cfd6e4;
+  color: #e8d0d8;
   font: 12px/1.4 inherit;
   font-family: inherit;
   padding: 5px 8px;
@@ -312,10 +365,10 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.lct-o-item:hover { background: rgba(122, 162, 255, 0.14); color: #fff; }
+.lct-o-item:hover { background: rgba(255, 93, 138, 0.14); color: #fff; }
 .lct-o-user { font-weight: 600; }
-.lct-o-user::before { content: "› "; color: #7aa2ff; }
-.lct-o-h { color: #9aa3b5; }
+.lct-o-user::before { content: "› "; color: #ff5d8a; }
+.lct-o-h { color: #cbb2ba; }
 .lct-o-h2 { padding-left: 18px; }
 .lct-o-h3 { padding-left: 28px; }
 .lct-o-star::before { content: "★ "; color: #ffd45e; }
@@ -323,9 +376,113 @@
 .lct-o-note {
   padding: 6px 10px 8px;
   font-size: 10.5px;
-  color: #8a91a0;
+  color: #cbb2ba;
 }
 .lct-o-note:empty { display: none; }
+
+/* ===== Seek progress pill =====
+   Paging a host's transcript moves its page — a site only fetches older turns
+   when its scroller is genuinely at the top, and the browser paints that. This
+   is the difference between "the page is broken" and "it is fetching, here is
+   how far, stop it if you like". */
+#lct-seek {
+  position: fixed;
+  left: 50%;
+  bottom: 26px;
+  z-index: 2147483646;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px 8px 14px;
+  border: 1px solid rgba(255, 220, 230, 0.14);
+  border-radius: 999px;
+  background: rgba(33, 15, 23, 0.985);
+  color: #fbf6f8;
+  font: 500 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 18px 48px rgba(14, 3, 10, 0.44);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 8px);
+  transition: opacity 0.18s ease, transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+}
+#lct-seek.lct-seek-show { opacity: 1; pointer-events: auto; transform: translate(-50%, 0); }
+.lct-seek-stop {
+  padding: 5px 11px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 93, 138, 0.16);
+  color: #ff5d8a;
+  font: 600 11px/1 inherit;
+  cursor: pointer;
+}
+.lct-seek-stop:hover { background: rgba(255, 93, 138, 0.28); }
+
+/* ===== Message preview =====
+   What you read while the site catches up. It closes itself the moment the
+   real message is on screen — it is the wait made useful, not a second reader. */
+#lct-preview {
+  position: fixed;
+  right: calc(64px + var(--lct-rail-inset, 0px));
+  top: 12vh;
+  z-index: 2147483645;
+  display: flex;
+  flex-direction: column;
+  width: min(460px, calc(100vw - 110px));
+  max-height: 62vh;
+  border: 1px solid rgba(255, 220, 230, 0.14);
+  border-radius: 14px;
+  background: rgba(33, 15, 23, 0.985);
+  color: #fbf6f8;
+  box-shadow: 0 18px 48px rgba(14, 3, 10, 0.44);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(6px) scale(0.985);
+  transition: opacity 0.2s ease, transform 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+#lct-preview.lct-p-open { opacity: 1; pointer-events: auto; transform: none; }
+.lct-p-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 10px 10px 13px;
+  border-bottom: 1px solid rgba(255, 220, 230, 0.14);
+}
+.lct-p-title {
+  flex: 1;
+  font: 600 11.5px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #ff5d8a;
+  font-variant-numeric: tabular-nums;
+}
+.lct-p-close {
+  width: 24px;
+  height: 24px;
+  border: 1px solid rgba(255, 220, 230, 0.14);
+  border-radius: 8px;
+  background: transparent;
+  color: #cbb2ba;
+  font: 400 12px/1 inherit;
+  cursor: pointer;
+}
+.lct-p-close:hover { background: rgba(255, 93, 138, 0.15); color: #ff5d8a; }
+.lct-p-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 13px;
+  font: 400 13px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* The 80-char index snippet, before the archive read lands. Trailing off is
+   honest — there IS more, it just hasn't arrived yet. */
+.lct-p-partial::after { content: "…"; opacity: 0.5; }
+.lct-p-note {
+  padding: 8px 13px 11px;
+  border-top: 1px solid rgba(255, 220, 230, 0.14);
+  font: 500 10.5px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #cbb2ba;
+}
+.lct-p-note:empty { display: none; }
 
 /* ===== Toast note ===== */
 #lct-note {
@@ -338,8 +495,8 @@
   padding: 10px 18px;
   font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   border-radius: 10px;
-  background: rgba(20, 22, 28, 0.95);
-  color: #e8eaf0;
+  background: rgba(33, 15, 23, 0.95);
+  color: #fbf6f8;
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
   opacity: 0;
   pointer-events: none;
@@ -358,31 +515,22 @@
   max-width: 280px;
   padding: 10px 12px;
   border-radius: 10px;
-  background: rgba(18, 19, 24, 0.97);
+  background: rgba(33, 15, 23, 0.97);
   border: 1px solid rgba(255, 255, 255, 0.09);
   box-shadow: 0 10px 32px rgba(0, 0, 0, 0.45);
-  color: #ececf1;
+  color: #fbf6f8;
   font: 400 12.5px/1.5 -apple-system, "Segoe UI", sans-serif;
   pointer-events: none; /* never trap the cursor on the way to the link */
 }
 #lct-chatcard .lct-cc-title { font-weight: 600; font-size: 13px; margin-bottom: 3px; }
-#lct-chatcard .lct-cc-dim { opacity: 0.62; }
-#lct-chatcard .lct-cc-star { color: #ffd45e; }
+#lct-chatcard .lct-cc-dim { color: var(--lct-muted); }
+#lct-chatcard .lct-cc-star { color: #e7bc58; }
 #lct-chatcard .lct-cc-badge {
   margin-top: 5px;
   padding-top: 5px;
   border-top: 1px solid rgba(255, 255, 255, 0.09);
-  color: #7aa2ff;
+  color: #ff5d8a;
   font-weight: 600;
-}
-@media (prefers-color-scheme: light) {
-  #lct-chatcard {
-    background: rgba(255, 255, 255, 0.98);
-    border-color: rgba(0, 0, 0, 0.12);
-    box-shadow: 0 10px 32px rgba(0, 0, 0, 0.18);
-    color: #1a1a1e;
-  }
-  #lct-chatcard .lct-cc-badge { border-top-color: rgba(0, 0, 0, 0.1); color: #3b5bdb; }
 }
 
 /* Total Recall overlay: see the dedicated section near the end of this file
@@ -397,10 +545,10 @@
   z-index: 2147483647;
   width: min(660px, calc(100vw - 32px));
   border-radius: 14px;
-  background: rgba(18, 19, 24, 0.98);
-  border: 1px solid rgba(122, 162, 255, 0.28);
+  background: rgba(33, 15, 23, 0.98);
+  border: 1px solid rgba(255, 93, 138, 0.28);
   box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
-  color: #ececf1;
+  color: #fbf6f8;
   font: 400 13.5px/1.5 -apple-system, "Segoe UI", sans-serif;
   opacity: 0;
   pointer-events: none;
@@ -412,44 +560,44 @@
   padding: 12px 16px; border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 #lct-bridge input[type="text"] {
-  flex: 1; border: none; outline: none; background: transparent; color: #ececf1; font-size: 15.5px;
+  flex: 1; border: none; outline: none; background: transparent; color: #fbf6f8; font-size: 15.5px;
 }
-#lct-bridge input[type="text"]::placeholder { color: rgba(236, 236, 241, 0.4); }
-#lct-bridge .lct-b-meta { color: rgba(236, 236, 241, 0.5); font-size: 12px; white-space: nowrap; }
+#lct-bridge input[type="text"]::placeholder { color: rgba(251, 247, 245, 0.4); }
+#lct-bridge .lct-b-meta { color: rgba(251, 247, 245, 0.5); font-size: 12px; white-space: nowrap; }
 #lct-bridge .lct-b-list { max-height: 44vh; overflow-y: auto; padding: 6px; }
 #lct-bridge .lct-b-item {
   display: flex; gap: 10px; align-items: flex-start;
   padding: 9px 11px; border-radius: 10px; cursor: pointer;
 }
-#lct-bridge .lct-b-item:hover { background: rgba(122, 162, 255, 0.08); }
-#lct-bridge .lct-b-item input[type="checkbox"] { margin-top: 3px; flex: none; width: 15px; height: 15px; accent-color: #7aa2ff; }
+#lct-bridge .lct-b-item:hover { background: rgba(255, 93, 138, 0.08); }
+#lct-bridge .lct-b-item input[type="checkbox"] { margin-top: 3px; flex: none; width: 15px; height: 15px; accent-color: #ff5d8a; }
 #lct-bridge .lct-b-body { min-width: 0; }
 #lct-bridge .lct-b-title { display: flex; gap: 8px; align-items: baseline; font-weight: 600; font-size: 13px; }
 #lct-bridge .lct-b-title b {
   font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
-  color: #7aa2ff; flex: none;
+  color: #ff5d8a; flex: none;
 }
 #lct-bridge .lct-b-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #lct-bridge .lct-b-ex {
-  color: rgba(236, 236, 241, 0.62); font-size: 12.5px; margin-top: 3px;
+  color: rgba(251, 247, 245, 0.62); font-size: 12.5px; margin-top: 3px;
   overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
 }
 #lct-bridge .lct-b-foot {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   padding: 10px 16px; border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
-#lct-bridge .lct-b-note { color: rgba(236, 236, 241, 0.45); font-size: 11.5px; }
+#lct-bridge .lct-b-note { color: rgba(251, 247, 245, 0.45); font-size: 11.5px; }
 #lct-bridge .lct-b-insert {
   flex: none; padding: 7px 14px; border: none; border-radius: 9px; cursor: pointer;
-  background: #5b7fff; color: #fff; font: 600 12.5px/1 -apple-system, "Segoe UI", sans-serif;
+  background: #ff5d8a; color: #fff; font: 600 12.5px/1 -apple-system, "Segoe UI", sans-serif;
 }
-#lct-bridge .lct-b-insert:hover { background: #6f8fff; }
+#lct-bridge .lct-b-insert:hover { background: #ff86a6; }
 #lct-bridge .lct-b-insert:disabled { opacity: 0.45; cursor: default; }
 
 #lct-b-toast {
   position: fixed; left: 50%; bottom: 92px; transform: translateX(-50%) translateY(8px);
   z-index: 2147483647; padding: 9px 16px; border-radius: 999px;
-  background: rgba(22, 24, 30, 0.97); color: #e8eaf0; border: 1px solid rgba(122, 162, 255, 0.35);
+  background: rgba(33, 15, 23, 0.97); color: #fbf6f8; border: 1px solid rgba(255, 93, 138, 0.35);
   font: 600 12.5px/1 -apple-system, "Segoe UI", sans-serif;
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
   opacity: 0; pointer-events: none; transition: opacity 0.2s ease, transform 0.2s ease;
@@ -458,16 +606,16 @@
 
 @media (prefers-color-scheme: light) {
   #lct-bridge {
-    background: rgba(255, 255, 255, 0.99); border-color: rgba(79, 110, 247, 0.3);
-    box-shadow: 0 24px 70px rgba(0, 0, 0, 0.25); color: #1a1a1e;
+    background: rgba(255, 255, 255, 0.99); border-color: rgba(209, 31, 79, 0.3);
+    box-shadow: 0 24px 70px rgba(0, 0, 0, 0.25); color: #2a1018;
   }
-  #lct-bridge input[type="text"] { color: #1a1a1e; }
-  #lct-bridge input[type="text"]::placeholder { color: rgba(26, 26, 30, 0.4); }
+  #lct-bridge input[type="text"] { color: #2a1018; }
+  #lct-bridge input[type="text"]::placeholder { color: rgba(42, 16, 24, 0.4); }
   #lct-bridge .lct-b-head, #lct-bridge .lct-b-foot { border-color: rgba(0, 0, 0, 0.08); }
-  #lct-bridge .lct-b-meta, #lct-bridge .lct-b-note { color: rgba(26, 26, 30, 0.5); }
-  #lct-bridge .lct-b-title b { color: #3b5bdb; }
-  #lct-bridge .lct-b-ex { color: rgba(26, 26, 30, 0.6); }
-  #lct-b-toast { background: rgba(255, 255, 255, 0.99); color: #1a1a1e; border-color: rgba(79, 110, 247, 0.35); }
+  #lct-bridge .lct-b-meta, #lct-bridge .lct-b-note { color: rgba(42, 16, 24, 0.5); }
+  #lct-bridge .lct-b-title b { color: #d11f4f; }
+  #lct-bridge .lct-b-ex { color: rgba(42, 16, 24, 0.6); }
+  #lct-b-toast { background: rgba(255, 255, 255, 0.99); color: #2a1018; border-color: rgba(209, 31, 79, 0.35); }
 }
 
 /* invisible hover bridge: covers the gap between the message edge and the
@@ -487,31 +635,64 @@
      buttons alike. CSS clamps it to half the box, so small controls read as
      the same shape family as the panel that holds them. */
   --lct-radius: 12px;
-  --lct-scrim: rgba(4, 10, 24, .34);
-  --lct-surface: rgba(18, 27, 45, .96);
-  --lct-surface-strong: rgba(23, 35, 58, .985);
-  --lct-ink: #f2f6ff;
-  --lct-muted: #b8c4d8;
-  --lct-line: rgba(206, 221, 248, .16);
-  --lct-accent: #4d9cff;
-  --lct-accent-soft: rgba(77, 156, 255, .15);
-  --lct-shadow: 0 18px 48px rgba(5, 13, 30, .36), 0 2px 6px rgba(5, 13, 30, .22);
+
+  /* Red brand palette, matched to the Recall page's signal rose. Surfaces are
+     warm near-black plum, never neutral or cool grey. */
+  --lct-rail-inset: 0px;   /* set by main.js when the host owns the right edge */
+  --lct-scrim: rgba(12, 3, 9, .40);
+  --lct-surface: rgba(26, 12, 18, .96);
+  --lct-surface-strong: rgba(33, 15, 23, .985);
+  --lct-ink: #fbf6f8;
+  --lct-muted: #cbb2ba;
+  --lct-line: rgba(255, 220, 230, .14);
+  --lct-accent: #ff5d8a;
+  --lct-accent-soft: rgba(255, 93, 138, .15);
+  --lct-shadow: 0 18px 48px rgba(14, 3, 10, .44), 0 2px 6px rgba(14, 3, 10, .28);
+
+  /* The Recall page's gradient field, dialled down for panels that sit over a
+     live chat. Layered over --lct-surface-strong, so colour stays last. */
+  --lct-field:
+    radial-gradient(122% 86% at 14% 0%, rgba(255, 18, 80, .13), transparent 56%),
+    radial-gradient(104% 78% at 88% 2%, rgba(232, 35, 112, .15), transparent 58%),
+    linear-gradient(163deg, rgba(141, 12, 55, .26) 0%, rgba(32, 15, 24, .12) 40%, transparent 74%);
+
+  /* Minimap canvas palette — read at draw time; a canvas can't use CSS.
+     Code rows drop to the deep crimson so they read as a band against the
+     rose user rows rather than as the same colour. */
+  --lct-mm-user: #ff5d8a;
+  --lct-mm-ai: rgba(226, 198, 208, .38);
+  --lct-mm-code: #ffc2d4;
+  --lct-mm-lens: rgba(255, 93, 138, .13);
+  --lct-mm-lens-edge: rgba(255, 93, 138, .55);
+  --lct-mm-track: rgba(255, 220, 230, .07);
+  /* Resting rail: track fades at both ends so it reads as a rule, not a pill. */
+  --lct-mm-rest-a: rgba(255, 93, 138, .16);
+  --lct-mm-rest-b: rgba(255, 93, 138, .38);
+  --lct-mm-thumb-a: #ff7ea4;
+  --lct-mm-thumb-b: #e0396c;
 }
 
 #lct-minimap,
 #lct-export-bar.lct-floating {
   border: 1px solid var(--lct-line);
   border-radius: var(--lct-radius);
-  background: var(--lct-surface);
-  box-shadow: 0 8px 22px rgba(4, 12, 10, 0.16);
+  background: var(--lct-field), var(--lct-surface);
+  box-shadow: 0 8px 22px rgba(14, 3, 10, 0.16);
   backdrop-filter: blur(12px) saturate(1.1);
 }
-#lct-minimap { width: 22px; right: 12px; opacity: .78; }
+/* No hover-widen: the export buttons sit inside, and resizing under the
+   pointer moves them out from under the click. */
+#lct-minimap { width: 22px; right: calc(12px + var(--lct-rail-inset, 0px)); opacity: .78; }
 #lct-minimap:hover { opacity: 1; }
 #lct-minimap.lct-collapsed { width: 13px; }
 #lct-mm-toggle { color: var(--lct-muted); }
 #lct-mm-toggle:hover { background: var(--lct-accent-soft); color: var(--lct-accent); }
-#lct-mm-count { color: var(--lct-accent); background: var(--lct-accent-soft); border-radius: var(--lct-radius); }
+#lct-mm-count {
+  color: var(--lct-accent);
+  background: var(--lct-accent-soft);
+  border: 1px solid var(--lct-line);
+  border-radius: 999px;
+}
 #lct-export-bar button { color: var(--lct-muted); border-radius: var(--lct-radius); }
 #lct-export-bar button:hover { background: var(--lct-accent-soft); color: var(--lct-accent); transform: translateY(-1px); }
 #lct-mm-tooltip,
@@ -545,12 +726,12 @@
 #lct-search button:hover { border-color: var(--lct-line); background: var(--lct-accent-soft); color: var(--lct-accent); }
 .lct-hit { animation-name: lct-pulse-refined; }
 @keyframes lct-pulse-refined {
-  0% { box-shadow: 0 0 0 3px rgba(103, 209, 175, .72); }
-  100% { box-shadow: 0 0 0 7px rgba(103, 209, 175, 0); }
+  0% { box-shadow: 0 0 0 3px rgba(255, 93, 138, .72); }
+  100% { box-shadow: 0 0 0 7px rgba(255, 93, 138, 0); }
 }
 
 #lct-resume {
-  border: 1px solid rgba(103, 209, 175, .38);
+  border: 1px solid rgba(255, 93, 138, .38);
   border-radius: var(--lct-radius);
   background: var(--lct-surface-strong);
   color: var(--lct-ink);
@@ -570,27 +751,61 @@
 .lct-starred { box-shadow: inset 2px 0 0 rgba(231, 188, 88, .76); }
 
 #lct-outline {
+  /* Was a local ember override back when --lct-accent was blue. The shared
+     accent is ember now, so these just alias it — one accent, one theme. */
+  --lct-o-accent: var(--lct-accent);
+  --lct-o-accent-soft: var(--lct-accent-soft);
   border-color: var(--lct-line);
   border-radius: var(--lct-radius);
-  background: var(--lct-surface-strong);
+  background: var(--lct-field), var(--lct-surface-strong);
   color: var(--lct-ink);
   box-shadow: var(--lct-shadow);
   font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
 }
 .lct-o-head { padding: 9px; border-color: var(--lct-line); }
-.lct-o-tab { color: var(--lct-muted); border-radius: var(--lct-radius); }
-.lct-o-tab.lct-o-on { background: var(--lct-accent-soft); color: var(--lct-accent); }
-.lct-o-close { border: 1px solid var(--lct-line); border-radius: var(--lct-radius); background: transparent; color: var(--lct-muted); }
-.lct-o-close:hover { background: var(--lct-accent-soft); color: var(--lct-accent); }
-.lct-o-item { border-radius: var(--lct-radius); color: var(--lct-ink); }
-.lct-o-item:hover { background: var(--lct-accent-soft); color: var(--lct-ink); }
-.lct-o-user::before { color: var(--lct-accent); }
+.lct-o-tab { color: var(--lct-muted); border-radius: var(--lct-radius); transition: background 0.16s ease, color 0.16s ease; }
+.lct-o-tab.lct-o-on { background: var(--lct-o-accent-soft); color: var(--lct-o-accent); }
+.lct-o-tab:hover:not(.lct-o-on) { background: color-mix(in srgb, var(--lct-ink) 6%, transparent); }
+.lct-o-close { border: 1px solid var(--lct-line); border-radius: var(--lct-radius); background: transparent; color: var(--lct-muted); transition: background 0.16s ease, color 0.16s ease; }
+.lct-o-close:hover { background: var(--lct-o-accent-soft); color: var(--lct-o-accent); }
+.lct-o-item {
+  border-radius: var(--lct-radius);
+  color: var(--lct-ink);
+  transition: background 0.14s ease, transform 0.14s cubic-bezier(0.22, 1, 0.36, 1);
+  animation: lct-o-in 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: calc(min(var(--i, 0), 12) * 16ms); /* long lists shouldn't take seconds to finish appearing */
+}
+@keyframes lct-o-in {
+  from { opacity: 0; transform: translateY(5px); }
+  to   { opacity: 1; transform: none; }
+}
+.lct-o-item:hover { background: var(--lct-o-accent-soft); color: var(--lct-ink); transform: translateX(2px); }
+/* Deliberately NOT animated in: an lct-o-in with fill-mode both would land on
+   opacity 1 and pin the star visible on every row. */
+.lct-o-fav { color: var(--lct-muted); border-radius: var(--lct-radius); }
+.lct-o-fav-on, .lct-o-fav:hover { color: #e7bc58; }
+.lct-o-user::before { color: var(--lct-o-accent); }
+.lct-o-star::before { color: #e7bc58; }
 .lct-o-h, .lct-o-note { color: var(--lct-muted); }
+
+#lct-seek, #lct-preview {
+  border-color: var(--lct-line);
+  background: var(--lct-field), var(--lct-surface-strong);
+  color: var(--lct-ink);
+  box-shadow: var(--lct-shadow);
+}
+.lct-seek-stop { background: var(--lct-accent-soft); color: var(--lct-accent); }
+.lct-seek-stop:hover { background: color-mix(in srgb, var(--lct-accent) 26%, transparent); }
+.lct-p-head, .lct-p-note { border-color: var(--lct-line); }
+.lct-p-title { color: var(--lct-accent); }
+.lct-p-close { border-color: var(--lct-line); color: var(--lct-muted); }
+.lct-p-close:hover { background: var(--lct-accent-soft); color: var(--lct-accent); }
+.lct-p-note { color: var(--lct-muted); }
 
 #lct-chatcard {
   border-color: var(--lct-line);
   border-radius: var(--lct-radius);
-  background: var(--lct-surface-strong);
+  background: var(--lct-field), var(--lct-surface-strong);
   color: var(--lct-ink);
   box-shadow: var(--lct-shadow);
   font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
@@ -600,7 +815,7 @@
 #lct-bridge {
   border-color: var(--lct-line);
   border-radius: var(--lct-radius);
-  background: var(--lct-surface-strong);
+  background: var(--lct-field), var(--lct-surface-strong);
   color: var(--lct-ink);
   box-shadow: var(--lct-shadow);
   font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
@@ -612,7 +827,7 @@
 #lct-bridge .lct-b-meta,
 #lct-bridge .lct-b-note { color: var(--lct-muted); }
 #lct-bridge .lct-b-item { border: 1px solid transparent; border-radius: var(--lct-radius); }
-#lct-bridge .lct-b-item:hover { background: var(--lct-accent-soft); border-color: rgba(103, 209, 175, .12); }
+#lct-bridge .lct-b-item:hover { background: var(--lct-accent-soft); border-color: rgba(255, 93, 138, .12); }
 #lct-bridge .lct-b-title b { color: var(--lct-accent); }
 #lct-bridge .lct-b-ex { color: color-mix(in srgb, var(--lct-ink) 68%, transparent); }
 #lct-bridge .lct-b-item input[type="checkbox"] { accent-color: var(--lct-accent); }
@@ -620,10 +835,10 @@
   border: 1px solid var(--lct-accent);
   border-radius: var(--lct-radius);
   background: var(--lct-accent);
-  color: #061426;
+  color: #2a1018;
   font-family: "Avenir Next", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
-#lct-bridge .lct-b-insert:hover { background: #75b4ff; }
+#lct-bridge .lct-b-insert:hover { background: #ff86a6; }
 /* ===== Total Recall overlay — the cross-chat command surface =============
    Sized by measurement, not by a fixed max-height: the list animates open to
    exactly what the results need (see sizeList in content/recall.js), so a
@@ -638,11 +853,11 @@
   width: min(720px, calc(100vw - 32px));
   border: 1px solid var(--lct-line);
   border-radius: var(--lct-radius);
-  background: var(--lct-surface-strong);
+  background: var(--lct-field), var(--lct-surface-strong);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, .06),
-    0 32px 80px -22px rgba(4, 12, 30, .6),
-    0 8px 24px -14px rgba(4, 12, 30, .5);
+    0 32px 80px -22px rgba(14, 3, 10, .6),
+    0 8px 24px -14px rgba(14, 3, 10, .5);
   backdrop-filter: blur(22px) saturate(1.35);
   color: var(--lct-ink);
   font: 400 13.5px/1.5 "Helvetica Neue", Helvetica, Arial, sans-serif;
@@ -956,6 +1171,192 @@
 #lct-r-sync:active { transform: none; }
 #lct-r-sync:disabled { opacity: .5; cursor: default; transform: none; }
 
+/* ===== Conversation navigator v3 =====
+   An instrument, not a widget. The chrome is deliberately almost absent: one
+   quiet surface, hairlines that fade before they touch the edges, and no
+   border-box anywhere near the canvas. Everything expressive happens in the
+   drawing — see draw() in content/minimap.js. */
+#lct-minimap {
+  top: clamp(64px, 12vh, 112px);
+  right: calc(10px + var(--lct-rail-inset, 0px));
+  bottom: clamp(72px, 12vh, 116px);
+  width: 40px;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 15px;
+  background: var(--lct-field), var(--lct-surface-strong);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, .04) inset,
+    0 12px 34px -14px rgba(14, 3, 10, .5),
+    0 2px 10px -6px rgba(14, 3, 10, .4);
+  backdrop-filter: blur(14px) saturate(1.1);
+  opacity: .82;
+  transition:
+    opacity 260ms cubic-bezier(.16, 1, .3, 1),
+    border-color 260ms cubic-bezier(.16, 1, .3, 1),
+    width 260ms cubic-bezier(.16, 1, .3, 1);
+}
+/* Reading the map is a deliberate act — it comes forward when you go to it. */
+#lct-minimap:hover,
+#lct-minimap:focus-within {
+  opacity: 1;
+  border-color: color-mix(in srgb, var(--lct-accent) 22%, transparent);
+}
+#lct-minimap.lct-collapsed {
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  bottom: auto;
+  border-radius: 9px;
+}
+#lct-minimap.lct-collapsed #lct-mm-stage,
+#lct-minimap.lct-collapsed #lct-mm-count,
+#lct-minimap.lct-collapsed #lct-export-bar { display: none; }
+
+/* ---- resting ----
+   Where the map lives when nobody is reading it: a scrollbar's worth of
+   colour and nothing else. No panel, no chrome, no blur — those are what make
+   a persistent overlay feel like it is sitting on top of someone's work. It
+   costs 13px, which is narrower than the scrollbar it sits beside. The full
+   instrument is one hover away; see drawRest() in content/minimap.js. */
+#lct-minimap.lct-mm-rest:not(.lct-collapsed) {
+  width: 13px;
+  border-color: transparent;
+  background: none;
+  box-shadow: none;
+  backdrop-filter: none;
+  opacity: .9;
+}
+/* visibility, NOT display. Hiding the chrome outright would give the canvas a
+   different height at rest than under the cursor, so a tick you aimed at while
+   the rail was quiet would be a different message by the time the panel
+   finished opening. Width is the only thing allowed to change here. */
+/* :not(.lct-collapsed) — once collapsed, the toggle IS the whole control, and
+   hiding it on unhover would leave a 28px square with no way back. */
+#lct-minimap.lct-mm-rest:not(.lct-collapsed) #lct-mm-toggle,
+#lct-minimap.lct-mm-rest:not(.lct-collapsed) #lct-mm-count,
+#lct-minimap.lct-mm-rest:not(.lct-collapsed) #lct-export-bar { visibility: hidden; }
+#lct-minimap.lct-mm-rest:not(.lct-collapsed) #lct-mm-stage { padding: 6px 0 7px; }
+
+#lct-mm-toggle {
+  order: 0;
+  position: relative;
+  width: 100%;
+  height: 27px;
+  min-height: 27px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--lct-muted);
+  font: 400 15px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  opacity: .7;
+  transition: color 200ms cubic-bezier(.16, 1, .3, 1), opacity 200ms cubic-bezier(.16, 1, .3, 1);
+}
+/* Hairlines fade out before the edges — a full-width rule would box the panel
+   into segments, which is the look this redesign is getting rid of. */
+#lct-mm-toggle::after {
+  content: "";
+  position: absolute;
+  left: 7px; right: 7px; bottom: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--lct-line), transparent);
+}
+#lct-minimap.lct-collapsed #lct-mm-toggle::after { display: none; }
+#lct-mm-toggle:hover { background: transparent; color: var(--lct-accent); opacity: 1; }
+
+#lct-mm-count {
+  order: 1;
+  align-self: center;
+  min-width: 20px;
+  margin: 6px 0 2px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;              /* a number, not a badge */
+  color: var(--lct-accent);
+  font: 500 8.5px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: -.03em;
+  font-variant-numeric: tabular-nums;
+  opacity: .75;
+  transition: opacity 200ms cubic-bezier(.16, 1, .3, 1);
+}
+#lct-minimap:hover #lct-mm-count { opacity: 1; }
+
+#lct-mm-stage {
+  order: 2;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  /* Tight: every px here comes straight out of the waveform's resolution. */
+  padding: 6px 5px 7px;
+}
+#lct-mm-canvas {
+  flex: none;
+  width: 100%;
+  height: 100%;
+  min-height: 48px;
+  outline: none;
+}
+#lct-mm-canvas:focus-visible {
+  outline: 2px solid var(--lct-accent);
+  outline-offset: 2px;
+}
+
+#lct-minimap #lct-export-bar {
+  order: 3;
+  position: relative;
+  width: 100%;
+  flex: 0 0 auto;
+  gap: 2px;
+  padding: 6px 0 6px;
+}
+#lct-minimap #lct-export-bar::before {
+  content: "";
+  position: absolute;
+  left: 7px; right: 7px; top: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--lct-line), transparent);
+}
+#lct-minimap #lct-export-bar button {
+  width: 23px;
+  height: 23px;
+  border-radius: 7px;
+  color: var(--lct-muted);
+  opacity: .62;
+  transition:
+    color 200ms cubic-bezier(.16, 1, .3, 1),
+    opacity 200ms cubic-bezier(.16, 1, .3, 1),
+    background 200ms cubic-bezier(.16, 1, .3, 1);
+}
+#lct-minimap:hover #lct-export-bar button { opacity: .85; }
+#lct-minimap #lct-export-bar button:hover {
+  background: var(--lct-accent-soft);
+  color: var(--lct-accent);
+  opacity: 1;
+  transform: none;                      /* no bounce — the icons sit in a column */
+}
+#lct-minimap #lct-export-bar button:active { transform: scale(.94); }
+
+#lct-mm-tooltip {
+  right: calc(54px + var(--lct-rail-inset, 0px));
+  width: min(280px, calc(100vw - 72px));
+  max-width: none;
+  padding: 8px 10px;
+  border: 1px solid var(--lct-line);
+  border-radius: 10px;
+  background: var(--lct-surface-strong);
+  color: var(--lct-ink);
+  box-shadow: var(--lct-shadow);
+  font: 500 11px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  white-space: normal;
+}
+
+@media (max-height: 420px), (max-width: 640px) {
+  #lct-minimap { display: none !important; }
+}
+
 @media (max-width: 620px) {
   #lct-recall { top: 6vh; }
   #lct-recall .lct-r-when { display: none; }
@@ -969,24 +1370,95 @@
 }
 /* the whole panel exists because this field is focused — boxing it says nothing */
 #lct-recall input:focus-visible { outline: none; }
+/* Light palette. The OS preference is only the fallback — the host page's
+   theme wins, stamped on <html> by main.js and outranking this query. */
 @media (prefers-color-scheme: light) {
   :root {
-    --lct-surface: rgba(255, 255, 255, .96);
-    --lct-surface-strong: rgba(255, 255, 255, .985);
-    --lct-ink: #142039;
-    --lct-muted: #5c6d88;
-    --lct-line: rgba(33, 70, 125, .16);
-    --lct-accent: #1769d1;
-    --lct-accent-soft: rgba(23, 105, 209, .1);
-    --lct-scrim: rgba(24, 42, 78, .1);
-    --lct-shadow: 0 18px 48px rgba(20, 55, 110, .14), 0 2px 6px rgba(20, 55, 110, .08);
+    /* Ember is a dark-field colour — on white it disappears, so light mode
+       drops to the gradient's deep rose (#b03d5c) for AA-legible accents. */
+    --lct-surface: rgba(255, 251, 250, .96);
+    --lct-surface-strong: rgba(255, 253, 252, .985);
+    --lct-ink: #2a1018;
+    --lct-muted: #7d5560;
+    --lct-line: rgba(125, 40, 62, .16);
+    --lct-accent: #d11f4f;
+    --lct-accent-soft: rgba(209, 31, 79, .1);
+    --lct-scrim: rgba(58, 18, 32, .1);
+    --lct-shadow: 0 18px 48px rgba(92, 24, 45, .14), 0 2px 6px rgba(92, 24, 45, .08);
+    --lct-mm-user: #d11f4f;
+    --lct-mm-ai: rgba(110, 76, 86, .34);
+    --lct-mm-code: #8d0c37;
+    --lct-mm-lens: rgba(209, 31, 79, .12);
+    --lct-mm-lens-edge: rgba(209, 31, 79, .45);
+    --lct-mm-track: rgba(58, 18, 32, .07);
+    --lct-mm-rest-a: rgba(209, 31, 79, .18);
+    --lct-mm-rest-b: rgba(209, 31, 79, .42);
+    --lct-mm-thumb-a: #e8446e;
+    --lct-mm-thumb-b: #a8123c;
+    --lct-field:
+      radial-gradient(122% 86% at 14% 0%, rgba(255, 18, 80, .09), transparent 56%),
+      radial-gradient(104% 78% at 88% 2%, rgba(242, 112, 143, .09), transparent 58%),
+      linear-gradient(163deg, rgba(141, 12, 55, .07) 0%, rgba(141, 12, 55, .03) 40%, transparent 74%);
   }
 }
+:root[data-lct-theme="light"] {
+  --lct-surface: rgba(255, 251, 250, .96);
+  --lct-surface-strong: rgba(255, 253, 252, .985);
+  --lct-ink: #2a1018;
+  --lct-muted: #7d5560;
+  --lct-line: rgba(125, 40, 62, .16);
+  --lct-accent: #d11f4f;
+  --lct-accent-soft: rgba(209, 31, 79, .1);
+  --lct-scrim: rgba(58, 18, 32, .1);
+  --lct-shadow: 0 18px 48px rgba(92, 24, 45, .14), 0 2px 6px rgba(92, 24, 45, .08);
+  --lct-mm-user: #d11f4f;
+  --lct-mm-ai: rgba(110, 76, 86, .34);
+  --lct-mm-code: #8d0c37;
+  --lct-mm-lens: rgba(209, 31, 79, .12);
+  --lct-mm-lens-edge: rgba(209, 31, 79, .45);
+  --lct-mm-track: rgba(58, 18, 32, .07);
+  --lct-mm-rest-a: rgba(209, 31, 79, .18);
+  --lct-mm-rest-b: rgba(209, 31, 79, .42);
+  --lct-mm-thumb-a: #e8446e;
+  --lct-mm-thumb-b: #a8123c;
+  --lct-field:
+    radial-gradient(122% 86% at 14% 0%, rgba(255, 18, 80, .09), transparent 56%),
+    radial-gradient(104% 78% at 88% 2%, rgba(242, 112, 143, .09), transparent 58%),
+    linear-gradient(163deg, rgba(141, 12, 55, .07) 0%, rgba(141, 12, 55, .03) 40%, transparent 74%);
+}
+:root[data-lct-theme="dark"] {
+  --lct-surface: rgba(26, 12, 18, .96);
+  --lct-surface-strong: rgba(33, 15, 23, .985);
+  --lct-ink: #fbf6f8;
+  --lct-muted: #cbb2ba;
+  --lct-line: rgba(255, 220, 230, .14);
+  --lct-accent: #ff5d8a;
+  --lct-accent-soft: rgba(255, 93, 138, .15);
+  --lct-scrim: rgba(12, 3, 9, .40);
+  --lct-shadow: 0 18px 48px rgba(14, 3, 10, .44), 0 2px 6px rgba(14, 3, 10, .28);
+  --lct-mm-user: #ff5d8a;
+  --lct-mm-ai: rgba(226, 198, 208, .38);
+  --lct-mm-code: #ffc2d4;
+  --lct-mm-lens: rgba(255, 93, 138, .13);
+  --lct-mm-lens-edge: rgba(255, 93, 138, .55);
+  --lct-mm-track: rgba(255, 220, 230, .07);
+  --lct-mm-rest-a: rgba(255, 93, 138, .16);
+  --lct-mm-rest-b: rgba(255, 93, 138, .38);
+  --lct-mm-thumb-a: #ff7ea4;
+  --lct-mm-thumb-b: #e0396c;
+  /* Restated: on a light OS the media query above would otherwise leave the
+     light field under these dark surfaces. */
+  --lct-field:
+    radial-gradient(122% 86% at 14% 0%, rgba(255, 18, 80, .13), transparent 56%),
+    radial-gradient(104% 78% at 88% 2%, rgba(232, 35, 112, .15), transparent 58%),
+    linear-gradient(163deg, rgba(141, 12, 55, .26) 0%, rgba(32, 15, 24, .12) 40%, transparent 74%);
+}
 @media (prefers-reduced-motion: reduce) {
-  #lct-minimap, #lct-export-bar button, #lct-search, #lct-search button, #lct-resume, #lct-star, #lct-recall, #lct-bridge, #lct-note, #lct-b-toast { transition-duration: 1ms !important; animation-duration: 1ms !important; }
+  #lct-minimap, #lct-mm-toggle, #lct-export-bar button, #lct-search, #lct-search button, #lct-resume, #lct-star, #lct-recall, #lct-bridge, #lct-note, #lct-b-toast, #lct-outline { transition-duration: 1ms !important; animation-duration: 1ms !important; }
   /* the overlay still resizes to fit its results — it just doesn't perform it */
   #lct-recall *,
-  #lct-recall::before {
+  #lct-recall::before,
+  #lct-outline * {
     animation: none !important;
     transition-duration: 1ms !important;
   }

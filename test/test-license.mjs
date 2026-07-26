@@ -1,24 +1,36 @@
 #!/usr/bin/env node
 /* License crypto unit tests — runs lib/license.js in Node with a `self` shim.
    Node 18+ exposes WebCrypto as globalThis.crypto, same API the browser uses. */
-import { readFileSync, existsSync } from "node:fs";
-import { createPrivateKey, sign } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { generateKeyPairSync, sign } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import vm from "node:vm";
 
 const ROOT = join(homedir(), "long-chat-toolkit");
-const PRIV = join(homedir(), ".lct-keys", "private.pem");
-if (!existsSync(PRIV)) { console.error("FATAL: no private key at ~/.lct-keys"); process.exit(1); }
 
-// Load lib/license.js exactly as shipped
+/* Signatures are tested against a throwaway keypair minted here, never the
+   shipped one. The production public key is pinned in lib/license.js and its
+   private half is deliberately not on any dev machine — depending on
+   ~/.lct-keys made these tests pass or fail on whatever that folder last
+   held. The code under test (WebCrypto import → ECDSA verify → payload parse)
+   is byte for byte the shipped path; only the trusted key differs. */
+const { publicKey, privateKey: priv } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+const TEST_PUB = publicKey.export({ type: "spki", format: "der" }).toString("base64");
+const licenseSrc = readFileSync(join(ROOT, "lib", "license.js"), "utf8")
+  .replace(/const PUBLIC_KEY_B64 = "[^"]*";/, `const PUBLIC_KEY_B64 = "${TEST_PUB}";`);
+if (!licenseSrc.includes(TEST_PUB)) {
+  console.error("FATAL: PUBLIC_KEY_B64 not found in lib/license.js — test key not installed");
+  process.exit(1);
+}
+
 const sandbox = {
   self: {}, crypto: globalThis.crypto, atob: globalThis.atob,
   TextDecoder, TextEncoder, JSON, console
 };
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
-vm.runInContext(readFileSync(join(ROOT, "lib", "license.js"), "utf8"), sandbox);
+vm.runInContext(licenseSrc, sandbox);
 // lib/dodo.js must survive a bare sandbox with no chrome.* and no navigator —
 // that is the guarantee that it touches nothing at load time.
 vm.runInContext(readFileSync(join(ROOT, "lib", "dodo.js"), "utf8"), sandbox);
@@ -26,7 +38,6 @@ const { verify, evaluate, kindOf } = sandbox.self.LCTLicense;
 const D = sandbox.self.LCTDodo;
 
 const b64url = (buf) => Buffer.from(buf).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-const priv = createPrivateKey(readFileSync(PRIV));
 const issue = (payloadObj) => {
   const payload = Buffer.from(JSON.stringify(payloadObj));
   const sig = sign("sha256", payload, { key: priv, dsaEncoding: "ieee-p1363" });
@@ -34,7 +45,11 @@ const issue = (payloadObj) => {
 };
 
 let pass = 0, fail = 0;
-const t = (name, cond) => { cond ? pass++ : fail++; console.log(`${cond ? "PASS" : "FAIL"}  ${name}`); };
+const failed = []; // reprinted at the end: a lone FAIL scrolls past in a long run
+const t = (name, cond) => {
+  cond ? pass++ : (fail++, failed.push(name));
+  console.log(`${cond ? "PASS" : "FAIL"}  ${name}`);
+};
 
 const good = issue({ e: "buyer@example.com", p: "pro", t: 1753100000000 });
 
@@ -190,4 +205,5 @@ t("L20 redact hides key-shaped strings", !D.redact("key DODO-1234-ABCD failed").
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
+if (fail) console.log("failed:\n  " + failed.join("\n  "));
 process.exit(fail ? 1 : 0);

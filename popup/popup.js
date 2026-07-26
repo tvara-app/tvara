@@ -63,6 +63,7 @@
     $("toggle-enabled").checked = !s || s.enabled !== false;
     $("toggle-minimap").checked = !s || s.minimap !== false;
     $("toggle-time").checked = !s || s.time !== false;
+    $("toggle-history").checked = !!(s && s.history === true);
   }
 
   function hostRow(label, count, total) {
@@ -157,13 +158,14 @@
     const settings = {
       enabled: $("toggle-enabled").checked,
       minimap: $("toggle-minimap").checked,
-      time: $("toggle-time").checked
+      time: $("toggle-time").checked,
+      history: $("toggle-history").checked
     };
     saveCache({ settings });
     await chrome.storage.local.set({ settings });
   }
 
-  for (const id of ["toggle-enabled", "toggle-minimap", "toggle-time"]) {
+  for (const id of ["toggle-enabled", "toggle-minimap", "toggle-time", "toggle-history"]) {
     $(id).addEventListener("change", saveSettings);
   }
 

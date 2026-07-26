@@ -14,7 +14,7 @@
 "use strict";
 
 const DB_NAME = "lct-recall";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const MAX_MSG_CHARS = 4000;   // per message — plenty for search, bounds disk
 const MAX_MSGS = 6000;        // per chat
 const MAX_RESULTS = 60;
@@ -27,10 +27,17 @@ function db() {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = () => {
       const d = req.result;
-      if (!d.objectStoreNames.contains("chats")) {
-        const s = d.createObjectStore("chats", { keyPath: "id" }); // id = host+path
-        s.createIndex("updatedAt", "updatedAt");
-      }
+      const s = d.objectStoreNames.contains("chats")
+        ? req.transaction.objectStore("chats")
+        : (() => {
+            const created = d.createObjectStore("chats", { keyPath: "id" }); // id = host+path
+            created.createIndex("updatedAt", "updatedAt");
+            return created;
+          })();
+      // Lets the sync build its id→revision map from index keys alone, without
+      // deserializing message bodies. On a large archive that is the difference
+      // between reading a few hundred KB and the entire database.
+      if (!s.indexNames.contains("sourceUpdatedAt")) s.createIndex("sourceUpdatedAt", "sourceUpdatedAt");
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => { dbPromise = null; reject(req.error); };
@@ -44,12 +51,22 @@ const reqP = (r) => new Promise((res, rej) => { r.onsuccess = () => res(r.result
 /* ---------- write path ---------- */
 
 function clampChat(chat) {
-  const msgs = (chat.msgs || []).slice(-MAX_MSGS).map((m) => ({
+  const src = chat.msgs || [];
+  const msgs = src.slice(-MAX_MSGS).map((m) => ({
+    // The provider's own message id. On ChatGPT this is the same string the DOM
+    // carries as data-message-id, which is what lets a stored record seed the
+    // in-page map with no network call at all.
+    i: String(m.i || "").slice(0, 80),
     r: m.r === "user" ? "user" : "assistant",
     t: String(m.t || "").slice(0, MAX_MSG_CHARS),
     ts: typeof m.ts === "number" ? m.ts : 0
   }));
   return {
+    // mv=1 promises BOTH: every message carries its id, and nothing was dropped
+    // by the MAX_MSGS window. Anything less cannot be an index source.
+    // (`t` is still clamped to MAX_MSG_CHARS — norm() in minimap.js saturates at
+    // 900 chars, so an archive-served tick is pixel-identical to a live one.)
+    mv: msgs.length && src.length <= MAX_MSGS && msgs.every((m) => m.i) ? 1 : 0,
     id: String(chat.id || "").slice(0, 600),
     host: String(chat.host || "").slice(0, 100),
     path: String(chat.path || "").slice(0, 500),
@@ -74,15 +91,23 @@ async function upsert(chat) {
   const isMeta = chat.meta === true && chat.msgs.length === 0;
   if (!isMeta && chat.msgs.length < 2) return { ok: false };
   const d = await db();
-  if (isMeta) {
-    // a meta record (title+dates from sync) must never ERASE archived text
-    const existing = await reqP(tx(d, "readonly").get(String(chat.id).slice(0, 600)));
-    if (existing && existing.n > 0) {
+  const id = String(chat.id).slice(0, 600);
+  // A live page only ever sees what the host MOUNTED. On ChatGPT that is the
+  // recent tail, and this id is the same one the provider sync writes — so
+  // without a guard, opening a chat trades a complete 1,500-message transcript
+  // for a 30-message fragment a few seconds later. Only a write that carries a
+  // provider revision is allowed to shrink a record.
+  const shrinks = !isMeta && !chat.sourceUpdatedAt;
+  if (isMeta || shrinks) {
+    const existing = await reqP(tx(d, "readonly").get(id));
+    const keep = existing && existing.n > 0 &&
+      (isMeta || existing.n > chat.msgs.length);
+    if (keep) {
       if (chat.title && !existing.title) {
         existing.title = String(chat.title).slice(0, 200);
         await reqP(tx(d, "readwrite").put(existing));
       }
-      return { ok: true };
+      return { ok: true, kept: true };
     }
   }
   const clamped = clampChat(chat);
@@ -94,9 +119,10 @@ async function upsert(chat) {
 
 async function importBatch(chats) {
   const arr = Array.isArray(chats) ? chats : [];
-  if (!arr.length) return { ok: 0, skipped: 0 };
+  if (!arr.length) return { ok: 0, skipped: 0, stored: [], failed: [] };
   const d = await db();
   let ok = 0, skipped = 0;
+  const stored = [], failed = [];   // sync needs ids, not just counts
 
   // Phase 1: read existing records in a single readonly transaction
   const store = d.transaction("chats", "readonly").objectStore("chats");
@@ -114,11 +140,12 @@ async function importBatch(chats) {
   // Phase 2: write all upserts in a single readwrite transaction
   const wStore = d.transaction("chats", "readwrite").objectStore("chats");
   for (const c of arr) {
+    const cid = String((c && c.id) || "").slice(0, 600);
     try {
-      if (!c || !c.id || !Array.isArray(c.msgs)) { skipped++; continue; }
+      if (!c || !c.id || !Array.isArray(c.msgs)) { skipped++; failed.push(cid); continue; }
       const chat = { ...c, keepTimes: true };
       const isMeta = chat.meta === true && chat.msgs.length === 0;
-      if (!isMeta && chat.msgs.length < 2) { skipped++; continue; }
+      if (!isMeta && chat.msgs.length < 2) { skipped++; failed.push(cid); continue; }
       const id = String(chat.id).slice(0, 600);
       if (isMeta) {
         const prev = existing.get(id);
@@ -127,7 +154,7 @@ async function importBatch(chats) {
             prev.title = String(chat.title).slice(0, 200);
             await reqP(wStore.put(prev));
           }
-          ok++; continue;
+          ok++; stored.push(id); continue;
         }
       }
       const previous = existing.get(id);
@@ -137,15 +164,17 @@ async function importBatch(chats) {
       // overwrite a newer local conversation that arrived in the meantime.
       if (previous && previous.n > 0 && candidateSource > 0 && previousSource > candidateSource) {
         ok++;
+        stored.push(id);
         continue;
       }
       const clamped = clampChat(chat);
       if ((chat.keepTimes || isMeta) && chat.updatedAt) clamped.updatedAt = chat.updatedAt;
       await reqP(wStore.put(clamped));
       ok++;
-    } catch { skipped++; }
+      stored.push(id);
+    } catch { skipped++; failed.push(cid); }
   }
-  return { ok, skipped };
+  return { ok, skipped, stored, failed };
 }
 
 /* ---------- search ---------- */
@@ -248,20 +277,47 @@ async function check(ids) {
  * that back-dates edits); the index cannot: a chat is either archived at the
  * provider's current revision or it is not.
  */
+/**
+ * id → archived provider revision, for one platform.
+ *
+ * Walks the sourceUpdatedAt index with openKeyCursor, so only index keys and
+ * primary keys are read — message bodies are never deserialized. The previous
+ * full-record scan pulled the entire archive into memory once per platform per
+ * pass, which is what made a multi-thousand-chat sync unusable.
+ */
 async function archiveIndex(host, prefix) {
   const d = await db();
   const index = new Map();
   const start = host + prefix;
+  const range = IDBKeyRange.bound(start, start + "￿");
+
+  const viaIndex = await new Promise((resolve) => {
+    let store;
+    try { store = tx(d, "readonly"); } catch { return resolve(null); }
+    if (!store.indexNames.contains("sourceUpdatedAt")) return resolve(null);
+    const cur = store.index("sourceUpdatedAt").openKeyCursor();
+    cur.onerror = () => resolve(null);
+    cur.onsuccess = () => {
+      const c = cur.result;
+      if (!c) return resolve(index);
+      const id = c.primaryKey;
+      if (typeof id === "string" && id.startsWith(start)) index.set(id, Number(c.key) || 0);
+      c.continue();
+    };
+  });
+  // Records written before the index existed carry no indexable key, so a
+  // shortfall against the true count means the map is incomplete.
+  if (viaIndex && viaIndex.size >= await platformCount(host, prefix)) return viaIndex;
+
+  index.clear();
   await new Promise((resolve, reject) => {
-    const cur = tx(d, "readonly").openCursor();
+    const cur = tx(d, "readonly").openCursor(range);
     cur.onerror = () => reject(cur.error);
     cur.onsuccess = () => {
       const c = cur.result;
       if (!c) return resolve();
       const v = c.value;
-      if (v && typeof v.id === "string" && v.id.startsWith(start)) {
-        index.set(v.id, Number(v.sourceUpdatedAt || v.updatedAt || 0));
-      }
+      if (v && typeof v.id === "string") index.set(v.id, Number(v.sourceUpdatedAt || v.updatedAt || 0));
       c.continue();
     };
   });
@@ -308,8 +364,25 @@ async function wipe() {
 /* Runs entirely in the service worker — no tabs needed. Uses host_permissions
    to make authenticated API requests directly with the user's cookies. */
 
-const BG_SYNC_CONCURRENCY = 8;
-const BG_SYNC_DELAY = 40;
+// Per-host pacing. These are ceilings: concurrency ramps up on a clean streak
+// and halves on a 429, so a healthy connection runs fast without ever being
+// the reason the provider's own site starts refusing the user.
+const BG_HOST_POLICY = {
+  "chatgpt.com":       { concurrency: 4, minIntervalMs: 320, listDelayMs: 600 },
+  "claude.ai":         { concurrency: 4, minIntervalMs: 300, listDelayMs: 450 },
+  "chat.deepseek.com": { concurrency: 3, minIntervalMs: 400, listDelayMs: 500 },
+  "grok.com":          { concurrency: 3, minIntervalMs: 400, listDelayMs: 500 }
+};
+const BG_FETCH_ATTEMPTS = 4;
+const BG_RATE_TRIP = 3;                          // consecutive 429s → circuit opens
+const BG_HOST_COOLDOWN_MS = 15 * 60 * 1000;
+const BG_PASS_BUDGET_MS = 4 * 60 * 1000;         // MV3 workers get reclaimed
+// Journal entries are ~120B, and the manifest grants unlimitedStorage, so this
+// covers a very large first backfill without ever refusing the watermark.
+const BG_PENDING_MAX = 50000;
+const BG_JOURNAL_FLUSH_MS = 3000;
+const BG_PROGRESS_MS = 400;
+const BG_LIST_MAX_PAGES = 100;
 const BG_SYNC_LIST_PAGE = 100;
 const BG_SYNC_BATCH = 15;
 const BG_SYNC_OVERLAP_MS = 5 * 60 * 1000;
@@ -324,6 +397,23 @@ const BG_RECOVERY = "lct-recall-recovery-v1";
 const BG_INSTALL = "lct-recall-install-v1";
 const BG_RUN = "lct-recall-sync-run-v1";
 const BG_ACTIVE_ACCOUNT = "lct-recall-active-account-v1";
+// Outstanding-work journal. Local-only and never roamed: it is meaningful only
+// against this browser's archive index, and it is far too large for sync's
+// 8KB-per-item cap.
+const BG_SYNC_WORK = "lct-recall-sync-work-v1";
+const BG_HOST_COOLDOWN = "lct-recall-host-cooldown-v1";
+const BG_PAGE_SCHEME = "lct-recall-page-scheme-v1";
+const BG_SCHEME_RETRY_MS = 7 * 24 * 60 * 60 * 1000;   // re-probe "none" weekly
+
+// Claude documents limit/offset; DeepSeek's and Grok's list endpoints are
+// undocumented and change between builds. Rather than hard-code a guess, the
+// walk tries these until one actually advances, then remembers the winner.
+const BG_PAGE_SCHEMES = [
+  { id: "offset", param: (i, size) => `offset=${i * size}` },
+  { id: "skip",   param: (i, size) => `skip=${i * size}` },
+  { id: "page0",  param: (i) => `page=${i}` },
+  { id: "page1",  param: (i) => `page=${i + 1}` }
+];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let ledgerWrite = Promise.resolve();
@@ -344,12 +434,18 @@ function cleanCheckpoint(value) {
   if (!BG_PLATFORM_IDS.has(platform) || !Number.isFinite(safeWatermark) || safeWatermark <= 0 ||
       !Number.isFinite(completedAt) || completedAt <= 0) return null;
   return {
-    version: 3,
+    version: 4,
     platform,
     safeWatermark,
     completedAt,
     lastResult: String(value.lastResult || "delta").slice(0, 32),
     archived: Math.max(0, Math.floor(Number(value.archived) || 0)),
+    // v3 and earlier only ever wrote a checkpoint after a fully clean pass, so
+    // defaulting these keeps migrated checkpoints trusted.
+    pendingCount: Math.max(0, Math.floor(Number(value.pendingCount) || 0)),
+    passState: value.passState === "partial" ? "partial" : "clean",
+    cooldownUntil: Math.max(0, Number(value.cooldownUntil) || 0),
+    runId: String(value.runId || "").slice(0, 8),
     // How many chats this browser held for the platform when the checkpoint was
     // written. A watermark alone cannot tell a resumed browser from a wiped one;
     // coverage can. If the archive now holds fewer chats than the checkpoint
@@ -369,21 +465,49 @@ function cleanLedger(value) {
   if (!value || value.version !== 2 || !value.checkpoints || typeof value.checkpoints !== "object" ||
       Array.isArray(value.checkpoints)) return { version: 2, checkpoints: {} };
   const checkpoints = {};
-  for (const [key, raw] of Object.entries(value.checkpoints).slice(0, 64)) {
+  // 64 checkpoints overflowed storage.sync's 8KB-per-item cap, which silently
+  // dropped the whole ledger. 8 covers every platform across two accounts.
+  const ranked = Object.entries(value.checkpoints)
+    .sort((a, b) => (Number(b[1] && b[1].completedAt) || 0) - (Number(a[1] && a[1].completedAt) || 0))
+    .slice(0, 8);
+  for (const [key, raw] of ranked) {
     const checkpoint = cleanCheckpoint(raw);
     if (checkpoint) checkpoints[String(key).slice(0, 200)] = checkpoint;
   }
   return { version: 2, checkpoints };
 }
 
+// Reads cover both areas and writes mirror: a sync-only read missed values
+// that landed in local after a sync write failed, which rotated the profile
+// salt and re-synced the whole history.
 async function getDurable(keys) {
-  try { return { data: await chrome.storage.sync.get(keys), synced: true }; }
-  catch { return { data: await chrome.storage.local.get(keys), synced: false }; }
+  const list = Array.isArray(keys) ? keys : [keys];
+  let data = {}, synced = true;
+  try { data = await chrome.storage.sync.get(list); }
+  catch { data = {}; synced = false; }
+  const missing = list.filter((k) => data[k] === undefined);
+  if (missing.length) {
+    try {
+      const local = await chrome.storage.local.get(missing);
+      data = { ...local, ...data };   // sync wins where both hold a value
+    } catch { /* local unavailable — return what sync gave us */ }
+  }
+  return { data, synced };
 }
 
 async function setDurable(value) {
-  try { await chrome.storage.sync.set(value); return true; }
-  catch { await chrome.storage.local.set(value); return false; }
+  let synced = false;
+  try { await chrome.storage.sync.set(value); synced = true; } catch { /* mirrored below */ }
+  try { await chrome.storage.local.set(value); } catch { /* sync copy may still hold */ }
+  return synced;
+}
+
+// setDurable mirrors, so every deletion must clear both areas or a "wipe
+// everything" leaves a shadow copy behind — a privacy promise, not a nicety.
+async function removeDurable(keys) {
+  const list = Array.isArray(keys) ? keys : [keys];
+  try { await chrome.storage.sync.remove(list); } catch { /* may not exist there */ }
+  try { await chrome.storage.local.remove(list); } catch { /* nor there */ }
 }
 
 async function readLedger() {
@@ -412,6 +536,11 @@ async function profileSalt() {
     crypto.getRandomValues(bytes);
     const salt = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
     await setDurable({ [BG_SYNC_PROFILE]: { version: 1, salt } });
+    // An unpersisted salt is worse than none: it rotates on every worker
+    // respawn, changing every account key and re-syncing the whole history.
+    // Fail loudly instead — the pass retries, the archive stays intact.
+    const verify = await getDurable(BG_SYNC_PROFILE);
+    if (!cleanProfile(verify.data[BG_SYNC_PROFILE])) throw new BgError("storage", "storage unavailable");
     return salt;
   })();
   try { return await profileSaltPromise; }
@@ -448,6 +577,109 @@ async function saveCheckpoint(key, checkpoint) {
     ledger.checkpoints[key] = checkpoint;
     return ledger;
   });
+}
+
+/* ---------- outstanding-work journal (local only) ----------
+ * pending is the OUTSTANDING set, not the failure set: it is seeded with every
+ * chat the pass intends to fetch and written alongside the advanced watermark
+ * BEFORE the first detail request. Ids leave it only once a row lands in the
+ * archive. That is what lets a first pass mint a trustworthy checkpoint even
+ * when every fetch is rate-limited. */
+
+let journalWrite = Promise.resolve();
+// Authoritative copy for the duration of a pass. Without it every drop re-read
+// and re-serialized the whole pending array — quadratic once a backfill runs
+// into the thousands.
+let journalCache = null;
+
+function cleanJob(value) {
+  if (!value || typeof value !== "object") return null;
+  const scanStartedAt = Number(value.scanStartedAt) || 0;
+  if (!scanStartedAt) return null;
+  const pending = Array.isArray(value.pending) ? value.pending.slice(0, BG_PENDING_MAX) : [];
+  return {
+    platform: String(value.platform || "").slice(0, 32),
+    scanStartedAt,
+    updatedAt: Number(value.updatedAt) || 0,
+    pending: pending.filter((p) => p && p.id).map((p) => ({
+      id: String(p.id).slice(0, 200),
+      rev: Number(p.rev) || 0,
+      title: String(p.title || "").slice(0, 200),
+      createdAt: Number(p.createdAt) || 0,
+      attempts: Math.max(0, Math.floor(Number(p.attempts) || 0)),
+      lastKind: String(p.lastKind || "").slice(0, 16)
+    })),
+    tombstones: (Array.isArray(value.tombstones) ? value.tombstones : [])
+      .filter((t) => t && t.id).slice(-500)
+      .map((t) => ({ id: String(t.id).slice(0, 200), at: Number(t.at) || 0 }))
+  };
+}
+
+async function readJournal() {
+  if (journalCache) return journalCache;
+  try {
+    const { [BG_SYNC_WORK]: raw } = await chrome.storage.local.get(BG_SYNC_WORK);
+    const jobs = raw && typeof raw.jobs === "object" && raw.jobs ? raw.jobs : {};
+    const out = {};
+    for (const [key, value] of Object.entries(jobs)) {
+      const job = cleanJob(value);
+      if (job) out[key] = job;
+    }
+    journalCache = { version: 1, jobs: out };
+  } catch { journalCache = { version: 1, jobs: {} }; }
+  return journalCache;
+}
+
+async function readJob(key) {
+  return (await readJournal()).jobs[key] || null;
+}
+
+// `persist: false` mutates the cached copy only. Callers batch several drops and
+// then force one write, so a 5,000-chat pass costs a handful of writes instead
+// of one per batch.
+async function mutateJournal(mutator, persist = true) {
+  const work = async () => {
+    const journal = await readJournal();
+    const next = await mutator(journal);
+    journalCache = next;
+    if (persist) {
+      try { await chrome.storage.local.set({ [BG_SYNC_WORK]: next }); } catch { /* full */ }
+    }
+    return next;
+  };
+  journalWrite = journalWrite.then(work, work);
+  return journalWrite;
+}
+
+async function flushJournal() {
+  return mutateJournal((journal) => journal, true);
+}
+
+async function writeJob(key, job) {
+  return mutateJournal((journal) => {
+    journal.jobs[key] = cleanJob({ ...job, updatedAt: Date.now() });
+    return journal;
+  });
+}
+
+async function clearJob(key) {
+  return mutateJournal((journal) => { delete journal.jobs[key]; return journal; });
+}
+
+async function dropFromJob(key, ids, tombstoned = [], persist = true) {
+  if (!ids.length && !tombstoned.length) return;
+  const gone = new Set(ids.concat(tombstoned));
+  return mutateJournal((journal) => {
+    const job = journal.jobs[key];
+    if (!job) return journal;
+    job.pending = job.pending.filter((p) => !gone.has(p.id));
+    if (tombstoned.length) {
+      job.tombstones = (job.tombstones || [])
+        .concat(tombstoned.map((id) => ({ id, at: Date.now() }))).slice(-500);
+    }
+    job.updatedAt = Date.now();
+    return journal;
+  }, persist);
 }
 
 async function setActiveAccount(adapter, checkpointKey) {
@@ -507,6 +739,10 @@ async function restoreLedger(backupLedger, backupMeta, backupProfile) {
     return ledger;
   });
   if (backupMeta) await setDurable({ [BG_BACKUP_MARKER]: backupMeta });
+  // Pending sets describe a pass against the pre-restore archive; keeping them
+  // would carry stale work into the restored one.
+  journalCache = null;
+  await chrome.storage.local.remove(BG_SYNC_WORK);
   await chrome.storage.local.set({
     [BG_INSTALL]: { at: Date.now() },
     [BG_RECOVERY]: { state: "ready", restoredAt: Date.now(), backup: backupMeta || null }
@@ -571,18 +807,141 @@ async function getCookieHeader(url) {
   } catch { return ""; }
 }
 
+// kind drives retry policy; message strings stay verbatim because the outer
+// catch and the signedOut flag still match on them.
+class BgError extends Error {
+  constructor(kind, message, meta = {}) {
+    super(message);
+    this.kind = kind;
+    Object.assign(this, meta);
+  }
+}
+
+function parseRetryAfter(value) {
+  if (!value) return 0;
+  const secs = Number(value);
+  if (Number.isFinite(secs)) return Math.max(0, Math.min(secs, 3600) * 1000);
+  const when = Date.parse(value);
+  return Number.isFinite(when) ? Math.max(0, Math.min(when - Date.now(), 3600000)) : 0;
+}
+
+// Full jitter: without it every worker retries on the same tick and the burst
+// that caused the 429 repeats exactly.
+function backoffDelay(attempt, retryAfterMs) {
+  const base = Math.min(30000, 1000 * 2 ** attempt);
+  return Math.max(retryAfterMs, Math.round(base * (0.5 + Math.random() * 0.5)));
+}
+
+const hostState = new Map();
+function hostEntry(host) {
+  let s = hostState.get(host);
+  if (!s) {
+    s = { chain: Promise.resolve(), nextAt: 0, cooldownUntil: 0, consecutiveRate: 0,
+          concurrency: 0, streak: 0 };
+    hostState.set(host, s);
+  }
+  return s;
+}
+
+function hostOf(url) {
+  try { return new URL(url).hostname; } catch { return ""; }
+}
+
+function policyFor(host) {
+  return BG_HOST_POLICY[host] || { concurrency: 2, minIntervalMs: 700, listDelayMs: 800 };
+}
+
+// Serializes request starts per host so minIntervalMs holds across all workers.
+function hostSlot(host) {
+  const s = hostEntry(host);
+  const policy = policyFor(host);
+  const work = async () => {
+    const wait = Math.max(s.cooldownUntil - Date.now(), s.nextAt - Date.now(), 0);
+    if (wait > 0) await sleep(wait);
+    s.nextAt = Date.now() + policy.minIntervalMs;
+  };
+  s.chain = s.chain.then(work, work);
+  return s.chain;
+}
+
+async function noteRateLimit(host, retryAfterMs, attempt) {
+  const s = hostEntry(host);
+  s.consecutiveRate++;
+  s.streak = 0;
+  const delay = backoffDelay(attempt, retryAfterMs);
+  // Cool the whole host, not the one worker: otherwise the other workers each
+  // collect their own 429 before any of them notices.
+  s.cooldownUntil = Math.max(s.cooldownUntil, Date.now() + delay);
+  if (s.consecutiveRate >= BG_RATE_TRIP) {
+    s.cooldownUntil = Math.max(s.cooldownUntil, Date.now() + BG_HOST_COOLDOWN_MS);
+    await persistCooldown(host, s.cooldownUntil);
+    return true;   // circuit open
+  }
+  return false;
+}
+
+function noteOk(host) {
+  const s = hostEntry(host);
+  s.consecutiveRate = 0;
+  s.streak++;
+}
+
+async function persistCooldown(host, until) {
+  try {
+    const { [BG_HOST_COOLDOWN]: raw } = await chrome.storage.local.get(BG_HOST_COOLDOWN);
+    const map = (raw && typeof raw === "object") ? raw : {};
+    map[host] = until;
+    await chrome.storage.local.set({ [BG_HOST_COOLDOWN]: map });
+  } catch { /* best effort */ }
+}
+
+// A respawned worker has no in-memory cooldown; without this it re-hammers a
+// host it was just throttled by.
+async function loadCooldown(host) {
+  try {
+    const { [BG_HOST_COOLDOWN]: raw } = await chrome.storage.local.get(BG_HOST_COOLDOWN);
+    const until = raw && typeof raw === "object" ? Number(raw[host]) || 0 : 0;
+    if (until > Date.now()) hostEntry(host).cooldownUntil = Math.max(hostEntry(host).cooldownUntil, until);
+    return until;
+  } catch { return 0; }
+}
+
 async function bgFetch(url, opts = {}) {
+  const host = hostOf(url);
   const cookieHeader = await getCookieHeader(url);
   const headers = {
     Accept: "application/json, text/plain, */*",
     ...(opts.headers || {}),
     Cookie: cookieHeader
   };
-  const r = await fetch(url, { ...opts, headers, credentials: "include" });
-  if (r.status === 429) throw new Error("rate-limited");
-  if (r.status === 401 || r.status === 403) throw new Error("unauthorized");
-  if (!r.ok) throw new Error("http " + r.status);
-  return r;
+  let lastRate = null;
+  for (let attempt = 0; attempt < BG_FETCH_ATTEMPTS; attempt++) {
+    await hostSlot(host);
+    let r;
+    try {
+      r = await fetch(url, { ...opts, headers, credentials: "include" });
+    } catch (error) {
+      if (attempt === BG_FETCH_ATTEMPTS - 1) throw new BgError("net", "network unavailable");
+      await sleep(backoffDelay(attempt, 0));
+      continue;
+    }
+    if (r.status === 429 || (r.status === 503 && r.headers.get("Retry-After"))) {
+      const retryAfterMs = parseRetryAfter(r.headers.get("Retry-After"));
+      const circuitOpen = await noteRateLimit(host, retryAfterMs, attempt);
+      lastRate = new BgError("rate", "rate-limited", { retryAfterMs, circuitOpen });
+      if (circuitOpen) throw lastRate;
+      continue;   // retry in place so the caller's slot isn't burned
+    }
+    if (r.status === 401 || r.status === 403) throw new BgError("auth", "unauthorized");
+    if (r.status === 404 || r.status === 410) throw new BgError("gone", "http " + r.status);
+    if (!r.ok) {
+      if (r.status >= 500 && attempt < BG_FETCH_ATTEMPTS - 1) { await sleep(backoffDelay(attempt, 0)); continue; }
+      throw new BgError("net", "http " + r.status);
+    }
+    noteOk(host);
+    return r;
+  }
+  throw lastRate || new BgError("net", "request failed");
 }
 
 async function bgJson(response) {
@@ -596,6 +955,171 @@ async function bgJson(response) {
   }
 }
 
+/**
+ * Walk a provider's conversation list page by page.
+ *
+ * Pagination on these endpoints is undocumented and differs between builds, so
+ * every exit degrades safely rather than looping or overclaiming:
+ *   - server ignored `limit` and returned everything → that IS the full set
+ *   - server ignored `offset` and repeated a page → stop, report incomplete
+ *   - short page → genuine end
+ * `complete` is only ever true when the walk actually reached the end, because
+ * the caller uses it to decide whether the watermark may advance.
+ */
+async function walkScheme(adapter, opts, scheme) {
+  const { pageSize, sinceMs, progress, fetchPage, toMeta } = opts;
+  const delayMs = opts.delayMs != null ? opts.delayMs : policyFor(adapter.host).listDelayMs;
+  const metas = [];
+  const seen = new Set();
+  let complete = false, ordered = true, previous = Infinity, hitOld = false, paged = false;
+
+  for (let page = 0; page < BG_LIST_MAX_PAGES; page++) {
+    if (page) await sleep(delayMs);
+    let items;
+    try { items = await fetchPage(scheme.param(page, pageSize), pageSize); }
+    catch (error) {
+      if (error && (error.kind === "auth" || error.kind === "rate")) throw error;
+      break;   // this scheme's params upset the endpoint — try another
+    }
+    if (!items.length) { complete = true; break; }
+
+    let fresh = 0;
+    for (const it of items) {
+      const meta = toMeta(it);
+      if (!meta || !meta.id || seen.has(meta.id)) continue;
+      seen.add(meta.id);
+      fresh++;
+      if (meta.updatedAt > previous) ordered = false;
+      previous = meta.updatedAt;
+      if (sinceMs && meta.updatedAt <= sinceMs) { hitOld = true; continue; }
+      metas.push(meta);
+    }
+    progress(metas.length, 0, `Listing chats… ${metas.length}`);
+
+    // Server ignored `limit` and handed back the whole list — that IS the end.
+    if (page === 0 && items.length > pageSize) { complete = true; break; }
+    if (!fresh) break;                                   // paging param ignored
+    if (page > 0) paged = true;                          // it genuinely advanced
+    if (items.length < pageSize) { complete = true; break; }
+    if (hitOld && ordered) { complete = true; break; }    // newest-first, past the watermark
+  }
+  metas.sort((a, b) => b.updatedAt - a.updatedAt);
+  return { metas, complete, paged };
+}
+
+async function readScheme(host) {
+  try {
+    const { [BG_PAGE_SCHEME]: raw } = await chrome.storage.local.get(BG_PAGE_SCHEME);
+    const entry = raw && typeof raw === "object" ? raw[host] : null;
+    if (!entry) return null;
+    if (!entry.id && Date.now() - (entry.at || 0) > BG_SCHEME_RETRY_MS) return null;
+    return entry;
+  } catch { return null; }
+}
+
+async function rememberScheme(host, id) {
+  try {
+    const { [BG_PAGE_SCHEME]: raw } = await chrome.storage.local.get(BG_PAGE_SCHEME);
+    const map = raw && typeof raw === "object" ? raw : {};
+    map[host] = { id: id || null, at: Date.now() };
+    await chrome.storage.local.set({ [BG_PAGE_SCHEME]: map });
+  } catch { /* best effort */ }
+}
+
+/**
+ * Walk a provider's conversation list, discovering how it paginates.
+ *
+ * Only Claude documents its scheme (limit/offset). For the others the walk
+ * tries each candidate until one actually advances past page one, then caches
+ * the winner per host so later passes go straight to it. Every exit degrades
+ * safely: a scheme that is ignored, rejected, or unsupported yields at most one
+ * page and `complete: false`, so the caller never advances the watermark past
+ * chats it did not see.
+ */
+async function pageThrough(adapter, opts) {
+  const schemes = opts.schemes || BG_PAGE_SCHEMES;
+  const known = opts.noCache ? null : await readScheme(adapter.host);
+
+  // Already established that this endpoint cannot page: take one page and stop
+  // rather than re-probing every pass.
+  if (known && !known.id) return walkScheme(adapter, opts, schemes[0]);
+
+  const order = known
+    ? schemes.filter((s) => s.id === known.id).concat(schemes.filter((s) => s.id !== known.id))
+    : schemes;
+
+  let best = null;
+  for (const scheme of order) {
+    const attempt = await walkScheme(adapter, opts, scheme);
+    if (!best || attempt.metas.length > best.metas.length) best = attempt;
+    if (attempt.paged) {
+      // Includes re-discovery: a cached scheme that stopped working falls
+      // through to the remaining candidates rather than giving up.
+      if (!opts.noCache && (!known || known.id !== scheme.id)) await rememberScheme(adapter.host, scheme.id);
+      return attempt;
+    }
+    if (attempt.complete) return attempt;   // one page held the whole history
+  }
+  if (!opts.noCache) await rememberScheme(adapter.host, null);
+  return best || { metas: [], complete: false, paged: false };
+}
+
+/**
+ * The branch of a ChatGPT conversation the page actually renders: current_node
+ * walked up the parent chain, root-first.
+ *
+ * Object.values(mapping) also hands back every dead edit/regenerate branch, and
+ * create_time is not an ordering ACROSS branches — so the old flat sort produced
+ * a transcript that no reader ever saw, in an order it was never in. That was
+ * survivable for search; it is not survivable for a map whose positions have to
+ * line up with the DOM.
+ */
+function chatBranch(conv) {
+  const map = (conv && conv.mapping) || null;
+  if (!map) return [];
+  const out = [];
+  const seen = new Set();                 // a malformed parent cycle must not hang the worker
+  let id = conv.current_node;
+  while (id && map[id] && !seen.has(id)) { seen.add(id); out.push(map[id]); id = map[id].parent; }
+  out.reverse();
+  // Share links and older payloads carry no current_node — fall back to the
+  // flat sort rather than returning nothing.
+  return out.length ? out : Object.values(map).sort(
+    (a, b) => ((a.message && a.message.create_time) || 0) - ((b.message && b.message.create_time) || 0)
+  );
+}
+
+/**
+ * One ChatGPT conversation as an ordered message list, keeping the provider's
+ * message id.
+ *
+ * Where a node kind is ambiguous, INCLUDE it: a surplus entry only draws a tick
+ * that never binds to an element, which the map already tolerates. A missing
+ * entry shifts every position after it.
+ */
+function chatgptMsgs(conv) {
+  const msgs = [];
+  for (const node of chatBranch(conv)) {
+    const m = node && node.message;
+    if (!m || !m.author) continue;
+    const role = m.author.role;
+    if (role !== "user" && role !== "assistant") continue;
+    if (m.metadata && m.metadata.is_visually_hidden_from_conversation) continue;
+    if (m.recipient && m.recipient !== "all") continue;      // a tool call, not a turn
+    const parts = (m.content && m.content.parts) || [];
+    const text = parts.filter((p) => typeof p === "string").join("\n").trim();
+    // Empty text is KEPT, unlike the other adapters: an image-only turn still
+    // occupies a row in the page, and the map's positions have to match.
+    msgs.push({
+      i: String(m.id || node.id || ""),
+      r: role,
+      t: text,
+      ts: m.create_time ? Math.floor(m.create_time) : 0
+    });
+  }
+  return msgs;                            // branch order IS reading order — no sort
+}
+
 const BG_ADAPTERS = [
   {
     id: "chatgpt", label: "ChatGPT", base: "https://chatgpt.com",
@@ -603,7 +1127,7 @@ const BG_ADAPTERS = [
     async prepare() {
       const r = await bgFetch(this.base + "/api/auth/session");
       const j = await bgJson(r);
-      if (!j || !j.accessToken) throw new Error("not signed in");
+      if (!j || !j.accessToken) throw new BgError("auth", "not signed in");
       return {
         tok: j.accessToken,
         account: j.user?.id || j.user?.email || j.account?.id || ""
@@ -615,13 +1139,24 @@ const BG_ADAPTERS = [
       });
       return bgJson(r);
     },
+    // One request: is anything newer than the watermark? Turns a routine
+    // "nothing changed" pass into a single call instead of a full listing.
+    async peek(ctx, sinceMs) {
+      const j = await this.get(ctx, "/backend-api/conversations?offset=0&limit=1&order=updated");
+      const it = (j.items || [])[0];
+      if (!it) return { hasNew: false, newestMs: 0 };
+      const upd = it.update_time ? new Date(it.update_time).getTime() : Date.now();
+      return { hasNew: upd > sinceMs, newestMs: upd };
+    },
     async list(ctx, sinceMs, progress) {
       const metas = [];
-      let hitOld = false;
-      for (let off = 0; off < 50000 && !hitOld; off += BG_SYNC_LIST_PAGE) {
+      let hitOld = false, complete = false, page = 0;
+      for (; page < BG_LIST_MAX_PAGES && !hitOld; page++) {
+        if (page) await sleep(policyFor(this.host).listDelayMs);
         const j = await this.get(ctx,
-          `/backend-api/conversations?offset=${off}&limit=${BG_SYNC_LIST_PAGE}&order=updated`);
-        for (const it of j.items || []) {
+          `/backend-api/conversations?offset=${page * BG_SYNC_LIST_PAGE}&limit=${BG_SYNC_LIST_PAGE}&order=updated`);
+        const items = j.items || [];
+        for (const it of items) {
           const upd = it.update_time ? new Date(it.update_time).getTime() : Date.now();
           if (sinceMs && upd <= sinceMs) { hitOld = true; break; }
           metas.push({
@@ -631,25 +1166,23 @@ const BG_ADAPTERS = [
           });
         }
         progress(metas.length, j.total || 0, `Listing chats… ${metas.length}`);
-        if ((j.items || []).length < BG_SYNC_LIST_PAGE) break;
+        if (items.length < BG_SYNC_LIST_PAGE) { complete = true; break; }
       }
-      return metas;
+      return { metas, complete: complete || hitOld };
+    },
+    // One request returns the whole conversation. detailFull keeps the title and
+    // revision too, so a single-chat index fetch can archive what it read.
+    async detailFull(ctx, id) {
+      const conv = await this.get(ctx, "/backend-api/conversation/" + id);
+      return {
+        msgs: chatgptMsgs(conv),
+        title: String(conv.title || ""),
+        createdAt: conv.create_time ? Math.round(conv.create_time * 1000) : 0,
+        updatedAt: conv.update_time ? Math.round(conv.update_time * 1000) : 0
+      };
     },
     async detail(ctx, id) {
-      const conv = await this.get(ctx, "/backend-api/conversation/" + id);
-      const msgs = [];
-      for (const node of Object.values(conv.mapping || {})) {
-        const m = node && node.message;
-        if (!m || !m.author) continue;
-        const role = m.author.role;
-        if (role !== "user" && role !== "assistant") continue;
-        const parts = (m.content && m.content.parts) || [];
-        const text = parts.filter((p) => typeof p === "string").join("\n").trim();
-        if (!text) continue;
-        msgs.push({ r: role, t: text, ts: m.create_time ? Math.floor(m.create_time) : 0 });
-      }
-      msgs.sort((a, b) => (a.ts || 0) - (b.ts || 0));
-      return msgs;
+      return (await this.detailFull(ctx, id)).msgs;
     }
   },
   {
@@ -659,25 +1192,24 @@ const BG_ADAPTERS = [
       const r = await bgFetch(this.base + "/api/organizations");
       const orgs = await bgJson(r);
       const org = Array.isArray(orgs) ? (orgs.find((o) => o && o.uuid) || orgs[0]) : null;
-      if (!org || !org.uuid) throw new Error("not signed in");
+      if (!org || !org.uuid) throw new BgError("auth", "not signed in");
       return { org: org.uuid, account: org.uuid };
     },
     async get(ctx, path) { return bgJson(await bgFetch(this.base + path)); },
     async list(ctx, sinceMs, progress) {
-      const arr = await this.get(ctx, `/api/organizations/${ctx.org}/chat_conversations`);
-      const metas = [];
-      for (const it of Array.isArray(arr) ? arr : []) {
-        const upd = it.updated_at ? new Date(it.updated_at).getTime() : Date.now();
-        if (sinceMs && upd <= sinceMs) continue;
-        metas.push({
+      return pageThrough(this, {
+        pageSize: 100, sinceMs, progress,
+        fetchPage: async (page, limit) => {
+          const arr = await this.get(ctx,
+            `/api/organizations/${ctx.org}/chat_conversations?limit=${limit}&${page}`);
+          return Array.isArray(arr) ? arr : (arr && Array.isArray(arr.data) ? arr.data : []);
+        },
+        toMeta: (it) => ({
           id: it.uuid, title: it.name || "",
           createdAt: it.created_at ? new Date(it.created_at).getTime() : 0,
-          updatedAt: upd
-        });
-      }
-      metas.sort((a, b) => b.updatedAt - a.updatedAt);
-      progress(metas.length, metas.length, `Found ${metas.length} chats`);
-      return metas;
+          updatedAt: it.updated_at ? new Date(it.updated_at).getTime() : Date.now()
+        })
+      });
     },
     async detail(ctx, id) {
       const conv = await this.get(ctx, `/api/organizations/${ctx.org}/chat_conversations/${id}`);
@@ -702,21 +1234,18 @@ const BG_ADAPTERS = [
     },
     async get(ctx, path) { return bgJson(await bgFetch(this.base + path)); },
     async list(ctx, sinceMs, progress) {
-      const data = await this.get(ctx, "/api/v0/chat/list?count=500");
-      const items = data.data?.list || data.list || (Array.isArray(data) ? data : []);
-      const metas = [];
-      for (const it of items) {
-        const upd = it.updated_at ? new Date(it.updated_at).getTime() : (it.update_time || Date.now());
-        if (sinceMs && upd <= sinceMs) continue;
-        metas.push({
+      return pageThrough(this, {
+        pageSize: 100, sinceMs, progress,
+        fetchPage: async (page, limit) => {
+          const data = await this.get(ctx, `/api/v0/chat/list?count=${limit}&${page}`);
+          return data.data?.list || data.list || (Array.isArray(data) ? data : []);
+        },
+        toMeta: (it) => ({
           id: it.id || it.session_id, title: it.title || it.topic || "",
           createdAt: it.created_at ? new Date(it.created_at).getTime() : (it.create_time || 0),
-          updatedAt: upd
-        });
-      }
-      metas.sort((a, b) => b.updatedAt - a.updatedAt);
-      progress(metas.length, metas.length, `Found ${metas.length} chats`);
-      return metas;
+          updatedAt: it.updated_at ? new Date(it.updated_at).getTime() : (it.update_time || Date.now())
+        })
+      });
     },
     async detail(ctx, id) {
       const data = await this.get(ctx, "/api/v0/chat/history/" + id);
@@ -738,21 +1267,18 @@ const BG_ADAPTERS = [
     },
     async get(ctx, path) { return bgJson(await bgFetch(this.base + path)); },
     async list(ctx, sinceMs, progress) {
-      const data = await this.get(ctx, "/rest/app-chat/conversations?limit=500");
-      const items = data.conversations || data.items || (Array.isArray(data) ? data : []);
-      const metas = [];
-      for (const it of items) {
-        const upd = it.updated_at ? new Date(it.updated_at).getTime() : Date.now();
-        if (sinceMs && upd <= sinceMs) continue;
-        metas.push({
+      return pageThrough(this, {
+        pageSize: 100, sinceMs, progress,
+        fetchPage: async (page, limit) => {
+          const data = await this.get(ctx, `/rest/app-chat/conversations?limit=${limit}&${page}`);
+          return data.conversations || data.items || (Array.isArray(data) ? data : []);
+        },
+        toMeta: (it) => ({
           id: it.id || it.conversation_id, title: it.title || it.name || "",
           createdAt: it.created_at ? new Date(it.created_at).getTime() : 0,
-          updatedAt: upd
-        });
-      }
-      metas.sort((a, b) => b.updatedAt - a.updatedAt);
-      progress(metas.length, metas.length, `Found ${metas.length} chats`);
-      return metas;
+          updatedAt: it.updated_at ? new Date(it.updated_at).getTime() : Date.now()
+        })
+      });
     },
     async detail(ctx, id) {
       const data = await this.get(ctx, "/rest/app-chat/conversations/" + id);
@@ -769,209 +1295,518 @@ const BG_ADAPTERS = [
 
 let bgSyncRunning = false;
 
-async function writeProgress(adapter, run, done, total, msg, phase = "syncing") {
-  await chrome.storage.local.set({
-    [BG_SYNC_PROG(adapter.id)]: { state: "syncing", phase, done, total, msg, at: Date.now(), runId: run.id }
-  });
-  await beat(run, adapter.id);
+/* ===================== one conversation's index =====================
+ * The map used to be assembled by walking the host's own scroller to the top —
+ * sixty round trips of the page yanking itself around while somebody was trying
+ * to read it. The provider hands over the entire conversation in ONE request we
+ * already know how to make, and every message in it carries the same id ChatGPT
+ * stamps on the DOM. So the map can be complete before the first paint, and the
+ * page never has to move at all. */
+
+const IDX_SNIP = 80;                    // matches metaFor()'s slice in minimap.js
+const IDX_CODE = /```|\n {4}\S/;        // a hint; the DOM's own <pre> wins on mount
+const IDX_CTX_TTL = 5 * 60 * 1000;      // clicking through 20 chats = one prepare()
+const IDX_FRESH_MS = 60 * 1000;         // an SPA route bounce must not refetch
+
+const idxCtx = new Map();               // host -> { ctx, at }
+const idxInflight = new Map();          // recordId -> Promise
+const idxFetchedAt = new Map();         // recordId -> ms
+
+/** The map only needs shape and a label — never the full transcript. */
+function indexFromMsgs(msgs) {
+  const out = [];
+  for (const m of msgs || []) {
+    if (!m || !m.i) continue;
+    const t = m.t || "";
+    out.push({ i: m.i, r: m.r === "user" ? "user" : "assistant", n: t.length, c: IDX_CODE.test(t) ? 1 : 0, s: t.slice(0, IDX_SNIP) });
+  }
+  return out;
 }
 
-async function finishPlatform(adapter, checkpointKey, scanStartedAt, result, done, total, archived, message, coverage) {
+async function idxPrepare(adapter) {
+  const hit = idxCtx.get(adapter.host);
+  if (hit && Date.now() - hit.at < IDX_CTX_TTL) return hit.ctx;
+  const ctx = await adapter.prepare();
+  idxCtx.set(adapter.host, { ctx, at: Date.now() });
+  return ctx;
+}
+
+/**
+ * One message's full text, straight out of the archive.
+ *
+ * The index deliberately carries only an 80-char snippet — shipping every
+ * message's body would be megabytes on chat open for something the reader looks
+ * at one of. This is the other half: an IndexedDB read, so the preview fills in
+ * within a frame or two of the click.
+ */
+async function chatMessage(host, path, messageId) {
+  const id = String(host || "") + String(path || "");
+  try {
+    const d = await db();
+    const rec = await reqP(tx(d, "readonly").get(id.slice(0, 600)));
+    if (!rec || !rec.msgs) return { status: "missing" };
+    const m = rec.msgs.find((x) => x.i === messageId);
+    if (!m) return { status: "missing" };
+    return { status: "ok", role: m.r, text: m.t, ts: m.ts || 0 };
+  } catch { return { status: "missing" }; }
+}
+
+/** Forget a conversation that no longer exists upstream. */
+async function dropChat(id) {
+  try {
+    const d = await db();
+    await reqP(tx(d, "readwrite").delete(String(id).slice(0, 600)));
+  } catch { /* archive unavailable — nothing to forget */ }
+}
+
+/**
+ * The whole conversation as a per-message index, for ONE chat.
+ *
+ * Stale-while-revalidate: an archived copy that carries message ids is served
+ * with zero network so the map is complete before the first paint; the caller
+ * re-asks with force once it has painted, and only then do we pay the round
+ * trip. Every failure is a status, never a throw — no index just means the map
+ * falls back to what the host has mounted, which is where it started.
+ */
+async function chatIndex(host, path, opts = {}) {
+  const adapter = BG_ADAPTERS.find((a) => a.host === host && String(path || "").startsWith(a.prefix));
+  // Gemini and Perplexity have no history endpoint here at all — answer before
+  // touching the network rather than failing somewhere deeper.
+  if (!adapter || adapter.id !== "chatgpt" || !adapter.detailFull) return { status: "unsupported" };
+  const convId = String(path).slice(adapter.prefix.length).split(/[?#/]/)[0];
+  if (!convId) return { status: "unsupported" };
+  const recordId = adapter.host + adapter.prefix + convId;
+
+  if (!opts.force) {
+    try {
+      const d = await db();
+      const rec = await reqP(tx(d, "readonly").get(recordId));
+      if (rec && rec.mv === 1 && rec.n >= 2) {
+        return { status: "ok", source: "archive", stale: true, entries: indexFromMsgs(rec.msgs), title: rec.title || "" };
+      }
+    } catch { /* fall through to the provider */ }
+  }
+
+  const inflight = idxInflight.get(recordId);
+  if (inflight) return inflight;
+  if (opts.force && Date.now() - (idxFetchedAt.get(recordId) || 0) < IDX_FRESH_MS) {
+    return { status: "fresh" };
+  }
+
+  const run = (async () => {
+    try {
+      const ctx = await idxPrepare(adapter);
+      const full = await adapter.detailFull(ctx, convId);
+      idxFetchedAt.set(recordId, Date.now());
+      if (full.msgs.length >= 2) {
+        // importBatch, not upsert: it already refuses to overwrite a newer
+        // archived revision, and reading a chat should never lose one.
+        await importBatch([{
+          id: recordId, host: adapter.host, path: adapter.prefix + convId,
+          platform: adapter.label, title: full.title,
+          createdAt: full.createdAt, updatedAt: full.updatedAt || Date.now(),
+          sourceUpdatedAt: full.updatedAt, msgs: full.msgs
+        }]);
+      }
+      return { status: "ok", source: "provider", stale: false, entries: indexFromMsgs(full.msgs), title: full.title };
+    } catch (error) {
+      const kind = (error && error.kind) || "net";
+      // Deleted upstream: stop claiming we have it. Recall must not keep
+      // returning a chat the user threw away.
+      if (kind === "gone") { idxCtx.delete(adapter.host); await dropChat(recordId); }
+      if (kind === "auth") idxCtx.delete(adapter.host);
+      return { status: kind };
+    } finally {
+      idxInflight.delete(recordId);
+    }
+  })();
+  idxInflight.set(recordId, run);
+  return run;
+}
+
+/* ---------- progress (coalesced) ----------
+ * One write per BG_PROGRESS_MS instead of two per chat: a 256-chat pass used to
+ * fire ~512 storage writes and as many full UI repaints. */
+
+let progressPending = null;
+let progressTimer = null;
+let progressAt = 0;
+
+async function flushProgress() {
+  if (progressTimer) { clearTimeout(progressTimer); progressTimer = null; }
+  const p = progressPending;
+  if (!p) return;
+  progressPending = null;
+  progressAt = Date.now();
+  try {
+    await chrome.storage.local.set({
+      [BG_SYNC_PROG(p.platform)]: p.record,
+      ...(p.run ? { [BG_RUN]: { ...p.run, heartbeatAt: Date.now(), platform: p.platform } } : {})
+    });
+  } catch { /* dead context */ }
+}
+
+function writeProgress(adapter, run, fields, opts = {}) {
+  const record = {
+    state: "syncing", phase: "syncing", runId: run && run.id, platform: adapter.id,
+    at: Date.now(), ...fields
+  };
+  // `done` stays an alias of `attempted` for the popup and Recall page.
+  if (record.attempted != null && record.done == null) record.done = record.attempted;
+  progressPending = { platform: adapter.id, record, run };
+  const due = progressAt + BG_PROGRESS_MS - Date.now();
+  if (opts.force || due <= 0) return flushProgress();
+  if (!progressTimer) progressTimer = setTimeout(() => { flushProgress(); }, due);
+  return Promise.resolve();
+}
+
+async function finishPlatform(adapter, checkpointKey, checkpoint, result, fields, message, coverage) {
   const completedAt = Date.now();
   await saveCheckpoint(checkpointKey, {
-    version: 3,
+    ...checkpoint,
+    version: 4,
     platform: adapter.id,
-    safeWatermark: scanStartedAt,
     completedAt,
     lastResult: result,
-    archived,
     coverage: Math.max(0, Number(coverage) || 0),
     coverageKnown: true
   });
+  await clearJob(checkpointKey);
+  progressPending = null;
+  if (progressTimer) { clearTimeout(progressTimer); progressTimer = null; }
   await chrome.storage.local.set({
     [BG_SYNC_PROG(adapter.id)]: {
-      state: "done", phase: "up-to-date", done, total, result, archived, msg: message, at: completedAt
+      state: "done", phase: "up-to-date", result, msg: message, at: completedAt,
+      runId: checkpoint.runId, platform: adapter.id,
+      done: fields.attempted || 0, ...fields
     },
     [BG_SYNC_FLAG(adapter.id)]: { lastFull: completedAt }
   });
 }
 
+// Is the user on this site right now? An auto pass defers rather than compete
+// with their own browsing for the provider's rate limit. Needs no "tabs"
+// permission — tab.url is populated for hosts we already hold permission for.
+async function tabPresence(host) {
+  try {
+    if (typeof chrome.tabs === "undefined") return { open: false, active: false };
+    const tabs = await chrome.tabs.query({});
+    let open = false, active = false;
+    for (const t of tabs) {
+      let h = "";
+      try { h = new URL(t.url || "").hostname; } catch { /* opaque tab */ }
+      if (h !== host) continue;
+      open = true;
+      if (t.active) active = true;
+    }
+    return { open, active };
+  } catch { return { open: false, active: false }; }
+}
+
 /**
  * Reconcile one provider against the local archive.
  *
- * The contract, in order of authority:
+ * Authority order:
  *
  *   1. The archive index (what this browser actually holds) decides what gets
  *      downloaded. A chat is fetched only when it is absent, or when the
  *      provider's revision is newer than the archived one.
- *   2. The checkpoint watermark only decides how much metadata to LIST. It is
- *      an optimisation, never a correctness guarantee.
- *   3. The watermark is trusted only while coverage holds: the archive must
- *      still contain at least as many chats as the checkpoint recorded. A
- *      reinstall, a wipe, or a partial restore breaks coverage, and the pass
- *      silently widens to a full listing — which still downloads nothing that
- *      is already archived, because rule 1 outranks it.
- *
- * That is what makes the uninstall→reinstall gap work. Restore the encrypted
- * backup and the archive holds every chat that existed at backup time; the
- * chats created while the extension was gone are the only ids missing from the
- * index, so they are the only ones fetched. Skip the restore and coverage is
- * zero, so the pass rebuilds from scratch. Either way the answer is derived,
- * never assumed.
+ *   2. The outstanding-work journal holds everything this pass still intends to
+ *      fetch. It is written WITH the advanced watermark before the first detail
+ *      request, so an interrupted or fully rate-limited pass still leaves a
+ *      trustworthy checkpoint behind and the next pass resumes instead of
+ *      re-listing the whole history.
+ *   3. The checkpoint watermark only decides how much metadata to LIST, and is
+ *      trusted only while coverage holds AND the journal matches it. A
+ *      reinstall, a wipe, or a lost journal widens the pass to a full listing —
+ *      which still downloads nothing already archived, because rule 1 outranks
+ *      it.
  */
-async function bgSyncPlatform(adapter, run) {
-  let done = 0, total = 0;
+async function bgSyncPlatform(adapter, run, opts = {}) {
+  const auto = opts.reason === "auto";
+  let attempted = 0, succeeded = 0, failed = 0, total = 0;
   try {
-    await writeProgress(adapter, run, 0, 0, "Connecting…", "checking");
+    // 1. host cooling down from an earlier 429 — say so, don't grind
+    const cooldownUntil = await loadCooldown(adapter.host);
+    if (cooldownUntil > Date.now()) {
+      await chrome.storage.local.set({
+        [BG_SYNC_PROG(adapter.id)]: {
+          state: "paused", phase: "paused", runId: run.id, platform: adapter.id,
+          done: 0, total: 0, cooldownUntil,
+          msg: `${adapter.label} is rate-limiting — resumes automatically`, at: Date.now()
+        }
+      });
+      return { ok: true, result: "cooling-down" };
+    }
+
+    // 2. never compete with the user's own browsing on an unattended pass
+    const tabs = await tabPresence(adapter.host);
+    if (auto && tabs.active) {
+      await chrome.storage.local.set({
+        [BG_SYNC_PROG(adapter.id)]: {
+          state: "deferred", phase: "deferred", runId: run.id, platform: adapter.id,
+          done: 0, total: 0, msg: `Waiting until you're done on ${adapter.label}`, at: Date.now()
+        }
+      });
+      return { ok: true, result: "deferred" };
+    }
+
+    await writeProgress(adapter, run, { phase: "checking", attempted: 0, total: 0, msg: "Connecting…" }, { force: true });
     const ctx = await adapter.prepare();
     const { key: checkpointKey, checkpoint } = await readCheckpoint(adapter, ctx);
+    const job = await readJob(checkpointKey);
     await setActiveAccount(adapter, checkpointKey);
 
-    await writeProgress(adapter, run, 0, 0, "Reading your local archive…", "checking");
+    await writeProgress(adapter, run, { phase: "checking", attempted: 0, total: 0, msg: "Reading your local archive…" });
     const index = await archiveIndex(adapter.host, adapter.prefix);
     const covered = checkpoint && checkpoint.coverageKnown ? Number(checkpoint.coverage) || 0 : -1;
-    // covered < 0  → checkpoint predates coverage tracking, so it is unproven
-    // index.size < covered → the archive lost chats the checkpoint promised
-    const trustWatermark = !!(checkpoint && checkpoint.safeWatermark && covered >= 0 && index.size >= covered);
-    const sinceMs = trustWatermark
-      ? Math.max(0, checkpoint.safeWatermark - BG_SYNC_OVERLAP_MS)
-      : 0;
+    // The journal may run AHEAD of pendingCount (it flushes far more often than
+    // the sync ledger), never behind. scanStartedAt proves both came from the
+    // same pass; a missing journal with work outstanding forces a full listing.
+    const pendingOk = !(checkpoint && checkpoint.pendingCount) ||
+      !!(job && job.scanStartedAt === checkpoint.safeWatermark &&
+         job.pending.length <= checkpoint.pendingCount);
+    const trustWatermark = !!(checkpoint && checkpoint.safeWatermark &&
+      covered >= 0 && index.size >= covered && pendingOk);
+    const sinceMs = trustWatermark ? Math.max(0, checkpoint.safeWatermark - BG_SYNC_OVERLAP_MS) : 0;
     const mode = trustWatermark ? "delta" : "reconcile";
+    const carried = trustWatermark && job ? job.pending : [];
+    // Captured BEFORE listing on purpose: a chat that shifts pages mid-listing
+    // still has a revision >= this, so the next pass re-lists it.
     const scanStartedAt = Date.now();
+
+    // 3. one request to answer "anything new?" on a routine pass
+    if (trustWatermark && !carried.length && adapter.peek) {
+      const { hasNew } = await adapter.peek(ctx, sinceMs);
+      if (!hasNew) {
+        await finishPlatform(adapter, checkpointKey,
+          { ...checkpoint, safeWatermark: scanStartedAt, pendingCount: 0, passState: "clean", runId: run.id },
+          "up-to-date", { attempted: 0, total: 0, succeeded: 0, failed: 0 },
+          "Everything is already backed up", index.size);
+        return { ok: true, result: "up-to-date", mode };
+      }
+    }
+
     const progress = (count, listedTotal, msg) =>
-      writeProgress(adapter, run, count || 0, listedTotal || 0, msg || "Checking for new chats…", "checking");
+      writeProgress(adapter, run, { phase: "checking", attempted: count || 0, total: listedTotal || 0,
+        msg: msg || "Checking for new chats…" });
+    await writeProgress(adapter, run, { phase: "checking", attempted: 0, total: 0,
+      msg: mode === "delta" ? "Checking for new chats…"
+        : index.size ? "Rebuilding the archive index…" : "Building the first archive index…" });
 
-    await writeProgress(adapter, run, 0, 0,
-      mode === "delta"
-        ? "Checking for new chats…"
-        : index.size
-          ? "Rebuilding the archive index…"
-          : "Building the first archive index…",
-      "checking");
-    const metas = await adapter.list(ctx, sinceMs, progress);
-    if (!metas.length) {
-      await finishPlatform(adapter, checkpointKey, scanStartedAt, "up-to-date", 0, 0, 0,
-        "Everything is already backed up", index.size);
-      return { ok: true, result: "up-to-date", mode };
-    }
+    const listed = await adapter.list(ctx, sinceMs, progress);
+    const metas = listed.metas || [];
+    const complete = listed.complete !== false;
 
-    const toFetch = metas.filter((m) => {
-      const archivedRevision = index.get(adapter.host + adapter.prefix + m.id);
-      // A chat is a duplicate only when it is the same provider revision. The
-      // list overlap can therefore be safely retried after an interrupted
-      // worker without requesting its detail text again.
-      return archivedRevision === undefined || archivedRevision < m.updatedAt;
+    // 4. work = carried-over pending ∪ freshly listed, fresh meta winning,
+    //    minus anything the archive already holds at that revision or newer.
+    const byId = new Map();
+    for (const p of carried) byId.set(p.id, { id: p.id, rev: p.rev, title: p.title, createdAt: p.createdAt, attempts: p.attempts || 0 });
+    for (const m of metas) byId.set(m.id, { id: m.id, rev: m.updatedAt, title: m.title, createdAt: m.createdAt, attempts: 0 });
+    const work = Array.from(byId.values()).filter((w) => {
+      const archivedRevision = index.get(adapter.host + adapter.prefix + w.id);
+      return archivedRevision === undefined || archivedRevision < w.rev;
     });
-    if (!toFetch.length) {
-      await finishPlatform(adapter, checkpointKey, scanStartedAt, "up-to-date", metas.length, metas.length, 0,
+
+    if (!work.length) {
+      await finishPlatform(adapter, checkpointKey,
+        { ...checkpoint, safeWatermark: complete ? scanStartedAt : (checkpoint?.safeWatermark || 0),
+          pendingCount: 0, passState: complete ? "clean" : "partial", runId: run.id },
+        "up-to-date", { attempted: metas.length, total: metas.length, succeeded: 0, failed: 0 },
         "Everything is already backed up", index.size);
       return { ok: true, result: "up-to-date", mode };
     }
 
-    let cursor = 0, archived = 0, retryCount = 0, fatal = null, pauseUntil = 0;
-    total = toFetch.length;
+    total = work.length;
+    const overflow = work.length > BG_PENDING_MAX;
+
+    // 5. Persist the watermark and the FULL outstanding set before fetching
+    //    anything. This is what lets a first pass that is rate-limited on every
+    //    single chat still leave a resumable checkpoint behind.
+    await writeJob(checkpointKey, { platform: adapter.id, scanStartedAt, pending: work,
+      tombstones: job ? job.tombstones : [] });
+    const baseCoverage = await platformCount(adapter.host, adapter.prefix);
+    await saveCheckpoint(checkpointKey, {
+      version: 4, platform: adapter.id,
+      safeWatermark: complete && !overflow ? scanStartedAt : (checkpoint?.safeWatermark || 0),
+      completedAt: Date.now(), lastResult: mode,
+      archived: checkpoint?.archived || 0,
+      coverage: baseCoverage, coverageKnown: true,
+      pendingCount: work.length,
+      passState: complete && !overflow ? "clean" : "partial",
+      cooldownUntil: 0, runId: String(run.id).slice(0, 8)
+    });
+
+    // 6. fetch loop
+    const concurrency = Math.max(1, tabs.open
+      ? 1                                     // user is here, just not focused
+      : policyFor(adapter.host).concurrency);
+    const passStart = Date.now();
+    let cursor = 0, archived = 0, fatal = null, circuitOpen = false, budgetHit = false;
     const importQueue = [];
-    const flushQueue = async () => {
-      if (!importQueue.length) return;
-      const batch = importQueue.splice(0);
-      const result = await importBatch(batch);
-      archived += result.ok;
-      retryCount += result.skipped;
+    const settled = [], gone = [];
+    let journalAt = Date.now();
+
+    const flushQueue = async (force) => {
+      if (importQueue.length) {
+        const batch = importQueue.splice(0);
+        const result = await importBatch(batch);
+        archived += result.ok;
+        succeeded += result.ok;
+        failed += result.failed.length;
+        for (const id of result.stored) settled.push(id.slice((adapter.host + adapter.prefix).length));
+      }
+      const due = force || Date.now() - journalAt > BG_JOURNAL_FLUSH_MS;
+      if (settled.length || gone.length) {
+        // Always update the in-memory set; only pay for a storage write when
+        // the debounce is due.
+        await dropFromJob(checkpointKey, settled.splice(0), gone.splice(0), due);
+      } else if (due) {
+        await flushJournal();
+      }
+      if (due) journalAt = Date.now();
     };
+
     const worker = async () => {
-      while (!fatal) {
+      while (!fatal && !circuitOpen && !budgetHit) {
         const slot = cursor++;
         if (slot >= total) return;
-        const meta = toFetch[slot];
-        if (pauseUntil > Date.now()) await sleep(pauseUntil - Date.now());
+        if (Date.now() - passStart > BG_PASS_BUDGET_MS) { budgetHit = true; return; }
+        const item = work[slot];
         try {
-          const msgs = await adapter.detail(ctx, meta.id);
+          const msgs = await adapter.detail(ctx, item.id);
           const record = {
-            id: adapter.host + adapter.prefix + meta.id,
-            host: adapter.host, path: adapter.prefix + meta.id,
-            platform: adapter.label, title: meta.title,
-            createdAt: meta.createdAt, updatedAt: meta.updatedAt,
-            sourceUpdatedAt: meta.updatedAt, msgs
+            id: adapter.host + adapter.prefix + item.id,
+            host: adapter.host, path: adapter.prefix + item.id,
+            platform: adapter.label, title: item.title,
+            createdAt: item.createdAt, updatedAt: item.rev,
+            // Always the LISTED revision: stamping the fetch time would claim a
+            // revision we never verified and mask the next real update.
+            sourceUpdatedAt: item.rev, msgs
           };
-          // A conversation with no usable dialogue (empty, or a single opening
-          // turn) still has its provider revision fully accounted for. It is
-          // archived as a metadata record so it can never keep a checkpoint
-          // pinned open and re-fetch itself on every future pass.
           if (msgs.length < 2) { record.msgs = []; record.meta = true; }
           importQueue.push(record);
           if (importQueue.length >= BG_SYNC_BATCH) await flushQueue();
         } catch (error) {
-          const reason = String(error && error.message || error);
-          if (reason.includes("unauthorized")) { fatal = error; return; }
-          if (reason.includes("rate-limited")) pauseUntil = Date.now() + 15000;
-          retryCount++;
+          const kind = error && error.kind;
+          const reason = String((error && error.message) || error);
+          if (kind === "auth" || reason.includes("unauthorized")) { fatal = error; return; }
+          // Deleted upstream: drop it from the journal AND from the archive, so
+          // Recall stops returning a chat that no longer exists.
+          if (kind === "gone") { gone.push(item.id); await dropChat(adapter.host + adapter.prefix + item.id); }
+          // Anything not archived stays in the journal, so an abandoned slot is
+          // simply retried next pass — no cursor rewind needed.
+          else if (error && error.circuitOpen) { circuitOpen = true; return; }
+          else failed++;
         }
-        done++;
-        await writeProgress(adapter, run, done, total,
-          `Capturing ${done} of ${total} new chat${total === 1 ? "" : "s"}…`, "syncing");
-        await sleep(BG_SYNC_DELAY);
+        attempted++;
+        await writeProgress(adapter, run, {
+          attempted, total, succeeded, failed,
+          msg: `Capturing ${attempted} of ${total} new chat${total === 1 ? "" : "s"}…`
+        });
       }
     };
 
-    await Promise.all(Array.from({ length: Math.min(BG_SYNC_CONCURRENCY, total) }, worker));
-    await flushQueue();
+    await Promise.all(Array.from({ length: Math.min(concurrency, total) }, worker));
+    await flushQueue(true);
     if (fatal) throw fatal;
-    // Counted from the database, never inferred from `archived`: an update to
-    // an already-archived chat adds no row, and an inflated coverage figure
-    // would fail its own trust check forever and pin the platform in
-    // full-reconcile mode.
+
     const coverage = await platformCount(adapter.host, adapter.prefix);
-    if (retryCount) {
-      // Retain the preceding safe watermark: the failed chats must stay inside
-      // the next listing window. Coverage is still recorded, so the retry pass
-      // re-lists the same range and downloads only what is genuinely missing.
-      if (checkpoint) {
-        await saveCheckpoint(checkpointKey, { ...checkpoint, coverage, coverageKnown: true });
-      }
+    const remaining = await readJob(checkpointKey);
+    const left = remaining ? remaining.pending.length : 0;
+
+    if (circuitOpen || budgetHit || left) {
+      // Watermark and journal already persisted at step 5 — nothing is lost and
+      // the next pass picks up exactly what is left.
+      const until = hostEntry(adapter.host).cooldownUntil;
+      await saveCheckpoint(checkpointKey, {
+        ...(checkpoint || {}), version: 4, platform: adapter.id,
+        safeWatermark: complete && !overflow ? scanStartedAt : (checkpoint?.safeWatermark || 0),
+        completedAt: Date.now(),
+        lastResult: circuitOpen ? "rate-limited" : budgetHit ? "budget" : "partial",
+        archived, coverage, coverageKnown: true, pendingCount: left,
+        passState: complete && !overflow ? "clean" : "partial",
+        cooldownUntil: circuitOpen ? until : 0, runId: String(run.id).slice(0, 8)
+      });
+      progressPending = null;
       await chrome.storage.local.set({
         [BG_SYNC_PROG(adapter.id)]: {
-          state: "error", phase: "error", done, total, archived,
-          msg: `${archived} saved · ${retryCount} will retry automatically`, at: Date.now()
+          state: circuitOpen ? "paused" : "syncing", phase: circuitOpen ? "paused" : "syncing",
+          runId: run.id, platform: adapter.id, done: attempted, attempted, total, succeeded, failed,
+          msg: circuitOpen
+            ? `${archived} saved · ${adapter.label} is rate-limiting, ${opts.canResume === false ? "check again shortly" : "resumes automatically"}`
+            : `${archived} saved · ${left} left${opts.canResume === false ? " — check again to continue" : ", resumes automatically"}`,
+          at: Date.now()
         }
       });
-      return { ok: false, retryCount };
+      return { ok: true, result: circuitOpen ? "rate-limited" : "partial", archived, left };
     }
-    await finishPlatform(adapter, checkpointKey, scanStartedAt, mode, done, total, archived,
-      archived
-        ? `${archived} new chat${archived === 1 ? "" : "s"} backed up`
-        : "Everything is already backed up",
+
+    await finishPlatform(adapter, checkpointKey,
+      { ...(checkpoint || {}),
+        safeWatermark: complete && !overflow ? scanStartedAt : (checkpoint?.safeWatermark || 0),
+        archived, pendingCount: 0,
+        passState: complete && !overflow ? "clean" : "partial",
+        cooldownUntil: 0, runId: String(run.id).slice(0, 8) },
+      mode, { attempted, total, succeeded, failed },
+      archived ? `${archived} new chat${archived === 1 ? "" : "s"} backed up`
+               : "Everything is already backed up",
       coverage);
     return { ok: true, result: mode, archived };
   } catch (error) {
-    const reason = String(error && error.message || error);
+    const reason = String((error && error.message) || error);
     const signedOut = reason.includes("unauthorized") || reason.includes("not signed in") ||
       /unexpected provider response|invalid provider response/i.test(reason);
+    const rateLimited = (error && error.kind) === "rate";
     const message = reason.includes("unauthorized") || reason.includes("not signed in")
       ? `Not signed in`
       : /unexpected token\s*['"]?<?|valid json|json\.parse|unexpected provider response|invalid provider response/i.test(reason)
         ? `Needs an active session`
-        : `Couldn't reach ${adapter.label}`;
+        : rateLimited
+          ? `${adapter.label} is rate-limiting — resumes automatically`
+          : `Couldn't reach ${adapter.label}`;
+    progressPending = null;
     await chrome.storage.local.set({
       [BG_SYNC_PROG(adapter.id)]: {
-        state: "error", phase: "error", done, total, msg: message, signedOut, at: Date.now()
+        state: rateLimited ? "paused" : "error", phase: rateLimited ? "paused" : "error",
+        runId: run.id, platform: adapter.id,
+        done: attempted, attempted, total, succeeded, failed, msg: message, signedOut, at: Date.now()
       }
     });
     return { ok: false, error: reason, signedOut };
   }
 }
 
-async function bgSyncAll() {
+async function bgSyncAll(opts = {}) {
   const recovery = await ensureRecoveryState();
   if (recovery.state === "restore-required") return { status: "restore-required", recovery };
   if (bgSyncRunning) return { status: "already-running" };
   const run = await beginRun();
   if (!run) return { status: "already-running" };
   bgSyncRunning = true;
+  // writeProgress is no longer the only heartbeat: a cooldown or paced listing
+  // can outlast BG_RUN_STALE_MS and the run would declare itself interrupted.
+  const pulse = setInterval(() => { beat(run, null); }, 20000);
   try {
-    const results = await Promise.all(BG_ADAPTERS.map((adapter) => bgSyncPlatform(adapter, run)));
+    // With auto-sync off nothing will pick a partial pass back up, so the UI
+    // must not promise that it will.
+    const canResume = await autoSyncEnabled();
+    opts = { ...opts, canResume };
+    const results = [];
+    // Sequential, not Promise.all: four platforms at once meant up to 32
+    // concurrent authenticated requests on the user's own cookies.
+    for (const adapter of BG_ADAPTERS) {
+      results.push(await bgSyncPlatform(adapter, run, opts));
+      await sleep(2000);
+    }
+    await flushProgress();
     await chrome.storage.local.set({ [BG_RUN]: { ...run, state: "done", finishedAt: Date.now() } });
+    if (canResume && results.some((r) => r && (r.left || r.result === "deferred" || r.result === "partial"))) {
+      await scheduleResume();
+    }
     return { status: "done", results };
   } finally {
+    clearInterval(pulse);
     bgSyncRunning = false;
   }
 }
@@ -1006,7 +1841,7 @@ async function bgSyncStatus() {
     platforms,
     running: !!(run && run.state === "running"),
     recovery,
-    summary: summarize(platforms, !!(run && run.state === "running"), recovery),
+    summary: summarize(platforms, !!(run && run.state === "running"), recovery, run && run.id),
     run: run ? { state: run.state, startedAt: run.startedAt, interruptedAt: run.interruptedAt || 0 } : null
   };
 }
@@ -1019,27 +1854,42 @@ async function bgSyncStatus() {
  * of the four; requiring all four to report "up to date" meant the reassuring
  * message a fully-synced archive has earned could never appear.
  */
-function summarize(platforms, running, recovery) {
+function summarize(platforms, running, recovery, runId) {
   if (recovery && recovery.state === "restore-required") {
     return { state: "restore", message: "Restore your archive to continue", checkedAt: 0, connected: 0 };
   }
   const entries = Object.values(platforms);
   if (running || entries.some((p) => p.progress && p.progress.state === "syncing")) {
     const live = entries.filter((p) => p.progress && p.progress.state === "syncing");
-    // Sum the whole pass. Reporting only the loudest platform's numbers made a
-    // four-provider check look like it kept restarting at 0%.
-    let done = 0, total = 0;
+    // Only this run counts. finishPlatform leaves a "done" record behind
+    // indefinitely, and summing those inflated the denominator so the
+    // percentage never matched the message.
+    const current = runId || entries.reduce((newest, p) => {
+      const pr = p.progress;
+      return pr && pr.runId && (!newest || (Number(pr.at) || 0) > newest.at)
+        ? { id: pr.runId, at: Number(pr.at) || 0 } : newest;
+    }, null)?.id;
+    let done = 0, total = 0, succeeded = 0;
     for (const p of entries) {
       const pr = p.progress;
       if (!pr || !Number.isFinite(Number(pr.total)) || Number(pr.total) <= 0) continue;
       if (pr.state !== "syncing" && pr.state !== "done") continue;
+      if (current && pr.runId && pr.runId !== current) continue;
       done += Math.min(Number(pr.done) || 0, Number(pr.total));
       total += Number(pr.total);
+      succeeded += Number(pr.succeeded) || 0;
     }
     const message = live.length > 1
       ? `Checking ${live.length} platforms…`
       : (live[0] && live[0].progress.msg) || "Checking for new chats…";
-    return { state: "syncing", message, done, total, syncing: live.length, checkedAt: 0, connected: 0 };
+    return { state: "syncing", message, done, total, succeeded, syncing: live.length, checkedAt: 0, connected: 0 };
+  }
+
+  // A rate limit is not user-actionable and must not paint the error state.
+  const cooling = entries.filter((p) => p.progress && p.progress.state === "paused");
+  if (cooling.length) {
+    return { state: "paused", message: cooling[0].progress.msg || "Paused — resumes automatically",
+      checkedAt: 0, connected: entries.filter((p) => !(p.progress && p.progress.signedOut)).length };
   }
 
   const connected = entries.filter((p) => !(p.progress && p.progress.signedOut));
@@ -1082,12 +1932,12 @@ async function backupState() {
 async function wipeRecall() {
   await wipe();
   profileSaltPromise = null;
+  journalCache = null;
   const localKeys = [BG_RUN, BG_RECOVERY, BG_ACTIVE_ACCOUNT]
     .concat(BG_ADAPTERS.map((adapter) => BG_SYNC_PROG(adapter.id)))
     .concat(BG_ADAPTERS.map((adapter) => BG_SYNC_FLAG(adapter.id)));
-  await chrome.storage.local.remove(localKeys);
-  try { await chrome.storage.sync.remove([BG_SYNC_LEDGER, BG_BACKUP_MARKER, BG_SYNC_PROFILE]); }
-  catch { await chrome.storage.local.remove([BG_SYNC_LEDGER, BG_BACKUP_MARKER, BG_SYNC_PROFILE]); }
+  await chrome.storage.local.remove(localKeys.concat([BG_SYNC_WORK, BG_HOST_COOLDOWN, BG_PAGE_SCHEME]));
+  await removeDurable([BG_SYNC_LEDGER, BG_BACKUP_MARKER, BG_SYNC_PROFILE]);
   return { ok: true };
 }
 
@@ -1103,9 +1953,10 @@ async function wipeRecall() {
  * race a user who is still signing in.
  */
 const BG_AUTO_ALARM = "lct-auto-sync";
+const BG_RESUME_ALARM = "lct-auto-sync-resume";
 const BG_AUTO_STATE = "lct-recall-auto-sync-v1";
 const BG_AUTO_FIRST_DELAY_MIN = 10;
-const BG_AUTO_PERIOD_MIN = 360;      // every 6 hours
+const BG_AUTO_PERIOD_MIN = 180;      // every 3 hours
 
 async function autoSyncEnabled() {
   try {
@@ -1120,17 +1971,58 @@ async function ensureAutoSyncAlarm() {
     // Re-creating would reset the schedule on every worker wake, so a browser
     // that restarts often would never actually reach a tick.
     if (existing) return;
+    // Reloading the extension clears alarms. Carrying the last tick forward
+    // stops a reload from buying another full interval — or, worse, from
+    // starting a fresh pass every time the worker respawns.
+    let delay = BG_AUTO_FIRST_DELAY_MIN;
+    try {
+      const { [BG_AUTO_STATE]: state } = await chrome.storage.local.get(BG_AUTO_STATE);
+      const since = state && state.at ? (Date.now() - state.at) / 60000 : Infinity;
+      if (Number.isFinite(since)) {
+        delay = Math.min(BG_AUTO_PERIOD_MIN, Math.max(BG_AUTO_FIRST_DELAY_MIN, BG_AUTO_PERIOD_MIN - since));
+      }
+    } catch { /* no prior tick */ }
     await chrome.alarms.create(BG_AUTO_ALARM, {
-      delayInMinutes: BG_AUTO_FIRST_DELAY_MIN,
+      delayInMinutes: delay,
       periodInMinutes: BG_AUTO_PERIOD_MIN
     });
   } catch { /* alarms unavailable */ }
 }
 
+// A pass that ended with work outstanding comes back promptly rather than
+// waiting out the full period. 1 minute is the platform floor.
+async function scheduleResume() {
+  try { await chrome.alarms.create(BG_RESUME_ALARM, { delayInMinutes: 1 }); }
+  catch { /* alarms unavailable */ }
+}
+
+/* A tab just opened one of the providers. That is a better sync trigger than
+ * any clock — the session is live, the cookies are warm, and it is the moment
+ * the user expects "everything I've ever written" to already be searchable.
+ * Throttled here rather than in the page so ten tabs cost one pass. */
+const BG_VISIT_STATE = "lct-recall-visit-sync-v1";
+const BG_VISIT_MIN_MS = 20 * 60 * 1000;
+
+async function visitSync(platform) {
+  // Only the providers the sync engine can actually read. A visit to a host we
+  // have no history endpoint for is not a reason to go poll the other four.
+  if (!BG_PLATFORM_IDS.has(platform)) return { status: "unsupported" };
+  if (!(await autoSyncEnabled())) return { status: "disabled" };
+  let last = 0;
+  try {
+    const { [BG_VISIT_STATE]: state } = await chrome.storage.local.get(BG_VISIT_STATE);
+    last = (state && state.at) || 0;
+  } catch { /* no prior visit */ }
+  if (Date.now() - last < BG_VISIT_MIN_MS) return { status: "throttled", last };
+  try { await chrome.storage.local.set({ [BG_VISIT_STATE]: { at: Date.now() } }); }
+  catch { /* dead context */ }
+  return autoSyncTick();
+}
+
 async function autoSyncTick() {
   if (!(await autoSyncEnabled())) return { status: "disabled" };
   const started = Date.now();
-  const result = await bgSyncAll();       // owns the recovery gate and overlap guard
+  const result = await bgSyncAll({ reason: "auto" });   // owns recovery + overlap guards
   try {
     await chrome.storage.local.set({
       [BG_AUTO_STATE]: { at: started, status: result && result.status }
@@ -1141,7 +2033,7 @@ async function autoSyncTick() {
 
 try {
   chrome.alarms.onAlarm.addListener((alarm) => {
-    if (alarm && alarm.name === BG_AUTO_ALARM) autoSyncTick();
+    if (alarm && (alarm.name === BG_AUTO_ALARM || alarm.name === BG_RESUME_ALARM)) autoSyncTick();
   });
   chrome.runtime.onInstalled.addListener(() => { ensureAutoSyncAlarm(); });
   chrome.runtime.onStartup.addListener(() => { ensureAutoSyncAlarm(); });
@@ -1166,13 +2058,53 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       case "recall-check":       return check(msg.ids);
       case "recall-stats":       return stats();
       case "recall-wipe":        return wipeRecall();
-      case "recall-bg-sync":     return bgSyncAll();
+      case "recall-bg-sync":     return bgSyncAll({ reason: "manual" });
       case "recall-auto-tick":   return autoSyncTick();
+      case "recall-visit-sync":  return visitSync(msg.platform);
+      case "chat-index":         return chatIndex(msg.host, msg.path, { force: msg.force });
+      case "chat-message":       return chatMessage(msg.host, msg.path, msg.id);
+      case "chat-drop":          return dropChat(msg.id).then(() => ({ ok: true }));
+      // The branch walk decides whether the map's positions line up with the
+      // page at all, and the worker's network cannot be routed from a test —
+      // so the parse is reachable directly, same as the pacing selftest below.
+      case "chat-index-selftest": return {
+        msgs: chatgptMsgs(msg.conv || {}),
+        entries: indexFromMsgs(chatgptMsgs(msg.conv || {}))
+      };
       case "recall-sync-status": return bgSyncStatus();
       case "recall-backup-state": return backupState();
       case "recall-backup-mark": return markBackup(msg.meta);
       case "recall-restore-ledger": return restoreLedger(msg.ledger, msg.meta, msg.profile);
       case "recall-recovery-skip": return skipRecovery();
+      // Pacing logic is pure but unreachable from a test page otherwise, and a
+      // silent regression here is what lets the sync 429 the provider again.
+      case "recall-sync-selftest": return {
+        retryAfter: (msg.values || []).map(parseRetryAfter),
+        backoff: backoffDelay(Number(msg.attempt) || 0, Number(msg.retryAfterMs) || 0)
+      };
+      // Drives pageThrough over a scripted server so the safe-degradation exits
+      // (offset ignored, limit ignored, short page) are assertable.
+      case "recall-page-selftest": {
+        // `pages` is keyed by the query fragment a scheme produces, so a test
+        // can model a server that honours one spelling and ignores the rest.
+        const pages = msg.pages || {};
+        const calls = [];
+        const out = await pageThrough({ host: "selftest" }, {
+          pageSize: Number(msg.pageSize) || 2, sinceMs: Number(msg.sinceMs) || 0,
+          delayMs: 0, noCache: true, progress: () => {},
+          fetchPage: (page) => {
+            calls.push(page);
+            // "<param>=*" models a server that accepts the param but ignores
+            // it, always returning the same page — distinct from one that has
+            // genuinely run out of results.
+            const hit = pages[page] !== undefined ? pages[page] : pages[page.split("=")[0] + "=*"];
+            if (hit === "error") throw new BgError("net", "http 400");
+            return hit || [];
+          },
+          toMeta: (it) => ({ id: it.id, title: "", createdAt: 0, updatedAt: it.updatedAt })
+        });
+        return { ids: out.metas.map((m) => m.id), complete: out.complete, paged: out.paged, calls };
+      }
       default: return { err: "unknown" };
     }
   };

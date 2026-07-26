@@ -54,11 +54,11 @@ async function caption(page, text) {
     Object.assign(b.style, {
       position: "fixed", left: 0, right: 0, bottom: 0, height: "76px", zIndex: 2147483647,
       display: "flex", alignItems: "center", padding: "0 28px",
-      background: "#0b0c10", borderTop: "2px solid #7aa2ff",
-      font: "600 24px/1.2 -apple-system, 'Segoe UI', sans-serif", color: "#fff"
+      background: "#060406", borderTop: "2px solid #ff5d8a",
+      font: "600 24px/1.2 -apple-system, 'Segoe UI', sans-serif", color: "#fbf6f8"
     });
     const lb = b.querySelector(".lb"), lc = b.querySelector(".lc"), lr = b.querySelector(".lr");
-    Object.assign(lb.style, { fontSize: "14px", fontWeight: "700", color: "#7aa2ff", flex: "1 0 0", whiteSpace: "nowrap" });
+    Object.assign(lb.style, { fontSize: "14px", fontWeight: "700", color: "#ff5d8a", flex: "1 0 0", whiteSpace: "nowrap" });
     Object.assign(lc.style, { flex: "0 1 auto", textAlign: "center" });
     Object.assign(lr.style, { flex: "1 0 0" });
     document.body.appendChild(b);

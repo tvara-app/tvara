@@ -32,6 +32,8 @@
   let writeTimer = null;
   let latestMessages = null;
   let shownFor = null;      // pathname the visible card belongs to
+  let titleAnchor = null;   // anchor whose native title we've suppressed
+  let savedTitle = null;
 
   const KEY = () => "chats:" + location.hostname;
 
@@ -107,6 +109,28 @@
     hoverTimer = null;
     shownFor = null;
     if (card) card.style.display = "none";
+    restoreTitle();
+  }
+
+  // Sites often put the full (untruncated) name in a native `title` attribute
+  // for accessibility. Left alone, the browser's own tooltip pops up on top
+  // of our card (native tooltips paint above all page content, unstylable)
+  // and visually collides with it. Suppress it for as long as our card owns
+  // this anchor, then restore it so accessibility isn't affected otherwise.
+  function suppressTitle(anchor) {
+    if (anchor === titleAnchor) return;
+    restoreTitle();
+    if (anchor && anchor.hasAttribute("title")) {
+      savedTitle = anchor.getAttribute("title");
+      anchor.removeAttribute("title");
+      titleAnchor = anchor;
+    }
+  }
+
+  function restoreTitle() {
+    if (titleAnchor && savedTitle != null) titleAnchor.setAttribute("title", savedTitle);
+    titleAnchor = null;
+    savedTitle = null;
   }
 
   function isLongest(path) {
@@ -197,7 +221,9 @@
     }
     if (path === shownFor) return;
     clearTimeout(hoverTimer);
-    const rect = e.target.closest("a[href]").getBoundingClientRect();
+    const anchor = e.target.closest("a[href]");
+    suppressTitle(anchor);
+    const rect = anchor.getBoundingClientRect();
     hoverTimer = setTimeout(async () => {
       if (!recordsLoaded) await loadRecords();
       renderCard(path, rect);

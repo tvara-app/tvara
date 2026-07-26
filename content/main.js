@@ -15,6 +15,7 @@
     enabled: true,
     minimap: true,
     time: true,
+    history: false,    // walk the host's scroller on open — off, it moves the page
     pro: false,
     trialUntil: 0      // ms epoch; 0 = no trial started
   };
@@ -31,8 +32,75 @@
     state.time && toolsUnlocked() ? (el) => self.LCTTimeline.info(el) : null;
 
   let lastMessages = [];
-  let currentHref = location.href;
+  // The CONVERSATION, not location.href: these hosts rewrite their own query
+  // string and hash while you sit still, and treating that as a chat switch
+  // reset every per-chat cache several times a minute.
+  const routeId = () => location.hostname + location.pathname;
+  let currentRoute = routeId();
   let statsTimer = null;
+
+  /* ---------- theme ----------
+     Our surfaces follow the SITE's theme, not the OS's: a white minimap on a
+     dark ChatGPT is the mismatch people actually notice. Stamped on <html>,
+     where styles.css picks it up (data-lct-theme outranks the media query). */
+  function syncTheme() {
+    let dark = null;
+    for (const el of [document.body, document.documentElement]) {
+      const m = el && getComputedStyle(el).backgroundColor
+        .match(/rgba?\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)(?:[\s,/]+([\d.]+))?/);
+      if (!m || (m[4] !== undefined && +m[4] < 0.5)) continue; // see-through: keep looking
+      dark = (+m[1] * 299 + +m[2] * 587 + +m[3] * 114) / 1000 < 128;
+      break;
+    }
+    if (dark === null) dark = matchMedia("(prefers-color-scheme: dark)").matches;
+    const next = dark ? "dark" : "light";
+    if (document.documentElement.dataset.lctTheme !== next) {
+      document.documentElement.dataset.lctTheme = next;
+    }
+  }
+  syncTheme();
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", syncTheme);
+
+  /* ---------- right-edge clearance ----------
+     ChatGPT grows its own message-navigator rail on the right edge, and our
+     strip docked on top of it — two navigators, one covering the other. Measure
+     whatever the host parked there and step aside, so they sit side by side.
+
+     Measured rather than a per-platform constant: the rail only appears on long
+     chats, and reserving space it isn't using would be its own kind of wrong. */
+  const RAIL_MAX = 96;       // wider than this is content, not a rail
+  let railAt = 0;
+  function syncRail(force) {
+    // 9 hit-tests per pass, and the caller runs on every engine tick — a rail
+    // appearing 2s late is invisible; the layout cost of checking wouldn't be.
+    if (!force && Date.now() - railAt < 2000) return;
+    railAt = Date.now();
+    const vw = document.documentElement.clientWidth;
+    const vh = document.documentElement.clientHeight;
+    let inset = 0;
+    // Probe down the right edge: three heights so a short rail isn't missed,
+    // three depths so we see past our own strip.
+    for (const fy of [0.32, 0.5, 0.68]) {
+      for (const dx of [6, 18, 30]) {
+        for (const el of document.elementsFromPoint(vw - dx, Math.round(vh * fy))) {
+          if (el.id?.startsWith("lct-") || el.closest?.("[id^='lct-']")) continue;
+          const r = el.getBoundingClientRect();
+          // a rail: narrow, tall, and hugging the right edge
+          if (r.width < 4 || r.width > RAIL_MAX) continue;
+          if (r.right < vw - RAIL_MAX) continue;
+          if (r.height < vh * 0.2) continue;
+          inset = Math.max(inset, Math.min(RAIL_MAX, Math.ceil(vw - r.left)));
+          break;                 // deepest match at this point wins
+        }
+      }
+    }
+    const next = inset ? inset + 4 + "px" : "0px";   // 4px breathing room
+    if (document.documentElement.style.getPropertyValue("--lct-rail-inset") !== next) {
+      document.documentElement.style.setProperty("--lct-rail-inset", next);
+    }
+  }
+  syncRail(true);
+  addEventListener("resize", () => syncRail(true), { passive: true });
 
   let statsLatest = null;
   function pushStats(windowed, total) {
@@ -63,13 +131,22 @@
   // gate here made the minimap vanish on some chats — never again.)
   function onEngineUpdate(messages, windowedCount) {
     lastMessages = messages;
-    if (location.href !== currentHref) onChatSwitch();
+    syncTheme(); // hosts flip theme without reloading
+    syncRail();  // the host's rail shows up once the chat gets long (throttled)
+    if (routeId() !== currentRoute) onChatSwitch();
+    self.LCTHistoryLoader.maybeStart(adapter, messages);
     if (state.minimap && toolsUnlocked()) self.LCTMinimap.update(messages, adapter);
     else self.LCTMinimap.destroy();
     self.LCTTimeline.update(messages);
     self.LCTOutline.update(messages);
-    self.LCTChatCard.update(messages);
-    self.LCTRecall.update(messages);
+    if (!document.documentElement.hasAttribute("data-lct-virtual-history")) {
+      self.LCTChatCard.update(messages);
+    }
+    // The virtual-history fixture exercises host paging in isolation. It is
+    // intentionally not an archive source for the end-to-end test profile.
+    if (!document.documentElement.hasAttribute("data-lct-virtual-history")) {
+      self.LCTRecall.update(messages);
+    }
     pushStats(windowedCount, messages.length);
     injectExportButtons();
     updateCountPill(windowedCount);
@@ -79,11 +156,40 @@
   }
 
   function onChatSwitch() {
-    currentHref = location.href;
+    currentRoute = routeId();
     loadedAt = Date.now(); // suppress save/offer while the host auto-scrolls
     resumeOffered = false;
     removeChip();
+    seedFromProvider();
   }
+
+  /* ---------- the complete map, without moving the page ----------
+     The host mounts only its recent tail, and walking its scroller to the top
+     to find the rest is what made opening a long chat feel like a page that
+     could not sit still. The provider hands the whole conversation over in one
+     request the background already makes — so the map arrives complete and the
+     viewport never moves. */
+  function seedFromProvider() {
+    if (!state.enabled || !state.minimap || !toolsUnlocked()) return;
+    const route = routeId();
+    self.LCTChatIndex.load(adapter, (entries) => {
+      if (routeId() === route) self.LCTMinimap.seed(entries, route);
+    });
+  }
+
+  // A branch switch (an edit or a regenerate) means the seed describes a
+  // conversation that is no longer on screen. Re-ask, debounced — the host
+  // remounts in bursts and each burst would otherwise be its own request.
+  let staleTimer = null;
+  self.LCTMinimap.setStaleHandler(() => {
+    clearTimeout(staleTimer);
+    staleTimer = setTimeout(() => {
+      const route = routeId();
+      self.LCTChatIndex.refresh(adapter, (entries) => {
+        if (routeId() === route) self.LCTMinimap.seed(entries, route);
+      });
+    }, 800);
+  });
 
   /* ---------- make the invisible visible ---------- */
 
@@ -95,7 +201,7 @@
       pill = document.createElement("div");
       pill.id = "lct-mm-count";
       pill.title = "Messages the speed engine has put to sleep — they wake instantly when you scroll to them.";
-      mm.insertBefore(pill, mm.querySelector("#lct-mm-canvas"));
+      mm.insertBefore(pill, mm.querySelector("#lct-mm-stage") || mm.querySelector("#lct-mm-canvas"));
     }
     if (windowedCount > 0) {
       pill.textContent = String(windowedCount);
@@ -294,6 +400,9 @@
       <button data-act="outline" title="Outline &amp; starred messages" aria-label="Outline and starred messages">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg>
       </button>
+      <button data-act="history" title="Load this chat's older messages into the map (moves the page while it runs)" aria-label="Load older messages into the map">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V5"/><path d="m6 11 6-6 6 6"/><path d="M4 3h16"/></svg>
+      </button>
       <button data-fmt="md" title="Backup chat as Markdown" aria-label="Backup chat as Markdown">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>
       </button>
@@ -307,10 +416,23 @@
       bar.classList.add("lct-floating");
       document.documentElement.appendChild(bar);
     }
+    // Only offered where the host actually pages its transcript; everywhere
+    // else the whole conversation is already mounted and the button would be a
+    // lie. Placed here, once, because the bar is built once.
+    if (!self.LCTHistoryLoader.supported(adapter)) {
+      bar.querySelector('[data-act="history"]').remove();
+    }
     bar.addEventListener("click", (e) => {
       const act = e.target.closest("button[data-act]");
       if (act) {
         if (!toolsUnlocked()) return showUpgradeNote();
+        if (act.dataset.act === "history") {
+          const began = self.LCTHistoryLoader.start(adapter);
+          flashNote(began
+            ? "Loading older messages — the page will scroll while it runs. Scroll or press a key to stop."
+            : "Already loading older messages.");
+          return;
+        }
         return self.LCTOutline.toggle();
       }
       const btn = e.target.closest("button[data-fmt]");
@@ -318,11 +440,7 @@
       if (!toolsUnlocked()) return showUpgradeNote();
       const res = self.LCTExporter.exportChat(adapter, btn.dataset.fmt, timeFn());
       if (res.ok) {
-        let msg = `Backed up the ${res.count} loaded messages`;
-        if (adapter.id === "chatgpt") {
-          msg += " — for a huge chat, scroll to the top first (ChatGPT unloads old messages)";
-        }
-        flashNote(msg);
+        flashNote(`Backed up the ${res.count} loaded messages`);
       }
     });
   }
@@ -353,12 +471,14 @@
       state.enabled = settings.enabled !== false;
       state.minimap = settings.minimap !== false;
       state.time = settings.time !== false;
+      state.history = settings.history === true;   // opt-in: it moves the page
     }
     state.trialUntil = trial && trial.startedAt ? trial.startedAt + 7 * 864e5 : 0;
     state.pro = (await self.LCTLicense.evaluate(license)).pro;
   }
 
   function applyState() {
+    self.LCTHistoryLoader.setAuto(state.enabled && state.history && toolsUnlocked());
     self.LCTTimeline.setDisplay(state.enabled && state.time && toolsUnlocked());
     self.LCTOutline.setEnabled(state.enabled && toolsUnlocked());
     self.LCTChatCard.setEnabled(state.enabled && toolsUnlocked());
@@ -367,6 +487,7 @@
       else self.LCTEngine.rescan();
     } else {
       self.LCTEngine.stop();
+      self.LCTHistoryLoader.stop();
       self.LCTMinimap.destroy();
       const bar = document.getElementById("lct-export-bar");
       if (bar) bar.remove();
@@ -427,5 +548,22 @@
     });
   } catch (_) { /* storage API unavailable */ }
 
-  loadState().then(applyState);
+  /* ---------- sync every past chat, just by showing up ----------
+     Opening the site is the one moment we know the provider session is alive
+     and authenticated, so it is the right moment to catch the archive up on
+     everything this browser has never seen. The background worker owns the
+     work AND the throttle — this only says "a tab is here now". */
+  function kickVisitSync() {
+    try {
+      chrome.runtime.sendMessage({ type: "recall-visit-sync", platform: adapter.id }, () => {
+        void chrome.runtime.lastError;   // worker asleep / context gone: fine
+      });
+    } catch (_) { /* extension context already invalidated */ }
+  }
+
+  loadState().then(() => {
+    applyState();
+    seedFromProvider();
+    if (state.enabled) kickVisitSync();
+  });
 })();

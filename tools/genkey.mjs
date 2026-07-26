@@ -11,7 +11,7 @@
  * NEVER commit or share it.
  * Key format: LCT1.<b64url(payload)>.<b64url(ECDSA-P256-SHA256 signature, P1363)>
  */
-import { generateKeyPairSync, createPrivateKey, sign } from "node:crypto";
+import { generateKeyPairSync, createPrivateKey, createPublicKey, sign } from "node:crypto";
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -47,6 +47,32 @@ function init() {
   console.log(`🔒 Private key: ${PRIV_PATH} — outside the repo. BACK IT UP somewhere safe.`);
 }
 
+/**
+ * Refuse to sign with a key the extension doesn't trust. Without this the
+ * failure is invisible from here: issue() happily signs with whatever sits in
+ * ~/.lct-keys, and the customer is the one who finds out. It has happened —
+ * see commit 45b71da.
+ */
+function assertKeyPairMatchesShipped(priv) {
+  const shipped = readFileSync(LICENSE_JS, "utf8").match(/const PUBLIC_KEY_B64 = "([^"]*)";/);
+  if (!shipped) {
+    console.error("Could not find PUBLIC_KEY_B64 in lib/license.js — refusing to issue.");
+    process.exit(1);
+  }
+  const local = createPublicKey(priv).export({ type: "spki", format: "der" }).toString("base64");
+  if (local === shipped[1]) return;
+  console.error(
+    `\n✋ Refusing to issue: ${PRIV_PATH} does not match the shipped public key.\n` +
+    `   Keys signed with it would fail verification in every installed copy.\n\n` +
+    `   ships (lib/license.js): ${shipped[1]}\n` +
+    `   local  (private.pem)  : ${local}\n\n` +
+    `   Restore the private half of the shipped key from backup. Do NOT patch\n` +
+    `   lib/license.js to match this pair — that invalidates every licence\n` +
+    `   already sold.\n`
+  );
+  process.exit(1);
+}
+
 function issue(email) {
   if (!email || !email.includes("@")) {
     console.error("Usage: node tools/genkey.mjs issue customer@email.com");
@@ -57,6 +83,7 @@ function issue(email) {
     process.exit(1);
   }
   const priv = createPrivateKey(readFileSync(PRIV_PATH));
+  assertKeyPairMatchesShipped(priv);
   const payload = Buffer.from(JSON.stringify({ e: email, p: "pro", t: Date.now() }));
   const sig = sign("sha256", payload, { key: priv, dsaEncoding: "ieee-p1363" });
   const key = `LCT1.${b64url(payload)}.${b64url(sig)}`;

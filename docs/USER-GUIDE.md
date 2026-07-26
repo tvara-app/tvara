@@ -92,8 +92,9 @@ Recall page from the popup) → one search box across **every archived chat on
 every platform** → click a result and land in that chat with the in-chat
 search already open on your words.
 **How the archive builds:**
-- **Automatic, in the background:** a check runs by itself roughly every 6
-  hours, and shortly after the browser starts — no tab open, no button. It
+- **Automatic, in the background:** a check runs by itself roughly every 3
+  hours, shortly after the browser starts, and whenever you open one of the
+  chat sites (at most once every 20 minutes) — no button to press. It
   reads the history endpoints for your signed-in ChatGPT, Claude, DeepSeek and
   Grok accounts and writes only what is missing. Turn it off with **Keep the
   archive current by itself** on the Recall page, and it will only ever check
@@ -139,23 +140,37 @@ paying for what you can't see. A safety zone above and below your viewport
 **How to use it:** nothing — it's automatic on chats longer than ~25 messages.
 The popup shows live proof: *"1,491 messages asleep right now"*, per site,
 as an honest **"1,491 of 1,500"** count.
+**Opening a chat is still:** the toolkit never scrolls the page on its own.
+Where a site mounts only a recent tail (ChatGPT does this on long chats), the
+full text still reaches your archive through the background sync, which never
+touches the page. If you want the *in-page* map complete right now, press **⤒**
+on the minimap toolbar — that pass walks the site's own scroller to the oldest
+turn and then returns you to the message you were reading, and any wheel,
+touch, pointer or keyboard input cancels it immediately. Prefer it automatic?
+popup → *Load full history on open*.
 **Turn it off:** popup → *Speed engine* toggle.
 
 ### 🗺️ Minimap
-**What it does:** a VS Code-style strip on the right edge showing the shape of
-the whole conversation — your prompts, AI replies, code blocks — with a count
-pill on top.
-**How to use it:** hover any bar for a preview of that message; click to jump
-there. The `‹` handle collapses/expands the strip. Under the minimap sits a
-small toolbar with three buttons: **☰ outline**, **⤓ Markdown backup**,
-**{ } JSON backup**.
+**What it does:** a compact navigator on the right edge showing the shape of
+the whole conversation: your prompts, AI replies and code blocks, with a count
+of sleeping messages.
+**How to use it:** at rest it is a thin gradient rail on the right edge, about
+as wide as a scrollbar, with a bright thumb showing where you are. Move the
+pointer onto it and it opens into the full map. Hover any bar for a preview of
+that message; click to jump there — one click lands, even hundreds of turns
+away and even where the site has unloaded the message. Focus the navigator to
+use Home, End, Page Up, Page Down and the arrow keys. The `‹` handle collapses
+it to a corner. Its toolbar opens the outline, loads older messages (**⤒**) and
+backs up the conversation as Markdown or JSON.
 
 ### 📑 Outline — auto table of contents
 **What it does:** builds a live table of contents from every prompt you sent
 plus every heading in the AI's answers. For very long chats it lists the first
 400 entries and says so on screen — it never silently truncates.
 **How to use it:** click **☰** on the minimap toolbar. Click any entry to jump
-straight to that part of the chat (the target pulses so you can't lose it).
+straight to that part of the chat (the target pulses so you can't lose it) —
+a heading takes you to that heading, not to the top of the answer holding it.
+Every row carries its own ☆, so you can star straight from the list.
 Two tabs: **Outline** (everything) and **Starred** (only what you starred).
 Press `Esc` to close.
 
@@ -163,9 +178,13 @@ Press `Esc` to close.
 **What it does:** bookmarks inside a conversation. The gold in a 500-message
 brainstorm — the final schema, the working function — stays one click away.
 **How to use it:** hover any message → a small ☆ button appears near its top
-right corner → click it. The message gets a gold edge. Find all starred
-messages in the outline's **Starred** tab. Click the ★ again to unstar.
-Stars are saved per conversation, locally, and survive reloads.
+right corner → click it. Or open the outline and use the ☆ on any row. The
+message gets a gold edge. Find all starred messages in the outline's
+**Starred** tab; clicking one goes to it even if the site has unloaded that
+part of the chat. Click the ★ again to unstar.
+Stars are saved per conversation and survive reloads. They also travel with
+your browser profile: the most recent 60 per conversation sync to your other
+signed-in browsers, and the full set is always kept on this one.
 
 ### 🔎 In-chat search
 **What it does:** instant full-text search across the entire loaded

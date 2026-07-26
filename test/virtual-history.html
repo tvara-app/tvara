@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en" data-lct-virtual-history>
+<head>
+  <meta charset="utf-8" />
+  <title>LCT virtual history fixture</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; overflow: hidden; }
+    body { background: #1d1d22; color: #ececf1; font: 14px/1.5 system-ui, sans-serif; }
+    #virtual-scroller { height: 100%; overflow-y: auto; overscroll-behavior: contain; }
+    #chat { max-width: 720px; margin: 0 auto; padding: 22px 20px 110px; }
+    .msg { min-height: 74px; margin: 9px 0; padding: 16px 18px; border-radius: 12px; background: #292a31; }
+    .msg.user { background: #343540; }
+    .meta { margin-bottom: 5px; color: #aeb0be; font-size: 11px; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <main id="virtual-scroller" aria-label="Virtualized conversation">
+    <section id="chat"></section>
+  </main>
+  <script>
+    /* Knobs, all defaulted to the original fixture so the assertions written
+       against it keep meaning exactly what they meant:
+         total, page   — conversation size and how much the host hands over
+         index=1       — publish a provider-style index (see the DOM script tag)
+         anchor=1      — adjust scrollTop on prepend, i.e. a host that anchors
+         latency=      — how long a page takes to arrive
+         deadAfter=N   — stop handing over history after N pages            */
+    const q = new URLSearchParams(location.search);
+    const num = (k, d) => { const v = parseInt(q.get(k), 10); return Number.isFinite(v) ? v : d; };
+    const TOTAL = num("total", 240);
+    const PAGE = num("page", 20);
+    const LATENCY = num("latency", 70);
+    const DEAD_AFTER = num("deadAfter", Infinity);
+    const ANCHORS = q.get("anchor") === "1";
+    const WITH_INDEX = q.get("index") === "1";
+
+    const scroller = document.getElementById("virtual-scroller");
+    const chat = document.getElementById("chat");
+    let first = Math.max(0, TOTAL - PAGE);
+    let loading = false;
+    let loads = 0;
+
+    const idOf = (index) => "virtual-" + (index + 1);
+    const bodyOf = (index) =>
+      "Virtual history message " + (index + 1) + ". This row exists to verify that the loader " +
+      "reaches the oldest available turn and returns the reader to the original tail.";
+
+    function turn(index) {
+      const el = document.createElement("article");
+      const user = index % 2 === 0;
+      el.className = "msg " + (user ? "user" : "assistant");
+      el.id = "v-" + String(index + 1).padStart(3, "0");
+      el.setAttribute("data-lct-message", "");
+      el.setAttribute("data-lct-role", user ? "user" : "assistant");
+      el.setAttribute("data-message-id", idOf(index));
+      el.innerHTML = `<div class="meta">${user ? "You" : "AI"} · turn ${index + 1}</div><div>${bodyOf(index)}</div>`;
+      return el;
+    }
+
+    function prependPage() {
+      if (loading || first === 0 || loads >= DEAD_AFTER) return;
+      loading = true;
+      setTimeout(() => {
+        const start = Math.max(0, first - PAGE);
+        const fragment = document.createDocumentFragment();
+        for (let i = start; i < first; i++) fragment.appendChild(turn(i));
+        const before = chat.scrollHeight;
+        chat.prepend(fragment);
+        // A host that keeps the reader's content still when it prepends. The
+        // loader has to notice it is no longer at the top and re-pin, and it
+        // has to do that before the frame paints.
+        if (ANCHORS) scroller.scrollTop += chat.scrollHeight - before;
+        first = start;
+        loads++;
+        if (first === 0) {
+          const sentinel = document.createElement("div");
+          sentinel.id = "earliest";
+          sentinel.textContent = "Earliest turn mounted";
+          chat.prepend(sentinel);
+        }
+        loading = false;
+      }, LATENCY);
+    }
+
+    for (let i = first; i < TOTAL; i++) chat.appendChild(turn(i));
+
+    /* Motion instrumentation. "The map filled in without the page moving" is
+       the whole claim of the provider seed, so it has to be measurable. */
+    const motion = { events: 0, distance: 0, maxTop: 0, framesAboveTop: 0 };
+    let lastTop = 0;
+    scroller.addEventListener("scroll", () => {
+      const top = scroller.scrollTop;
+      motion.events++;
+      motion.distance += Math.abs(top - lastTop);
+      motion.maxTop = Math.max(motion.maxTop, top);
+      if (top <= 2) motion.framesAboveTop++;
+      lastTop = top;
+      if (top <= 2) prependPage();
+    }, { passive: true });
+
+    scroller.scrollTop = scroller.scrollHeight;
+    lastTop = scroller.scrollTop;
+
+    window.__virtualHistory = {
+      get loads() { return loads; },
+      get first() { return first; },
+      total: TOTAL,
+      motion,
+      resetMotion() { motion.events = 0; motion.distance = 0; motion.maxTop = 0; motion.framesAboveTop = 0; }
+    };
+
+    /* The index the provider would have returned. Published through the DOM,
+       not a global: content scripts run in an isolated world and cannot see
+       this page's window. */
+    if (WITH_INDEX) {
+      const entries = [];
+      for (let i = 0; i < TOTAL; i++) {
+        const text = bodyOf(i);
+        entries.push({ i: idOf(i), r: i % 2 === 0 ? "user" : "assistant", n: text.length, c: 0, s: text.slice(0, 80) });
+      }
+      const tag = document.createElement("script");
+      tag.type = "application/json";
+      tag.id = "lct-fixture-index";
+      tag.textContent = JSON.stringify(entries);
+      document.body.appendChild(tag);
+      window.__virtualHistory.index = entries;
+    }
+
+    requestAnimationFrame(() => {
+      const top = scroller.getBoundingClientRect().top;
+      const bottom = scroller.getBoundingClientRect().bottom;
+      const anchor = [...chat.querySelectorAll("[data-message-id]")].find((el) => {
+        const r = el.getBoundingClientRect();
+        return r.bottom > top && r.top < bottom;
+      });
+      window.__virtualHistory.anchor = anchor && anchor.id;
+    });
+  </script>
+</body>
+</html>

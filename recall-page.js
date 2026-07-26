@@ -611,6 +611,10 @@
     } else if (p && (p.state === "error" || p.state === "interrupted")) {
       status.textContent = p.msg;
       status.classList.add("err");
+    } else if (p && (p.state === "paused" || p.state === "deferred")) {
+      // Waiting on a rate limit or on the user's own tab is neither an error
+      // nor "ready to check" — say which, so nobody re-clicks and re-triggers it.
+      status.textContent = p.msg;
     } else if (platform && platform.phase === "up-to-date") {
       const checkedAt = platform.checkpoint?.completedAt || p?.at || 0;
       const coverage = platform.checkpoint?.coverage || 0;

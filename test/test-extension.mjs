@@ -3,20 +3,45 @@
    Loads the real unpacked extension into Chromium, tests the popup UI state
    machine, license activation (incl. "key must never appear in the DOM"),
    storage persistence, and the speed engine on the 1,500-message torture page. */
-import { createHash, createPrivateKey, sign } from "node:crypto";
-import { readFileSync, mkdirSync, rmSync } from "node:fs";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chromium } from "playwright";
 
-const EXT = join(homedir(), "long-chat-toolkit");
+const SRC = join(homedir(), "long-chat-toolkit");
 // Work dirs live under the OS temp dir — never committed (test/.gitignore).
-const SCRATCH = join(EXT, "test", ".work");
+const SCRATCH = join(SRC, "test", ".work");
 const PROFILE = join(SCRATCH, "chrome-profile");
 const SHOTS = join(SCRATCH, "shots");
 rmSync(PROFILE, { recursive: true, force: true });
 mkdirSync(SHOTS, { recursive: true });
+
+/* Chromium loads a mirror of the repo, not the repo itself: activation can
+   only be tested with a key the extension trusts, and the shipped public key's
+   private half is deliberately not on any dev machine. The mirror differs from
+   what ships by exactly one line — PUBLIC_KEY_B64 — so every other byte under
+   test is the real thing. */
+const EXT = join(SCRATCH, "ext");
+rmSync(EXT, { recursive: true, force: true });
+mkdirSync(EXT, { recursive: true });
+const sync = spawnSync("rsync", [
+  "-a", "--exclude", ".git", "--exclude", "node_modules", "--exclude", "test/.work",
+  SRC + "/", EXT + "/"
+]);
+if (sync.status !== 0) { console.error("FATAL: could not mirror the extension"); process.exit(1); }
+
+const { publicKey, privateKey: priv } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+const TEST_PUB = publicKey.export({ type: "spki", format: "der" }).toString("base64");
+const licPath = join(EXT, "lib", "license.js");
+const patched = readFileSync(licPath, "utf8")
+  .replace(/const PUBLIC_KEY_B64 = "[^"]*";/, `const PUBLIC_KEY_B64 = "${TEST_PUB}";`);
+if (!patched.includes(TEST_PUB)) {
+  console.error("FATAL: PUBLIC_KEY_B64 not found in lib/license.js — test key not installed");
+  process.exit(1);
+}
+writeFileSync(licPath, patched);
 
 // Unpacked extension ID = sha256(absolute path) first 16 bytes, nibbles mapped a..p
 const computedId = [...createHash("sha256").update(EXT).digest().subarray(0, 16)]
@@ -36,9 +61,8 @@ function idFromProfile() {
   return null;
 }
 
-// Issue a REAL pro key (same signing path as tools/genkey.mjs)
+// Issue a pro key the mirror trusts (same signing path as tools/genkey.mjs)
 const b64url = (buf) => Buffer.from(buf).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-const priv = createPrivateKey(readFileSync(join(homedir(), ".lct-keys", "private.pem")));
 const payload = Buffer.from(JSON.stringify({ e: "test@example.com", p: "pro", t: 1753100000000 }));
 const KEY = `LCT1.${b64url(payload)}.${b64url(sign("sha256", payload, { key: priv, dsaEncoding: "ieee-p1363" }))}`;
 
@@ -46,9 +70,11 @@ const KEY = `LCT1.${b64url(payload)}.${b64url(sign("sha256", payload, { key: pri
 const server = spawn("python3", ["-m", "http.server", "8917", "--bind", "127.0.0.1"], { cwd: EXT, stdio: "ignore" });
 
 let pass = 0, fail = 0;
+const failed = []; // reprinted at the end: one FAIL in 180 lines scrolls past
 const t = (name, cond, extra = "") => {
-  cond ? pass++ : fail++;
-  console.log(`${cond ? "PASS" : "FAIL"}  ${name}${cond || !extra ? "" : "  → " + extra}`);
+  const line = `${name}${cond || !extra ? "" : "  → " + extra}`;
+  cond ? pass++ : (fail++, failed.push(line));
+  console.log(`${cond ? "PASS" : "FAIL"}  ${line}`);
 };
 
 const ctx = await chromium.launchPersistentContext(PROFILE, {
@@ -472,8 +498,26 @@ try {
     }, [DKEY, state]);
   };
   const stateOf = () => pop.evaluate(async () => (await chrome.storage.local.get("lct-license-state-v1"))["lct-license-state-v1"]);
+
+  /* A revalidation round is two steps — one request, then a state write built
+     from the state it read BEFORE that request (lib/dodo.js maybeRevalidate).
+     Seeding the next case in between lets the older write land on top of the
+     new seed and carry lastValidatedAt forward, which gates the next round out
+     for 30 days: no call, no strike, no downgrade, and A9s waits for a Free
+     badge that can never arrive. Let the round finish before reseeding. */
+  const settle = async () => {
+    let calls = -1, attempt = -1;
+    for (let i = 0; i < 60; i++) {
+      const c = dodo.calls.length;
+      const a = ((await stateOf()) || {}).lastAttemptAt || 0;
+      if (c === calls && a === attempt) return;
+      calls = c; attempt = a;
+      await pop.waitForTimeout(150);
+    }
+  };
   const NOW = Date.now();
 
+  await settle();
   dodoReset({ status: 200, body: { valid: true } });
   await seedDodoPro({ lastValidatedAt: NOW - 2 * 864e5, lastAttemptAt: 0, strikes: [] });
   await pop.waitForSelector("#pro-active:not([hidden])");
@@ -481,6 +525,7 @@ try {
   t("A9p no re-validation inside the 30-day window", dodo.calls.length === 0,
     JSON.stringify(dodo.calls.map((c) => c.path)));
 
+  await settle();
   dodoReset({ status: 200, body: { valid: true } });
   await seedDodoPro({ lastValidatedAt: NOW - 31 * 864e5, lastAttemptAt: 0, strikes: [] });
   // Wait for the CALL, not for a storage side-effect: a state-based wait can be
@@ -496,6 +541,7 @@ try {
     (await pop.textContent("#plan-badge")).trim() === "Pro",
     JSON.stringify(dodo.calls.map((c) => c.path)));
 
+  await settle();
   dodoReset({ status: 200, body: { valid: false } });
   await seedDodoPro({ lastValidatedAt: NOW - 31 * 864e5, lastAttemptAt: 0, strikes: [] });
   await pop.waitForFunction(async () =>
@@ -503,6 +549,7 @@ try {
   t("A9r one refusal does not withdraw Pro",
     (await pop.textContent("#plan-badge")).trim() === "Pro" && (await licenseOf()).revokedAt === undefined);
 
+  await settle();
   dodoReset({ status: 200, body: { valid: false } });
   await seedDodoPro({ lastValidatedAt: NOW - 31 * 864e5, lastAttemptAt: 0, strikes: [NOW - 40 * 864e5] });
   await pop.waitForSelector("#pro-upsell:not([hidden])");
@@ -631,6 +678,276 @@ try {
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
   await page.waitForTimeout(600);
 
+  /* B2c0 — opening a long chat must be STILL. Walking a host's virtualizer to
+     the first turn is sixty round trips of it yanking its own scroller to the
+     top, and doing that unasked is indistinguishable from the page reloading
+     itself under the reader. The backfill is opt-in for exactly this reason. */
+  const quiet = await ctx.newPage();
+  trackErrors(quiet);
+  await quiet.goto("http://127.0.0.1:8917/test/virtual-history.html");
+  await quiet.waitForSelector("#lct-minimap", { timeout: 20000 });
+  const quietBefore = await quiet.evaluate(() => ({
+    loads: window.__virtualHistory.loads,
+    top: document.getElementById("virtual-scroller").scrollTop
+  }));
+  await quiet.waitForTimeout(3000);
+  const quietAfter = await quiet.evaluate(() => ({
+    loads: window.__virtualHistory.loads,
+    top: document.getElementById("virtual-scroller").scrollTop,
+    state: document.documentElement.dataset.lctHistoryState || "(never started)"
+  }));
+  t("B2c0 opening a long chat never hijacks the host scroller",
+    quietAfter.loads === quietBefore.loads &&
+    quietAfter.top === quietBefore.top &&
+    quietAfter.state === "(never started)",
+    JSON.stringify({ quietBefore, quietAfter }));
+  await quiet.close();
+
+  /* B2e — the provider seed. The host mounts only its recent tail, and walking
+     its scroller to find the rest is what made opening a long chat feel like a
+     page that could not sit still. Given the conversation's index up front, the
+     map must be complete and readable with the page never moving at all. */
+  const seeded = await ctx.newPage();
+  trackErrors(seeded);
+  await seeded.goto("http://127.0.0.1:8917/test/virtual-history.html?index=1&total=1500&page=25");
+  await seeded.waitForSelector("#lct-minimap", { timeout: 20000 });
+  const seedAt = Date.now();
+  await seeded.waitForFunction(() =>
+    document.getElementById("lct-mm-canvas")?.getAttribute("aria-valuemax") === "1500",
+    null, { timeout: 6000 });
+  const seedMs = Date.now() - seedAt;
+  t("B2e the whole conversation is mapped from the index, not from scrolling",
+    true, seedMs + "ms after the minimap appeared");
+  t("B2e and it is there effectively at once", seedMs < 1500, seedMs + "ms");
+  await seeded.evaluate(() => window.__virtualHistory.resetMotion());
+  await seeded.waitForTimeout(2000);
+  const seedStill = await seeded.evaluate(() => ({
+    valuemax: document.getElementById("lct-mm-canvas").getAttribute("aria-valuemax"),
+    mounted: document.querySelectorAll("[data-message-id]").length,
+    loads: window.__virtualHistory.loads,
+    framesAboveTop: window.__virtualHistory.motion.framesAboveTop,
+    hist: document.documentElement.dataset.lctHistoryState || "(never started)"
+  }));
+  // The point of the whole design: a complete map while the host is still only
+  // holding 25 rows, with its scroller never sent to the top even once.
+  t("B2e the map is complete while the host still holds only its tail",
+    seedStill.valuemax === "1500" && seedStill.mounted === 25, JSON.stringify(seedStill));
+  t("B2e the host was never asked to page, and never yanked to the top",
+    seedStill.loads === 0 && seedStill.framesAboveTop === 0 && seedStill.hist === "(never started)",
+    JSON.stringify(seedStill));
+
+  // A message the page has never rendered is still readable from the map.
+  await seeded.hover("#lct-minimap");
+  await seeded.waitForTimeout(400);
+  const mmBox = await seeded.locator("#lct-mm-canvas").boundingBox();
+  await seeded.mouse.move(mmBox.x + 5, mmBox.y + Math.round(mmBox.height * 0.08));
+  await seeded.waitForTimeout(300);
+  t("B2e hovering an unmounted tick shows the provider's own snippet",
+    await seeded.evaluate(() => {
+      const tip = document.getElementById("lct-mm-tooltip");
+      return !!tip && tip.style.display === "block" && /Virtual history message \d+/.test(tip.textContent);
+    }));
+
+  // The map is the conversation, not the render window: recycling every mounted
+  // row must not shrink it, and a new reply must extend it by exactly one.
+  await seeded.evaluate(() => {
+    document.querySelectorAll("[data-message-id]").forEach((el) => el.remove());
+  });
+  await seeded.waitForTimeout(900);
+  t("B2e the seeded map survives the host recycling every row it had",
+    (await seeded.getAttribute("#lct-mm-canvas", "aria-valuemax")) === "1500");
+  await seeded.evaluate(() => {
+    const el = document.createElement("article");
+    el.className = "msg assistant";
+    el.setAttribute("data-lct-message", "");
+    el.setAttribute("data-lct-role", "assistant");
+    el.setAttribute("data-message-id", "virtual-1501");
+    el.textContent = "A reply that streamed in after we asked for the index.";
+    document.getElementById("chat").appendChild(el);
+  });
+  await seeded.waitForFunction(() =>
+    document.getElementById("lct-mm-canvas")?.getAttribute("aria-valuemax") === "1501",
+    null, { timeout: 6000 });
+  t("B2e a reply that arrives after the index extends the map by one", true);
+  await seeded.close();
+
+  /* B2g — clicking the top of the map. The rows for message #1 are simply not
+     in the page, so no amount of interpolation reaches them: only the host's
+     own upward paging does. That takes a moment, so the message itself opens
+     immediately from the index while the navigation runs behind it. */
+  const topClick = await ctx.newPage();
+  trackErrors(topClick);
+  await topClick.goto("http://127.0.0.1:8917/test/virtual-history.html?index=1&total=1500&page=25");
+  await topClick.waitForFunction(() =>
+    document.getElementById("lct-mm-canvas")?.getAttribute("aria-valuemax") === "1500",
+    null, { timeout: 20000 });
+  await topClick.hover("#lct-minimap");
+  await topClick.waitForTimeout(400);
+  const topBox = await topClick.locator("#lct-mm-canvas").boundingBox();
+  await topClick.mouse.click(topBox.x + 5, topBox.y + 1);
+  await topClick.waitForTimeout(300);
+  const opened = await topClick.evaluate(() => ({
+    open: !!document.querySelector("#lct-preview.lct-p-open"),
+    title: document.querySelector(".lct-p-title")?.textContent || "",
+    body: document.querySelector(".lct-p-body")?.textContent || "",
+    pill: document.querySelector("#lct-seek.lct-seek-show")
+      ? document.querySelector(".lct-seek-text").textContent : null,
+    state: document.documentElement.dataset.lctSeekState
+  }));
+  // At 1,500 messages one pixel row spans three of them, so the top of the rail
+  // has to SNAP to the first message rather than land wherever it computes to.
+  t("B2g the top of the map means message #1, not whatever pixel maths says",
+    /^#1 of 1500 /.test(opened.title), opened.title);
+  t("B2g the message is readable immediately, before the host has it",
+    opened.open && /Virtual history message 1\./.test(opened.body), opened.body.slice(0, 60));
+  t("B2g the wait is named, with a real denominator",
+    /^Loading older messages… [\d,]+ of 1,500$/.test(opened.pill || ""), String(opened.pill));
+  // The click that starts a seek is itself a pointerdown, and the loader's
+  // stand-down listener is in capture phase: it must not cancel its own start.
+  t("B2g the click that started the seek never cancels it", opened.state === "running");
+
+  await topClick.waitForFunction(() =>
+    document.documentElement.dataset.lctSeekState === "done", null, { timeout: 90000 });
+  await topClick.waitForTimeout(500);
+  const landed = await topClick.evaluate(() => {
+    const el = document.querySelector('[data-message-id="virtual-1"]');
+    const view = document.getElementById("virtual-scroller").getBoundingClientRect();
+    const r = el && el.getBoundingClientRect();
+    return {
+      hitId: document.querySelector(".lct-hit")?.getAttribute("data-message-id") || null,
+      inView: !!r && r.bottom > view.top && r.top < view.bottom,
+      previewClosed: !document.querySelector("#lct-preview.lct-p-open"),
+      pillGone: !document.querySelector("#lct-seek.lct-seek-show")
+    };
+  });
+  t("B2g one click on the top of the map lands on the first message",
+    landed.hitId === "virtual-1" && landed.inView, JSON.stringify(landed));
+  t("B2g the preview steps aside once the real message is on screen",
+    landed.previewClosed && landed.pillGone, JSON.stringify(landed));
+  await topClick.close();
+
+  /* B2g2 — a seek must stand down the instant the reader takes over, and must
+     admit it when the host has no more history rather than parking at the top. */
+  const stopped = await ctx.newPage();
+  trackErrors(stopped);
+  await stopped.goto("http://127.0.0.1:8917/test/virtual-history.html?index=1&total=1500&page=25&latency=200");
+  await stopped.waitForFunction(() =>
+    document.getElementById("lct-mm-canvas")?.getAttribute("aria-valuemax") === "1500",
+    null, { timeout: 20000 });
+  await stopped.hover("#lct-minimap");
+  await stopped.waitForTimeout(400);
+  const stopBox = await stopped.locator("#lct-mm-canvas").boundingBox();
+  await stopped.mouse.click(stopBox.x + 5, stopBox.y + 1);
+  await stopped.waitForFunction(() =>
+    document.documentElement.dataset.lctSeekState === "running", null, { timeout: 8000 });
+  await stopped.evaluate(() => document.getElementById("virtual-scroller")
+    .dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true })));
+  await stopped.waitForFunction(() =>
+    document.documentElement.dataset.lctSeekState === "cancelled", null, { timeout: 5000 });
+  const restTop = await stopped.evaluate(() => document.getElementById("virtual-scroller").scrollTop);
+  await stopped.waitForTimeout(700);
+  t("B2g2 a scroll stands the seek down and it stays down",
+    (await stopped.evaluate(() => document.getElementById("virtual-scroller").scrollTop)) === restTop);
+  await stopped.close();
+
+  const dead = await ctx.newPage();
+  trackErrors(dead);
+  await dead.goto("http://127.0.0.1:8917/test/virtual-history.html?index=1&total=1500&page=25&deadAfter=3");
+  await dead.waitForFunction(() =>
+    document.getElementById("lct-mm-canvas")?.getAttribute("aria-valuemax") === "1500",
+    null, { timeout: 20000 });
+  await dead.hover("#lct-minimap");
+  await dead.waitForTimeout(400);
+  const deadBox = await dead.locator("#lct-mm-canvas").boundingBox();
+  await dead.mouse.click(deadBox.x + 5, deadBox.y + 1);
+  await dead.waitForFunction(() =>
+    document.documentElement.dataset.lctSeekState === "exhausted", null, { timeout: 30000 });
+  await dead.waitForTimeout(400);
+  t("B2g2 a host that stops handing over history is reported, not waited on",
+    await dead.evaluate(() => /as far back as/i.test(document.querySelector(".lct-p-note")?.textContent || "")));
+  await dead.close();
+
+  /* B2c — virtual-history backfill, the deliberate kind. ChatGPT's host
+     virtualizer mounts only the tail at first. Once asked, the loader must
+     reach the earliest turn, stop, and restore the reader without relying on
+     a magic scroll height. */
+  await pop.evaluate(() => chrome.storage.local.set({
+    settings: { enabled: true, minimap: true, time: true, history: true }
+  }));
+  const virtual = await ctx.newPage();
+  trackErrors(virtual);
+  await virtual.goto("http://127.0.0.1:8917/test/virtual-history.html");
+  await virtual.waitForFunction(() => document.documentElement.dataset.lctHistoryState === "complete", null, { timeout: 20000 });
+  const historyState = await virtual.evaluate(async () => {
+    const scroller = document.getElementById("virtual-scroller");
+    const anchor = document.getElementById(window.__virtualHistory.anchor);
+    const sr = scroller.getBoundingClientRect();
+    const ar = anchor.getBoundingClientRect();
+    const ids = [...document.querySelectorAll("[data-message-id]")].map((el) => el.getAttribute("data-message-id"));
+    const loadsAtFinish = window.__virtualHistory.loads;
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    return {
+      count: ids.length,
+      unique: new Set(ids).size,
+      first: ids[0],
+      last: ids[ids.length - 1],
+      total: window.__virtualHistory.total,
+      loadsAtFinish,
+      loadsAfterWait: window.__virtualHistory.loads,
+      anchorVisible: ar.bottom > sr.top && ar.top < sr.bottom
+    };
+  });
+  t("B2c initial loader mounts every virtual turn through the first",
+    historyState.count === historyState.total && historyState.first === "virtual-1" && historyState.last === "virtual-240",
+    JSON.stringify(historyState));
+  t("B2c initial loader keeps virtual turns unique", historyState.unique === historyState.total);
+  t("B2c initial loader restores the reader anchor", historyState.anchorVisible);
+  t("B2c initial loader stops once the oldest turn is mounted", historyState.loadsAtFinish === historyState.loadsAfterWait);
+  await virtual.waitForSelector('#lct-mm-canvas[role="slider"]', { timeout: 5000 });
+  t("B2c redesigned minimap exposes keyboard navigation semantics", true);
+  // Model the host recycling its old DOM window after the initial crawl. The
+  // navigator must retain the established full-map catalog instead of snapping
+  // back to only the last mounted page.
+  await virtual.evaluate(() => {
+    [...document.querySelectorAll("[data-message-id]")].slice(0, 200).forEach((el) => el.remove());
+  });
+  await virtual.waitForFunction(() => {
+    const map = document.getElementById("lct-mm-canvas");
+    return document.querySelectorAll("[data-message-id]").length === 40 && map?.getAttribute("aria-valuemax") === "240";
+  }, null, { timeout: 8000 });
+  t("B2c minimap keeps the complete map after the host recycles old DOM rows", true);
+  await virtual.close();
+
+  /* B2d — a reader who scrolls mid-crawl cancels it, and must not be punished
+     for it. The backfill used to be one-shot per route: one stray wheel and
+     that conversation never finished loading its history for the whole session.
+     It has to stand down immediately, then resume once the reader settles. */
+  const resumed = await ctx.newPage();
+  trackErrors(resumed);
+  await resumed.goto("http://127.0.0.1:8917/test/virtual-history.html");
+  // Interrupt as soon as the crawl is genuinely under way.
+  await resumed.waitForFunction(() => document.documentElement.dataset.lctHistoryState === "running", null, { timeout: 15000 });
+  await resumed.evaluate(() => {
+    document.getElementById("virtual-scroller")
+      .dispatchEvent(new WheelEvent("wheel", { deltaY: 120, bubbles: true }));
+  });
+  await resumed.waitForFunction(() => document.documentElement.dataset.lctHistoryState === "cancelled", null, { timeout: 8000 });
+  const partial = await resumed.evaluate(() => document.querySelectorAll("[data-message-id]").length);
+  t("B2d a scroll during the crawl stands the loader down at once", true);
+  // Left alone, it picks up where the host now is and finishes the job.
+  await resumed.waitForFunction(() => document.documentElement.dataset.lctHistoryState === "complete", null, { timeout: 30000 });
+  const finished = await resumed.evaluate(() => ({
+    count: document.querySelectorAll("[data-message-id]").length,
+    first: document.querySelector("[data-message-id]")?.getAttribute("data-message-id")
+  }));
+  t("B2d an interrupted backfill resumes and still reaches the first turn",
+    finished.count === 240 && finished.first === "virtual-1",
+    JSON.stringify({ partial, finished }));
+  await resumed.close();
+  await pop.evaluate(() => chrome.storage.local.set({
+    settings: { enabled: true, minimap: true, time: true, history: false }
+  }));
+
   t("B3 export bar with 3 SVG buttons (outline + md + json)",
     (await page.locator("#lct-export-bar button svg").count()) === 3);
 
@@ -649,6 +966,7 @@ try {
 
   // B5 — markdown backup produces a download
   const dl = page.waitForEvent("download", { timeout: 10000 });
+  await page.hover("#lct-minimap"); // the map rests as a rail — its bar unfurls on hover
   await page.click('#lct-export-bar button[data-fmt="md"]');
   const download = await dl;
   t("B5 backup triggers download", (download.suggestedFilename() || "").endsWith(".md"),
@@ -678,6 +996,7 @@ try {
     mk("t-file-msg", '<span class="chip"></span>');
   });
   await page.waitForTimeout(1200); // engine + outline notice the new messages
+  await page.hover("#lct-minimap"); // the map rests as a rail — its bar unfurls on hover
   await page.click('#lct-export-bar button[data-act="outline"]');
   await page.waitForSelector("#lct-outline.lct-o-open");
   t("B7 outline opens from the minimap bar", true);
@@ -734,6 +1053,7 @@ try {
     (await chrome.storage.local.get(null)));
   const starKey = Object.keys(starStore).find((k) => k.startsWith("stars:127.0.0.1"));
   t("B8 star persisted to storage", !!starKey && Object.keys(starStore[starKey]).length === 1);
+  await page.hover("#lct-minimap"); // the map rests as a rail — its bar unfurls on hover
   await page.click('#lct-export-bar button[data-act="outline"]'); // reopen panel
   await page.waitForSelector("#lct-outline.lct-o-open");
   await page.click('#lct-outline [data-mode="star"]');
@@ -750,6 +1070,7 @@ try {
     if (await page.locator("#lct-star").isVisible()) break;
   }
   await page.click("#lct-star");
+  await page.hover("#lct-minimap"); // the map rests as a rail — its bar unfurls on hover
   await page.click('#lct-export-bar button[data-act="outline"]');
   await page.waitForSelector("#lct-outline.lct-o-open");
   await page.click('#lct-outline [data-mode="star"]');
@@ -1018,7 +1339,7 @@ try {
   // sync" would only ever mean "sync while a page happens to be open".
   const alarm = await recall.evaluate(() => chrome.alarms.get("lct-auto-sync"));
   t("B11b an auto-sync alarm is registered", !!alarm, JSON.stringify(alarm));
-  t("B11b it repeats rather than firing once", alarm && alarm.periodInMinutes === 360,
+  t("B11b it repeats rather than firing once", alarm && alarm.periodInMinutes === 180,
     JSON.stringify(alarm));
   t("B11b the first tick is delayed, not on startup",
     alarm && alarm.scheduledTime > Date.now() + 60000, JSON.stringify(alarm));
@@ -1075,6 +1396,254 @@ try {
     "lct-recall-sync-run-v1", "recall-sync-progress:chatgpt", "recall-sync-progress:claude",
     "recall-sync-progress:deepseek", "recall-sync-progress:grok"
   ]));
+
+  /* ---- B11c. rate-limit governor, work journal, progress hygiene ---- */
+
+  // finishPlatform leaves a "done" row in storage forever. Summing those into
+  // the live pass inflated the denominator, so the percentage disagreed with
+  // the message and drifted backwards as platforms completed.
+  await recall.evaluate((at) => chrome.storage.local.set({
+    "recall-sync-progress:chatgpt": {
+      state: "syncing", phase: "syncing", runId: "run-B", platform: "chatgpt",
+      done: 25, attempted: 25, total: 50, succeeded: 25, failed: 0, msg: "Capturing 25 of 50 new chats…", at
+    },
+    // stale leftover from a previous run — must be ignored entirely
+    "recall-sync-progress:claude": {
+      state: "done", phase: "up-to-date", runId: "run-A", platform: "claude",
+      done: 900, attempted: 900, total: 900, succeeded: 900, failed: 0, msg: "900 new chats backed up", at: at - 90000
+    }
+  }), Date.now());
+  const hygiene = await recall.evaluate(() => new Promise((res) =>
+    chrome.runtime.sendMessage({ type: "recall-sync-status" }, res)));
+  t("B11c a finished run's totals never inflate the live percentage",
+    hygiene.summary.done === 25 && hygiene.summary.total === 50,
+    JSON.stringify(hygiene.summary));
+  t("B11c the message and the percentage describe the same pass",
+    /25 of 50/.test(hygiene.summary.message), hygiene.summary.message);
+  await recall.evaluate(() => chrome.storage.local.remove([
+    "lct-recall-sync-run-v1", "recall-sync-progress:chatgpt", "recall-sync-progress:claude"
+  ]));
+
+  // A 429 is not user-actionable. Painting it red trained people to click
+  // "sync" again, which is exactly what re-triggers the rate limit.
+  await recall.evaluate((at) => chrome.storage.local.set({
+    "recall-sync-progress:chatgpt": {
+      state: "paused", phase: "paused", runId: "run-C", platform: "chatgpt", done: 0, total: 0,
+      msg: "ChatGPT is rate-limiting — resumes automatically", at
+    }
+  }), Date.now());
+  const cooled = await recall.evaluate(() => new Promise((res) =>
+    chrome.runtime.sendMessage({ type: "recall-sync-status" }, res)));
+  t("B11c rate limiting reports as paused, never as an error",
+    cooled.summary.state === "paused" && /resumes automatically/.test(cooled.summary.message),
+    JSON.stringify(cooled.summary));
+  await recall.evaluate(() => chrome.storage.local.remove("recall-sync-progress:chatgpt"));
+
+  // Retry-After comes in two wire formats and providers use both. Mis-parsing
+  // the HTTP-date form yields 0 and the backoff collapses to nothing.
+  const httpDate = new Date(Date.now() + 120000).toUTCString();
+  const pacing = await recall.evaluate((d) => new Promise((res) =>
+    chrome.runtime.sendMessage(
+      { type: "recall-sync-selftest", values: ["120", d, "", "garbage", "-5"], attempt: 3, retryAfterMs: 0 }, res)),
+    httpDate);
+  t("B11c Retry-After in seconds is honoured", pacing.retryAfter[0] === 120000,
+    JSON.stringify(pacing.retryAfter));
+  t("B11c Retry-After as an HTTP-date is honoured",
+    pacing.retryAfter[1] > 110000 && pacing.retryAfter[1] <= 120000, JSON.stringify(pacing.retryAfter));
+  t("B11c a missing or malformed Retry-After never becomes a negative wait",
+    pacing.retryAfter[2] === 0 && pacing.retryAfter[3] === 0 && pacing.retryAfter[4] === 0,
+    JSON.stringify(pacing.retryAfter));
+  t("B11c backoff grows with the attempt but stays jittered and capped",
+    pacing.backoff >= 4000 && pacing.backoff <= 30000, String(pacing.backoff));
+
+  // Claude/DeepSeek/Grok used to stop at their first page, silently losing every
+  // chat past it. Their pagination params are undocumented and differ by build,
+  // so the walk has to page properly when it can and give up safely when it
+  // cannot — never loop, never claim completeness it did not earn.
+  const walk = (pages, pageSize = 2) => recall.evaluate((m) => new Promise((res) =>
+    chrome.runtime.sendMessage({ type: "recall-page-selftest", ...m }, res)), { pages, pageSize });
+  // Distinct descending timestamps per id, so "did we lose a chat" is asserted
+  // on the set of ids rather than on sort order.
+  const stamp = { t: 100000 };
+  const P = (...ids) => ids.map((id) => ({ id, updatedAt: stamp.t-- }));
+  const got = (r) => [...r.ids].sort().join(",");
+
+  // Claude documents limit/offset, so that spelling is tried first.
+  const offsetServer = await walk({
+    "offset=0": P("a", "b"), "offset=2": P("c", "d"), "offset=4": P("e")
+  });
+  t("B11c pagination walks past the first page to the end",
+    got(offsetServer) === "a,b,c,d,e" && offsetServer.complete === true,
+    JSON.stringify(offsetServer));
+
+  // A server that only understands `page` must still be paged fully — this is
+  // exactly the case that silently truncated DeepSeek/Grok at their first page.
+  const pageServer = await walk({
+    "offset=*": P("a", "b"), "skip=*": P("a", "b"),        // both ignored
+    "page=0": P("c", "d"), "page=1": P("e", "f"), "page=2": P("g")
+  });
+  t("B11c a server that only understands page= is still paged fully",
+    got(pageServer) === "c,d,e,f,g" && pageServer.paged === true,
+    JSON.stringify(pageServer));
+
+  const noPaging = await walk({ "offset=*": P("a", "b"), "skip=*": P("a", "b"), "page=*": P("a", "b") });
+  t("B11c an endpoint that cannot page stops instead of looping",
+    got(noPaging) === "a,b" && noPaging.calls.length <= 8, JSON.stringify(noPaging));
+  t("B11c and never claims a completeness it did not earn",
+    noPaging.complete === false, JSON.stringify(noPaging));
+
+  const rejects = await walk({ "offset=*": "error", "skip=*": "error", "page=0": P("a", "b"), "page=1": P("c") });
+  t("B11c a scheme the endpoint rejects is skipped, not fatal",
+    got(rejects) === "a,b,c" && rejects.complete === true, JSON.stringify(rejects));
+
+  const ignoredLimit = await walk({ "offset=0": P("a", "b", "c") });
+  t("B11c a server that ignores limit is recognised as returning everything",
+    got(ignoredLimit) === "a,b,c" && ignoredLimit.complete === true &&
+    ignoredLimit.calls.length === 1, JSON.stringify(ignoredLimit));
+
+  const emptyWalk = await walk({});
+  t("B11c an empty history is complete, not an error",
+    emptyWalk.ids.length === 0 && emptyWalk.complete === true, JSON.stringify(emptyWalk));
+
+  // setDurable mirrors to local when storage.sync rejects. A reader that only
+  // consulted sync concluded the checkpoint never existed, regenerated the
+  // profile salt, and re-synced the entire history on every reload.
+  const durableBefore = await recall.evaluate(async () => {
+    const keys = ["lct-recall-sync-ledger-v2", "lct-recall-sync-profile-v1"];
+    const saved = await chrome.storage.sync.get(keys);
+    const account = await chrome.storage.local.get("lct-recall-active-account-v1");
+    await chrome.storage.sync.remove(keys);
+    await chrome.storage.local.set({
+      "lct-recall-sync-ledger-v2": {
+        version: 2,
+        checkpoints: {
+          "chatgpt:localonly": {
+            version: 3, platform: "chatgpt", safeWatermark: 111, completedAt: 222,
+            lastResult: "delta", archived: 5, coverage: 5, coverageKnown: true
+          }
+        }
+      },
+      "lct-recall-active-account-v1": { chatgpt: "chatgpt:localonly" }
+    });
+    return { saved, account: account["lct-recall-active-account-v1"] || null };
+  });
+  const localOnly = await recall.evaluate(() => new Promise((res) =>
+    chrome.runtime.sendMessage({ type: "recall-sync-status" }, res)));
+  t("B11c a ledger that only reached local storage is still found",
+    localOnly.platforms.chatgpt.checkpoint?.safeWatermark === 111,
+    JSON.stringify(localOnly.platforms.chatgpt.checkpoint));
+  t("B11c a pre-v4 checkpoint survives migration and stays trusted",
+    localOnly.platforms.chatgpt.checkpoint?.pendingCount === 0 &&
+    localOnly.platforms.chatgpt.checkpoint?.passState === "clean",
+    JSON.stringify(localOnly.platforms.chatgpt.checkpoint));
+
+  /* ---- B11d. the transcript parse the map is built on ----
+     Positions in the map have to line up with rows in the page, so the parse
+     must reproduce the branch the reader is actually looking at. The worker's
+     network cannot be routed from here, so the parse is reachable directly. */
+  const parsed = await pop.evaluate(() => new Promise((res) =>
+    chrome.runtime.sendMessage({
+      type: "chat-index-selftest",
+      conv: {
+        current_node: "c",
+        mapping: {
+          root: { id: "root", parent: null, message: null },
+          a: { id: "a", parent: "root", message: { id: "a", author: { role: "user" }, create_time: 3,
+               content: { parts: ["first"] } } },
+          // a dead regenerate branch: newer than the live one, and never rendered
+          dead: { id: "dead", parent: "a", message: { id: "dead", author: { role: "assistant" }, create_time: 9,
+                  content: { parts: ["a reply that was thrown away"] } } },
+          hidden: { id: "hidden", parent: "a", message: { id: "hidden", author: { role: "user" }, create_time: 4,
+                    metadata: { is_visually_hidden_from_conversation: true }, content: { parts: ["system context"] } } },
+          tool: { id: "tool", parent: "a", message: { id: "tool", author: { role: "assistant" }, create_time: 5,
+                  recipient: "python", content: { parts: ["tool call"] } } },
+          b: { id: "b", parent: "a", message: { id: "b", author: { role: "assistant" }, create_time: 6,
+               content: { parts: ["second"] } } },
+          // an image-only turn: no text, but it still occupies a row
+          c: { id: "c", parent: "b", message: { id: "c", author: { role: "user" }, create_time: 7,
+               content: { parts: [{ asset_pointer: "file-x" }] } } }
+        }
+      }
+    }, res)));
+  t("B11d the parse follows the live branch, in reading order",
+    parsed.msgs.map((m) => m.i).join(",") === "a,b,c",
+    JSON.stringify(parsed.msgs.map((m) => m.i)));
+  t("B11d a regenerated branch nobody can see is not in the map",
+    !parsed.msgs.some((m) => m.i === "dead"));
+  t("B11d hidden context turns and tool calls are not rows",
+    !parsed.msgs.some((m) => m.i === "hidden" || m.i === "tool"));
+  t("B11d an image-only turn keeps its position",
+    parsed.entries.length === 3 && parsed.entries[2].i === "c" && parsed.entries[2].n === 0,
+    JSON.stringify(parsed.entries[2]));
+
+  const cyclic = await pop.evaluate(() => new Promise((res) =>
+    chrome.runtime.sendMessage({
+      type: "chat-index-selftest",
+      conv: { current_node: "x", mapping: {
+        x: { id: "x", parent: "y", message: { id: "x", author: { role: "user" }, content: { parts: ["x"] } } },
+        y: { id: "y", parent: "x", message: { id: "y", author: { role: "assistant" }, content: { parts: ["y"] } } }
+      } }
+    }, res)));
+  t("B11d a malformed parent cycle terminates instead of hanging the worker",
+    Array.isArray(cyclic.msgs) && cyclic.msgs.length === 2, JSON.stringify(cyclic.msgs?.length));
+
+  /* ---- B11e. the index cache, and the write that used to destroy it ---- */
+  await pop.evaluate(() => new Promise((res) =>
+    chrome.runtime.sendMessage({ type: "recall-import", chats: [{
+      id: "chatgpt.com/c/idx-1", host: "chatgpt.com", path: "/c/idx-1",
+      platform: "ChatGPT", title: "Indexed chat", createdAt: 1, updatedAt: 2, sourceUpdatedAt: 2,
+      msgs: [{ i: "m1", r: "user", t: "question one" }, { i: "m2", r: "assistant", t: "answer one" },
+             { i: "m3", r: "user", t: "question two" }]
+    }] }, res)));
+  const cached = await pop.evaluate(() => new Promise((res) =>
+    chrome.runtime.sendMessage({ type: "chat-index", host: "chatgpt.com", path: "/c/idx-1" }, res)));
+  t("B11e an archived chat with message ids serves the map with no network",
+    cached.status === "ok" && cached.source === "archive" && cached.entries.length === 3,
+    JSON.stringify({ status: cached.status, source: cached.source, n: cached.entries?.length }));
+  t("B11e the index carries what the map draws with",
+    cached.entries[0].i === "m1" && cached.entries[0].r === "user" && cached.entries[0].n === 12,
+    JSON.stringify(cached.entries[0]));
+  const oneMsg = await pop.evaluate(() => new Promise((res) =>
+    chrome.runtime.sendMessage({ type: "chat-message", host: "chatgpt.com", path: "/c/idx-1", id: "m2" }, res)));
+  t("B11e a single message's full text comes back for the preview",
+    oneMsg.status === "ok" && oneMsg.text === "answer one", JSON.stringify(oneMsg));
+
+  // The live page re-archives whatever the host MOUNTED, under the same id the
+  // sync writes. On ChatGPT that is the tail — so without a guard, opening a
+  // chat trades a complete transcript for a fragment.
+  await pop.evaluate(() => new Promise((res) =>
+    chrome.runtime.sendMessage({ type: "recall-upsert", chat: {
+      id: "chatgpt.com/c/idx-1", host: "chatgpt.com", path: "/c/idx-1",
+      platform: "ChatGPT", title: "Indexed chat",
+      msgs: [{ r: "user", t: "question two" }, { r: "assistant", t: "answer two" }]
+    } }, res)));
+  const afterTail = await pop.evaluate(() => new Promise((res) =>
+    chrome.runtime.sendMessage({ type: "recall-check", ids: ["chatgpt.com/c/idx-1"] }, res)));
+  t("B11e a mounted-tail write never shrinks a complete archived chat",
+    afterTail["chatgpt.com/c/idx-1"]?.n === 3, JSON.stringify(afterTail));
+  const stillCached = await pop.evaluate(() => new Promise((res) =>
+    chrome.runtime.sendMessage({ type: "chat-index", host: "chatgpt.com", path: "/c/idx-1" }, res)));
+  t("B11e and the index survives it", stillCached.entries?.length === 3);
+
+  const unsupported = await pop.evaluate(() => new Promise((res) =>
+    chrome.runtime.sendMessage({ type: "chat-index", host: "gemini.google.com", path: "/app/x" }, res)));
+  t("B11e a platform with no history endpoint is answered, not attempted",
+    unsupported.status === "unsupported", JSON.stringify(unsupported));
+
+  await pop.evaluate(() => new Promise((res) =>
+    chrome.runtime.sendMessage({ type: "chat-drop", id: "chatgpt.com/c/idx-1" }, res)));
+  const dropped = await pop.evaluate(() => new Promise((res) =>
+    chrome.runtime.sendMessage({ type: "recall-check", ids: ["chatgpt.com/c/idx-1"] }, res)));
+  t("B11e a chat deleted upstream is forgotten locally too",
+    !dropped["chatgpt.com/c/idx-1"], JSON.stringify(dropped));
+
+  // Put the seeded ledger and salt back — the backup/restore handoff below is
+  // built from them.
+  await recall.evaluate(async (before) => {
+    await chrome.storage.local.remove(["lct-recall-sync-ledger-v2", "lct-recall-active-account-v1"]);
+    if (before.saved && Object.keys(before.saved).length) await chrome.storage.sync.set(before.saved);
+    if (before.account) await chrome.storage.local.set({ "lct-recall-active-account-v1": before.account });
+  }, durableBefore);
 
   // 6) import a ChatGPT-format export (parser + batch import, fully local)
   const fixture = [
@@ -1200,6 +1769,21 @@ try {
     return s && s.chats === 0;
   }, null, { timeout: 5000 });
   t("B11 wipe empties the archive", true);
+  // setDurable mirrors into both storage areas, so a wipe that only cleared
+  // storage.sync would leave the ledger behind after "delete everything".
+  const wipedDurable = await recall.evaluate(async () => {
+    const local = await chrome.storage.local.get(["lct-recall-sync-ledger-v2", "lct-recall-sync-work-v1"]);
+    const synced = await chrome.storage.sync.get("lct-recall-sync-ledger-v2");
+    return {
+      local: local["lct-recall-sync-ledger-v2"] || null,
+      work: local["lct-recall-sync-work-v1"] || null,
+      synced: synced["lct-recall-sync-ledger-v2"] || null
+    };
+  });
+  t("B11 wipe clears the ledger from both storage areas",
+    !wipedDurable.local && !wipedDurable.synced, JSON.stringify(wipedDurable));
+  t("B11 wipe clears the outstanding-work journal too",
+    !wipedDurable.work, JSON.stringify(wipedDurable));
   await recall.fill("#restore-passphrase", reinstallPassphrase);
   await recall.click("#restore-run");
   await recall.waitForSelector("#restore-status.ok", { timeout: 30000 });
@@ -1339,7 +1923,9 @@ try {
 } finally {
   await ctx.close();
   server.kill();
+  // in the finally so an abort mid-run still says what had failed before it
+  console.log(`\n${pass} passed, ${fail} failed`);
+  if (fail) console.log("failed:\n  " + failed.join("\n  "));
 }
 
-console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
