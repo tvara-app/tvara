@@ -400,7 +400,7 @@
       <button data-act="outline" title="Outline &amp; starred messages" aria-label="Outline and starred messages">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg>
       </button>
-      <button data-act="history" title="Load this chat's older messages into the map (moves the page while it runs)" aria-label="Load older messages into the map">
+      <button data-act="history" title="Mount every older message in the page itself — for the site's own Ctrl+F and a full backup. The map is already complete without this." aria-label="Mount every older message in the page">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V5"/><path d="m6 11 6-6 6 6"/><path d="M4 3h16"/></svg>
       </button>
       <button data-fmt="md" title="Backup chat as Markdown" aria-label="Backup chat as Markdown">
@@ -429,8 +429,8 @@
         if (act.dataset.act === "history") {
           const began = self.LCTHistoryLoader.start(adapter);
           flashNote(began
-            ? "Loading older messages — the page will scroll while it runs. Scroll or press a key to stop."
-            : "Already loading older messages.");
+            ? "Mounting every older message — the page scrolls while it runs. Scroll or press a key to stop."
+            : "Already mounting older messages.");
           return;
         }
         return self.LCTOutline.toggle();

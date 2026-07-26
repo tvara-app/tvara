@@ -141,13 +141,11 @@ paying for what you can't see. A safety zone above and below your viewport
 The popup shows live proof: *"1,491 messages asleep right now"*, per site,
 as an honest **"1,491 of 1,500"** count.
 **Opening a chat is still:** the toolkit never scrolls the page on its own.
-Where a site mounts only a recent tail (ChatGPT does this on long chats), the
-full text still reaches your archive through the background sync, which never
-touches the page. If you want the *in-page* map complete right now, press **⤒**
-on the minimap toolbar — that pass walks the site's own scroller to the oldest
-turn and then returns you to the message you were reading, and any wheel,
-touch, pointer or keyboard input cancels it immediately. Prefer it automatic?
-popup → *Load full history on open*.
+On ChatGPT the map does not need it to — see *How the map is complete instantly*
+below. The **⤒** button on the minimap toolbar is only for mounting every older
+message in the page itself, which you want for the site's own Ctrl+F or a full
+backup; it scrolls while it runs, says how far along it is, and stops the moment
+you touch the page.
 **Turn it off:** popup → *Speed engine* toggle.
 
 ### 🗺️ Minimap
@@ -162,6 +160,26 @@ away and even where the site has unloaded the message. Focus the navigator to
 use Home, End, Page Up, Page Down and the arrow keys. The `‹` handle collapses
 it to a corner. Its toolbar opens the outline, loads older messages (**⤒**) and
 backs up the conversation as Markdown or JSON.
+
+### ⚡ How the map is complete instantly
+**What it does:** on ChatGPT, the map shows the whole conversation the moment you
+open it — every message, in order — while the page itself has only rendered the
+last twenty or so. Nothing scrolls.
+**How:** ChatGPT hands over an entire conversation in one request, and every
+message in it carries the same ID the page stamps on each rendered message. The
+background worker asks for that once, and the map is built from it. Your archived
+copy answers first (instantly, and offline), then the live copy corrects it a
+beat later. There is no way to make a website load its own older messages without
+its page moving — so this removes the need to.
+**What you get from it:** hover any point in the conversation, however far back,
+and read that message without the site loading anything. The count is the real
+count. And the chat you are reading gets fully archived for free.
+**Clicking something the page hasn't rendered:** it opens immediately in a small
+preview so you can read it now, while the site is asked to load its way back to
+it. A pill at the bottom says how far along that is, with a Stop button. When the
+real message arrives, the preview steps aside and you land on it.
+**Elsewhere:** on sites without that kind of history endpoint, the map still
+builds from what is on the page, exactly as before.
 
 ### 📑 Outline — auto table of contents
 **What it does:** builds a live table of contents from every prompt you sent
@@ -299,6 +317,9 @@ your own scripts).
   month. It sends your licence key and a device label — never conversation
   text, never a cookie. The free tier never contacts it at all.
 - **No accounts, no analytics, no telemetry, no remote code.**
+- **When we talk to a provider:** on the sync schedule, when you press a sync
+  button, and — on ChatGPT — once when you open a conversation, to read that
+  conversation. Nothing leaves your browser either way.
 - **Everything is stored locally:** settings, reading positions, stars,
   first-seen times, license key — in your browser's extension storage.
 - **ChatGPT timestamp script:** the one page-world script (ChatGPT only) is
