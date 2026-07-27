@@ -35,6 +35,7 @@ svg { display: block; }
 
 html {
   width: 380px;
+  border-radius: 16px;
   overflow: hidden;
   background: var(--void);
 }
@@ -42,6 +43,7 @@ html {
 body {
   position: relative;
   width: 380px;
+  border-radius: 16px;
   overflow: hidden;
   background: var(--void);
   color: var(--ink);
@@ -113,7 +115,7 @@ header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 11px var(--gutter) 10px;
+  padding: 8px var(--gutter) 6px;
 }
 .brand { display: flex; align-items: center; gap: 9px; min-width: 0; }
 .mark {
@@ -156,10 +158,10 @@ main { padding: 0 var(--gutter); }
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 7px;
-  padding: 4px 0 11px;
+  gap: 6px;
+  padding: 2px 0 6px;
 }
-.pulse-num { font-size: 21px; font-weight: 400; letter-spacing: -.035em; font-variant-numeric: tabular-nums; }
+.pulse-num { font-size: 20px; font-weight: 400; letter-spacing: -.035em; font-variant-numeric: tabular-nums; }
 .pulse-label { color: var(--ink-dim); font-size: 11.5px; }
 /* ---------- usage circles ---------- */
 
@@ -167,34 +169,34 @@ main { padding: 0 var(--gutter); }
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
-  gap: 6px 16px;
+  gap: 12px 22px;
   flex-basis: 100%;
 }
-#usage-bars:not(:empty) { margin-top: 10px; }
+#usage-bars:not(:empty) { margin-top: 12px; margin-bottom: 8px; }
 
 .usage-circle {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 3px;
-  min-width: 56px;
+  gap: 5px;
+  min-width: 86px;
 }
 
 /* The SVG ring */
 .usage-ring {
   position: relative;
-  width: 36px;
-  height: 36px;
+  width: 64px;
+  height: 64px;
 }
-.usage-ring svg { display: block; width: 36px; height: 36px; }
+.usage-ring svg { display: block; width: 64px; height: 64px; }
 .usage-ring-track {
   fill: none;
   stroke: rgb(255 255 255 / .08);
-  stroke-width: 3;
+  stroke-width: 3.2;
 }
 .usage-ring-fill {
   fill: none;
-  stroke-width: 3;
+  stroke-width: 3.2;
   stroke-linecap: round;
   transition: stroke-dashoffset .7s var(--ease);
 }
@@ -204,8 +206,8 @@ main { padding: 0 var(--gutter); }
   inset: 0;
   display: grid;
   place-items: center;
-  font-size: 9px;
-  font-weight: 500;
+  font-size: 15px;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
   color: var(--ink);
   line-height: 1;
@@ -214,15 +216,15 @@ main { padding: 0 var(--gutter); }
 
 /* Labels below */
 .usage-circle-name {
-  font-size: 8.5px;
+  font-size: 12px;
   font-weight: 500;
   letter-spacing: .01em;
   line-height: 1;
   white-space: nowrap;
 }
 .usage-circle-plan {
-  font-size: 7.5px;
-  color: var(--ink-faint);
+  font-size: 10px;
+  color: var(--ink-dim);
   line-height: 1;
   white-space: nowrap;
 }
@@ -247,9 +249,9 @@ main { padding: 0 var(--gutter); }
   grid-template-columns: var(--icon-col) minmax(0, 1fr) auto;
   align-items: center;
   width: 100%;
-  min-height: 42px;
+  min-height: 38px;
   gap: var(--icon-gap);
-  padding: 6px 0;
+  padding: 5px 0;
   border: 0;
   border-top: 1px solid var(--line-soft);
   background: transparent;
@@ -304,11 +306,11 @@ main { padding: 0 var(--gutter); }
 .row.alert .row-icon { color: #ff8a6b; }
 .row.alert .row-title { color: var(--ink); }
 
-/* toggle — state, not decoration, so it keeps its travel */
+/* toggle — compact switch */
 .row input[type="checkbox"] {
   position: relative;
-  width: 32px;
-  height: 18px;
+  width: 28px;
+  height: 16px;
   flex: none;
   appearance: none;
   border: 1px solid var(--line-strong);
@@ -320,8 +322,8 @@ main { padding: 0 var(--gutter); }
 .row input[type="checkbox"]::after {
   content: "";
   position: absolute;
-  top: 3px;
-  left: 3px;
+  top: 2px;
+  left: 2px;
   width: 10px;
   height: 10px;
   border-radius: 50%;
@@ -329,7 +331,7 @@ main { padding: 0 var(--gutter); }
   transition: transform .4s var(--ease), background .4s var(--ease);
 }
 .row input[type="checkbox"]:checked { border-color: transparent; background: var(--ink); }
-.row input[type="checkbox"]:checked::after { transform: translateX(14px); background: #1a0d11; }
+.row input[type="checkbox"]:checked::after { transform: translateX(12px); background: #1a0d11; }
 
 /* ---------- recall panel (aligned to the text column) ---------- */
 
@@ -396,23 +398,23 @@ main { padding: 0 var(--gutter); }
 /* ---------- pro / state ---------- */
 
 .pro-card, .state-card {
-  margin-top: 10px;
-  padding: 11px 13px;
+  margin-top: 6px;
+  padding: 8px 10px;
   border: 1px solid var(--line);
-  border-radius: 13px;
+  border-radius: 11px;
   background: var(--glass);
 }
 .pro-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .pro-title { font-size: 12px; font-weight: 500; }
 .price-pill { color: var(--ember); font-size: 9.5px; white-space: nowrap; }
-.pro-note { margin-top: 5px; color: var(--ink-faint); font-size: 10px; line-height: 1.4; }
+.pro-note { margin-top: 4px; color: var(--ink-faint); font-size: 10px; line-height: 1.3; }
 .pro-note.active { color: var(--ok); }
 
-.license-row { display: flex; gap: 6px; margin-top: 8px; }
+.license-row { display: flex; gap: 6px; margin-top: 6px; }
 .license-row input, .license-row button, #trial-start, .ghost {
-  min-height: 31px;
+  min-height: 28px;
   border: 1px solid var(--line);
-  border-radius: 9px;
+  border-radius: 8px;
   font: 500 10.5px/1 var(--sans);
 }
 .license-row input {
@@ -435,7 +437,7 @@ main { padding: 0 var(--gutter); }
 }
 #trial-start {
   width: 100%;
-  margin-top: 8px;
+  margin-top: 6px;
   border-color: transparent;
   background: var(--ink);
   color: #16090d;
@@ -443,7 +445,7 @@ main { padding: 0 var(--gutter); }
 }
 .license-row button:hover, #trial-start:hover { opacity: .88; }
 
-#license-status { margin-top: 7px; font-size: 9.5px; }
+#license-status { margin-top: 5px; font-size: 9.5px; }
 #license-status:empty { display: none; }
 #license-status.err { color: var(--danger); }
 #license-status.ok { color: var(--ok); }
@@ -481,10 +483,10 @@ body.dm-open #pro-active, body.dm-open #trial-active { display: none !important;
 #device-manager-back { width: 100%; margin-top: 9px; }
 #license-retry-activate {
   width: 100%;
-  min-height: 31px;
-  margin-top: 8px;
+  min-height: 28px;
+  margin-top: 6px;
   border: 1px solid transparent;
-  border-radius: 9px;
+  border-radius: 8px;
   background: var(--ink);
   color: #16090d;
   font: 500 10.5px/1 var(--sans);
@@ -510,7 +512,7 @@ body.dm-open #pro-active, body.dm-open #trial-active { display: none !important;
 /* ---------- footer ---------- */
 
 footer {
-  padding: 11px var(--gutter) 12px;
+  padding: 6px var(--gutter) 8px;
   color: var(--ink-faint);
   font-size: 9px;
   text-align: center;

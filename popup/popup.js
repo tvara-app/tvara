@@ -111,9 +111,9 @@
     const wrap = document.createElement("div");
     wrap.className = "usage-circle";
 
-    // Percentage for the ring arc
+    // Percentage for the ring arc — 0 sent means 0 arc progress (lore-accurate)
     const raw = limit ? sent / limit : (sent > 0 ? 0.15 : 0);
-    const pct = Math.max(raw, 0.04); // always show a sliver
+    const pct = sent > 0 ? Math.max(raw, 0.04) : 0;
     if (limit && raw >= 0.9) wrap.classList.add("over90");
 
     // SVG ring
