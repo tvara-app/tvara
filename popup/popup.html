@@ -98,6 +98,16 @@
           </div>
         </div>
 
+        <button class="row row-button alert" id="deletion-alert" type="button" hidden>
+          <span class="row-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M6 7l1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12"/></svg>
+          </span>
+          <span class="row-text">
+            <span class="row-title" id="deletion-alert-title">Chats deleted on the site</span>
+            <span class="row-sub" id="deletion-alert-sub">Your backup still has them — decide what to keep</span>
+          </span>
+        </button>
+
         <button class="row row-button" id="sync-history" type="button">
           <span class="row-icon sync-icon" aria-hidden="true">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20.5 12a8.5 8.5 0 0 0-14.6-5.9L3.5 8.4"/><path d="M3.5 4.2v4.2h4.2"/><path d="M3.5 12a8.5 8.5 0 0 0 14.6 5.9l2.4-2.3"/><path d="M20.5 19.8v-4.2h-4.2"/></svg>
@@ -162,6 +172,7 @@
 
   <script src="../lib/license.js"></script>
   <script src="../lib/dodo.js"></script>
+  <script src="../lib/entitlement.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

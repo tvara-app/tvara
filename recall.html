@@ -70,6 +70,29 @@
         <p id="restore-status" class="status-copy" role="status"></p>
       </section>
 
+      <section id="deletions" class="panel urgent" hidden aria-labelledby="deletions-title">
+        <div class="panel-head">
+          <div>
+            <div class="kicker">Deleted where you use them</div>
+            <h2 id="deletions-title">Chats removed from the provider</h2>
+          </div>
+          <span class="price-pill" id="deletions-count"></span>
+        </div>
+        <p class="dim">These conversations no longer exist on the site. Your backup still has every word of them. Nothing is removed here unless you say so.</p>
+        <div id="deletions-list" class="deletion-list"></div>
+        <div class="actions">
+          <button id="deletions-keep-all" type="button">Keep all backup copies</button>
+          <button id="deletions-delete-all" class="secondary danger-action" type="button">Delete all from backup</button>
+        </div>
+        <label class="field-label" for="deletion-policy">When a chat is deleted on the site</label>
+        <select id="deletion-policy" class="secure-input">
+          <option value="ask">Ask me every time (recommended)</option>
+          <option value="keep">Always keep my backup copy, never ask</option>
+          <option value="mirror">Always delete it from my backup too</option>
+        </select>
+        <p id="deletions-status" class="status-copy" role="status"></p>
+      </section>
+
       <div class="rail">
         <section class="panel" id="sync-panel">
           <div class="panel-head">
@@ -94,17 +117,27 @@
         <section class="panel" id="backup-panel" aria-labelledby="backup-title">
           <div class="kicker">Reinstall backup</div>
           <h2 id="backup-title">Carry this archive to a new install</h2>
-          <p class="dim">An encrypted snapshot taken before you uninstall. On the new install, restore it and only the chats you had in the gap are fetched. The passphrase stays with you.</p>
+          <p class="dim">An encrypted snapshot you can restore into any browser. AES-256-GCM under a key stretched from your passphrase — which is never stored, never synced, and not recoverable. Lose it and the file is unreadable, by us or anyone.</p>
           <div class="form-grid">
             <label class="field-label" for="backup-passphrase">New backup passphrase</label>
-            <input id="backup-passphrase" class="secure-input" type="password" autocomplete="new-password" />
+            <input id="backup-passphrase" class="secure-input" type="password" autocomplete="new-password" spellcheck="false" />
+            <div id="backup-strength" class="strength" hidden><span class="strength-bar"><i></i></span><span class="strength-text"></span></div>
             <label class="field-label" for="backup-passphrase-confirm">Confirm passphrase</label>
-            <input id="backup-passphrase-confirm" class="secure-input" type="password" autocomplete="new-password" />
+            <input id="backup-passphrase-confirm" class="secure-input" type="password" autocomplete="new-password" spellcheck="false" />
+            <label class="auto-sync" for="backup-auto">
+              <input type="checkbox" id="backup-auto" checked />
+              <span>Also keep writing this backup automatically, so a reinstall never costs you an archive.</span>
+            </label>
             <div class="actions">
               <button id="create-backup" type="button">Create reinstall backup</button>
             </div>
           </div>
           <p id="backup-status" class="status-copy" role="status"></p>
+          <p id="autobackup-status" class="status-copy dim" role="status"></p>
+          <div class="actions" id="autobackup-actions" hidden>
+            <button id="autobackup-run" class="secondary" type="button">Back up now</button>
+            <button id="autobackup-off" class="secondary" type="button">Turn automatic backup off</button>
+          </div>
         </section>
       </div>
 
@@ -121,14 +154,16 @@
     </main>
 
     <footer>
-      <span>Local archive · no telemetry, no Long Chat Toolkit server</span>
+      <span>Local archive · no telemetry, no chat data ever uploaded</span>
       <span class="kbd-hint">Press <kbd>⌘⇧K</kbd> on any chat site to search from where you are</span>
     </footer>
   </div>
 
   <script src="lib/license.js"></script>
   <script src="lib/dodo.js"></script>
+  <script src="lib/entitlement.js"></script>
   <script src="lib/recall-db.js"></script>
+  <script src="lib/backup-crypto.js"></script>
   <script src="recall-page.js"></script>
 </body>
 </html>

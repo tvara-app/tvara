@@ -42,8 +42,15 @@
   /* ---------- theme ----------
      Our surfaces follow the SITE's theme, not the OS's: a white minimap on a
      dark ChatGPT is the mismatch people actually notice. Stamped on <html>,
-     where styles.css picks it up (data-lct-theme outranks the media query). */
-  function syncTheme() {
+     where styles.css picks it up (data-lct-theme outranks the media query).
+
+     Throttled like the rail below: two getComputedStyle reads on every engine
+     tick, for a value that changes when someone flips a setting. A theme
+     landing a second late is invisible; the style recalcs were not free. */
+  let themeAt = 0;
+  function syncTheme(force) {
+    if (!force && Date.now() - themeAt < 1000) return;
+    themeAt = Date.now();
     let dark = null;
     for (const el of [document.body, document.documentElement]) {
       const m = el && getComputedStyle(el).backgroundColor
@@ -58,8 +65,8 @@
       document.documentElement.dataset.lctTheme = next;
     }
   }
-  syncTheme();
-  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", syncTheme);
+  syncTheme(true);
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => syncTheme(true));
 
   /* ---------- right-edge clearance ----------
      ChatGPT grows its own message-navigator rail on the right edge, and our
@@ -260,19 +267,23 @@
     { passive: true, capture: true }
   );
 
+  // Topmost message still visible in the viewport, by binary search: rects rise
+  // monotonically in document order, so this costs ~log2(n) layout reads. The
+  // scan it replaces read a rect for every message above the fold — at the
+  // bottom of a 1,500-turn chat, that was all of them.
   function currentAnchor() {
-    // topmost message still visible in the viewport
-    for (let i = 0; i < lastMessages.length; i++) {
-      const r = lastMessages[i].getBoundingClientRect();
-      if (r.height > 0 && r.bottom > 90) {
-        return {
-          key: self.LCTTimeline.keyOf(lastMessages[i]),
-          index: i,
-          total: lastMessages.length
-        };
-      }
+    const n = lastMessages.length;
+    if (!n) return null;
+    let lo = 0, hi = n - 1, at = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (lastMessages[mid].getBoundingClientRect().bottom > 90) { at = mid; hi = mid - 1; }
+      else lo = mid + 1;
     }
-    return null;
+    // A collapsed (zero-height) row is a position nothing can be restored to.
+    while (at >= 0 && at < n && lastMessages[at].getBoundingClientRect().height <= 0) at++;
+    if (at < 0 || at >= n) return null;
+    return { key: self.LCTTimeline.keyOf(lastMessages[at]), index: at, total: n };
   }
 
   function findSavedIndex(saved, messages) {
@@ -466,15 +477,19 @@
   /* ---------- settings / license ---------- */
 
   async function loadState() {
-    const { settings, license, trial } = await store.get(["settings", "license", "trial"]);
+    const { settings } = await store.get(["settings"]);
     if (settings) {
       state.enabled = settings.enabled !== false;
       state.minimap = settings.minimap !== false;
       state.time = settings.time !== false;
       state.history = settings.history === true;   // opt-in: it moves the page
     }
-    state.trialUntil = trial && trial.startedAt ? trial.startedAt + 7 * 864e5 : 0;
-    state.pro = (await self.LCTLicense.evaluate(license)).pro;
+    // The worker holds the signed entitlement; content scripts only ask.
+    // A hostile page shares this DOM but not this message channel.
+    const verdict = await new Promise((res) =>
+      chrome.runtime.sendMessage({ type: "entitlement-state" }, res));
+    state.pro = !!(verdict && verdict.entitled && verdict.via !== "trial");
+    state.trialUntil = (verdict && verdict.trial && verdict.trial.until) || 0;
   }
 
   function applyState() {
@@ -498,7 +513,7 @@
   try {
     chrome.storage.onChanged.addListener(async (changes, area) => {
       if (area !== "local") return;
-      if (changes.settings || changes.license || changes.trial) {
+      if (changes.settings || changes.license || changes["lct-entitlement-v2"] || changes["lct-trial-v2"]) {
         await loadState();
         applyState();
       }

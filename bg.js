@@ -8,10 +8,21 @@
  *
  * Privacy: the worker may make scoped, authenticated requests only to the AI
  * providers declared in manifest host permissions to copy history into this
- * local archive. It has no Long Chat Toolkit server, telemetry, or upload
- * path; everything is deletable in one click from the Recall page.
+ * local archive. No telemetry, no chat text ever leaves; everything is
+ * deletable in one click from the Recall page. The single non-provider call is
+ * licence entitlement (lib/entitlement.js) — licence key + device hash, nothing
+ * else, and only when refreshing a token.
+ *
+ * Enforcement: this worker is the ONLY authority on paid features. Pages hide
+ * locked UI as a courtesy; requireEntitlement() below is what actually decides.
  */
 "use strict";
+
+// One implementation of the backup envelope, shared with the Recall page.
+try { importScripts("lib/backup-crypto.js"); } catch (_) { /* tests load bg.js bare */ }
+// Licence verification. Order matters: entitlement.js calls into LCTLicense.
+try { importScripts("lib/license.js", "lib/dodo.js", "lib/entitlement.js"); }
+catch (_) { /* tests load bg.js bare */ }
 
 const DB_NAME = "lct-recall";
 const DB_VERSION = 2;
@@ -403,6 +414,21 @@ const BG_ACTIVE_ACCOUNT = "lct-recall-active-account-v1";
 const BG_SYNC_WORK = "lct-recall-sync-work-v1";
 const BG_HOST_COOLDOWN = "lct-recall-host-cooldown-v1";
 const BG_PAGE_SCHEME = "lct-recall-page-scheme-v1";
+// Chats the provider no longer has. Local-only, and deliberately NOT a delete:
+// see the deletion-review section below for why the archive keeps them until
+// the user says otherwise.
+const BG_DELETIONS = "lct-recall-deletions-v1";
+const BG_DELETION_MAX = 500;
+// Deletion can only be inferred from a listing that covers the whole history,
+// and a delta pass never does. So one full listing is forced on this cadence.
+const BG_SWEEP_STATE = "lct-recall-sweep-v1";
+const BG_SWEEP_MS = 24 * 60 * 60 * 1000;
+// Key material for unattended backups. chrome.storage.local ONLY — never
+// setDurable, because storage.sync roams to Google's servers and a wrapped
+// archive key has no business leaving the device.
+const BG_AUTOBACKUP = "lct-recall-autobackup-v1";
+const BG_AUTOBACKUP_STATE = "lct-recall-autobackup-state-v1";
+const BG_RESTORE_GUARD = "lct-recall-restore-guard-v1";
 const BG_SCHEME_RETRY_MS = 7 * 24 * 60 * 60 * 1000;   // re-probe "none" weekly
 
 // Claude documents limit/offset; DeepSeek's and Grok's list endpoints are
@@ -707,12 +733,28 @@ async function markBackup(meta) {
   return marker;
 }
 
+/**
+ * Reinstall detection.
+ *
+ * The install marker lives in storage.local (wiped with the extension); the
+ * backup marker is durable (survives via storage.sync). Marker without install
+ * marker = this profile had an archive before, and this is a fresh install.
+ *
+ * This used to HALT syncing until the user restored a file, which meant a
+ * reinstall silently archived nothing — possibly forever, since nothing tells
+ * an idle user to go and look. It is now an OFFER: syncing resumes immediately
+ * and rebuilds from the providers, and restoring the old file afterwards still
+ * merges cleanly, because importBatch() refuses to overwrite a newer archived
+ * revision. Restoring first is only ever a shortcut, never a prerequisite.
+ */
 async function ensureRecoveryState() {
   const local = await chrome.storage.local.get([BG_INSTALL, BG_RECOVERY]);
   if (local[BG_INSTALL]) return local[BG_RECOVERY] || { state: "ready" };
   const { data } = await getDurable(BG_BACKUP_MARKER);
   const marker = data[BG_BACKUP_MARKER] || null;
-  const recovery = marker ? { state: "restore-required", backup: marker } : { state: "ready" };
+  const recovery = marker
+    ? { state: "restore-offered", backup: marker, reinstalledAt: Date.now() }
+    : { state: "ready" };
   await chrome.storage.local.set({ [BG_INSTALL]: { at: Date.now() }, [BG_RECOVERY]: recovery });
   return recovery;
 }
@@ -747,6 +789,7 @@ async function restoreLedger(backupLedger, backupMeta, backupProfile) {
     [BG_INSTALL]: { at: Date.now() },
     [BG_RECOVERY]: { state: "ready", restoredAt: Date.now(), backup: backupMeta || null }
   });
+  await restoreGuardReset();
   return { ok: true };
 }
 
@@ -1351,12 +1394,259 @@ async function chatMessage(host, path, messageId) {
   } catch { return { status: "missing" }; }
 }
 
-/** Forget a conversation that no longer exists upstream. */
+/** Forget a conversation. The only path that removes archived text. */
 async function dropChat(id) {
   try {
     const d = await db();
     await reqP(tx(d, "readwrite").delete(String(id).slice(0, 600)));
   } catch { /* archive unavailable — nothing to forget */ }
+}
+
+/* ===================== deletion review =====================
+ *
+ * A chat vanishing upstream used to delete the archived copy on sight. That
+ * makes the backup strictly weaker than the provider: one wrong click on
+ * chatgpt.com, or a provider retention sweep, and the local copy — the whole
+ * reason this archive exists — is gone with it, silently.
+ *
+ * So deletion is now a QUESTION, not an event. A vanished chat is quarantined:
+ * still archived, still searchable, flagged, and queued for the user. Only an
+ * explicit answer (or an explicit standing policy) removes anything.
+ *
+ * settings.deletionPolicy:
+ *   "ask"    — default. Quarantine and prompt.
+ *   "keep"   — the archive outlives the provider. Never prompt, never delete.
+ *   "mirror" — the archive tracks the provider exactly. Delete on sight.
+ */
+
+const DELETION_REASONS = new Set(["opened", "sync", "sweep"]);
+
+async function deletionPolicy() {
+  try {
+    const { settings } = await chrome.storage.local.get("settings");
+    const value = settings && settings.deletionPolicy;
+    return value === "keep" || value === "mirror" ? value : "ask";
+  } catch { return "ask"; }
+}
+
+async function readDeletions() {
+  try {
+    const { [BG_DELETIONS]: raw } = await chrome.storage.local.get(BG_DELETIONS);
+    const items = raw && typeof raw.items === "object" && raw.items ? raw.items : {};
+    const out = {};
+    for (const [id, value] of Object.entries(items)) {
+      if (!value || typeof value !== "object") continue;
+      out[String(id).slice(0, 600)] = {
+        id: String(id).slice(0, 600),
+        platform: String(value.platform || "").slice(0, 32),
+        host: String(value.host || "").slice(0, 120),
+        path: String(value.path || "").slice(0, 400),
+        title: String(value.title || "").slice(0, 200),
+        messages: Math.max(0, Math.floor(Number(value.messages) || 0)),
+        updatedAt: Number(value.updatedAt) || 0,
+        detectedAt: Number(value.detectedAt) || 0,
+        reason: DELETION_REASONS.has(value.reason) ? value.reason : "sync"
+      };
+    }
+    return { version: 1, items: out };
+  } catch { return { version: 1, items: {} }; }
+}
+
+let deletionWrite = Promise.resolve();
+
+async function mutateDeletions(mutator) {
+  const work = async () => {
+    const current = await readDeletions();
+    const next = (await mutator(current)) || current;
+    const entries = Object.entries(next.items);
+    if (entries.length > BG_DELETION_MAX) {
+      // Oldest detections go first: the newest surprise is the one the user
+      // still has context for.
+      entries.sort((a, b) => (b[1].detectedAt || 0) - (a[1].detectedAt || 0));
+      next.items = Object.fromEntries(entries.slice(0, BG_DELETION_MAX));
+    }
+    try { await chrome.storage.local.set({ [BG_DELETIONS]: next }); } catch { /* full */ }
+    await paintDeletionBadge(Object.keys(next.items).length);
+    return next;
+  };
+  deletionWrite = deletionWrite.then(work, work);
+  return deletionWrite;
+}
+
+async function paintDeletionBadge(count) {
+  try {
+    if (!chrome.action || !chrome.action.setBadgeText) return;
+    await chrome.action.setBadgeText({ text: count ? String(Math.min(count, 99)) : "" });
+    if (count && chrome.action.setBadgeBackgroundColor) {
+      await chrome.action.setBadgeBackgroundColor({ color: "#c2410c" });
+    }
+  } catch { /* action API unavailable */ }
+}
+
+/** Enough of the archived record to let the user recognise what they are about to lose. */
+async function chatSummary(id) {
+  try {
+    const d = await db();
+    const rec = await reqP(tx(d, "readonly").get(String(id).slice(0, 600)));
+    if (!rec) return null;
+    return { title: rec.title || "", messages: (rec.msgs || []).length,
+      updatedAt: rec.updatedAt || 0, platform: rec.platform || "", host: rec.host || "", path: rec.path || "" };
+  } catch { return null; }
+}
+
+let deletionNoticePending = null;
+
+/**
+ * The provider says this chat is gone. Decide what that means for the archive.
+ * Returns whether the archived copy was actually removed.
+ */
+async function noteVanished(id, hint = {}, reason = "sync") {
+  const recordId = String(id).slice(0, 600);
+  const policy = await deletionPolicy();
+  if (policy === "mirror") { await dropChat(recordId); return { removed: true, policy }; }
+  if (policy === "keep") return { removed: false, policy };
+
+  const existing = (await readDeletions()).items[recordId];
+  if (existing) return { removed: false, policy, queued: true };
+  const summary = await chatSummary(recordId);
+  // Nothing archived under that id — there is no decision to put to anyone.
+  if (!summary) return { removed: false, policy, unknown: true };
+
+  await mutateDeletions((state) => {
+    state.items[recordId] = {
+      id: recordId,
+      platform: summary.platform || hint.platform || "",
+      host: summary.host || hint.host || "",
+      path: summary.path || hint.path || "",
+      title: summary.title,
+      messages: summary.messages,
+      updatedAt: summary.updatedAt,
+      detectedAt: Date.now(),
+      reason: DELETION_REASONS.has(reason) ? reason : "sync"
+    };
+    return state;
+  });
+  scheduleDeletionNotice();
+  return { removed: false, policy, queued: true };
+}
+
+/* One notification per burst, not one per chat: a sweep can find forty at once
+   and forty toasts is an attack on the user, not a prompt. */
+function scheduleDeletionNotice() {
+  if (deletionNoticePending) return;
+  deletionNoticePending = setTimeout(() => {
+    deletionNoticePending = null;
+    showDeletionNotice();
+  }, 2500);
+}
+
+async function showDeletionNotice() {
+  const count = Object.keys((await readDeletions()).items).length;
+  if (!count) return;
+  try {
+    if (!chrome.notifications || !chrome.notifications.create) return;
+    await chrome.notifications.create("lct-deletions", {
+      type: "basic",
+      iconUrl: chrome.runtime.getURL("icons/icon128.png"),
+      title: count === 1 ? "A chat was deleted where you use it" : `${count} chats were deleted where you use them`,
+      message: count === 1
+        ? "Your backup still has it. Keep the backup copy, or delete it here too?"
+        : "Your backup still has them. Choose which copies to keep.",
+      priority: 1,
+      requireInteraction: false
+    });
+  } catch { /* notifications unavailable — the badge and the panel still carry it */ }
+}
+
+/** The user answered. `action` is "delete" (remove from the backup too) or "keep". */
+async function resolveDeletions(ids, action) {
+  const wanted = Array.isArray(ids) ? ids.map((id) => String(id).slice(0, 600)) : [];
+  const state = await readDeletions();
+  const targets = wanted.length ? wanted.filter((id) => state.items[id]) : Object.keys(state.items);
+  if (action === "delete") {
+    for (const id of targets) await dropChat(id);
+  } else if (action !== "keep") {
+    return { err: "unknown action" };
+  }
+  await mutateDeletions((current) => {
+    for (const id of targets) delete current.items[id];
+    return current;
+  });
+  try { if (chrome.notifications) await chrome.notifications.clear("lct-deletions"); } catch { /* fine */ }
+  return { ok: true, action, count: targets.length };
+}
+
+async function deletionsList() {
+  const state = await readDeletions();
+  const items = Object.values(state.items).sort((a, b) => (b.detectedAt || 0) - (a.detectedAt || 0));
+  return { items, policy: await deletionPolicy() };
+}
+
+/**
+ * Reconcile a FULL provider listing against the archive. Only safe when the
+ * listing genuinely covered everything — a delta pass lists a window, and every
+ * chat outside it would look deleted.
+ */
+async function sweepVanished(adapter, index, listedIds, scanStartedAt, pendingIds) {
+  const candidates = [];
+  for (const [recordId, revision] of index) {
+    if (listedIds.has(recordId)) continue;
+    // Written during this very pass, or still outstanding in the journal —
+    // either way the listing is not evidence it is gone.
+    if (Number(revision) >= scanStartedAt) continue;
+    if (pendingIds.has(recordId.slice((adapter.host + adapter.prefix).length))) continue;
+    candidates.push(recordId);
+  }
+  if (!candidates.length) return { vanished: 0 };
+  // A signed-out session, a changed response shape or a half-finished walk can
+  // all produce a short listing, and every chat outside it then looks deleted.
+  // Anything past a quarter of the archive is treated as a broken listing
+  // rather than a very busy afternoon of deleting. The small floor keeps this
+  // workable on a four-chat archive, where a quarter is one chat.
+  //
+  // The trade is deliberate: a genuine mass deletion goes unnoticed (the copies
+  // simply stay, which is this feature's default anyway) instead of a glitch
+  // putting the whole archive up for deletion in one dialog.
+  const ceiling = Math.max(5, Math.floor(index.size * 0.25));
+  if (candidates.length > ceiling) {
+    await noteSweepAnomaly(adapter.id, candidates.length, index.size);
+    return { vanished: 0, skipped: candidates.length, reason: "implausible" };
+  }
+  let removed = 0, queued = 0;
+  for (const recordId of candidates) {
+    const result = await noteVanished(recordId, { platform: adapter.id, host: adapter.host }, "sweep");
+    if (result.removed) removed++;
+    else if (result.queued) queued++;
+  }
+  return { vanished: candidates.length, removed, queued };
+}
+
+async function sweepDue(platformId) {
+  try {
+    const { [BG_SWEEP_STATE]: state } = await chrome.storage.local.get(BG_SWEEP_STATE);
+    const at = (state && state[platformId]) || 0;
+    return Date.now() - at > BG_SWEEP_MS;
+  } catch { return false; }
+}
+
+/* Kept so the UI can explain a silence: "we saw most of your history vanish
+   from the listing and did not believe it" is information the user wants. */
+async function noteSweepAnomaly(platformId, missing, archived) {
+  try {
+    const { [BG_SWEEP_STATE]: state } = await chrome.storage.local.get(BG_SWEEP_STATE);
+    const next = state && typeof state === "object" ? state : {};
+    next.anomaly = { platform: platformId, missing, archived, at: Date.now() };
+    await chrome.storage.local.set({ [BG_SWEEP_STATE]: next });
+  } catch { /* nothing to record it in */ }
+}
+
+async function markSwept(platformId) {
+  try {
+    const { [BG_SWEEP_STATE]: state } = await chrome.storage.local.get(BG_SWEEP_STATE);
+    const next = state && typeof state === "object" ? state : {};
+    next[platformId] = Date.now();
+    await chrome.storage.local.set({ [BG_SWEEP_STATE]: next });
+  } catch { /* next pass sweeps instead */ }
 }
 
 /**
@@ -1411,9 +1701,12 @@ async function chatIndex(host, path, opts = {}) {
       return { status: "ok", source: "provider", stale: false, entries: indexFromMsgs(full.msgs), title: full.title };
     } catch (error) {
       const kind = (error && error.kind) || "net";
-      // Deleted upstream: stop claiming we have it. Recall must not keep
-      // returning a chat the user threw away.
-      if (kind === "gone") { idxCtx.delete(adapter.host); await dropChat(recordId); }
+      // Deleted upstream. Quarantine it and ask — deleting on sight would make
+      // the archive lose exactly what the user may have opened it to recover.
+      if (kind === "gone") {
+        idxCtx.delete(adapter.host);
+        await noteVanished(recordId, { platform: adapter.id, host: adapter.host, path: adapter.prefix + convId }, "opened");
+      }
       if (kind === "auth") idxCtx.delete(adapter.host);
       return { status: kind };
     } finally {
@@ -1568,15 +1861,23 @@ async function bgSyncPlatform(adapter, run, opts = {}) {
          job.pending.length <= checkpoint.pendingCount);
     const trustWatermark = !!(checkpoint && checkpoint.safeWatermark &&
       covered >= 0 && index.size >= covered && pendingOk);
-    const sinceMs = trustWatermark ? Math.max(0, checkpoint.safeWatermark - BG_SYNC_OVERLAP_MS) : 0;
-    const mode = trustWatermark ? "delta" : "reconcile";
+    // A delta listing cannot see a deletion: a chat the user removed simply is
+    // not in the window, exactly like a chat that never changed. Once a day the
+    // pass lists everything instead, purely so vanished chats can be noticed.
+    // It costs listing requests only — rule 1 still downloads nothing already
+    // archived.
+    const sweeping = trustWatermark && index.size > 0 && await sweepDue(adapter.id) &&
+      (await deletionPolicy()) !== "keep";
+    const sinceMs = trustWatermark && !sweeping ? Math.max(0, checkpoint.safeWatermark - BG_SYNC_OVERLAP_MS) : 0;
+    const mode = sweeping ? "sweep" : trustWatermark ? "delta" : "reconcile";
     const carried = trustWatermark && job ? job.pending : [];
     // Captured BEFORE listing on purpose: a chat that shifts pages mid-listing
     // still has a revision >= this, so the next pass re-lists it.
     const scanStartedAt = Date.now();
 
-    // 3. one request to answer "anything new?" on a routine pass
-    if (trustWatermark && !carried.length && adapter.peek) {
+    // 3. one request to answer "anything new?" on a routine pass. Skipped while
+    //    sweeping — "nothing new" says nothing about what was removed.
+    if (trustWatermark && !sweeping && !carried.length && adapter.peek) {
       const { hasNew } = await adapter.peek(ctx, sinceMs);
       if (!hasNew) {
         await finishPlatform(adapter, checkpointKey,
@@ -1592,11 +1893,23 @@ async function bgSyncPlatform(adapter, run, opts = {}) {
         msg: msg || "Checking for new chats…" });
     await writeProgress(adapter, run, { phase: "checking", attempted: 0, total: 0,
       msg: mode === "delta" ? "Checking for new chats…"
+        : mode === "sweep" ? "Checking which chats still exist…"
         : index.size ? "Rebuilding the archive index…" : "Building the first archive index…" });
 
     const listed = await adapter.list(ctx, sinceMs, progress);
     const metas = listed.metas || [];
     const complete = listed.complete !== false;
+
+    // 3b. The listing covered the whole history, so anything archived and not in
+    //     it is gone upstream. Never destructive by itself — noteVanished()
+    //     honours the user's policy, and the default is to ask.
+    if (sinceMs === 0 && complete && metas.length <= BG_PENDING_MAX) {
+      const prefix = adapter.host + adapter.prefix;
+      const listedIds = new Set(metas.map((m) => prefix + m.id));
+      const pendingIds = new Set(carried.map((p) => p.id));
+      await sweepVanished(adapter, index, listedIds, scanStartedAt, pendingIds);
+      await markSwept(adapter.id);
+    }
 
     // 4. work = carried-over pending ∪ freshly listed, fresh meta winning,
     //    minus anything the archive already holds at that revision or newer.
@@ -1691,9 +2004,14 @@ async function bgSyncPlatform(adapter, run, opts = {}) {
           const kind = error && error.kind;
           const reason = String((error && error.message) || error);
           if (kind === "auth" || reason.includes("unauthorized")) { fatal = error; return; }
-          // Deleted upstream: drop it from the journal AND from the archive, so
-          // Recall stops returning a chat that no longer exists.
-          if (kind === "gone") { gone.push(item.id); await dropChat(adapter.host + adapter.prefix + item.id); }
+          // Deleted upstream: it leaves the journal either way (there is nothing
+          // left to fetch), but whether the ARCHIVED copy goes is the user's
+          // call, not the provider's.
+          if (kind === "gone") {
+            gone.push(item.id);
+            await noteVanished(adapter.host + adapter.prefix + item.id,
+              { platform: adapter.id, host: adapter.host, path: adapter.prefix + item.id }, "sync");
+          }
           // Anything not archived stays in the journal, so an abandoned slot is
           // simply retried next pass — no cursor rewind needed.
           else if (error && error.circuitOpen) { circuitOpen = true; return; }
@@ -1778,8 +2096,10 @@ async function bgSyncPlatform(adapter, run, opts = {}) {
 }
 
 async function bgSyncAll(opts = {}) {
-  const recovery = await ensureRecoveryState();
-  if (recovery.state === "restore-required") return { status: "restore-required", recovery };
+  // Records the reinstall so the page can offer the old backup. It no longer
+  // gates the pass: a reinstalled browser starts re-archiving straight away and
+  // a later restore merges into it.
+  await ensureRecoveryState();
   if (bgSyncRunning) return { status: "already-running" };
   const run = await beginRun();
   if (!run) return { status: "already-running" };
@@ -1804,6 +2124,9 @@ async function bgSyncAll(opts = {}) {
     if (canResume && results.some((r) => r && (r.left || r.result === "deferred" || r.result === "partial"))) {
       await scheduleResume();
     }
+    // New chats just landed; if the portable copy is due, write it now rather
+    // than waiting out the clock.
+    await maybeAutoBackup("sync");
     return { status: "done", results };
   } finally {
     clearInterval(pulse);
@@ -1837,10 +2160,13 @@ async function bgSyncStatus() {
       phase
     };
   }
+  const deletions = await deletionsList();
   return {
     platforms,
     running: !!(run && run.state === "running"),
     recovery,
+    deletions: { count: deletions.items.length, policy: deletions.policy },
+    autoBackup: await autoBackupState(),
     summary: summarize(platforms, !!(run && run.state === "running"), recovery, run && run.id),
     run: run ? { state: run.state, startedAt: run.startedAt, interruptedAt: run.interruptedAt || 0 } : null
   };
@@ -1855,9 +2181,6 @@ async function bgSyncStatus() {
  * message a fully-synced archive has earned could never appear.
  */
 function summarize(platforms, running, recovery, runId) {
-  if (recovery && recovery.state === "restore-required") {
-    return { state: "restore", message: "Restore your archive to continue", checkedAt: 0, connected: 0 };
-  }
   const entries = Object.values(platforms);
   if (running || entries.some((p) => p.progress && p.progress.state === "syncing")) {
     const live = entries.filter((p) => p.progress && p.progress.state === "syncing");
@@ -1936,9 +2259,228 @@ async function wipeRecall() {
   const localKeys = [BG_RUN, BG_RECOVERY, BG_ACTIVE_ACCOUNT]
     .concat(BG_ADAPTERS.map((adapter) => BG_SYNC_PROG(adapter.id)))
     .concat(BG_ADAPTERS.map((adapter) => BG_SYNC_FLAG(adapter.id)));
-  await chrome.storage.local.remove(localKeys.concat([BG_SYNC_WORK, BG_HOST_COOLDOWN, BG_PAGE_SCHEME]));
+  // "Delete everything" has to mean the backup key material too, or a wiped
+  // browser would keep writing readable archives of whatever comes next.
+  await chrome.storage.local.remove(localKeys.concat([BG_SYNC_WORK, BG_HOST_COOLDOWN, BG_PAGE_SCHEME,
+    BG_DELETIONS, BG_SWEEP_STATE, BG_AUTOBACKUP, BG_AUTOBACKUP_STATE, BG_RESTORE_GUARD]));
   await removeDurable([BG_SYNC_LEDGER, BG_BACKUP_MARKER, BG_SYNC_PROFILE]);
+  await paintDeletionBadge(0);
+  try { await chrome.alarms.clear(BG_AUTOBACKUP_ALARM); } catch { /* alarms unavailable */ }
   return { ok: true };
+}
+
+/* ===================== automatic encrypted backup =====================
+ *
+ * The manual backup was the only portable copy, and it existed only if the user
+ * remembered to make one before uninstalling — which is the one moment nobody
+ * remembers. This writes the same encrypted envelope on a schedule.
+ *
+ * Set-up is the only time the passphrase exists: the page derives a key from
+ * it, wraps a random file key under that, and hands the worker the wrapped blob
+ * plus the raw file key. The worker can then seal a backup at any hour with no
+ * passphrase anywhere. The FILE still opens only with the passphrase, which is
+ * never stored, never synced, and not recoverable.
+ */
+
+const BG_AUTOBACKUP_ALARM = "lct-auto-backup";
+const BG_AUTOBACKUP_MIN_HOURS = 1;
+const BG_AUTOBACKUP_MAX_HOURS = 24 * 30;
+// base64 inflates by a third and the whole envelope is held in memory as a data
+// URL; past this the worker would be gambling with an OOM every night.
+const BG_AUTOBACKUP_MAX_BYTES = 96 * 1024 * 1024;
+const BG_AUTOBACKUP_FOLDER = "Long Chat Toolkit";
+
+async function readAutoBackup() {
+  try {
+    const { [BG_AUTOBACKUP]: raw } = await chrome.storage.local.get(BG_AUTOBACKUP);
+    if (!raw || raw.enabled !== true) return null;
+    if (!self.LCTBackupCrypto || !self.LCTBackupCrypto.validKeyring(raw.keyring)) return null;
+    return {
+      enabled: true,
+      keyring: raw.keyring,
+      everyHours: Math.min(BG_AUTOBACKUP_MAX_HOURS, Math.max(BG_AUTOBACKUP_MIN_HOURS,
+        Math.floor(Number(raw.everyHours) || 24))),
+      filename: String(raw.filename || "long-chat-toolkit-auto.lctbackup").slice(0, 120)
+    };
+  } catch { return null; }
+}
+
+async function readAutoBackupRun() {
+  try {
+    const { [BG_AUTOBACKUP_STATE]: raw } = await chrome.storage.local.get(BG_AUTOBACKUP_STATE);
+    return raw && typeof raw === "object" ? raw : {};
+  } catch { return {}; }
+}
+
+/** Everything the UI is allowed to know. The keyring never crosses this line. */
+async function autoBackupState() {
+  const config = await readAutoBackup();
+  const run = await readAutoBackupRun();
+  return {
+    enabled: !!config,
+    everyHours: config ? config.everyHours : 24,
+    filename: config ? config.filename : "",
+    folder: BG_AUTOBACKUP_FOLDER,
+    lastAt: Number(run.lastAt) || 0,
+    lastChats: Math.max(0, Number(run.lastChats) || 0),
+    lastError: String(run.lastError || "").slice(0, 200),
+    nextAt: config && run.lastAt ? Number(run.lastAt) + config.everyHours * 3600000 : 0
+  };
+}
+
+async function autoBackupConfigure(config) {
+  const crypt = self.LCTBackupCrypto;
+  if (!crypt || !crypt.validKeyring(config && config.keyring)) {
+    return { err: "That backup key could not be verified" };
+  }
+  const everyHours = Math.min(BG_AUTOBACKUP_MAX_HOURS, Math.max(BG_AUTOBACKUP_MIN_HOURS,
+    Math.floor(Number(config.everyHours) || 24)));
+  await chrome.storage.local.set({
+    [BG_AUTOBACKUP]: { version: 1, enabled: true, keyring: config.keyring, everyHours,
+      filename: "long-chat-toolkit-auto.lctbackup", setUpAt: Date.now() }
+  });
+  await chrome.storage.local.set({ [BG_AUTOBACKUP_STATE]: { lastAt: 0, lastChats: 0, lastError: "" } });
+  await ensureAutoBackupAlarm(true);
+  const first = await runAutoBackup("setup");
+  return { ok: true, state: await autoBackupState(), first };
+}
+
+async function autoBackupDisable() {
+  await chrome.storage.local.remove([BG_AUTOBACKUP, BG_AUTOBACKUP_STATE]);
+  try { await chrome.alarms.clear(BG_AUTOBACKUP_ALARM); } catch { /* alarms unavailable */ }
+  return { ok: true, state: await autoBackupState() };
+}
+
+/** Every archived chat, straight out of IndexedDB. */
+async function archiveSnapshot() {
+  const d = await db();
+  return new Promise((resolve, reject) => {
+    const out = [];
+    const req = tx(d, "readonly").openCursor();
+    req.onerror = () => reject(req.error);
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) return resolve(out);
+      out.push(cursor.value);
+      cursor.continue();
+    };
+  });
+}
+
+let autoBackupRunning = false;
+
+async function runAutoBackup(reason) {
+  const config = await readAutoBackup();
+  if (!config) return { status: "disabled" };
+  if (autoBackupRunning) return { status: "already-running" };
+  // A snapshot taken mid-pass would be a torn read of a moving archive, and the
+  // next scheduled one is minutes away.
+  if (bgSyncRunning && reason !== "manual") return { status: "busy" };
+  autoBackupRunning = true;
+  const note = async (fields) => {
+    const run = await readAutoBackupRun();
+    try { await chrome.storage.local.set({ [BG_AUTOBACKUP_STATE]: { ...run, ...fields } }); }
+    catch { /* dead context */ }
+  };
+  try {
+    const [chats, durable] = await Promise.all([archiveSnapshot(), backupState()]);
+    if (!chats.length) {
+      await note({ lastError: "", lastCheckedAt: Date.now() });
+      return { status: "empty" };
+    }
+    const sealed = await self.LCTBackupCrypto.seal({
+      format: self.LCTBackupCrypto.PAYLOAD_FORMAT,
+      version: 1,
+      createdAt: Date.now(),
+      chats,
+      ledger: durable.ledger || { version: 2, checkpoints: {} },
+      profile: durable.profile || null
+    }, { keyring: config.keyring });
+
+    if (sealed.json.length > BG_AUTOBACKUP_MAX_BYTES) {
+      await note({ lastError: "This archive is too large for automatic backup — export it from the Recall page.", lastCheckedAt: Date.now() });
+      return { status: "too-large" };
+    }
+    // MV3 service workers have no URL.createObjectURL, so the envelope travels
+    // to the downloads API as a data URL.
+    const url = "data:application/octet-stream;base64," +
+      self.LCTBackupCrypto.bytesToBase64(new TextEncoder().encode(sealed.json));
+    await new Promise((resolve, reject) => {
+      chrome.downloads.download({
+        url,
+        filename: `${BG_AUTOBACKUP_FOLDER}/${config.filename}`,
+        conflictAction: "overwrite",
+        saveAs: false
+      }, (id) => {
+        const error = chrome.runtime.lastError;
+        if (error || id === undefined) reject(new Error(error ? error.message : "the download was refused"));
+        else resolve(id);
+      });
+    });
+    await markBackup({ chats: chats.length, filename: config.filename, automatic: true });
+    await note({ lastAt: Date.now(), lastChats: chats.length, lastError: "", lastCheckedAt: Date.now() });
+    return { status: "ok", chats: chats.length };
+  } catch (error) {
+    await note({ lastError: String((error && error.message) || error).slice(0, 200), lastCheckedAt: Date.now() });
+    return { status: "error", error: String((error && error.message) || error) };
+  } finally {
+    autoBackupRunning = false;
+  }
+}
+
+async function maybeAutoBackup(reason) {
+  const config = await readAutoBackup();
+  if (!config) return { status: "disabled" };
+  const run = await readAutoBackupRun();
+  const due = Date.now() - (Number(run.lastAt) || 0) >= config.everyHours * 3600000;
+  return due ? runAutoBackup(reason) : { status: "not-due" };
+}
+
+async function ensureAutoBackupAlarm(force) {
+  const config = await readAutoBackup();
+  try {
+    if (!config) { await chrome.alarms.clear(BG_AUTOBACKUP_ALARM); return; }
+    const existing = await chrome.alarms.get(BG_AUTOBACKUP_ALARM);
+    if (existing && !force) return;
+    // Deliberately more frequent than everyHours: the alarm only asks "is it
+    // due yet", and a browser that is closed at the exact hour would otherwise
+    // skip a whole cycle.
+    const period = Math.max(30, Math.min(config.everyHours * 60, 6 * 60));
+    await chrome.alarms.create(BG_AUTOBACKUP_ALARM, { delayInMinutes: force ? period : 5, periodInMinutes: period });
+  } catch { /* alarms unavailable */ }
+}
+
+/* ---------- restore brute-force guard ----------
+ * PBKDF2 at a million rounds already makes offline guessing expensive. This
+ * covers the other direction: someone at an unlocked machine feeding the
+ * restore box a wordlist. Kept in the worker so reloading the page — or opening
+ * a second one — does not reset the count. */
+
+const BG_RESTORE_FREE_TRIES = 3;
+const BG_RESTORE_MAX_WAIT_MS = 60 * 60 * 1000;
+
+async function restoreGuard() {
+  try {
+    const { [BG_RESTORE_GUARD]: raw } = await chrome.storage.local.get(BG_RESTORE_GUARD);
+    const fails = Math.max(0, Math.floor(Number(raw && raw.fails) || 0));
+    const until = Math.max(0, Number(raw && raw.until) || 0);
+    return { fails, until, allowed: Date.now() >= until, waitMs: Math.max(0, until - Date.now()) };
+  } catch { return { fails: 0, until: 0, allowed: true, waitMs: 0 }; }
+}
+
+async function restoreGuardFail() {
+  const current = await restoreGuard();
+  const fails = current.fails + 1;
+  const over = fails - BG_RESTORE_FREE_TRIES;
+  const wait = over <= 0 ? 0 : Math.min(BG_RESTORE_MAX_WAIT_MS, 30000 * Math.pow(2, over - 1));
+  const until = wait ? Date.now() + wait : 0;
+  try { await chrome.storage.local.set({ [BG_RESTORE_GUARD]: { fails, until } }); } catch { /* full */ }
+  return { fails, until, allowed: !wait, waitMs: wait };
+}
+
+async function restoreGuardReset() {
+  try { await chrome.storage.local.remove(BG_RESTORE_GUARD); } catch { /* fine */ }
+  return { fails: 0, until: 0, allowed: true, waitMs: 0 };
 }
 
 /* ---------- automatic background sync ----------
@@ -2033,12 +2575,128 @@ async function autoSyncTick() {
 
 try {
   chrome.alarms.onAlarm.addListener((alarm) => {
-    if (alarm && (alarm.name === BG_AUTO_ALARM || alarm.name === BG_RESUME_ALARM)) autoSyncTick();
+    if (!alarm) return;
+    if (alarm.name === BG_AUTO_ALARM || alarm.name === BG_RESUME_ALARM) autoSyncTick();
+    else if (alarm.name === BG_AUTOBACKUP_ALARM) maybeAutoBackup("alarm");
   });
-  chrome.runtime.onInstalled.addListener(() => { ensureAutoSyncAlarm(); });
-  chrome.runtime.onStartup.addListener(() => { ensureAutoSyncAlarm(); });
-  ensureAutoSyncAlarm();   // the worker is respawned constantly; keep it alive
+  const wake = () => {
+    ensureAutoSyncAlarm();
+    ensureAutoBackupAlarm();
+    // A reinstall wipes storage.local, so the badge has to be repainted from
+    // whatever survived rather than assumed to be still on screen.
+    readDeletions().then((state) => paintDeletionBadge(Object.keys(state.items).length));
+  };
+  chrome.runtime.onInstalled.addListener(wake);
+  chrome.runtime.onStartup.addListener(wake);
+  wake();   // the worker is respawned constantly; keep it alive
 } catch (_) { /* alarms API unavailable */ }
+
+// Clicking the "a chat was deleted" toast has to land on the decision itself,
+// not on a page where the user has to go hunting for it.
+try {
+  chrome.notifications.onClicked.addListener((id) => {
+    if (id !== "lct-deletions") return;
+    chrome.notifications.clear(id);
+    chrome.tabs.create({ url: chrome.runtime.getURL("recall.html#deletions") });
+  });
+} catch (_) { /* notifications API unavailable */ }
+
+/* ---------- entitlement gate ---------- */
+
+/**
+ * The paywall. Every gated handler goes through here and nowhere else.
+ *
+ * Deliberately NOT a cached boolean: a cached `pro` flag in storage is exactly
+ * the thing a hand-edited record forges. Each call re-verifies the LCT2
+ * signature (cheap — one ECDSA verify, no network).
+ *
+ * Trial is time-boxed and pinned to first-seen, checked here rather than in the
+ * page so wiping local storage does not mint a second one (see trialState).
+ */
+// Frozen: nobody can delete an entry from the paywall map at runtime to
+// route a gated handler around the gate.
+const PAID = Object.freeze({
+  "recall-search": "archive.search",
+  "recall-backup-state": "archive.backup",
+  "recall-backup-mark": "archive.backup",
+  "recall-autobackup-state": "archive.backup",
+  "recall-autobackup-enable": "archive.backup",
+  "recall-autobackup-disable": "archive.backup",
+  "recall-autobackup-run": "archive.backup",
+  "recall-snapshot": "archive.backup",
+  "recall-restore-ledger": "archive.restore",
+  "recall-restore-guard": "archive.restore",
+  "recall-restore-guard-fail": "archive.restore",
+  "recall-restore-guard-reset": "archive.restore"
+});
+
+const TRIAL_MS = 7 * 864e5;
+const TRIAL_KEY = "lct-trial-v2";
+
+/**
+ * Trial clock, worker-owned and sync-backed. storage.sync survives a local
+ * wipe and a reinstall on the same profile, so "clear data, trial again" costs
+ * a whole new browser profile instead of one click.
+ */
+async function trialState() {
+  let rec = null;
+  try {
+    const got = await chrome.storage.sync.get(TRIAL_KEY);
+    rec = got && got[TRIAL_KEY];
+  } catch { /* sync unavailable */ }
+  if (!rec) {
+    try {
+      const got = await chrome.storage.local.get(TRIAL_KEY);
+      rec = got && got[TRIAL_KEY];
+    } catch { /* dead context */ }
+  }
+  const startedAt = Number(rec && rec.startedAt) || 0;
+  if (!startedAt) return { started: false, active: false, spent: false, until: 0 };
+  const until = startedAt + TRIAL_MS;
+  return { started: true, active: Date.now() < until, spent: Date.now() >= until, until };
+}
+
+async function startTrial() {
+  const cur = await trialState();
+  if (cur.started) return cur;                       // one per profile, ever
+  const rec = { startedAt: Date.now(), v: 2 };
+  // Both stores: sync is the durable record, local is the offline fallback.
+  try { await chrome.storage.sync.set({ [TRIAL_KEY]: rec }); } catch { /* quota/offline */ }
+  try { await chrome.storage.local.set({ [TRIAL_KEY]: rec }); } catch { /* dead context */ }
+  return trialState();
+}
+
+/** Cached only within a single wake of the worker, never persisted. */
+async function entitlementVerdict() {
+  let license = null;
+  try {
+    const got = await chrome.storage.local.get("license");
+    license = got && got.license;
+  } catch { /* dead context */ }
+
+  const trial = await trialState();
+  if (!license || !license.key) {
+    return { entitled: trial.active, via: trial.active ? "trial" : "none", trial, features: trial.active ? (self.LCTEntitlement?.FEATURES || []) : [] };
+  }
+
+  let deviceId = "";
+  try { deviceId = await self.LCTDodo.ensureDeviceId(); } catch { /* pre-activation */ }
+
+  const res = await self.LCTEntitlement.evaluate(license, deviceId);
+  if (res.entitled) return { ...res, via: res.kind, trial };
+  // A dead licence still leaves an unspent trial usable.
+  if (trial.active) return { entitled: true, via: "trial", trial, features: self.LCTEntitlement.FEATURES.slice(), reason: res.reason };
+  return { ...res, via: "none", trial };
+}
+
+async function requireEntitlement(feature) {
+  const v = await entitlementVerdict();
+  if (!v.entitled) return { ok: false, reason: v.reason || "locked" };
+  if (v.via !== "trial" && Array.isArray(v.features) && !v.features.includes(feature)) {
+    return { ok: false, reason: "feature" };
+  }
+  return { ok: true, via: v.via, stale: !!v.stale };
+}
 
 /* ---------- message router ---------- */
 
@@ -2049,21 +2707,92 @@ try {
   });
 } catch (_) { /* commands API unavailable */ }
 
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+/* ---------- rapid-query detection ---------- */
+// A normal popup opens once; an automated bypass tool hammers entitlement-state
+// dozens of times per second. Flagging this does not block the user — it rate-
+// limits the response so scripted brute-force cannot converge on a working
+// payload in practical time.
+const _queryLog = [];      // circular buffer of timestamps
+const _QUERY_WINDOW = 60000;
+const _QUERY_MAX = 50;
+
+function _queryThrottle() {
+  const now = Date.now();
+  _queryLog.push(now);
+  // Evict entries outside the window
+  while (_queryLog.length > 0 && _queryLog[0] < now - _QUERY_WINDOW) _queryLog.shift();
+  return _queryLog.length > _QUERY_MAX;
+}
+
+// ---------- sender validation ----------
+// Content scripts and extension pages originate from a chrome-extension:// URL.
+// An externally_connectable page or injected context would carry the web page's
+// URL. The id check (below) already blocks other extensions; the URL guard
+// catches any message arriving from a web page context.
+function _senderAllowed(sender) {
+  if (!sender || sender.id !== chrome.runtime.id) return false;
+  // Service worker self-messages have no url/tab.
+  if (!sender.url && !sender.tab) return true;
+  const url = sender.url || (sender.tab && sender.tab.url) || "";
+  // Accept: chrome-extension://<own-id>/*, moz-extension://<uuid>/*
+  if (/^(chrome|moz)-extension:\/\//i.test(url)) return true;
+  // Accept: AI sites the content script runs on (matches manifest host_permissions)
+  if (/^https:\/\/(chatgpt\.com|chat\.openai\.com|claude\.ai|gemini\.google\.com|www\.perplexity\.ai|chat\.deepseek\.com|grok\.com)/i.test(url)) return true;
+  // Accept: localhost and 127.0.0.1 (dev/test, http or https — matches manifest)
+  if (/^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(url)) return true;
+  return false;
+}
+
+// ---------- closure-captured gate ----------
+// The message handler captures this reference at definition time. Reassigning
+// the global `requireEntitlement` from DevTools changes nothing — the router
+// calls through _gate, which is unreachable from outside this scope.
+const _gate = requireEntitlement;
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!_senderAllowed(sender)) return false;
+
   const run = async () => {
+    // Rate-limit entitlement probes
+    if ((msg && msg.type) === "entitlement-state" && _queryThrottle()) {
+      await new Promise((r) => setTimeout(r, 2000)); // throttle, not block
+    }
+
+    const feature = PAID[msg && msg.type];
+    if (feature) {
+      // Use the closure-captured _gate, not the global requireEntitlement.
+      const gate = await _gate(feature);
+      if (!gate.ok) return { err: "locked", feature, reason: gate.reason };
+    }
+
     switch (msg && msg.type) {
+      case "entitlement-state": return entitlementVerdict();
+      case "entitlement-refresh": {
+        const got = await chrome.storage.local.get("license");
+        const lic = got && got.license;
+        if (!lic || !lic.key) return { ok: false, branch: "none" };
+        const deviceId = await self.LCTDodo.ensureDeviceId();
+        return self.LCTEntitlement.refresh(lic, deviceId, { force: !!(msg && msg.force) });
+      }
+      case "trial-state":  return trialState();
+      case "trial-start":  return startTrial();
       case "recall-upsert":      return upsert(msg.chat);
       case "recall-import":      return importBatch(msg.chats);
       case "recall-search":      return search(msg.q, msg.long);
       case "recall-check":       return check(msg.ids);
       case "recall-stats":       return stats();
+      // Export reads the archive HERE, behind the gate — not from the page's
+      // own IndexedDB handle, which no paywall could sit in front of.
+      case "recall-snapshot":    return { chats: await archiveSnapshot(), durable: await backupState() };
       case "recall-wipe":        return wipeRecall();
       case "recall-bg-sync":     return bgSyncAll({ reason: "manual" });
       case "recall-auto-tick":   return autoSyncTick();
       case "recall-visit-sync":  return visitSync(msg.platform);
       case "chat-index":         return chatIndex(msg.host, msg.path, { force: msg.force });
       case "chat-message":       return chatMessage(msg.host, msg.path, msg.id);
-      case "chat-drop":          return dropChat(msg.id).then(() => ({ ok: true }));
+      // "the page found this chat gone", not "delete this". Nothing outside
+      // resolveDeletions() gets to remove archived text on request.
+      case "chat-drop":          return noteVanished(msg.id, {}, "opened");
       // The branch walk decides whether the map's positions line up with the
       // page at all, and the worker's network cannot be routed from a test —
       // so the parse is reachable directly, same as the pacing selftest below.
@@ -2076,6 +2805,25 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       case "recall-backup-mark": return markBackup(msg.meta);
       case "recall-restore-ledger": return restoreLedger(msg.ledger, msg.meta, msg.profile);
       case "recall-recovery-skip": return skipRecovery();
+      case "recall-deletions":        return deletionsList();
+      case "recall-deletions-resolve": return resolveDeletions(msg.ids, msg.action);
+      case "recall-autobackup-state": return autoBackupState();
+      case "recall-autobackup-enable": return autoBackupConfigure(msg.config);
+      case "recall-autobackup-disable": return autoBackupDisable();
+      case "recall-autobackup-run":   return runAutoBackup("manual");
+      // Counting failed restore attempts in the page would reset on reload.
+      case "recall-restore-guard":       return restoreGuard();
+      case "recall-restore-guard-fail":  return restoreGuardFail();
+      case "recall-restore-guard-reset": return restoreGuardReset();
+      // The sweep's safety ceiling is the difference between "the user deleted
+      // one chat" and "a signed-out listing wiped the archive". It only ever
+      // runs behind a live provider walk, so it is reachable here directly.
+      case "recall-sweep-selftest": {
+        const index = new Map((msg.index || []).map((entry) => [entry.id, entry.rev]));
+        return sweepVanished({ id: "selftest", host: "selftest", prefix: "/" },
+          index, new Set(msg.listed || []), Number(msg.scanStartedAt) || Date.now(),
+          new Set(msg.pending || []));
+      }
       // Pacing logic is pure but unreachable from a test page otherwise, and a
       // silent regression here is what lets the sync 429 the provider again.
       case "recall-sync-selftest": return {

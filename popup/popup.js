@@ -5,7 +5,7 @@
   "use strict";
 
   const $ = (id) => document.getElementById(id);
-  const TRIAL_MS = 7 * 864e5;
+  const send = (msg) => new Promise((res) => chrome.runtime.sendMessage(msg, res));
 
   // te•••@gmail.com — enough to recognize yourself, useless to a stranger
   function maskEmail(email) {
@@ -125,23 +125,45 @@
     const total = rows.reduce((s, [, n]) => s + n, 0);
     paintStats(total, rows);
 
-    const trialUntil = trial && trial.startedAt ? trial.startedAt + TRIAL_MS : 0;
-    let pro = false;
-    let masked = null;
-    let licenseKind = null;
+    // The worker decides; the popup only renders. Asking it here rather than
+    // recomputing locally means one verdict, and the one that gates the data.
+    const verdict = await send({ type: "entitlement-state" });
+    const trialUntil = (verdict && verdict.trial && verdict.trial.until) || 0;
+    const pro = !!(verdict && verdict.entitled && verdict.via !== "trial");
+    const licenseKind = (verdict && verdict.kind) || null;
+    const masked = license && license.key ? maskEmail(license.email) : null;
+
     if (license && license.key) {
-      const res = await self.LCTLicense.evaluate(license);
-      pro = res.pro;
-      masked = maskEmail(license.email);
-      licenseKind = res.kind;
-      // Fire-and-forget: at most monthly, never blocking paint, and it can only
-      // ever withdraw Pro after two authoritative refusals a week apart.
+      // Two independent revocation paths, both fire-and-forget, neither blocks
+      // paint. The token is the gate; maybeRevalidate is the second signal —
+      // it sets revokedAt, which evaluate() treats as an immediate hard stop,
+      // and it still lands a refund or chargeback if the issuer is unreachable.
+      send({ type: "entitlement-refresh" });
       self.LCTDodo.maybeRevalidate(license);
-      if (res.reason === "revoked") {
+
+      // One cause, one explanation. "Invalid" is never the word — the licence
+      // is real, something about this install stopped matching it.
+      const DEAD = {
+        revoked: { text: "This licence was deactivated on your account." },
+        expired: {
+          text: "This licence needs to check in.",
+          note: "It has been offline too long. Connect once and Pro comes straight back."
+        },
+        "device-mismatch": {
+          text: "This licence is registered to another device.",
+          note: "Re-activate here from the popup — you have 5 device slots."
+        },
+        "key-mismatch": { text: "This licence was deactivated on your account." },
+        "no-token": {
+          text: "Activation didn't finish.",
+          note: "Paste your key again — the seat is already yours, nothing was lost."
+        }
+      };
+      const dead = !pro && verdict && DEAD[verdict.reason];
+      if (dead) {
         paintLicenseState({
-          text: "This licence was deactivated on your account.",
           note: "If that's a surprise, reply to your purchase email and we'll sort it out.",
-          cls: "err", sticky: true
+          ...dead, cls: "err", sticky: true
         });
       }
     }
@@ -171,11 +193,12 @@
 
   /* ---------- trial ---------- */
 
+  // The worker owns the clock and refuses a second trial per profile.
   $("trial-start").addEventListener("click", async () => {
-    const startedAt = Date.now();
-    await chrome.storage.local.set({ trial: { startedAt } });
-    paintPlan(false, null, startedAt + TRIAL_MS);
-    saveCache({ trialUntil: startedAt + TRIAL_MS });
+    const t = await send({ type: "trial-start" });
+    const until = (t && t.until) || 0;
+    paintPlan(false, null, until);
+    saveCache({ trialUntil: until });
   });
 
   /* ---------- license ---------- */
@@ -299,15 +322,31 @@
         license: record,
         "lct-license-state-v1": { lastValidatedAt: now, lastAttemptAt: now, strikes: [] }
       });
+
+      // The seat exists; now mint the signed entitlement that actually unlocks
+      // paid features. Awaited, not fired off: without a token the user paid
+      // and got nothing, and they need to see why while the popup is still open.
+      btn.textContent = "Finishing…";
+      const ent = await self.LCTEntitlement.refresh(record, res.deviceId, { force: true });
+      if (!ent.ok) {
+        paintLicenseState(ent.revoked
+          ? { text: "That licence is not active.", cls: "err",
+              note: "The payment provider does not recognise it. Contact support with your order id." }
+          : { text: "Activated, but the entitlement server didn't answer.", cls: "warn",
+              note: "Pro unlocks by itself once you're back online — nothing to redo." });
+      }
+
       pendingKey = null;
       input.value = "";
-      paintLicenseState(res.evicted
-        ? { text: `Activated. Freed ${res.evicted} to make room.`, cls: "warn" }
-        : null);
+      if (ent.ok) {
+        paintLicenseState(res.evicted
+          ? { text: `Activated. Freed ${res.evicted} to make room.`, cls: "warn" }
+          : null);
+      }
       const masked = maskEmail(record.email);
-      paintPlan(true, masked, (cache && cache.trialUntil) || 0);
+      paintPlan(!!ent.ok, masked, (cache && cache.trialUntil) || 0);
       const seatCount = Object.keys((await self.LCTDodo.readSeats()).seats).length;
-      saveCache({ pro: true, masked, licenseKind: "dodo", seatCount });
+      saveCache({ pro: !!ent.ok, masked, licenseKind: "dodo", seatCount });
       return;
     }
 
@@ -517,6 +556,7 @@
       if (!released.ok) await self.LCTDodo.markOrphan(await self.LCTDodo.ensureDeviceId());
     }
     await chrome.storage.local.remove(["license", "lct-license-state-v1"]);
+    await self.LCTEntitlement.clearToken();   // a token outliving its key would still unlock
     paintLicenseState(null);
     closeDeviceManager();
     paintPlan(false, null, (cache && cache.trialUntil) || 0);
@@ -583,7 +623,6 @@
         saveCache({ sync: { text: summary.message + " · checked " + timeAgo(summary.checkedAt), cls: "ok" } });
         break;
       case "error":
-      case "restore":
         updateSyncStatus(summary.message, "err");
         break;
       default:
@@ -591,22 +630,34 @@
     }
   }
 
+  // Chats the provider dropped are held, not deleted, until the user decides.
+  // The popup is where most people will first notice.
+  function paintDeletionAlert(deletions) {
+    const count = (deletions && deletions.count) || 0;
+    $("deletion-alert").hidden = !count;
+    if (!count) return;
+    $("deletion-alert-title").textContent = count === 1
+      ? "1 chat was deleted on the site" : `${count} chats were deleted on the site`;
+  }
+
+  $("deletion-alert").addEventListener("click", () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL("recall.html#deletions") });
+    window.close();
+  });
+
   async function checkFreshness(retry = true) {
     const status = await new Promise((res) =>
       chrome.runtime.sendMessage({ type: "recall-sync-status" }, res));
     // A cold service worker can drop the very first message of a session.
     if (!status && retry) return setTimeout(() => checkFreshness(false), 350);
     paintSummary(status && status.summary);
+    paintDeletionAlert(status && status.deletions);
   }
 
   async function triggerSync() {
     if (isSyncing) return;
     const status = await new Promise((res) =>
       chrome.runtime.sendMessage({ type: "recall-sync-status" }, res));
-    if (status && status.recovery && status.recovery.state === "restore-required") {
-      updateSyncStatus("Restore your archive in Total Recall first", "err");
-      return;
-    }
     isSyncing = true;
     setSyncBusy(true);
     updateSyncStatus("Checking for new chats…");

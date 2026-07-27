@@ -24,6 +24,8 @@
   let ro = null;           // ResizeObserver on the strip
   let hoverIdx = -1;
   const metaCache = new WeakMap(); // el -> {role, hasCode, snippet}
+  const rows = new WeakMap();      // el -> projected row (hosts with no stable ids)
+  let projectDirty = true;         // the projection is stale — see project()
   // ChatGPT replaces old DOM rows while you scroll. Keep a lightweight catalog
   // keyed by its stable message IDs so the map reflects the full conversation
   // we have already seen, not just the virtualizer's current window.
@@ -196,9 +198,20 @@
     return Math.min(messages.length - 1, Math.max(0, Math.floor((y / h) * messages.length)));
   }
 
+  // Cached for good: an id never changes, and the fallback branch is a subtree
+  // query that was otherwise paid for every message on every engine tick — on
+  // hosts that have no ids at all it never found anything to show for it.
+  const keyCache = new WeakMap();
+
   function keyOf(el) {
-    const id = el && (el.getAttribute("data-message-id") || el.querySelector?.("[data-message-id]")?.getAttribute("data-message-id"));
-    return id ? "id:" + id : "";
+    if (!el) return "";
+    let k = keyCache.get(el);
+    if (k !== undefined) return k;
+    const id = el.getAttribute("data-message-id") ||
+      el.querySelector?.("[data-message-id]")?.getAttribute("data-message-id");
+    k = id ? "id:" + id : "";
+    keyCache.set(el, k);
+    return k;
   }
 
   function clearCatalog(route) {
@@ -208,6 +221,7 @@
     catalogPositions = new Map();
     catalog.clear();
     seeded = false;
+    projectDirty = true;
     // A new conversation is a new map: replay the entrance and let the lens
     // land where it lands instead of sliding in from the last chat's position.
     motion.intro = 0;
@@ -217,6 +231,7 @@
   function reindexCatalog() {
     catalogPositions = new Map();
     for (let i = 0; i < catalogOrder.length; i++) catalogPositions.set(catalogOrder[i], i);
+    projectDirty = true;
   }
 
   function isAtTop(msgEls) {
@@ -303,9 +318,18 @@
     if (!allStable) {
       // Other platforms often keep their whole transcript mounted. Do not risk
       // merging identical text-only prompts into a false history there.
+      // Rows are reused per element rather than rebuilt: this path runs on
+      // every engine tick, and a fresh object per message was the map's
+      // steady-state garbage on Claude and Gemini.
       messages = msgEls.map((el, i) => {
         const meta = metaFor(el, adapter, i >= msgEls.length - 3);
-        return { el, role: meta.role, hasCode: meta.hasCode, snippet: meta.snippet, len: meta.len, key: "" };
+        let row = rows.get(el);
+        if (!row) { row = { el, key: "" }; rows.set(el, row); }
+        row.role = meta.role;
+        row.hasCode = meta.hasCode;
+        row.snippet = meta.snippet;
+        row.len = meta.len;
+        return row;
       });
       return;
     }
@@ -317,7 +341,8 @@
       const el = msgEls[i];
       const key = keys[i];
       const meta = metaFor(el, adapter, i >= msgEls.length - 3);
-      const entry = catalog.get(key) || { key };
+      let entry = catalog.get(key);
+      if (!entry) { entry = { key }; projectDirty = true; }
       entry.el = el;
       entry.role = meta.role;
       // The index guesses at code from a ``` in the text; a mounted row has the
@@ -331,7 +356,14 @@
     project();
   }
 
-  const project = () => { messages = catalogOrder.map((key) => catalog.get(key)).filter(Boolean); };
+  // The projection only changes when the ORDER does. Entries are mutated in
+  // place, so rebuilding this array on every tick allocated a fresh n-slot copy
+  // of a list that was already correct.
+  const project = () => {
+    if (!projectDirty) return;
+    projectDirty = false;
+    messages = catalogOrder.map((key) => catalog.get(key)).filter(Boolean);
+  };
 
   /**
    * Reconcile a freshly mounted window against a provider seed.
@@ -490,31 +522,39 @@
    * Visible message indices, by binary search over document order (~log2(n)
    * rect reads). scrollHeight lies here — content-visibility makes it an
    * estimate that shifts as messages wake, swelling the old indicator.
+   *
+   * `live` is refilled in place rather than rebuilt. This runs on every scroll
+   * event and every eased frame, and a 5,000-entry array of fresh objects per
+   * frame is collector pressure during exactly the scroll we are selling as
+   * smooth. Indices only — the element is one lookup away.
    */
+  const live = [];
+
   function visibleRange() {
-    const live = [];
+    live.length = 0;
     for (let i = 0; i < messages.length; i++) {
       const el = messages[i].el;
-      if (el && el.isConnected) live.push({ index: i, el });
+      if (el && el.isConnected) live.push(i);
     }
-    if (!live.length) return null;
+    const n = live.length;
+    if (!n) return null;
     let top = 0, bottom = innerHeight;
     if (scroller && scroller !== document.scrollingElement && scroller !== document.documentElement) {
       const r = scroller.getBoundingClientRect();
       top = r.top; bottom = r.bottom;
     }
     const search = (test) => {
-      let lo = 0, hi = live.length;
+      let lo = 0, hi = n;
       while (lo < hi) {
         const mid = (lo + hi) >> 1;
-        if (test(live[mid].el.getBoundingClientRect())) hi = mid;
+        if (test(messages[live[mid]].el.getBoundingClientRect())) hi = mid;
         else lo = mid + 1;
       }
       return lo;
     };
     const first = search((r) => r.bottom > top);
     const last = search((r) => r.top >= bottom) - 1;
-    return last < first ? null : { first: live[first].index, last: live[last].index };
+    return last < first ? null : { first: live[first], last: live[last] };
   }
 
   /**
@@ -545,7 +585,15 @@
    * answers bulge, quick prompts pinch — so the strip becomes a waveform of the
    * conversation's shape. sqrt keeps one enormous message from flattening the rest.
    */
-  const norm = (m) => Math.min(1, Math.sqrt((m.len || 0) / LEN_REF));
+  // Memoized on the row: at 5,000 messages this is called once per message per
+  // frame, and a row's length only moves while it streams.
+  const norm = (m) => {
+    if (m.w === undefined || m.wLen !== m.len) {
+      m.wLen = m.len;
+      m.w = Math.min(1, Math.sqrt((m.len || 0) / LEN_REF));
+    }
+    return m.w;
+  };
 
   /**
    * The resting rail: what the map looks like when nobody is reading it.

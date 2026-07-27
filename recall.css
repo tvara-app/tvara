@@ -128,6 +128,9 @@ main { display: flex; flex-direction: column; gap: 14px; padding-bottom: 24px; }
 .rail { order: 2; }
 #recovery { order: 3; }
 #recovery.urgent { order: -1; }
+/* A pending deletion outranks everything: it is the one panel where not
+   looking has a permanent cost. */
+#deletions { order: -2; }
 main > .danger { order: 4; }
 h1 {
   font-size: clamp(46px, 6.4vw, 72px);
@@ -321,6 +324,60 @@ button:disabled { cursor: default; opacity: .4; }
 .status-copy { min-height: 1.3em; margin-top: 11px; color: var(--ink-faint); font-size: 11.5px; }
 .status-copy.ok { color: var(--signal-warm); }
 .status-copy.err { color: var(--danger); }
+.status-copy.dim { color: var(--ink-faint); opacity: .85; }
+
+/* ---------- passphrase strength ---------- */
+
+.strength { display: flex; align-items: center; gap: 9px; }
+.strength-bar {
+  flex: 0 0 96px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--line);
+  overflow: hidden;
+}
+.strength-bar i { display: block; height: 100%; width: 0; background: var(--danger); transition: width .3s var(--ease), background .3s var(--ease); }
+.strength[data-score="1"] .strength-bar i { width: 25%; }
+.strength[data-score="2"] .strength-bar i { width: 50%; background: var(--signal-warm); }
+.strength[data-score="3"] .strength-bar i { width: 75%; background: var(--signal-warm); }
+.strength[data-score="4"] .strength-bar i { width: 100%; background: var(--signal); }
+.strength-text { color: var(--ink-faint); font-size: 11px; }
+
+/* ---------- deleted-upstream review ---------- */
+
+.price-pill {
+  padding: 4px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--ink-dim);
+  font: 11px/1 var(--mono);
+  white-space: nowrap;
+}
+.deletion-list { display: grid; gap: 8px; margin-top: 16px; max-height: 340px; overflow-y: auto; }
+.deletion-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 11px 13px;
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  background: var(--glass);
+}
+.deletion-main { display: grid; gap: 3px; min-width: 0; flex: 1; }
+.deletion-title {
+  color: var(--ink);
+  font-size: 13px;
+  letter-spacing: -.015em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.deletion-meta { color: var(--ink-faint); font: 10.5px/1.3 var(--mono); }
+.deletion-actions { display: flex; gap: 7px; flex: 0 0 auto; }
+.deletion-actions button { min-height: 30px; padding: 0 12px; font-size: 11.5px; }
+.danger-action { border-color: rgb(255 122 122 / .35); color: var(--danger); }
+.danger-action:hover { border-color: var(--danger); background: rgb(255 122 122 / .1); color: var(--danger); }
+#deletion-policy { margin-top: 6px; max-width: 460px; }
 
 /* ---------- provider rows ---------- */
 

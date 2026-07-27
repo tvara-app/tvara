@@ -22,6 +22,7 @@ const KEYS_DIR = join(homedir(), ".lct-keys");
 const PRIV_PATH = join(KEYS_DIR, "private.pem");
 const PUB_PATH = join(KEYS_DIR, "public.b64");
 const LICENSE_JS = join(HERE, "..", "lib", "license.js");
+const ENTITLEMENT_JS = join(HERE, "..", "lib", "entitlement.js");
 
 const b64url = (buf) =>
   Buffer.from(buf).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -38,12 +39,14 @@ function init() {
   const spkiB64 = publicKey.export({ type: "spki", format: "der" }).toString("base64");
   writeFileSync(PUB_PATH, spkiB64);
 
-  // Patch the public key into lib/license.js
-  let src = readFileSync(LICENSE_JS, "utf8");
-  src = src.replace(/const PUBLIC_KEY_B64 = "[^"]*";/, `const PUBLIC_KEY_B64 = "${spkiB64}";`);
-  writeFileSync(LICENSE_JS, src);
+  // Same pair verifies LCT1 keys and LCT2 entitlement tokens — patch both.
+  for (const path of [LICENSE_JS, ENTITLEMENT_JS]) {
+    const src = readFileSync(path, "utf8")
+      .replace(/const PUBLIC_KEY_B64 = "[^"]*";/, `const PUBLIC_KEY_B64 = "${spkiB64}";`);
+    writeFileSync(path, src);
+  }
 
-  console.log("✅ Keypair created. Public key patched into lib/license.js.");
+  console.log("✅ Keypair created. Public key patched into lib/license.js + lib/entitlement.js.");
   console.log(`🔒 Private key: ${PRIV_PATH} — outside the repo. BACK IT UP somewhere safe.`);
 }
 
@@ -54,12 +57,23 @@ function init() {
  * see commit 45b71da.
  */
 function assertKeyPairMatchesShipped(priv) {
-  const shipped = readFileSync(LICENSE_JS, "utf8").match(/const PUBLIC_KEY_B64 = "([^"]*)";/);
-  if (!shipped) {
-    console.error("Could not find PUBLIC_KEY_B64 in lib/license.js — refusing to issue.");
-    process.exit(1);
-  }
   const local = createPublicKey(priv).export({ type: "spki", format: "der" }).toString("base64");
+  let shipped = null;
+
+  // Both files must agree, or entitlement tokens verify where licences don't.
+  for (const path of [LICENSE_JS, ENTITLEMENT_JS]) {
+    const found = readFileSync(path, "utf8").match(/const PUBLIC_KEY_B64 = "([^"]*)";/);
+    if (!found) {
+      console.error(`Could not find PUBLIC_KEY_B64 in ${path} — refusing to issue.`);
+      process.exit(1);
+    }
+    if (shipped && shipped[1] !== found[1]) {
+      console.error("\n✋ lib/license.js and lib/entitlement.js ship different public keys. Re-run init.\n");
+      process.exit(1);
+    }
+    shipped = found;
+  }
+
   if (local === shipped[1]) return;
   console.error(
     `\n✋ Refusing to issue: ${PRIV_PATH} does not match the shipped public key.\n` +
@@ -91,7 +105,26 @@ function issue(email) {
   console.log(key + "\n");
 }
 
+/**
+ * Print the private key as base64 PKCS8 for the entitlement Worker's
+ * SIGNING_KEY secret. Same pair the extension already trusts — the Worker
+ * cannot mint tokens with anything else.
+ */
+function workerKey() {
+  if (!existsSync(PRIV_PATH)) {
+    console.error("No keypair. Run: node tools/genkey.mjs init");
+    process.exit(1);
+  }
+  const priv = createPrivateKey(readFileSync(PRIV_PATH));
+  assertKeyPairMatchesShipped(priv);
+  const pkcs8 = priv.export({ type: "pkcs8", format: "der" }).toString("base64");
+  console.error("\n🔑 Paste into: wrangler secret put SIGNING_KEY\n");
+  console.log(pkcs8);
+  console.error("\n⚠️  Signing key. Never commit it, never paste it in a browser.\n");
+}
+
 const [, , cmd, arg] = process.argv;
 if (cmd === "init") init();
 else if (cmd === "issue") issue(arg);
-else console.log("Usage:\n  node tools/genkey.mjs init\n  node tools/genkey.mjs issue customer@email.com");
+else if (cmd === "worker-key") workerKey();
+else console.log("Usage:\n  node tools/genkey.mjs init\n  node tools/genkey.mjs issue customer@email.com\n  node tools/genkey.mjs worker-key");

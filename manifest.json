@@ -7,8 +7,13 @@
     "alarms",
     "storage",
     "unlimitedStorage",
-    "cookies"
+    "cookies",
+    "downloads",
+    "notifications"
   ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+  },
   "host_permissions": [
     "https://chatgpt.com/*",
     "https://chat.openai.com/*",
@@ -60,7 +65,6 @@
       ],
       "js": [
         "lib/store.js",
-        "lib/license.js",
         "content/adapters.js",
         "content/engine.js",
         "content/nav.js",

@@ -54,24 +54,41 @@
   /**
    * Stable-ish key for a message element. ChatGPT has server UUIDs in the
    * DOM; Gemini responses carry r_<hex> ids; elsewhere we content-hash.
-   * Streaming messages change length, so hashes are recomputed until the
-   * text settles — stale intermediate stamps are harmless (same minute).
+   *
+   * The id probe runs BEFORE any text is read, and an id-derived key is cached
+   * for good — an id cannot change. `el.textContent` serializes a whole answer
+   * subtree, and this used to run it on every call — once per message per
+   * engine tick, four times a second, plus again for the outline's star sweep.
+   * It scales with the conversation's total text, so it is the read that gets
+   * worse the longer someone's chat gets.
+   *
+   * Content hashes DO move while a message streams, so `fresh` re-measures.
+   * Callers pass it for the tail only — the same "only the tail changes" rule
+   * search.js and the minimap's meta cache already run on.
    */
-  function keyOf(el) {
-    const text = el.textContent || "";
-    const cached = keyCache.get(el);
-    if (cached && cached.len === text.length) return cached.k;
+  const TAIL = 5;
 
-    let k;
+  function keyOf(el, fresh) {
+    const cached = keyCache.get(el);
+    if (cached && (cached.fixed || !fresh)) return cached.k;
+
     const idEl =
       el.hasAttribute && el.hasAttribute("data-message-id")
         ? el
         : el.querySelector && el.querySelector("[data-message-id]");
-    if (idEl) k = "id:" + idEl.getAttribute("data-message-id");
-    else if (el.id && /^r_[0-9a-f]+$/i.test(el.id)) k = "id:" + el.id;
-    else k = "h:" + hash(text.slice(0, 200)) + ":" + text.length;
+    const id = idEl
+      ? idEl.getAttribute("data-message-id")
+      : el.id && /^r_[0-9a-f]+$/i.test(el.id) ? el.id : "";
+    if (id) {
+      const k = "id:" + id;
+      keyCache.set(el, { k, fixed: true, len: -1 });
+      return k;
+    }
 
-    keyCache.set(el, { k, len: text.length });
+    const text = el.textContent || "";
+    if (cached && cached.len === text.length) return cached.k;
+    const k = "h:" + hash(text.slice(0, 200)) + ":" + text.length;
+    keyCache.set(el, { k, fixed: false, len: text.length });
     return k;
   }
 
@@ -134,8 +151,10 @@
   }
 
   async function update(messages) {
+    const n = messages.length;
+    const tailFrom = n - TAIL;   // only these can still be changing
     indexMap = new WeakMap(); // el -> position in conversation (1-based via +1)
-    for (let i = 0; i < messages.length; i++) indexMap.set(messages[i], i);
+    for (let i = 0; i < n; i++) indexMap.set(messages[i], i);
     const id = location.hostname + location.pathname;
     if (id !== convId) {
       resetConversation(id);
@@ -144,12 +163,12 @@
 
     msgSet = new WeakSet();
     for (const el of messages) msgSet.add(el);
-    if (!messages.length) return;
+    if (!n) return;
 
     if (!settled) {
       // First scans of a conversation: everything already present is history,
       // not new. Snapshot it; only stamp what appears after we settle.
-      for (const el of messages) baseline.add(keyOf(el));
+      for (let i = 0; i < n; i++) baseline.add(keyOf(messages[i], i >= tailFrom));
       clearTimeout(settleTimer);
       settleTimer = setTimeout(() => {
         settled = true;
@@ -162,8 +181,8 @@
     // unknown messages after it are new, unknown ones before it are history
     // that the app just lazy-mounted.
     let lastKnown = -1;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const k = keyOf(messages[i]);
+    for (let i = n - 1; i >= 0; i--) {
+      const k = keyOf(messages[i], i >= tailFrom);
       if (seen[k] || baseline.has(k) || exact[k]) {
         lastKnown = i;
         break;
@@ -171,8 +190,8 @@
     }
 
     let dirty = false;
-    for (let i = 0; i < messages.length; i++) {
-      const k = keyOf(messages[i]);
+    for (let i = 0; i < n; i++) {
+      const k = keyOf(messages[i], i >= tailFrom);
       if (seen[k] || baseline.has(k)) continue;
       if (lastKnown === -1) {
         // no anchors at all: brand-new chat → stamp; lost anchors → be honest

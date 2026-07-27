@@ -1,0 +1,29 @@
+name = "entitlement"
+main = "entitlement-worker.js"
+compatibility_date = "2025-01-01"
+
+# Rate-limit buckets + the server-side seat ledger + trial tracking. Create with:
+#   wrangler kv namespace create RL
+[[kv_namespaces]]
+binding = "RL"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+[vars]
+DODO_MODE = "live"
+# ⚠️  SECURITY: Lock this down BEFORE shipping to production.
+# Set to your extension's chrome-extension://<id> origin. Empty = any extension
+# origin may call, which is acceptable for development but NOT for production.
+# Example: "chrome-extension://abcdefghijklmnopqrstuvwxyz123456"
+ALLOWED_ORIGINS = ""
+
+# Secrets (never in this file — set via wrangler CLI):
+#   wrangler secret put DODO_API_KEY     # Dodo Payments server-side API key
+#   wrangler secret put SIGNING_KEY      # ECDSA P-256 PKCS8, base64 (node tools/genkey.mjs worker-key)
+#
+# ⚠️  SECURITY CHECKLIST before first deploy:
+#   1. Create KV namespace: wrangler kv namespace create RL
+#   2. Replace REPLACE_WITH_KV_NAMESPACE_ID above with the actual ID
+#   3. Set ALLOWED_ORIGINS to your production extension origin
+#   4. Set DODO_API_KEY and SIGNING_KEY secrets
+#   5. Verify: wrangler deploy --dry-run
+

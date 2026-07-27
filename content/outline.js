@@ -116,7 +116,13 @@
     return on;
   }
 
+  // Tracks what each message is currently painted as, so the per-tick sweep
+  // below writes only where the answer actually changed.
+  const painted = new WeakMap();
+
   function paintStar(el, on) {
+    if (painted.get(el) === on) return;
+    painted.set(el, on);
     el.classList.toggle("lct-starred", on);
   }
 

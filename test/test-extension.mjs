@@ -43,6 +43,25 @@ if (!patched.includes(TEST_PUB)) {
 }
 writeFileSync(licPath, patched);
 
+// Same treatment for the entitlement verifier, plus a test issuer origin so
+// page.route can intercept it. Both must carry the SAME key: a token verifies
+// against one file, an LCT1 licence against the other.
+const entPath = join(EXT, "lib", "entitlement.js");
+const TEST_ISSUER = "https://entitlement.test.invalid";
+// Compute the integrity hash for the test public key so the key-integrity
+// guard inside entitlement.js passes with the swapped key.
+const testKeyIntegrity = [...createHash("sha256").update(TEST_PUB).digest().subarray(0, 16)]
+  .map((b) => b.toString(16).padStart(2, "0")).join("");
+let entPatched = readFileSync(entPath, "utf8")
+  .replace(/const PUBLIC_KEY_B64 = "[^"]*";/, `const PUBLIC_KEY_B64 = "${TEST_PUB}";`)
+  .replace(/const ISSUER = "[^"]*";/, `const ISSUER = "${TEST_ISSUER}";`)
+  .replace(/const _KEY_INTEGRITY = "[^"]*";/, `const _KEY_INTEGRITY = "${testKeyIntegrity}";`);
+if (!entPatched.includes(TEST_PUB) || !entPatched.includes(TEST_ISSUER)) {
+  console.error("FATAL: could not patch lib/entitlement.js for tests");
+  process.exit(1);
+}
+writeFileSync(entPath, entPatched);
+
 // Unpacked extension ID = sha256(absolute path) first 16 bytes, nibbles mapped a..p
 const computedId = [...createHash("sha256").update(EXT).digest().subarray(0, 16)]
   .map((b) => String.fromCharCode(97 + (b >> 4)) + String.fromCharCode(97 + (b & 15)))
@@ -77,10 +96,16 @@ const t = (name, cond, extra = "") => {
   console.log(`${cond ? "PASS" : "FAIL"}  ${line}`);
 };
 
+// Scheduled backups are written by the service worker through chrome.downloads,
+// which lands them here rather than in any page's download event.
+const DOWNLOADS = join(SCRATCH, "downloads");
+rmSync(DOWNLOADS, { recursive: true, force: true });
+mkdirSync(DOWNLOADS, { recursive: true });
 const ctx = await chromium.launchPersistentContext(PROFILE, {
   channel: "chromium", // extensions require the chromium channel's new headless
   headless: true,
-  args: [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`],
+  args: [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`,
+         `--download-directory=${DOWNLOADS}`],
   viewport: { width: 900, height: 800 }
 });
 await new Promise((r) => setTimeout(r, 1500)); // let Chrome register the extension
@@ -237,8 +262,13 @@ try {
   t("A8 badge flips to Trial", (await pop.textContent("#plan-badge")).trim() === "Trial");
   t("A8 trial note shows 7 days left", (await pop.textContent("#trial-note")).includes("7 days left"));
   t("A8 trial button gone after start", !(await pop.isVisible("#trial-start")));
-  const trialStore = await pop.evaluate(async () => (await chrome.storage.local.get("trial")).trial);
-  t("A8 trial persisted to storage", trialStore && typeof trialStore.startedAt === "number");
+  const trialStore = await pop.evaluate(async () => ({
+    local: (await chrome.storage.local.get("lct-trial-v2"))["lct-trial-v2"],
+    sync: (await chrome.storage.sync.get("lct-trial-v2"))["lct-trial-v2"]
+  }));
+  t("A8 trial persisted to BOTH stores (sync survives a local wipe)",
+    trialStore.local && typeof trialStore.local.startedAt === "number" &&
+    trialStore.sync && typeof trialStore.sync.startedAt === "number");
   await pop.reload();
   await pop.waitForSelector(".badge.trial");
   const fpTrial = await pop.evaluate(() => window.__firstPaint);
@@ -275,6 +305,39 @@ try {
       body: next.raw || JSON.stringify(next.body || {})
     });
   });
+  /* The entitlement issuer, signing with the same throwaway key the mirrored
+     extension trusts. Mirrors the real Worker: bind to key + device, 90 days.
+     `ent.mode` steers the branch a test wants. */
+  const ent = { calls: [], mode: "ok" };
+  const sha256Hex = async (value, bytes = 16) =>
+    [...createHash("sha256").update(String(value)).digest().subarray(0, bytes)]
+      .map((b) => b.toString(16).padStart(2, "0")).join("");
+  const b64u = (buf) => Buffer.from(buf).toString("base64")
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+  await pop.route(TEST_ISSUER + "/**", async (route) => {
+    const body = route.request().postDataJSON() || {};
+    ent.calls.push(body);
+    if (ent.mode === "notfound") return route.fulfill({ status: 404, contentType: "application/json", body: "{}" });
+    if (ent.mode === "down")     return route.abort("failed");
+    const now = Date.now();
+    const claims = {
+      v: 2, sub: await sha256Hex(body.license_key), dev: String(body.device || ""),
+      plan: "pro", feat: ent.feat || ["archive.search", "archive.backup", "archive.restore"],
+      email: "buyer@example.com", iat: now, exp: now + (ent.ttlMs ?? 90 * 864e5), jti: "t1"
+    };
+    const payload = Buffer.from(JSON.stringify(claims));
+    const sig = sign("sha256", payload, { key: priv, dsaEncoding: "ieee-p1363" });
+    await route.fulfill({
+      status: 200, contentType: "application/json",
+      body: JSON.stringify({ token: `LCT2.${b64u(payload)}.${b64u(sig)}`, exp: claims.exp })
+    });
+  });
+  const entReset = (mode = "ok", over = {}) => {
+    ent.calls.length = 0; ent.mode = mode;
+    ent.feat = over.feat; ent.ttlMs = over.ttlMs;
+  };
+
   const DKEY = "DODO-TEST-KEY-0001";
   const OK201 = { status: 201, body: { id: "lki_new", license_key_id: "lk_1", customer: { email: "buyer@example.com" } } };
   const seedSeats = (seats, keyFp) => pop.evaluate(async ([seats, keyFp]) => {
@@ -284,8 +347,9 @@ try {
     (await chrome.storage.sync.get("lct-seats-v1"))["lct-seats-v1"]);
   const licenseOf = () => pop.evaluate(async () => (await chrome.storage.local.get("license")).license);
   const clearLicense = () => pop.evaluate(async () => {
-    await chrome.storage.local.remove(["license", "lct-license-state-v1", "trial"]);
-    await chrome.storage.sync.remove(["lct-seats-v1", "lct-device-id-v1"]);
+    await chrome.storage.local.remove(["license", "lct-license-state-v1", "trial",
+      "lct-entitlement-v2", "lct-trial-v2", "lct-clock-hwm-v1"]);
+    await chrome.storage.sync.remove(["lct-seats-v1", "lct-device-id-v1", "lct-trial-v2"]);
   });
   const doActivate = async (key) => {
     await pop.fill("#license-input", key);
@@ -489,13 +553,32 @@ try {
     orphaned.length === 1, JSON.stringify(seatsN.seats));
 
   // A9p-A9t — lazy re-validation, fail-open
+  /* Seeding a licence record alone is no longer worth Pro — that is the whole
+     point of LCT2 (see E2 in test-license.mjs). A legitimately activated
+     install also holds a signed token, so seed one, bound to this device. */
+  const mintTokenFor = async (key, over = {}) => {
+    const deviceId = await pop.evaluate(async () =>
+      ((await chrome.storage.sync.get("lct-device-id-v1"))["lct-device-id-v1"] || {}).id || "");
+    const now = Date.now();
+    const claims = {
+      v: 2, sub: await sha256Hex(key), dev: await sha256Hex(deviceId), plan: "pro",
+      feat: ["archive.search", "archive.backup", "archive.restore"],
+      email: "buyer@example.com", iat: now, exp: now + 90 * 864e5, jti: "seed", ...over
+    };
+    const payload = Buffer.from(JSON.stringify(claims));
+    const sig = sign("sha256", payload, { key: priv, dsaEncoding: "ieee-p1363" });
+    return `LCT2.${b64u(payload)}.${b64u(sig)}`;
+  };
+
   const seedDodoPro = async (state) => {
-    await pop.evaluate(async ([key, state]) => {
+    const token = await mintTokenFor(DKEY);
+    await pop.evaluate(async ([key, state, token]) => {
       await chrome.storage.local.set({
         license: { key, email: "buyer@example.com", plan: "pro", kind: "dodo", instanceId: "lki_1", activatedAt: Date.now() - 60 * 864e5 },
-        "lct-license-state-v1": state
+        "lct-license-state-v1": state,
+        "lct-entitlement-v2": { token, fetchedAt: Date.now(), lastAttemptAt: Date.now() }
       });
-    }, [DKEY, state]);
+    }, [DKEY, state, token]);
   };
   const stateOf = () => pop.evaluate(async () => (await chrome.storage.local.get("lct-license-state-v1"))["lct-license-state-v1"]);
 
@@ -627,7 +710,7 @@ try {
   // running again (B11 asserts Total Recall is reachable under trial)
   await clearLicense();
   await pop.unroute("https://*.dodopayments.com/**");
-  await pop.evaluate(() => chrome.storage.local.set({ trial: { startedAt: Date.now() } }));
+  await pop.evaluate(() => chrome.runtime.sendMessage({ type: "trial-start" }));
   await pop.reload();
   await pop.waitForSelector("#trial-active:not([hidden])");
 
@@ -675,6 +758,59 @@ try {
   await page.waitForFunction((was) => window.scrollY < was / 10, scrollBefore, { timeout: 3000 });
   t("B2b minimap click jumps across the whole chat in one go", true);
   t("B2b jump target pulses", (await page.locator(".lct-hit").count()) >= 1);
+
+  // Let the jump above finish and its mark expire, then clear any remainder:
+  // ".lct-hit" below must be THIS jump's target, not the first one still lit
+  // further up the document.
+  await page.waitForTimeout(1700);
+  await page.evaluate(() =>
+    document.querySelectorAll(".lct-hit").forEach((e) => e.classList.remove("lct-hit")));
+
+  await page.hover("#lct-minimap");
+  await page.waitForTimeout(300);
+  const mmBox2 = await page.locator("#lct-mm-canvas").boundingBox();
+  // Mid-chat, not the ends: block:"center" cannot centre a message the
+  // scroller is already clamped against, so those tell us nothing about aim.
+  const midY = mmBox2.y + Math.round(mmBox2.height * 0.40);
+
+  /* B2b2 — REGRESSION: the landing must HOLD. Sleeping neighbours are
+     contain-intrinsic-size guesses, and the browser used to wake them only
+     AFTER the scroll landed — their real heights then shoved the target off
+     centre, which is the land-wrong-then-snap the settle loop had to paper
+     over. nav.js wakes the band before the first aim instead. */
+  await page.mouse.click(mmBox2.x + 5, midY);
+  await page.waitForTimeout(150);
+  await page.evaluate(() => {
+    const h = document.querySelector(".lct-hit");
+    if (h) h.dataset.probeTarget = "1";
+  });
+  await page.waitForTimeout(1800);
+  const offCentre = await page.evaluate(() => {
+    const el = document.querySelector("[data-probe-target]");
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return Math.round(r.top + r.height / 2 - innerHeight / 2);
+  });
+  t("B2b2 the landing holds still after the neighbours render",
+    offCentre !== null && Math.abs(offCentre) <= 20, `${offCentre}px off centre`);
+
+  /* B2b3 — REGRESSION: jumping to a message whose pulse is still running must
+     restart it. lct-hit is a one-shot animation, and re-adding a class the
+     element already carries never restarts one — so the second jump landed with
+     no visible mark at all. That is the "works sometimes" pulse. */
+  const pulseAge = async () => page.evaluate(() => {
+    const h = document.querySelector(".lct-hit");
+    return h ? Math.round(h.getAnimations()[0]?.currentTime ?? -1) : -1;
+  });
+  await page.mouse.click(mmBox2.x + 5, midY);
+  await page.waitForTimeout(600);
+  const aged = await pulseAge();
+  await page.mouse.click(mmBox2.x + 5, midY);
+  await page.waitForTimeout(100);
+  const fresh = await pulseAge();
+  t("B2b3 re-jumping the same message restarts the pulse",
+    aged > 300 && fresh >= 0 && fresh < aged, `${aged}ms → ${fresh}ms`);
+
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
   await page.waitForTimeout(600);
 
@@ -1246,20 +1382,27 @@ try {
   t("B11 recall page shows archive stats",
     /chats archived/.test(await recall.textContent("#stats")));
 
-  // A fresh install with a durable migration marker must block history checks
-  // until the user restores or explicitly skips the encrypted archive.
+  // A reinstall offers the previous backup — and must NOT hold archiving
+  // hostage to it. Blocking the pass meant a reinstalled browser quietly
+  // archived nothing at all until someone went looking for this panel.
   await recall.evaluate(() => chrome.storage.local.set({
     "lct-recall-install-v1": { at: Date.now() },
     "lct-recall-recovery-v1": {
-      state: "restore-required", backup: { chats: 3, filename: "archive.lctbackup" }
+      state: "restore-offered", backup: { chats: 3, filename: "archive.lctbackup" }
     }
   }));
   await recall.reload();
   await recall.waitForFunction(() =>
-    /Restore your archive before syncing/.test(document.getElementById("recovery-title")?.textContent || "") &&
-    document.getElementById("sync-all")?.disabled,
+    /Bring your previous archive back/.test(document.getElementById("recovery-title")?.textContent || ""),
     null, { timeout: 5000 });
-  t("B11 recovery-required blocks automatic archive sync", true);
+  t("B11 reinstall offers the previous encrypted archive", true);
+  t("B11 reinstall does NOT block archiving on a restore",
+    !(await recall.evaluate(() => document.getElementById("sync-all")?.disabled)));
+  const reinstallSync = await recall.evaluate(() => new Promise((res) =>
+    chrome.runtime.sendMessage({ type: "recall-sync-status" }, res)));
+  t("B11 reinstall summary never reports a restore block",
+    reinstallSync && reinstallSync.summary && reinstallSync.summary.state !== "restore",
+    JSON.stringify(reinstallSync && reinstallSync.summary));
   await recall.evaluate(() => chrome.storage.local.set({
     "lct-recall-recovery-v1": { state: "ready" }
   }));
@@ -1630,12 +1773,129 @@ try {
   t("B11e a platform with no history endpoint is answered, not attempted",
     unsupported.status === "unsupported", JSON.stringify(unsupported));
 
+  /* --- deleted upstream: a question, never an event ---
+     Losing the archived copy the moment the provider loses theirs makes the
+     backup strictly weaker than the thing it is backing up. */
+  const gone = await pop.evaluate(async () => {
+    const send = (msg) => new Promise((res) => chrome.runtime.sendMessage(msg, res));
+    const settings = (await chrome.storage.local.get("settings")).settings || {};
+    await chrome.storage.local.set({ settings: { ...settings, deletionPolicy: "ask" } });
+    await send({ type: "recall-deletions-resolve", ids: [], action: "keep" });
+    const noted = await send({ type: "chat-drop", id: "chatgpt.com/c/idx-1" });
+    return {
+      noted,
+      stillArchived: await send({ type: "recall-check", ids: ["chatgpt.com/c/idx-1"] }),
+      queued: await send({ type: "recall-deletions" })
+    };
+  });
+  t("B11e a chat deleted upstream is NOT silently removed from the backup",
+    !!gone.stillArchived["chatgpt.com/c/idx-1"], JSON.stringify(gone.stillArchived));
+  t("B11e it is quarantined for the user to decide on",
+    gone.noted && gone.noted.queued === true && gone.queued.items.some((i) => i.id === "chatgpt.com/c/idx-1"),
+    JSON.stringify(gone.noted));
+  t("B11e the quarantined entry carries enough to recognise it",
+    gone.queued.items.some((i) => i.id === "chatgpt.com/c/idx-1" && i.messages > 0 && i.detectedAt > 0),
+    JSON.stringify(gone.queued.items[0]));
+
+  // "Keep" must leave the archive whole; only an explicit delete removes text.
+  const kept = await pop.evaluate(async () => {
+    const send = (msg) => new Promise((res) => chrome.runtime.sendMessage(msg, res));
+    await send({ type: "recall-deletions-resolve", ids: ["chatgpt.com/c/idx-1"], action: "keep" });
+    return {
+      archived: await send({ type: "recall-check", ids: ["chatgpt.com/c/idx-1"] }),
+      queued: await send({ type: "recall-deletions" })
+    };
+  });
+  t("B11e keeping a deleted chat leaves it archived and clears the prompt",
+    !!kept.archived["chatgpt.com/c/idx-1"] && kept.queued.items.length === 0, JSON.stringify(kept.queued));
+
+  // The standing policies are the escape hatch for people who want either
+  // extreme, and "mirror" is the only one that may destroy anything.
+  const policies = await pop.evaluate(async () => {
+    const send = (msg) => new Promise((res) => chrome.runtime.sendMessage(msg, res));
+    const setPolicy = async (deletionPolicy) => {
+      const settings = (await chrome.storage.local.get("settings")).settings || {};
+      await chrome.storage.local.set({ settings: { ...settings, deletionPolicy } });
+    };
+    await setPolicy("keep");
+    const keepResult = await send({ type: "chat-drop", id: "chatgpt.com/c/idx-1" });
+    const afterKeep = await send({ type: "recall-check", ids: ["chatgpt.com/c/idx-1"] });
+    await setPolicy("mirror");
+    const mirrorResult = await send({ type: "chat-drop", id: "chatgpt.com/c/idx-1" });
+    const afterMirror = await send({ type: "recall-check", ids: ["chatgpt.com/c/idx-1"] });
+    await setPolicy("ask");
+    return { keepResult, afterKeep, mirrorResult, afterMirror };
+  });
+  t("B11e policy 'keep' never deletes and never asks",
+    policies.keepResult.removed === false && !policies.keepResult.queued && !!policies.afterKeep["chatgpt.com/c/idx-1"],
+    JSON.stringify(policies.keepResult));
+  t("B11e policy 'mirror' deletes on sight, as asked",
+    policies.mirrorResult.removed === true && !policies.afterMirror["chatgpt.com/c/idx-1"],
+    JSON.stringify(policies.mirrorResult));
+
+  /* --- the full-listing sweep, and its refusal to be gaslit --- */
+  const sweep = await pop.evaluate(async () => {
+    const send = (msg) => new Promise((res) => chrome.runtime.sendMessage(msg, res));
+    // Record ids are host + prefix + provider id, which is what the sweep
+    // strips back off to compare against the journal's pending set.
+    const index = Array.from({ length: 40 }, (_, i) => ({ id: `selftest/c${i}`, rev: 1000 }));
+    const all = index.map((e) => e.id);
+    return {
+      // One chat missing from a full listing: a real deletion.
+      one: await send({ type: "recall-sweep-selftest", index, listed: all.slice(1), scanStartedAt: 5000 }),
+      // Half the archive missing: far likelier a broken listing than a user
+      // who deleted twenty chats between two passes.
+      mass: await send({ type: "recall-sweep-selftest", index, listed: all.slice(20), scanStartedAt: 5000 }),
+      // An empty listing is the signed-out case. It must never mean "wipe".
+      empty: await send({ type: "recall-sweep-selftest", index, listed: [], scanStartedAt: 5000 }),
+      // Written during this very pass — the listing is not evidence about it.
+      fresh: await send({ type: "recall-sweep-selftest",
+        index: [{ id: "selftest/c0", rev: 9000 }], listed: [], scanStartedAt: 5000 }),
+      // Still outstanding in the journal, so not yet expected in a listing.
+      pending: await send({ type: "recall-sweep-selftest",
+        index: [{ id: "selftest/c0", rev: 1000 }], listed: [], scanStartedAt: 5000, pending: ["c0"] })
+    };
+  });
+  t("B11e a full listing notices one genuinely deleted chat", sweep.one.vanished === 1, JSON.stringify(sweep.one));
+  t("B11e a listing that lost half the archive is discarded, not acted on",
+    sweep.mass.vanished === 0 && sweep.mass.reason === "implausible", JSON.stringify(sweep.mass));
+  t("B11e an empty listing never means 'delete everything'",
+    sweep.empty.vanished === 0, JSON.stringify(sweep.empty));
+  t("B11e a chat written during the pass is not called deleted", sweep.fresh.vanished === 0, JSON.stringify(sweep.fresh));
+  t("B11e a chat still pending in the journal is not called deleted", sweep.pending.vanished === 0, JSON.stringify(sweep.pending));
+
+  // Re-archive it so the backup handoff below still has this record.
+  await pop.evaluate(() => new Promise((res) => chrome.runtime.sendMessage({
+    type: "recall-upsert",
+    chat: { id: "chatgpt.com/c/idx-1", host: "chatgpt.com", path: "/c/idx-1", platform: "ChatGPT",
+      title: "Index seed", updatedAt: Date.now(),
+      msgs: [{ i: "m1", r: "user", t: "first" }, { i: "m2", r: "assistant", t: "second" }] }
+  }, res)));
+
+  /* --- and the prompt the user actually sees --- */
   await pop.evaluate(() => new Promise((res) =>
     chrome.runtime.sendMessage({ type: "chat-drop", id: "chatgpt.com/c/idx-1" }, res)));
-  const dropped = await pop.evaluate(() => new Promise((res) =>
+  await recall.reload();
+  await recall.waitForSelector("#deletions:not([hidden])", { timeout: 5000 });
+  t("B11e the deletion prompt surfaces on the Recall page", true);
+  t("B11e it names the chat rather than just counting it",
+    /Index seed/.test(await recall.textContent("#deletions-list")));
+  t("B11e bulk delete is armed, not one click from permanent",
+    (await recall.evaluate(async () => {
+      document.getElementById("deletions-delete-all").click();
+      return document.getElementById("deletions-delete-all").textContent;
+    })).includes("Click again"));
+  await pop.reload();
+  await pop.waitForSelector("#deletion-alert:not([hidden])", { timeout: 5000 });
+  t("B11e the popup carries the same unanswered question",
+    /1 chat was deleted/.test(await pop.textContent("#deletion-alert-title")));
+
+  await recall.click("#deletions-keep-all");
+  await recall.waitForSelector("#deletions", { state: "hidden", timeout: 5000 });
+  const afterKeepAll = await recall.evaluate(() => new Promise((res) =>
     chrome.runtime.sendMessage({ type: "recall-check", ids: ["chatgpt.com/c/idx-1"] }, res)));
-  t("B11e a chat deleted upstream is forgotten locally too",
-    !dropped["chatgpt.com/c/idx-1"], JSON.stringify(dropped));
+  t("B11e 'keep all' dismisses the prompt and keeps every word",
+    !!afterKeepAll["chatgpt.com/c/idx-1"], JSON.stringify(afterKeepAll));
 
   // Put the seeded ledger and salt back — the backup/restore handoff below is
   // built from them.
@@ -1734,6 +1994,9 @@ try {
   const reinstallPassphrase = "test migration archive passphrase";
   await recall.fill("#backup-passphrase", reinstallPassphrase);
   await recall.fill("#backup-passphrase-confirm", reinstallPassphrase);
+  // Scheduled backups are exercised on their own below; leaving them on here
+  // would put a second, worker-issued download in flight during this one.
+  await recall.uncheck("#backup-auto");
   const backupDownloadEvent = recall.waitForEvent("download");
   await recall.click("#create-backup");
   const backupDownload = await backupDownloadEvent;
@@ -1757,7 +2020,123 @@ try {
   await recall.click("#restore-run");
   await recall.waitForSelector("#restore-status.err", { timeout: 20000 });
   t("B11 wrong reinstall-backup passphrase cannot change the archive",
-    /incorrect|changed/.test(await recall.textContent("#restore-status")));
+    /Wrong passphrase|altered/.test(await recall.textContent("#restore-status")));
+
+  // The envelope is the only copy of the archive that ever leaves the browser,
+  // so it has to survive an attacker holding the file and editing it freely.
+  const backupJson = readFileSync(backupPath, "utf8");
+  const tamper = await recall.evaluate(async ({ json, pass }) => {
+    const C = self.LCTBackupCrypto;
+    const out = {};
+    const roundTrip = await C.open(json, pass);
+    out.roundTrip = roundTrip.chats.length > 0;
+    out.version = JSON.parse(json).version;
+    const bend = async (mutate) => {
+      const envelope = JSON.parse(json);
+      mutate(envelope);
+      try { await C.open(JSON.stringify(envelope), pass); return "accepted"; }
+      catch (error) { return String(error.message || error); }
+    };
+    // Cheapen the KDF so the passphrase could be brute-forced offline.
+    out.floor = await bend((e) => { e.kdf.iterations = 1000; });
+    // Keep it legal-looking but still a downgrade — the tag must catch it.
+    out.downgrade = await bend((e) => { e.kdf.iterations = 600000; });
+    // Steer the parser away from the format the tag was computed over.
+    out.compression = await bend((e) => { e.compression = "none"; });
+    // Swap in a key envelope that is not the one this body was sealed with.
+    out.keySwap = await bend((e) => { e.wrap.key = e.wrap.key.slice(0, -6) + "AAAAAA"; });
+    out.body = await bend((e) => { e.payload = e.payload.slice(0, -6) + "AAAAAA"; });
+    return out;
+  }, { json: backupJson, pass: reinstallPassphrase });
+  t("B11 backup envelope is v2 (wrapped file key, authenticated header)", tamper.version === 2, JSON.stringify(tamper.version));
+  t("B11 backup decrypts with the right passphrase", tamper.roundTrip === true);
+  t("B11 backup refuses a weakened KDF outright", /unsafe encryption/.test(tamper.floor), tamper.floor);
+  t("B11 backup rejects a KDF downgrade at the tag", tamper.downgrade !== "accepted", tamper.downgrade);
+  t("B11 backup rejects a swapped compression field", tamper.compression !== "accepted", tamper.compression);
+  t("B11 backup rejects a substituted key envelope", tamper.keySwap !== "accepted", tamper.keySwap);
+  t("B11 backup rejects an edited ciphertext", tamper.body !== "accepted", tamper.body);
+
+  // Guessing at the restore box has to get expensive, and reloading the page
+  // must not be the way out of it.
+  const lockout = await recall.evaluate(async () => {
+    const send = (msg) => new Promise((res) => chrome.runtime.sendMessage(msg, res));
+    await send({ type: "recall-restore-guard-reset" });
+    let last = null;
+    for (let i = 0; i < 5; i++) last = await send({ type: "recall-restore-guard-fail" });
+    const seen = await send({ type: "recall-restore-guard" });
+    await send({ type: "recall-restore-guard-reset" });
+    const after = await send({ type: "recall-restore-guard" });
+    return { last, seen, after };
+  });
+  t("B11 repeated wrong passphrases lock the restore box",
+    lockout.last && lockout.last.allowed === false && lockout.last.waitMs > 0, JSON.stringify(lockout.last));
+  t("B11 the lockout is worker-owned, so a page reload cannot clear it",
+    lockout.seen && lockout.seen.allowed === false, JSON.stringify(lockout.seen));
+  t("B11 a successful restore clears the lockout", lockout.after && lockout.after.allowed === true);
+
+  /* --- scheduled backups ---
+     The manual button only helps people who remember to press it before
+     uninstalling, which is the one moment nobody remembers. */
+  const autoPassphrase = "scheduled archive passphrase 42";
+  const seenDownloads = await recall.evaluate(() => new Promise((res) =>
+    chrome.downloads.search({}, (items) => res((items || []).map((f) => f.id)))));
+  const auto = await recall.evaluate(async ({ pass, seen }) => {
+    const send = (msg) => new Promise((res) => chrome.runtime.sendMessage(msg, res));
+    const keyring = await self.LCTBackupCrypto.mintKeyring(pass);
+    const enabled = await send({ type: "recall-autobackup-enable", config: { keyring, everyHours: 24 } });
+    const state = await send({ type: "recall-autobackup-state" });
+    const stored = await chrome.storage.local.get("lct-recall-autobackup-v1");
+    const roamed = await chrome.storage.sync.get("lct-recall-autobackup-v1");
+    // The worker's download surfaces on no page, and the harness rewrites the
+    // on-disk name, so it is identified by being the new completed item.
+    const known = new Set(seen);
+    let fresh = [];
+    for (let i = 0; i < 40 && !fresh.length; i++) {
+      const all = await new Promise((res) => chrome.downloads.search({}, (items) => res(items || [])));
+      fresh = all.filter((f) => !known.has(f.id) && f.state === "complete");
+      if (!fresh.length) await new Promise((r) => setTimeout(r, 250));
+    }
+    return { enabled, state, roamed: roamed["lct-recall-autobackup-v1"] || null,
+      keptPassphrase: JSON.stringify(stored).includes(pass),
+      paths: fresh.map((f) => f.filename) };
+  }, { pass: autoPassphrase, seen: seenDownloads });
+  t("B11 automatic backup can be set up from a passphrase",
+    auto.enabled && auto.enabled.ok === true, JSON.stringify(auto.enabled));
+  t("B11 setting it up writes the first encrypted file immediately",
+    auto.enabled.first && auto.enabled.first.status === "ok", JSON.stringify(auto.enabled.first));
+  t("B11 the scheduled backup is filed under its own folder",
+    auto.state.folder === "Long Chat Toolkit" && auto.state.filename === "long-chat-toolkit-auto.lctbackup",
+    JSON.stringify(auto.state));
+  t("B11 the passphrase itself is never stored", auto.keptPassphrase === false);
+  t("B11 backup key material never roams to storage.sync", auto.roamed === null || auto.roamed === undefined);
+  t("B11 the UI is told the state without being handed the key",
+    auto.state.enabled === true && auto.state.lastChats > 0 && !("keyring" in auto.state),
+    JSON.stringify(auto.state));
+
+  // The point of the whole exercise: the file written with nobody watching has
+  // to be a real, openable backup — same envelope, same passphrase, nothing
+  // weaker for being unattended.
+  const autoJson = auto.paths.map((p) => { try { return readFileSync(p, "utf8"); } catch { return ""; } })
+    .find((text) => text.startsWith("{") && text.includes("lct-backup"));
+  t("B11 the scheduled pass actually wrote a backup file", !!autoJson, JSON.stringify(auto.paths));
+  if (autoJson) {
+    const opened = await recall.evaluate(async ({ json, pass }) => {
+      const out = { version: JSON.parse(json).version };
+      try {
+        const snapshot = await self.LCTBackupCrypto.open(json, pass);
+        out.chats = snapshot.chats.length;
+      } catch (error) { out.error = String(error.message || error); }
+      try { await self.LCTBackupCrypto.open(json, "not the scheduled passphrase"); out.wrong = "accepted"; }
+      catch (error) { out.wrong = String(error.message || error); }
+      return out;
+    }, { json: autoJson, pass: autoPassphrase });
+    t("B11 the unattended file opens with the passphrase and nothing else",
+      opened.chats > 0 && opened.version === 2, JSON.stringify(opened));
+    t("B11 the unattended file is unreadable without it", opened.wrong !== "accepted", opened.wrong);
+  }
+
+  await recall.evaluate(() => new Promise((res) =>
+    chrome.runtime.sendMessage({ type: "recall-autobackup-disable" }, res)));
 
   // 8) wipe then restore: this models the local-data half of an
   // uninstall/reinstall handoff while keeping the encrypted file external.
@@ -1812,7 +2191,10 @@ try {
     otherAccountStatus && otherAccountStatus.platforms.chatgpt.checkpoint === null);
 
   // 9) gating: no trial, no pro → commands don't open, and say why
-  await pop.evaluate(() => chrome.storage.local.remove("trial"));
+  await pop.evaluate(async () => {
+    await chrome.storage.local.remove(["lct-trial-v2", "trial"]);
+    await chrome.storage.sync.remove("lct-trial-v2");
+  });
   await page.reload();
   await page.waitForSelector("#lct-minimap", { timeout: 15000 });
   await fireCmd("open-recall");
@@ -1838,7 +2220,76 @@ try {
   // the file input itself is hidden by design — its label is the control
   t("B11 locked page still owns import + wipe (user's data)",
     (await recall.isVisible('label[for="import-file"]')) && (await recall.isVisible("#wipe")));
-  await pop.evaluate(() => chrome.storage.local.set({ trial: { startedAt: Date.now() } })); // restore
+
+  /* ---- B13. The paywall, tested where it is actually enforced ----
+     Every check here goes straight to the worker, bypassing the UI entirely —
+     because that is exactly what a bypass attempt does. Buttons being disabled
+     proves nothing; these assert the data does not come out. */
+
+  const ask = (msg) => pop.evaluate((m) =>
+    new Promise((res) => chrome.runtime.sendMessage(m, res)), msg);
+
+  const locked = {
+    search:   await ask({ type: "recall-search", q: "architectural" }),
+    snapshot: await ask({ type: "recall-snapshot" }),
+    backup:   await ask({ type: "recall-backup-state" }),
+    autoOn:   await ask({ type: "recall-autobackup-enable", config: { everyHours: 24 } }),
+    autoRun:  await ask({ type: "recall-autobackup-run" }),
+    restore:  await ask({ type: "recall-restore-ledger", ledger: {}, meta: {}, profile: null }),
+    guard:    await ask({ type: "recall-restore-guard" })
+  };
+  t("B13 the worker refuses every paid call when locked",
+    Object.values(locked).every((r) => r && r.err === "locked"),
+    JSON.stringify(locked));
+  t("B13 a locked refusal leaks no archive data",
+    !locked.snapshot.chats && !locked.search.results,
+    JSON.stringify({ s: locked.snapshot, q: locked.search }));
+
+  // The bypass this whole layer exists to stop: writing a Pro record by hand.
+  await pop.evaluate(() => chrome.storage.local.set({
+    license: { key: "DODO-FORGED-KEY-9999", email: "me@example.com", plan: "pro",
+      kind: "dodo", instanceId: "lki_forged", activatedAt: Date.now() }
+  }));
+  const forged = await ask({ type: "entitlement-state" });
+  const forgedSearch = await ask({ type: "recall-search", q: "architectural" });
+  t("B13 a hand-written Pro record buys nothing",
+    forged && forged.entitled === false && forgedSearch.err === "locked",
+    JSON.stringify(forged));
+
+  // Same, with a fabricated token: no private key, no entitlement.
+  await pop.evaluate(() => chrome.storage.local.set({
+    "lct-entitlement-v2": { token: "LCT2.eyJ2IjoyLCJwbGFuIjoicHJvIn0.AAAA", fetchedAt: Date.now() }
+  }));
+  const fakeTok = await ask({ type: "entitlement-state" });
+  t("B13 a fabricated token fails on signature",
+    fakeTok && fakeTok.entitled === false && fakeTok.reason === "signature",
+    JSON.stringify(fakeTok));
+
+  // A real, correctly-signed token restores everything — proving the refusals
+  // above were the gate working, not something incidentally broken.
+  await pop.evaluate(async () => chrome.storage.local.remove("lct-entitlement-v2"));
+  const goodTok = await mintTokenFor("DODO-FORGED-KEY-9999");
+  await pop.evaluate((tok) => chrome.storage.local.set({
+    "lct-entitlement-v2": { token: tok, fetchedAt: Date.now(), lastAttemptAt: Date.now() }
+  }), goodTok);
+  const unlockedState = await ask({ type: "entitlement-state" });
+  const unlockedSnap = await ask({ type: "recall-snapshot" });
+  t("B13 a properly signed token unlocks the same calls",
+    unlockedState.entitled === true && unlockedState.via === "dodo" &&
+    unlockedSnap && !unlockedSnap.err && Array.isArray(unlockedSnap.chats),
+    JSON.stringify(unlockedState));
+
+  // Trial is worker-owned and sync-backed: clearing local storage is the
+  // one-click "reset my trial" that must not work.
+  await pop.evaluate(async () => {
+    await chrome.storage.local.remove(["license", "lct-entitlement-v2"]);
+  });
+  const trialFirst = await ask({ type: "trial-start" });
+  await pop.evaluate(() => chrome.storage.local.remove("lct-trial-v2"));   // local only
+  const trialSecond = await ask({ type: "trial-start" });
+  t("B13 wiping local storage does not mint a second trial",
+    trialFirst.until > 0 && trialSecond.until === trialFirst.until,
+    JSON.stringify({ trialFirst, trialSecond }));
 
   /* ============ B12. Context Bridge (cross-platform prompt injection) ====== */
   await page.reload(); // pick up the restored trial

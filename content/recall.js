@@ -43,8 +43,28 @@
   // Prefer real content blocks over raw textContent: chat sites embed role
   // labels ("You said:", sr-only headers) that would pollute every snippet.
   // Falls back to full text when a message has no block structure.
+  //
+  // Cached per element. A flush walks the WHOLE conversation, and while a
+  // reply streams the pre-check below fires every 3s — so a 1,500-turn chat
+  // was re-extracting 1,500 subtrees to capture a change in one of them.
+  // `fresh` re-reads the tail, the only part that can still move. 5 deep, the
+  // same window search.js and the timeline use: a message must be re-read once
+  // more AFTER it finishes streaming, and only leaving the tail ends that.
   const BLOCK_SEL = "p, h1, h2, h3, h4, li, pre, blockquote";
-  function textOf(el) {
+  const TAIL = 5;
+  const textCache = new WeakMap();
+
+  function textOf(el, fresh) {
+    if (!fresh) {
+      const hit = textCache.get(el);
+      if (hit !== undefined) return hit;
+    }
+    const text = extractText(el);
+    textCache.set(el, text);
+    return text;
+  }
+
+  function extractText(el) {
     const blocks = el.querySelectorAll(BLOCK_SEL);
     if (!blocks.length) return (el.textContent || "").trim();
     const parts = [];
@@ -77,13 +97,15 @@
     }
 
     const out = [];
-    for (const el of msgs) {
+    const tailFrom = msgs.length - TAIL;
+    for (let i = 0; i < msgs.length; i++) {
+      const el = msgs[i];
       let role = "assistant";
       try { role = adapter.role(el) === "user" ? "user" : "assistant"; } catch { /* guard */ }
       const inf = self.LCTTimeline.info(el);
       out.push({
         r: role,
-        t: textOf(el),
+        t: textOf(el, i >= tailFrom),
         ts: inf && inf.kind === "exact" ? inf.t : 0
       });
     }

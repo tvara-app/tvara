@@ -6,51 +6,13 @@
 
   const $ = (id) => document.getElementById(id);
   const send = (msg) => new Promise((res) => chrome.runtime.sendMessage(msg, res));
-  const TRIAL_MS = 7 * 864e5;
-  const encoder = new TextEncoder();
-  const decoder = new TextDecoder();
-  const BACKUP_ITERATIONS = 600000;
+  const crypt = self.LCTBackupCrypto;
 
   const setStatus = (id, text, kind = "") => {
     const node = $(id);
     node.className = "status-copy" + (kind ? " " + kind : "");
     node.textContent = text || "";
   };
-
-  function bytesToBase64(bytes) {
-    const parts = [];
-    for (let i = 0; i < bytes.length; i += 0x8000) {
-      parts.push(String.fromCharCode(...bytes.subarray(i, i + 0x8000)));
-    }
-    return btoa(parts.join(""));
-  }
-
-  function base64ToBytes(value) {
-    const raw = atob(String(value || ""));
-    const bytes = new Uint8Array(raw.length);
-    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-    return bytes;
-  }
-
-  async function deriveBackupKey(passphrase, salt) {
-    const material = await crypto.subtle.importKey("raw", encoder.encode(passphrase), "PBKDF2", false, ["deriveKey"]);
-    return crypto.subtle.deriveKey({
-      name: "PBKDF2", hash: "SHA-256", salt, iterations: BACKUP_ITERATIONS
-    }, material, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
-  }
-
-  async function compressBackup(bytes) {
-    if (!("CompressionStream" in self)) return { compression: "none", bytes };
-    const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream("gzip"));
-    return { compression: "gzip", bytes: new Uint8Array(await new Response(stream).arrayBuffer()) };
-  }
-
-  async function decompressBackup(bytes, compression) {
-    if (compression === "none") return bytes;
-    if (compression !== "gzip" || !("DecompressionStream" in self)) throw new Error("This browser cannot read this backup compression format");
-    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
-    return new Uint8Array(await new Response(stream).arrayBuffer());
-  }
 
   function download(blob, filename) {
     const url = URL.createObjectURL(blob);
@@ -64,22 +26,38 @@
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
-  /* ---------- plan gating (search is Pro/trial; archive + import are not) */
+  /* ---------- plan gating ---------------------------------------------------
+     Paid: search, backup/export, restore. Free: the archive keeps building,
+     and official provider exports still import — nobody loses history by not
+     paying, they lose the tools that get it back out.
 
-  let unlocked = false;
+     This function paints locks. It does not enforce them: bg.js re-checks the
+     signed entitlement on every gated message, so hiding a button is courtesy,
+     not security. */
+
+  let unlocked = false;      // search
+  let canBackup = false;     // export + auto-backup
+  let canRestore = false;    // import a .lctbackup
 
   async function loadPlan() {
-    const { license, trial } = await chrome.storage.local.get(["license", "trial"]);
-    let pro = false;
-    if (license && license.key) pro = (await self.LCTLicense.evaluate(license)).pro;
-    // a monthly re-check, at most; never blocks paint, never downgrades on a network error
-    if (license && license.key && self.LCTDodo) self.LCTDodo.maybeRevalidate(license);
-    const trialOn = !pro && trial && trial.startedAt && Date.now() < trial.startedAt + TRIAL_MS;
-    const trialSpent = !pro && !trialOn && trial && trial.startedAt;
-    unlocked = pro || trialOn;
+    const verdict = (await send({ type: "entitlement-state" })) || {};
+    const feats = Array.isArray(verdict.features) ? verdict.features : [];
+    const entitled = !!verdict.entitled;
+    const trialOn = entitled && verdict.via === "trial";
+    const pro = entitled && !trialOn;
+    const trialSpent = !entitled && verdict.trial && verdict.trial.spent;
+
+    unlocked = entitled && (trialOn || feats.includes("archive.search"));
+    canBackup = entitled && (trialOn || feats.includes("archive.backup"));
+    canRestore = entitled && (trialOn || feats.includes("archive.restore"));
+
+    // Opportunistic renewal — fire and forget, never gates paint.
+    send({ type: "entitlement-refresh" });
+
     const badge = $("plan-badge");
     badge.textContent = pro ? "Pro" : trialOn ? "Trial" : "Free";
     badge.className = "badge " + (pro ? "pro" : trialOn ? "trial" : "");
+
     // The lock lives inside the archive core rather than replacing it: the
     // stats below stay visible so a locked archive still looks alive, and the
     // trial can be started here instead of only from the popup.
@@ -91,13 +69,39 @@
       $("core-locked").querySelector(".locked-copy").textContent =
         "The archive kept building the whole time — nothing was lost. $9 once, from the extension popup, unlocks search again forever.";
     }
+
+    paintPaidSections(verdict);
     paintArchiveState();
   }
 
+  const LOCK_COPY = "Pro feature. Your archive keeps building either way — unlock from the extension popup to get it back out.";
+
+  /** Disable rather than hide: a vanished backup button reads as data loss. */
+  function paintPaidSections(verdict) {
+    for (const [id, allowed] of [["create-backup", canBackup], ["backup-auto", canBackup],
+      ["autobackup-run", canBackup], ["restore-run", canRestore]]) {
+      const node = $(id);
+      if (!node) continue;
+      node.disabled = !allowed;
+      node.title = allowed ? "" : LOCK_COPY;
+    }
+    if (!canBackup) setStatus("backup-status", LOCK_COPY, "");
+    if (!canRestore) setStatus("restore-status", LOCK_COPY, "");
+    // Grace period: signed, valid, but overdue a renewal. Works, warns.
+    if (verdict && verdict.stale) {
+      setStatus("backup-status", "Licence needs to check in — reconnect within 14 days to keep Pro.", "warn");
+    }
+  }
+
+  /** One place the "you're locked" answer from the worker becomes UI copy. */
+  function lockedResponse(res) {
+    if (!res || res.err !== "locked") return false;
+    loadPlan();
+    return true;
+  }
+
   $("trial-start").addEventListener("click", async () => {
-    const { trial } = await chrome.storage.local.get("trial");
-    if (trial && trial.startedAt) return;
-    await chrome.storage.local.set({ trial: { startedAt: Date.now() } });
+    await send({ type: "trial-start" });
     await loadPlan();
     $("q").focus();
   });
@@ -155,6 +159,7 @@
     }
     $("q-meta").textContent = "searching…";
     const res = await send({ type: "recall-search", q });
+    if (lockedResponse(res)) { $("q-meta").textContent = ""; return; }
     // A slower earlier query must never repaint over a newer one.
     if (!res || res.err || q !== $("q").value.trim()) return;
     $("results").replaceChildren(...res.results.map(row));
@@ -429,23 +434,35 @@
 
   let restoreFile = null;
 
-  async function createReinstallBackup() {
-    const passphrase = $("backup-passphrase").value;
-    const confirmation = $("backup-passphrase-confirm").value;
-    if (passphrase.length < 12) throw new Error("Use a passphrase with at least 12 characters");
-    if (passphrase !== confirmation) throw new Error("The passphrases do not match");
-    if (!self.LCTRecallDB || !self.LCTRecallDB.getAll) throw new Error("Archive storage is unavailable");
+  /** Live strength meter. The passphrase is the only thing protecting the file. */
+  function paintStrength() {
+    const value = $("backup-passphrase").value;
+    const meter = $("backup-strength");
+    if (!value) { meter.hidden = true; return; }
+    const rated = crypt.ratePassphrase(value);
+    meter.hidden = false;
+    meter.dataset.score = String(rated.score);
+    meter.querySelector(".strength-text").textContent = rated.ok
+      ? ["", "Weak", "Fair", "Strong", "Very strong"][rated.score] || "Strong"
+      : rated.reason;
+  }
+  $("backup-passphrase").addEventListener("input", paintStrength);
 
+  async function collectSnapshot() {
     const state = await send({ type: "recall-sync-status" });
     if (state && state.running) throw new Error("Wait for the current sync to finish before creating a backup");
-    const [chats, durable] = await Promise.all([
-      self.LCTRecallDB.getAll(),
-      send({ type: "recall-backup-state" })
-    ]);
-    if (!durable || durable.err) throw new Error("Could not read the sync checkpoint");
 
-    const payload = {
-      format: "lct-backup-payload",
+    // Read via the worker, not the page's own IndexedDB handle — the gate has
+    // to sit in front of the data, and only bg.js can hold it there.
+    const snap = await send({ type: "recall-snapshot" });
+    if (snap && snap.err === "locked") throw new Error(LOCK_COPY);
+    if (!snap || snap.err) throw new Error("Could not read the archive");
+    const chats = snap.chats || [];
+    const durable = snap.durable;
+    if (!durable || durable.err) throw new Error("Could not read the sync checkpoint");
+    if (!chats.length) throw new Error("There is nothing archived to back up yet");
+    return {
+      format: crypt.PAYLOAD_FORMAT,
       version: 1,
       createdAt: Date.now(),
       chats,
@@ -455,27 +472,39 @@
       // safely resume from this backup's checkpoint even without Chrome Sync.
       profile: durable.profile || null
     };
-    const packed = await compressBackup(encoder.encode(JSON.stringify(payload)));
-    const salt = crypto.getRandomValues(new Uint8Array(16));
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const key = await deriveBackupKey(passphrase, salt);
-    const cipher = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, packed.bytes);
-    const envelope = {
-      format: "lct-backup",
-      version: 1,
-      createdAt: payload.createdAt,
-      kdf: { name: "PBKDF2", hash: "SHA-256", iterations: BACKUP_ITERATIONS, salt: bytesToBase64(salt) },
-      cipher: { name: "AES-GCM", iv: bytesToBase64(iv) },
-      compression: packed.compression,
-      payload: bytesToBase64(new Uint8Array(cipher))
-    };
+  }
+
+  async function createReinstallBackup() {
+    const passphrase = $("backup-passphrase").value;
+    const confirmation = $("backup-passphrase-confirm").value;
+    const rated = crypt.ratePassphrase(passphrase);
+    if (!rated.ok) throw new Error(rated.reason);
+    if (passphrase !== confirmation) throw new Error("The passphrases do not match");
+
+    const payload = await collectSnapshot();
+    const sealed = await crypt.seal(payload, { passphrase });
     const stamp = new Date().toISOString().slice(0, 10);
     const filename = `long-chat-toolkit-${stamp}.lctbackup`;
-    download(new Blob([JSON.stringify(envelope)], { type: "application/json" }), filename);
-    await send({ type: "recall-backup-mark", meta: { chats: chats.length, filename } });
+    download(new Blob([sealed.json], { type: "application/octet-stream" }), filename);
+    await send({ type: "recall-backup-mark", meta: { chats: payload.chats.length, filename } });
+
+    // Setting automatic backup up from the same passphrase costs one extra key
+    // derivation and removes the only reason a reinstall ever loses anything:
+    // needing to remember to press this button before uninstalling.
+    let automatic = "";
+    if ($("backup-auto").checked) {
+      try {
+        const keyring = await crypt.mintKeyring(passphrase);
+        const result = await send({ type: "recall-autobackup-enable", config: { keyring, everyHours: 24 } });
+        automatic = result && result.ok ? " Automatic backups are on." : " Automatic backup could not be enabled.";
+      } catch { automatic = " Automatic backup could not be enabled."; }
+    }
+
     $("backup-passphrase").value = "";
     $("backup-passphrase-confirm").value = "";
-    setStatus("backup-status", `${chats.length.toLocaleString()} chats encrypted in ${filename}`, "ok");
+    $("backup-strength").hidden = true;
+    setStatus("backup-status", `${payload.chats.length.toLocaleString()} chats encrypted in ${filename}.${automatic}`, "ok");
+    await paintAutoBackup();
   }
 
   $("create-backup").addEventListener("click", async () => {
@@ -487,39 +516,88 @@
     finally { button.disabled = false; }
   });
 
+  /* ---------- automatic backup ---------- */
+
+  async function paintAutoBackup() {
+    const state = await send({ type: "recall-autobackup-state" });
+    if (!state || state.err) return;
+    $("autobackup-actions").hidden = !state.enabled;
+    if (!state.enabled) {
+      setStatus("autobackup-status", "Automatic backup is off — the archive only leaves this browser when you press the button.", "");
+      return;
+    }
+    const where = `${state.folder}/${state.filename} in your downloads folder`;
+    if (state.lastError) {
+      setStatus("autobackup-status", `Automatic backup is on, but the last attempt failed: ${state.lastError}`, "err");
+    } else if (state.lastAt) {
+      setStatus("autobackup-status",
+        `Automatic backup is on — ${state.lastChats.toLocaleString()} chats written ${timeAgo(state.lastAt)} to ${where}. Same passphrase, same encryption.`, "ok");
+    } else {
+      setStatus("autobackup-status", `Automatic backup is on — the first file will be written to ${where}.`, "");
+    }
+  }
+
+  $("autobackup-run").addEventListener("click", async () => {
+    const button = $("autobackup-run");
+    button.disabled = true;
+    setStatus("autobackup-status", "Writing an encrypted backup…");
+    const result = await send({ type: "recall-autobackup-run" });
+    if (result && result.status === "ok") await paintAutoBackup();
+    else setStatus("autobackup-status", `Backup did not run: ${(result && (result.error || result.status)) || "unknown reason"}`, "err");
+    button.disabled = false;
+  });
+
+  $("autobackup-off").addEventListener("click", async () => {
+    await send({ type: "recall-autobackup-disable" });
+    await paintAutoBackup();
+  });
+
+  paintAutoBackup();
+
   $("restore-file").addEventListener("change", (event) => {
     restoreFile = event.target.files && event.target.files[0];
     $("restore-file-name").textContent = restoreFile ? restoreFile.name : "No backup selected";
-    $("restore-run").disabled = !restoreFile;
-    setStatus("restore-status", "");
+    $("restore-run").disabled = !restoreFile || !canRestore;
+    setStatus("restore-status", canRestore ? "" : LOCK_COPY);
   });
+
+  function waitLabel(ms) {
+    const seconds = Math.ceil(ms / 1000);
+    if (seconds < 90) return `${seconds} seconds`;
+    return `${Math.ceil(seconds / 60)} minutes`;
+  }
 
   async function restoreReinstallBackup() {
     if (!restoreFile) throw new Error("Choose an encrypted backup file first");
+    // Throttling lives in the worker, so reloading this page — or opening a
+    // second one — cannot reset the count on a wordlist run.
+    const guard = await send({ type: "recall-restore-guard" });
+    if (guard && guard.err === "locked") { loadPlan(); throw new Error(LOCK_COPY); }
+    if (guard && !guard.allowed) {
+      throw new Error(`Too many failed passphrase attempts. Try again in ${waitLabel(guard.waitMs)}.`);
+    }
+    if (restoreFile.size > crypt.MAX_FILE_BYTES) throw new Error("This file is too large to be a backup");
     const passphrase = $("restore-passphrase").value;
     if (!passphrase) throw new Error("Enter the backup passphrase");
-    let envelope;
-    try { envelope = JSON.parse(await restoreFile.text()); }
-    catch { throw new Error("This is not a valid Long Chat Toolkit backup"); }
-    if (!envelope || envelope.format !== "lct-backup" || envelope.version !== 1 || !envelope.kdf || !envelope.cipher) {
-      throw new Error("This backup format is not supported");
-    }
-    if (envelope.kdf.name !== "PBKDF2" || envelope.kdf.hash !== "SHA-256" || envelope.cipher.name !== "AES-GCM") {
-      throw new Error("This backup uses unsupported encryption");
-    }
-    const key = await deriveBackupKey(passphrase, base64ToBytes(envelope.kdf.salt));
-    let plaintext;
-    try {
-      plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv: base64ToBytes(envelope.cipher.iv) }, key,
-        base64ToBytes(envelope.payload));
-    } catch { throw new Error("The passphrase is incorrect or the backup was changed"); }
-    let snapshot;
-    try { snapshot = JSON.parse(decoder.decode(await decompressBackup(new Uint8Array(plaintext), envelope.compression))); }
-    catch { throw new Error("The encrypted backup could not be read"); }
-    if (!snapshot || snapshot.format !== "lct-backup-payload" || snapshot.version !== 1 || !Array.isArray(snapshot.chats)) {
-      throw new Error("The backup contents are incomplete");
-    }
 
+    const text = await restoreFile.text();
+    // Envelope shape is checked before any key work, so a malformed file fails
+    // fast and never counts against the attempt budget.
+    crypt.inspect(text);
+
+    let snapshot;
+    try {
+      snapshot = await crypt.open(text, passphrase);
+    } catch (error) {
+      const after = await send({ type: "recall-restore-guard-fail" });
+      const suffix = after && !after.allowed ? ` Further attempts are paused for ${waitLabel(after.waitMs)}.` : "";
+      throw new Error(String(error.message || error) + suffix);
+    }
+    await send({ type: "recall-restore-guard-reset" });
+
+    // Merge, never replace: importBatch refuses to overwrite a newer archived
+    // revision, so restoring an older backup on top of a browser that has
+    // already re-synced adds only what is missing.
     let imported = 0, skipped = 0;
     for (let i = 0; i < snapshot.chats.length; i += 15) {
       setStatus("restore-status", `Restoring ${Math.min(i + 15, snapshot.chats.length)} of ${snapshot.chats.length} chats…`);
@@ -527,7 +605,7 @@
       imported += (result && result.ok) || 0;
       skipped += (result && result.skipped) || 0;
     }
-    const meta = { version: 1, createdAt: envelope.createdAt || snapshot.createdAt || Date.now(), chats: snapshot.chats.length,
+    const meta = { version: 1, createdAt: snapshot.createdAt || Date.now(), chats: snapshot.chats.length,
       filename: restoreFile.name };
     const restored = await send({
       type: "recall-restore-ledger", ledger: snapshot.ledger,
@@ -539,7 +617,8 @@
     restoreFile = null;
     $("restore-file-name").textContent = "No backup selected";
     $("restore-run").disabled = true;
-    setStatus("restore-status", `${imported.toLocaleString()} chats restored${skipped ? `, ${skipped} skipped` : ""}. Checking only the gap…`, "ok");
+    setStatus("restore-status",
+      `${imported.toLocaleString()} chat${imported === 1 ? "" : "s"} added to the archive${skipped ? `, ${skipped} already here` : ""}. Checking the gap…`, "ok");
     await loadStats();
     await initSyncUI();
     chrome.runtime.sendMessage({ type: "recall-bg-sync" });
@@ -550,14 +629,108 @@
     button.disabled = true;
     try { await restoreReinstallBackup(); }
     catch (error) { setStatus("restore-status", String(error.message || error), "err"); }
-    finally { button.disabled = !restoreFile; }
+    finally { button.disabled = !restoreFile || !canRestore; }
   });
 
   $("recovery-skip").addEventListener("click", async () => {
     await send({ type: "recall-recovery-skip" });
-    setStatus("restore-status", "The old archive will not be restored. A future sync checks only chats after the saved checkpoint.", "ok");
+    setStatus("restore-status", "Dismissed. The archive keeps rebuilding itself from your providers.", "ok");
     await initSyncUI();
   });
+
+  /* ---------- deleted-upstream review ----------
+   * The archive deliberately outlives the provider unless the user says
+   * otherwise, so every removal is a decision made here. */
+
+  const PLATFORM_NAMES = { chatgpt: "ChatGPT", claude: "Claude", deepseek: "DeepSeek", grok: "Grok", gemini: "Gemini" };
+
+  function deletionRow(item) {
+    const row = document.createElement("div");
+    row.className = "deletion-row";
+    row.dataset.id = item.id;
+
+    const main = document.createElement("div");
+    main.className = "deletion-main";
+    const title = document.createElement("span");
+    title.className = "deletion-title";
+    title.textContent = item.title || "Untitled conversation";
+    const meta = document.createElement("span");
+    meta.className = "deletion-meta";
+    const bits = [PLATFORM_NAMES[item.platform] || item.platform || "Unknown"];
+    if (item.messages) bits.push(`${item.messages.toLocaleString()} message${item.messages === 1 ? "" : "s"}`);
+    if (item.detectedAt) bits.push(`noticed ${timeAgo(item.detectedAt)}`);
+    meta.textContent = bits.join(" · ");
+    main.append(title, meta);
+
+    const actions = document.createElement("div");
+    actions.className = "deletion-actions";
+    const keep = document.createElement("button");
+    keep.type = "button";
+    keep.textContent = "Keep";
+    keep.addEventListener("click", () => resolveDeletion([item.id], "keep"));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "secondary danger-action";
+    remove.textContent = "Delete";
+    remove.addEventListener("click", () => resolveDeletion([item.id], "delete"));
+    actions.append(keep, remove);
+
+    row.append(main, actions);
+    return row;
+  }
+
+  async function resolveDeletion(ids, action) {
+    const result = await send({ type: "recall-deletions-resolve", ids, action });
+    if (!result || result.err) { setStatus("deletions-status", "That could not be saved", "err"); return; }
+    setStatus("deletions-status", action === "delete"
+      ? `${result.count} removed from your backup.`
+      : `${result.count} kept. They stay searchable here even though the site no longer has them.`, "ok");
+    await paintDeletions();
+    await loadStats();
+  }
+
+  async function paintDeletions() {
+    const state = await send({ type: "recall-deletions" });
+    if (!state || state.err) return;
+    const items = state.items || [];
+    $("deletion-policy").value = state.policy || "ask";
+    $("deletions").hidden = !items.length;
+    if (!items.length) return;
+    $("deletions-count").textContent = items.length === 1 ? "1 chat" : `${items.length} chats`;
+    $("deletions-list").replaceChildren(...items.map(deletionRow));
+  }
+
+  $("deletions-keep-all").addEventListener("click", () => resolveDeletion([], "keep"));
+  $("deletions-delete-all").addEventListener("click", function () {
+    // Same arming pattern as the wipe button: bulk deletion of the only
+    // remaining copy should never be one stray click away.
+    if (this.dataset.armed !== "1") {
+      this.dataset.armed = "1";
+      this.textContent = "Click again to delete them permanently";
+      setTimeout(() => { this.dataset.armed = ""; this.textContent = "Delete all from backup"; }, 5000);
+      return;
+    }
+    this.dataset.armed = "";
+    this.textContent = "Delete all from backup";
+    resolveDeletion([], "delete");
+  });
+
+  $("deletion-policy").addEventListener("change", async () => {
+    const value = $("deletion-policy").value;
+    const { settings } = await chrome.storage.local.get("settings");
+    await chrome.storage.local.set({ settings: { ...(settings || {}), deletionPolicy: value } });
+    setStatus("deletions-status", value === "keep"
+      ? "Your backup now outlives the provider. Deleted chats stay here and you will not be asked again."
+      : value === "mirror"
+        ? "Your backup now mirrors the provider. Chats deleted there will be deleted here too, without asking."
+        : "You will be asked each time a chat is deleted on the site.", "ok");
+    if (value !== "ask") await resolveDeletion([], value === "mirror" ? "delete" : "keep");
+  });
+
+  paintDeletions();
+  if (location.hash === "#deletions") {
+    $("deletions").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 
   /* ---------- background-owned history sync ---------- */
 
@@ -646,24 +819,24 @@
     const status = await send({ type: "recall-sync-status" });
     if (!status || status.err) return;
     const recovery = status.recovery || { state: "ready" };
-    const needsRestore = recovery.state === "restore-required";
+    // A reinstall no longer blocks anything: archiving has already restarted by
+    // the time this paints. Restoring the old file is a shortcut that fills in
+    // everything the providers no longer list, not a prerequisite.
+    const offered = recovery.state === "restore-offered";
     $("recovery").hidden = false;
-    $("recovery").classList.toggle("urgent", needsRestore);
-    $("recovery-title").textContent = needsRestore ? "Restore your archive before syncing" : "Restore an existing archive";
-    $("recovery-skip").hidden = !needsRestore;
-    if (needsRestore && recovery.backup) {
-      $("recovery-copy").textContent = `A ${Number(recovery.backup.chats || 0).toLocaleString()}-chat encrypted backup was created before this install. Restore it first so only the gap is checked.`;
+    $("recovery").classList.toggle("urgent", offered);
+    $("recovery-title").textContent = offered ? "Bring your previous archive back" : "Restore an existing archive";
+    $("recovery-skip").hidden = !offered;
+    if (offered && recovery.backup) {
+      $("recovery-copy").textContent = `This looks like a fresh install, and a ${Number(recovery.backup.chats || 0).toLocaleString()}-chat encrypted backup was made before it. Archiving has already restarted on its own and is adding only what is missing — restore the file to bring back everything older than your providers still list.`;
     } else {
-      $("recovery-copy").textContent = "Choose an encrypted Long Chat Toolkit backup to restore it into this browser. Restoring merges safely and only checks the later gap.";
+      $("recovery-copy").textContent = "Choose an encrypted Long Chat Toolkit backup to merge it into this browser. Chats already archived here are left alone; only what is missing is added.";
     }
     $("sync-rows").replaceChildren();
     for (const app of APPS) paintRow(app, status.platforms && status.platforms[app.id]);
     paintSummary(status.summary);
     updateSyncButton(!!status.running);
-    if (needsRestore) {
-      $("sync-all").disabled = true;
-      $("sync-all").textContent = "Restore archive first";
-    }
+    paintDeletions();
   }
 
   function paintSummary(summary) {
@@ -716,10 +889,6 @@
     const status = await send({ type: "recall-sync-status" });
     if (status && status.running) {
       refreshSyncRows();
-      return;
-    }
-    if (status && status.recovery && status.recovery.state === "restore-required") {
-      await initSyncUI();
       return;
     }
     $("sync-rows").replaceChildren();

@@ -38,11 +38,30 @@
   // land short and the scrollbar lies. Measured heights make both exact.
   // A message the reader was just sent to stays awake regardless of distance —
   // re-windowing the landing zone mid-jump is what made one click land short.
-  function sleep(el) {
-    if (el.classList.contains("lct-awake")) return;
-    const h = el.offsetHeight;
-    if (h > 0) el.style.containIntrinsicSize = "auto " + h + "px";
-    el.classList.add(CLASS);
+  //
+  // Two phases, deliberately. `content-visibility` is a layout-affecting
+  // property, so reading offsetHeight right after writing the class on the
+  // previous element forces a synchronous reflow — once per message. Reading
+  // the whole batch first, then writing the whole batch, costs one layout for
+  // however many messages are going to sleep.
+  const pending = [];
+
+  function queueSleep(el) {
+    if (el.classList.contains("lct-awake") || el.classList.contains(CLASS)) return;
+    pending.push(el);
+  }
+
+  function flushSleep() {
+    const n = pending.length;
+    if (!n) return;
+    const heights = new Array(n);
+    for (let i = 0; i < n; i++) heights[i] = pending[i].offsetHeight;   // read pass
+    for (let i = 0; i < n; i++) {                                       // write pass
+      const el = pending[i];
+      if (heights[i] > 0) el.style.containIntrinsicSize = "auto " + heights[i] + "px";
+      el.classList.add(CLASS);
+    }
+    pending.length = 0;
   }
 
   let nearSet = new WeakSet();       // messages near the viewport (never window)
@@ -65,9 +84,10 @@
             en.target.classList.remove(CLASS);
           } else {
             nearSet.delete(en.target);
-            if (!tailSet.has(en.target) && enabled) sleep(en.target);
+            if (!tailSet.has(en.target) && enabled) queueSleep(en.target);
           }
         }
+        flushSleep();
         // newly classified messages change the windowed count — refresh it
         if (firstClassifications) scheduleRescan();
       },
@@ -108,13 +128,14 @@
       if (tailSet.has(el) || nearSet.has(el) || el.classList.contains("lct-awake")) {
         el.classList.remove(CLASS);
       } else if (classifiedSet.has(el)) {
-        if (!el.classList.contains(CLASS)) sleep(el);
+        queueSleep(el);
         count++;
       }
       // not yet classified by the IO → leave it live. Windowing a message the
       // user might be looking at (first scan, chat switch) causes a visible
       // collapse-to-skeleton flash; waiting one IO tick costs nothing.
     }
+    flushSleep();
     windowedCount = count;
     if (onUpdate) onUpdate(messages, count);
   }
@@ -125,7 +146,9 @@
   }
 
   function unwindowAll() {
-    document.querySelectorAll("." + CLASS).forEach((el) => el.classList.remove(CLASS));
+    pending.length = 0;   // anything queued was queued for a page we just left
+    const asleep = document.getElementsByClassName(CLASS);
+    while (asleep.length) asleep[0].classList.remove(CLASS);   // live collection
   }
 
   function start(a, updateCb) {

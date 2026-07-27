@@ -227,6 +227,11 @@ main { padding: 0 var(--gutter); }
 .row-static { cursor: default; }
 .row-button:hover .row-title, .row-action:hover { color: var(--ink); }
 
+/* Something is waiting on a decision that cannot be undone once made. */
+.row.alert { border-color: rgb(255 138 107 / .34); background: rgb(255 138 107 / .07); }
+.row.alert .row-icon { color: #ff8a6b; }
+.row.alert .row-title { color: var(--ink); }
+
 /* toggle — state, not decoration, so it keeps its travel */
 .row input[type="checkbox"] {
   position: relative;

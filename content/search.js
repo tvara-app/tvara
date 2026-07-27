@@ -21,10 +21,11 @@
 
   function init(a) { adapter = a; }
 
-  function buildCache() {
+  function buildCache(msgs) {
     try {
+      const arr = msgs || adapter.messages();
       // cache per element; only the streaming tail can change content
-      items = adapter.messages().map((el, i, arr) => {
+      items = arr.map((el, i) => {
         let text = textCache.get(el);
         if (text === undefined || i >= arr.length - 5) {
           text = (el.textContent || "").toLowerCase();
@@ -82,7 +83,13 @@
     return q.length >= 2 || (q.length === 1 && /[^\u0000-\u007f]/.test(q));
   }
 
-  function runQuery() {
+  /**
+   * @param {Element} [keep] stay on this hit instead of jumping to the first.
+   *   A refresh must not move the reader: re-running the query on every engine
+   *   tick used to call step(1), which yanked the page back to hit 1 roughly
+   *   four times a second while a chat was still streaming.
+   */
+  function runQuery(keep) {
     const q = input.value.trim().toLowerCase();
     hits = [];
     cur = -1;
@@ -90,6 +97,13 @@
       for (let i = 0; i < items.length; i++) {
         if (items[i].text.includes(q)) hits.push(i);
       }
+    }
+    if (keep) {
+      // The kept hit can have been unmounted out from under us — fall to the
+      // first match rather than to "0 of 5", but still never scroll.
+      const at = hits.findIndex((i) => items[i].el === keep);
+      cur = at >= 0 ? at : hits.length ? 0 : -1;
+      return updateCounter();
     }
     if (hits.length) step(1);
     else updateCounter();
@@ -108,27 +122,20 @@
     counter.classList.toggle("lct-s-none", !hits.length && active);
   }
 
+  // Delegated to nav.js. The copy that lived here never woke the target, so it
+  // landed short across sleeping regions, and re-adding lct-hit to an element
+  // that already had it never restarted the pulse — stepping onto the same hit
+  // twice showed nothing at all.
   function jumpTo(el) {
     if (!el || !el.isConnected) return;
-    // settle loop: first scroll estimate lands short across sleeping regions
-    let tries = 0;
-    const step = () => {
-      el.scrollIntoView({ behavior: "auto", block: "center" });
-      const r = el.getBoundingClientRect();
-      const centered =
-        r.height > 0 &&
-        Math.abs(r.top + r.height / 2 - innerHeight / 2) <= Math.max(80, r.height / 2);
-      if (!centered && ++tries < 8) requestAnimationFrame(step);
-    };
-    step();
-    if (lastHit) lastHit.classList.remove("lct-hit");
-    el.classList.add("lct-hit");
+    if (lastHit && lastHit !== el) lastHit.classList.remove("lct-hit");
     lastHit = el;
-    setTimeout(() => { if (lastHit === el) { el.classList.remove("lct-hit"); lastHit = null; } }, 1600);
+    self.LCTNav.jumpTo(el, { block: "center" });
   }
 
   function open(prefill) {
     ensureBar();
+    cacheSig = "";        // whatever the last session saw, re-sync on next tick
     buildCache();
     bar.classList.add("lct-s-open");
     isOpen = true;
@@ -150,8 +157,24 @@
 
   function toggle() { isOpen ? close() : open(); }
 
-  // keep the cache fresh if new messages stream in while the bar is open
-  function refresh() { if (isOpen) { buildCache(); runQuery(); } }
+  // Keep the cache fresh if new messages stream in while the bar is open.
+  // Gated on a cheap signature: this fires on every engine tick, and rebuilding
+  // the cache plus re-scanning every message's text is real work to do four
+  // times a second for a conversation that has not changed.
+  let cacheSig = "";
+
+  function refresh() {
+    if (!isOpen) return;
+    let msgs;
+    try { msgs = adapter.messages(); } catch (_) { return; }
+    const last = msgs[msgs.length - 1];
+    const sig = msgs.length + ":" + (last ? (last.textContent || "").length : 0);
+    if (sig === cacheSig) return;
+    cacheSig = sig;
+    const at = cur >= 0 && hits[cur] !== undefined ? items[hits[cur]].el : null;
+    buildCache(msgs);
+    runQuery(at);
+  }
 
   self.LCTSearch = { init, open, close, toggle, refresh, get isOpen() { return isOpen; } };
 })();

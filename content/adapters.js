@@ -9,40 +9,76 @@
 
   const dedupe = (els) => Array.from(new Set(els.filter(Boolean)));
 
-  /** Recursively search through open shadow roots for matching elements. */
+  /**
+   * Recursively search through open shadow roots for matching elements.
+   *
+   * Finding shadow hosts means visiting every element — there is no selector
+   * for "has a shadow root" — so this is budgeted. It is a deep fallback that
+   * reruns at rescan frequency, and an unbounded document-wide walk on a host
+   * that has drifted would cost more than the drift.
+   */
+  const SHADOW_BUDGET = 20000;
+
   function queryShadowAll(root, selector) {
     const results = [];
-    try { results.push(...root.querySelectorAll(selector)); } catch {}
-    const walk = (node) => {
-      if (node.shadowRoot) {
-        try { results.push(...node.shadowRoot.querySelectorAll(selector)); } catch {}
-        node.shadowRoot.querySelectorAll("*").forEach(walk);
+    let budget = SHADOW_BUDGET;
+    const scan = (node) => {
+      try { results.push(...node.querySelectorAll(selector)); } catch {}
+      const all = node.querySelectorAll("*");
+      for (const el of all) {
+        if (--budget < 0) return;
+        if (el.shadowRoot) scan(el.shadowRoot);
       }
     };
-    root.querySelectorAll("*").forEach(walk);
+    scan(root);
     return dedupe(results);
   }
+
+  const TEXTY = 20;   // chars that make a child look like a message, not chrome
+
+  const textyChildren = (el) => {
+    const out = [];
+    for (const c of el.children) if ((c.textContent || "").trim().length > TEXTY) out.push(c);
+    return out;
+  };
 
   /**
    * Shared fallback for platforms with build-hashed class names (DeepSeek,
    * Grok, Perplexity): the message list is the element with the most
-   * text-bearing children. Lowered threshold to 6 children with a stricter
-   * text-length filter (>20 chars) to avoid false positives on nav/sidebar
-   * elements while still catching shorter conversations.
+   * text-bearing children. 6+ children, each over TEXTY chars, so nav and
+   * sidebar lists don't win while short conversations still do.
+   *
+   * Scoped to <main> where there is one, and the text test is spent only on
+   * the shortlist. This is a rescan-frequency path on the experimental hosts,
+   * and serializing every candidate's subtree to rank it made a selector miss
+   * cost more than the lag the engine removes.
    */
-  function heuristicMessages() {
-    let best = null;
-    for (const el of document.querySelectorAll("div, section, ol, ul")) {
+  const SHORTLIST = 8;
+
+  function heuristicMessages(scope, minKids) {
+    const root = scope || document.querySelector("main") || document.body;
+    const floor = minKids || 6;
+    const shortlist = [];
+    for (const el of root.querySelectorAll("div, section, ol, ul")) {
       const n = el.childElementCount;
-      if (n < 6 || n > 2000) continue;
+      if (n < floor || n > 2000) continue;
       if (el.closest("nav, aside, header, footer")) continue;
-      if (!best || n > best.childElementCount) best = el;
+      // keep the densest few by child count alone — no text read yet
+      if (shortlist.length < SHORTLIST) shortlist.push(el);
+      else {
+        let worst = 0;
+        for (let i = 1; i < shortlist.length; i++) {
+          if (shortlist[i].childElementCount < shortlist[worst].childElementCount) worst = i;
+        }
+        if (n > shortlist[worst].childElementCount) shortlist[worst] = el;
+      }
     }
-    if (!best) return [];
-    const kids = Array.from(best.children).filter(
-      (c) => (c.textContent || "").trim().length > 20
-    );
-    return kids.length >= 4 ? kids : [];
+    shortlist.sort((a, b) => b.childElementCount - a.childElementCount);
+    for (const el of shortlist) {
+      const kids = textyChildren(el);
+      if (kids.length >= 4) return kids;
+    }
+    return [];
   }
 
   /* ---------- composer resolution (Context Bridge) ----------
@@ -89,22 +125,46 @@
     return best;
   }
 
-  /** Find the nearest scrollable ancestor of an element. */
+  /**
+   * Find the nearest scrollable ancestor of an element.
+   *
+   * Memoized. The walk costs a getComputedStyle AND a scrollHeight read per
+   * ancestor — style plus layout, a dozen levels deep — and the minimap and the
+   * resume tracker each ask on every engine tick. Hosts really do rebuild their
+   * scroller (chat switch, zoom), so the answer is held briefly rather than for
+   * good, and a resize drops it outright.
+   */
+  const scrollerMemo = new WeakMap();   // el -> { at, gen, scroller }
+  const SCROLLER_TTL = 1000;
+  let scrollerGen = 0;
+  addEventListener("resize", () => { scrollerGen++; }, { passive: true });
+
   function findScroller(el) {
+    const memo = el && scrollerMemo.get(el);
+    if (memo && memo.gen === scrollerGen && Date.now() - memo.at < SCROLLER_TTL &&
+        memo.scroller.isConnected) {
+      return memo.scroller;
+    }
+
+    let found = null;
     let node = el;
     while (node && node !== document.body) {
       const s = getComputedStyle(node);
       if (/(auto|scroll)/.test(s.overflowY) && node.scrollHeight > node.clientHeight + 100) {
-        return node;
+        found = node;
+        break;
       }
       node = node.parentElement;
     }
-    return document.scrollingElement || document.documentElement;
+    if (!found) found = document.scrollingElement || document.documentElement;
+    if (el) scrollerMemo.set(el, { at: Date.now(), gen: scrollerGen, scroller: found });
+    return found;
   }
 
   const ADAPTERS = [
     {
       id: "chatgpt",
+      roleStable: true,   // data-message-author-role, set at mount
       convPath: /^\/c\//,
       label: "ChatGPT",
       hostRe: /(^|\.)chatgpt\.com$|(^|\.)chat\.openai\.com$/,
@@ -136,30 +196,12 @@
         ));
         if (els.length) return els;
 
-        // Layer 5: structural — largest child-list with text content
-        const root = document.querySelector("main") || document.body;
-        let best = null, bestN = 0;
-        for (const el of root.querySelectorAll("div")) {
-          const n = el.childElementCount;
-          if (n < 4 || n > 2000) continue;
-          if (el.closest("nav, aside, header, footer")) continue;
-          const textKids = Array.from(el.children).filter(
-            (c) => (c.textContent || "").trim().length > 20
-          );
-          if (textKids.length > bestN && textKids.length >= 4) {
-            bestN = textKids.length;
-            best = el;
-          }
-        }
-        if (best) {
-          els = Array.from(best.children).filter(
-            (c) => (c.textContent || "").trim().length > 20
-          );
-          if (els.length >= 4) return els;
-        }
-
-        // Layer 6: shared heuristic (last resort)
-        return heuristicMessages();
+        // Layer 5 (last resort): structural — densest child-list with text.
+        // Shared with the other hosts rather than a second, costlier copy: the
+        // copy that lived here serialized every div's children to rank them,
+        // which on a redesign would have run over the whole document four
+        // times a second. 4 children, not 6 — ChatGPT's threshold.
+        return heuristicMessages(null, 4);
       },
       role(el) {
         // Check the element itself first (current ChatGPT puts role on the message div)
@@ -182,6 +224,7 @@
     },
     {
       id: "claude",
+      roleStable: true,   // the user-message testid, set at mount
       convPath: /^\/chat\//,
       label: "Claude",
       hostRe: /(^|\.)claude\.ai$/,
@@ -201,6 +244,7 @@
     },
     {
       id: "gemini",
+      roleStable: true,   // the custom element's own tag name
       convPath: /^\/app\/./,
       label: "Gemini",
       hostRe: /(^|\.)gemini\.google\.com$/,
@@ -314,6 +358,7 @@
     },
     {
       id: "deepseek",
+      roleStable: true,   // the class name the app renders it with
       convPath: /^\/(a\/)?chat\/./,
       label: "DeepSeek",
       hostRe: /(^|\.)chat\.deepseek\.com$/,
@@ -332,6 +377,7 @@
     },
     {
       id: "grok",
+      roleStable: true,   // data-role / alignment class, set at mount
       convPath: /^\/(c|chat)\/./,
       label: "Grok",
       hostRe: /(^|\.)grok\.com$/,
@@ -384,6 +430,7 @@
     },
     {
       id: "synthetic",
+      roleStable: true,   // an explicit data-lct-role attribute
       convPath: /(synthetic|demo)\.html$/,
       label: "Test Page",
       hostRe: /^(localhost|127\.0\.0\.1)$/,
@@ -404,6 +451,26 @@
 
   // adapters without an explicit composer() use the generic resolver
   for (const a of ADAPTERS) if (!a.composer) a.composer = () => pickComposer([]);
+
+  /* role() is a subtree query on most hosts, and four callers ask for every
+     message on a timer — the minimap's meta, the chat card's record, the
+     outline's render and the archive flush. A message's role never changes, so
+     memoize it once at the boundary and every caller gets it.
+
+     Only for adapters flagged roleStable: those read a marker that is present
+     the moment the element mounts. Perplexity is deliberately not one — its
+     role() decides from text length, so a streaming answer reads as "user"
+     until it grows, and caching that would make the guess permanent. */
+  const roleMemo = new WeakMap();
+  for (const a of ADAPTERS) {
+    if (!a.roleStable) continue;
+    const read = a.role;
+    a.role = function (el) {
+      let r = roleMemo.get(el);
+      if (r === undefined) { r = read.call(this, el); roleMemo.set(el, r); }
+      return r;
+    };
+  }
 
   self.LCTAdapters = { detect, findScroller, pickComposer };
 })();

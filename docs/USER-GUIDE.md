@@ -120,16 +120,48 @@ search already open on your words.
   you import into Recall.
 
 **Reinstall continuity:** while the archive is idle, choose **Create reinstall
-backup**. It saves a versioned `.lctbackup` file encrypted with AES-GCM; your
-passphrase is derived locally with PBKDF2-SHA-256 (600,000 iterations) and is
-never stored. After reinstalling, restore that file before checking history:
-Recall merges the newer checkpoint and checks only chats created in the gap.
+backup**. It saves a versioned `.lctbackup` file: a random file key encrypts the
+archive with AES-256-GCM, and that key is itself wrapped under a key stretched
+from your passphrase with PBKDF2-SHA-256 at 1,000,000 rounds over a 32-byte
+random salt. Both layers authenticate the file's own header, so a file edited to
+claim a cheaper KDF, a different compression format, or someone else's key
+envelope fails to open rather than opening weaker. Your passphrase is never
+stored, never synced, and cannot be recovered — by us or by anyone.
+
+Leave **Also keep writing this backup automatically** ticked and the worker
+keeps a current copy in `Downloads/Long Chat Toolkit/` by itself. This is the
+part that matters: the manual button only ever helped people who remembered to
+press it before uninstalling.
+
+**After a reinstall,** archiving restarts on its own straight away and adds only
+what is missing — it does not wait for you to restore anything. The Recall page
+offers your previous backup at the top; restoring it merges in, leaving chats
+already archived alone and bringing back the older ones your providers no longer
+list. Restoring is a shortcut, never a prerequisite.
+
+**When you delete a chat on the provider's site,** the archived copy is *not*
+deleted with it. It is held aside and you are asked — a badge on the toolbar
+icon, a row in the popup, and a panel on the Recall page naming each chat and
+its message count, with **Keep** and **Delete** per chat plus **Keep all** /
+**Delete all**. Under *When a chat is deleted on the site* you can make either
+answer standing: **always keep my backup copy** (the archive outlives the
+provider) or **always delete it from my backup too** (the archive mirrors the
+provider exactly). Deletions are noticed by a full history listing that runs
+about once a day; if that listing comes back missing an implausible share of
+your archive — a signed-out session, a provider hiccup — it is discarded rather
+than acted on, so a glitch can never put your whole archive up for deletion.
+
+**Restoring is rate-limited.** Repeated wrong passphrases pause the restore box
+for an escalating delay, counted in the background worker, so reloading the page
+or opening a second one does not reset it.
 
 **Privacy, provable:** the archive lives in your browser's local extension
 storage. The only history network requests are scoped to the declared
-first-party AI-provider endpoints; Long Chat Toolkit has no server, telemetry
-or chat-data upload route. The Recall page shows exactly what's stored (chats,
-messages, MB) and has a delete-everything button.
+first-party AI-provider endpoints. There is no telemetry and no chat-data
+upload route of any kind; the single non-provider request the extension can
+make is licence verification, and it carries a licence key and a device hash —
+nothing else, and never on the free tier. The Recall page shows exactly what's
+stored (chats, messages, MB) and has a delete-everything button.
 **Honesty note:** without an import, Recall only knows chats you've opened
 since installing — it says so rather than pretending otherwise.
 
@@ -312,10 +344,17 @@ your own scripts).
   access only to supported AI providers so an explicit history check can read
   your own account. It does not grant a generic upload destination, and the
   extension contains no analytics or remote-code path.
-- **The one exception, stated plainly:** activating Pro contacts the payment
-  provider's licence server, and a licensed copy re-checks there at most once a
-  month. It sends your licence key and a device label — never conversation
-  text, never a cookie. The free tier never contacts it at all.
+- **The one exception, stated plainly:** licensing. Activating Pro contacts the
+  payment provider's licence server, and our entitlement endpoint, which returns
+  a signed 90-day token. A licensed copy renews that token at most every 30 days
+  and re-checks the payment provider at most monthly. Between them, four things
+  leave the machine: your licence key, a coarse device label ("Chrome · macOS"),
+  a hash of a random device id, and the activation receipt id. Never conversation
+  text, never a cookie, never an account. The free tier contacts neither, ever.
+- **Why a token at all:** paid features are checked against a signature the
+  extension verifies offline. That is what makes Pro real without an account,
+  a login, or a call every time you search — and it is why the extension keeps
+  working on a plane.
 - **No accounts, no analytics, no telemetry, no remote code.**
 - **When we talk to a provider:** on the sync schedule, when you press a sync
   button, and — on ChatGPT — once when you open a conversation, to read that
@@ -325,12 +364,27 @@ your own scripts).
 - **ChatGPT timestamp script:** the one page-world script (ChatGPT only) is
   bundled, unminified, read-only, and makes no network calls. It reads
   message times from ChatGPT's own in-page state and nothing else.
+- **The backup file assumes it will be stolen.** AES-256-GCM under a random
+  per-file key, wrapped by PBKDF2-SHA-256 at 1,000,000 rounds; both layers
+  authenticate the header, and a file declaring fewer than 600,000 rounds is
+  refused outright rather than opened weakly. Failed restore attempts are
+  throttled by the background worker, not the page.
+- **Backup key material never roams.** The wrapped key that makes unattended
+  backups possible is kept in local extension storage only, never in
+  `storage.sync`. Anything able to read it can already read the plaintext
+  archive next to it, so it costs nothing to keep — and everything to sync.
+- **Nothing deletes your archive but you.** No provider response, failed
+  request or odd-looking listing removes archived text. The only code path that
+  deletes runs behind your answer to the prompt (or the standing policy you
+  chose yourself).
 - **Open source.** Read every line: the repo is public.
 
-**Uninstalling** removes local extension data. Before uninstalling, create an
-encrypted reinstall backup; the `.lctbackup` file stays on your disk, and its
-small durable marker can prompt you to restore before a new install checks the
-post-backup gap.
+**Uninstalling** removes local extension data — including the backup key
+material, so a wiped browser cannot keep writing readable archives of whatever
+comes next. Your `.lctbackup` files stay on your disk. Turn automatic backup on
+and there is nothing to remember before uninstalling; a small durable marker
+also lets the new install offer the restore, while archiving restarts by itself
+either way.
 
 ---
 
