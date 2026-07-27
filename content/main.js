@@ -130,6 +130,47 @@
     }, 1500);
   }
 
+  /* ---------- usage tracking ----------
+     Counts user-sent messages per platform in a rolling 3-hour window.
+     On first tick (or after a chat switch) the current count is a baseline —
+     we never count pre-existing messages as newly sent. Writes are throttled
+     at the same 1.5s cadence as pushStats to avoid hammering storage. */
+  const USAGE_WINDOW_MS = 3 * 60 * 60 * 1000; // 3 hours
+  let prevUserMsgCount = -1; // -1 = baseline not yet established
+  let usageTimer = null;
+  let usagePending = 0;
+
+  function resetUsageBaseline() { prevUserMsgCount = -1; }
+
+  function trackUsage(messages) {
+    let userCount = 0;
+    for (const el of messages) {
+      if (adapter.role(el) === "user") userCount++;
+    }
+    // First tick or chat switch: snapshot existing count, don't record it.
+    if (prevUserMsgCount < 0) { prevUserMsgCount = userCount; return; }
+
+    const delta = userCount - prevUserMsgCount;
+    prevUserMsgCount = userCount;
+    if (delta <= 0) return; // deletion or no change
+
+    usagePending += delta;
+    if (usageTimer) return;
+    usageTimer = setTimeout(async () => {
+      usageTimer = null;
+      const batch = usagePending;
+      usagePending = 0;
+      const key = "usage:" + location.hostname;
+      const data = await store.get(key);
+      const rec = (data && data[key]) || { sent: [] };
+      const cutoff = Date.now() - USAGE_WINDOW_MS;
+      const pruned = Array.isArray(rec.sent) ? rec.sent.filter((ts) => ts > cutoff) : [];
+      const now = Date.now();
+      for (let i = 0; i < batch; i++) pruned.push(now);
+      await store.set({ [key]: { sent: pruned, platform: adapter.label, id: adapter.id, updatedAt: now } });
+    }, 1500);
+  }
+
   // Every module here self-throttles internally (minimap caches per-element
   // meta + rAF-batches its draw; chatcard/recall/stats debounce their writes;
   // outline only re-renders while open). So we call them every tick — crucially
@@ -155,6 +196,7 @@
       self.LCTRecall.update(messages);
     }
     pushStats(windowedCount, messages.length);
+    trackUsage(messages);
     injectExportButtons();
     updateCountPill(windowedCount);
     maybeShowAha(messages.length, windowedCount);
@@ -166,6 +208,7 @@
     currentRoute = routeId();
     loadedAt = Date.now(); // suppress save/offer while the host auto-scrolls
     resumeOffered = false;
+    resetUsageBaseline();
     removeChip();
     seedFromProvider();
   }

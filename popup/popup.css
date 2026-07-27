@@ -161,10 +161,82 @@ main { padding: 0 var(--gutter); }
 }
 .pulse-num { font-size: 21px; font-weight: 400; letter-spacing: -.035em; font-variant-numeric: tabular-nums; }
 .pulse-label { color: var(--ink-dim); font-size: 11.5px; }
-#stat-hosts { display: flex; flex-wrap: wrap; gap: 4px 14px; flex-basis: 100%; }
-#stat-hosts:not(:empty) { margin-top: 8px; }
-.host-row { display: flex; align-items: baseline; gap: 6px; color: var(--ink-faint); font-size: 10px; }
-.host-row b { color: var(--ink-dim); font-weight: 400; font-variant-numeric: tabular-nums; }
+/* ---------- usage circles ---------- */
+
+#usage-bars {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px 16px;
+  flex-basis: 100%;
+}
+#usage-bars:not(:empty) { margin-top: 10px; }
+
+.usage-circle {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  min-width: 56px;
+}
+
+/* The SVG ring */
+.usage-ring {
+  position: relative;
+  width: 36px;
+  height: 36px;
+}
+.usage-ring svg { display: block; width: 36px; height: 36px; }
+.usage-ring-track {
+  fill: none;
+  stroke: rgb(255 255 255 / .08);
+  stroke-width: 3;
+}
+.usage-ring-fill {
+  fill: none;
+  stroke-width: 3;
+  stroke-linecap: round;
+  transition: stroke-dashoffset .7s var(--ease);
+}
+/* Count text centered inside the ring */
+.usage-ring-count {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 9px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  line-height: 1;
+  pointer-events: none;
+}
+
+/* Labels below */
+.usage-circle-name {
+  font-size: 8.5px;
+  font-weight: 500;
+  letter-spacing: .01em;
+  line-height: 1;
+  white-space: nowrap;
+}
+.usage-circle-plan {
+  font-size: 7.5px;
+  color: var(--ink-faint);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+/* Warning state */
+.usage-circle.over90 .usage-ring-fill {
+  animation: ring-pulse 2.2s ease-in-out infinite alternate;
+}
+.usage-circle.over90 .usage-ring-count { color: var(--danger); }
+@keyframes ring-pulse {
+  from { filter: brightness(1) drop-shadow(0 0 0 transparent); }
+  to   { filter: brightness(1.3) drop-shadow(0 0 3px currentColor); }
+}
+
 
 /* ---------- the row stack: one icon column, hairline separated ---------- */
 

@@ -66,21 +66,164 @@
     $("toggle-history").checked = !!(s && s.history === true);
   }
 
-  function hostRow(label, count, total) {
-    const row = document.createElement("div");
-    row.className = "host-row";
-    const name = document.createElement("span");
-    name.textContent = label; // textContent, never innerHTML: storage data is not markup
-    const num = document.createElement("b");
-    num.textContent = total ? `${count.toLocaleString()} of ${total.toLocaleString()}` : count.toLocaleString();
-    row.append(name, num);
-    return row;
+  /* ---------- usage circles ----------
+     Per-provider circular progress rings showing messages sent in a rolling
+     window. Always visible for every platform the user has synced with.
+     Each ring shows: count in centre, platform name below, plan tier below. */
+
+  const USAGE_WINDOW_MS = 3 * 60 * 60 * 1000; // 3 hours
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  const RING_R = 15;                           // radius
+  const RING_C = 2 * Math.PI * RING_R;        // circumference ≈ 94.25
+
+  // Provider configuration: color, default limit, default plan label.
+  const PROVIDERS = {
+    chatgpt:    { color: "#10a37f", limit: 80,   plan: "Plus" },
+    claude:     { color: "#d97757", limit: 45,   plan: "Pro" },
+    gemini:     { color: "#4285f4", limit: null,  plan: "Free" },
+    deepseek:   { color: "#4d6bfe", limit: null,  plan: "Free" },
+    grok:       { color: "#c8c8c8", limit: null,  plan: "Free" },
+    perplexity: { color: "#20808d", limit: null,  plan: "Free" }
+  };
+
+  const HOST_TO_ID = {
+    "chatgpt.com": "chatgpt", "chat.openai.com": "chatgpt",
+    "claude.ai": "claude", "gemini.google.com": "gemini",
+    "chat.deepseek.com": "deepseek", "grok.com": "grok",
+    "www.perplexity.ai": "perplexity"
+  };
+
+  const ID_TO_LABEL = {
+    chatgpt: "ChatGPT", claude: "Claude", gemini: "Gemini",
+    deepseek: "DeepSeek", grok: "Grok", perplexity: "Perplexity"
+  };
+
+  const KNOWN_PLATFORMS = [
+    { id: "chatgpt", label: "ChatGPT" },
+    { id: "claude",  label: "Claude" },
+    { id: "gemini",  label: "Gemini" }
+  ];
+
+  function usageCircleEl(providerId, platformLabel, sent, limit, plan) {
+    const info = PROVIDERS[providerId] || PROVIDERS.chatgpt;
+    const color = info.color;
+
+    const wrap = document.createElement("div");
+    wrap.className = "usage-circle";
+
+    // Percentage for the ring arc
+    const raw = limit ? sent / limit : (sent > 0 ? 0.15 : 0);
+    const pct = Math.max(raw, 0.04); // always show a sliver
+    if (limit && raw >= 0.9) wrap.classList.add("over90");
+
+    // SVG ring
+    const ring = document.createElement("div");
+    ring.className = "usage-ring";
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 36 36");
+
+    // Track circle (background)
+    const track = document.createElementNS(SVG_NS, "circle");
+    track.setAttribute("cx", "18"); track.setAttribute("cy", "18");
+    track.setAttribute("r", String(RING_R));
+    track.setAttribute("class", "usage-ring-track");
+
+    // Fill circle (progress arc)
+    const fill = document.createElementNS(SVG_NS, "circle");
+    fill.setAttribute("cx", "18"); fill.setAttribute("cy", "18");
+    fill.setAttribute("r", String(RING_R));
+    fill.setAttribute("class", "usage-ring-fill");
+    fill.style.stroke = color;
+    fill.style.strokeDasharray = String(RING_C);
+    fill.style.strokeDashoffset = String(RING_C * (1 - Math.min(pct, 1)));
+    // Rotate -90° so the arc starts from the top
+    fill.setAttribute("transform", "rotate(-90 18 18)");
+
+    svg.append(track, fill);
+
+    // Count text inside the ring
+    const countEl = document.createElement("span");
+    countEl.className = "usage-ring-count";
+    countEl.textContent = limit ? `${sent}` : `${sent}`;
+    ring.append(svg, countEl);
+
+    // Platform name
+    const nameEl = document.createElement("span");
+    nameEl.className = "usage-circle-name";
+    nameEl.textContent = platformLabel;
+    nameEl.style.color = color;
+
+    // Plan label (e.g. "0/80 · Plus")
+    const planEl = document.createElement("span");
+    planEl.className = "usage-circle-plan";
+    const planParts = [];
+    if (limit) planParts.push(`${sent}/${limit}`);
+    planParts.push(plan || "Free");
+    planEl.textContent = planParts.join(" · ");
+
+    wrap.append(ring, nameEl, planEl);
+    return wrap;
   }
 
-  function paintStats(total, rows) {
-    $("stat-windowed").textContent = (total || 0).toLocaleString();
-    $("stat-hosts").replaceChildren(
-      ...(rows || []).map(([label, count, t]) => hostRow(label, count, t))
+  /**
+   * Paint the usage circles and the windowed total.
+   * @param {number} windowedTotal
+   * @param {Array} statRows — [[platform, windowed, total], ...]
+   * @param {Object} usageMap — { hostname: { sent, platform, id } }
+   * @param {string[]} syncedPlatforms — platform ids from recall-sync checkpoints
+   */
+  function paintUsageBars(windowedTotal, statRows, usageMap, syncedPlatforms) {
+    $("stat-windowed").textContent = (windowedTotal || 0).toLocaleString();
+
+    const cutoff = Date.now() - USAGE_WINDOW_MS;
+    const barMap = new Map();
+
+    // 1. Seed from usage data (sent timestamps)
+    if (usageMap) {
+      for (const [host, rec] of Object.entries(usageMap)) {
+        const id = rec.id || HOST_TO_ID[host] || host;
+        const label = rec.platform || ID_TO_LABEL[id] || id;
+        const sent = Array.isArray(rec.sent) ? rec.sent.filter((ts) => ts > cutoff).length : 0;
+        const info = PROVIDERS[id] || {};
+        barMap.set(id, { id, label, sent, limit: info.limit ?? null,
+          plan: info.plan || "Free",
+          lastSent: sent > 0 ? Math.max(...rec.sent) : 0 });
+      }
+    }
+
+    // 2. Merge stats-only platforms
+    for (const [label] of (statRows || [])) {
+      const entry = Object.entries(HOST_TO_ID).find(([, v]) =>
+        v === label.toLowerCase() || label.toLowerCase().startsWith(v));
+      const pid = entry ? entry[1] : label.toLowerCase();
+      if (barMap.has(pid)) continue;
+      const info = PROVIDERS[pid] || {};
+      barMap.set(pid, { id: pid, label, sent: 0, limit: info.limit ?? null,
+        plan: info.plan || "Free", lastSent: 0 });
+    }
+
+    // 3. Seed from synced platforms
+    for (const pid of (syncedPlatforms || [])) {
+      if (barMap.has(pid)) continue;
+      const info = PROVIDERS[pid] || {};
+      barMap.set(pid, { id: pid, label: ID_TO_LABEL[pid] || pid, sent: 0,
+        limit: info.limit ?? null, plan: info.plan || "Free", lastSent: 0 });
+    }
+
+    // 4. Fallback: show default platforms
+    if (barMap.size === 0) {
+      for (const p of KNOWN_PLATFORMS) {
+        const info = PROVIDERS[p.id] || {};
+        barMap.set(p.id, { id: p.id, label: p.label, sent: 0,
+          limit: info.limit ?? null, plan: info.plan || "Free", lastSent: 0 });
+      }
+    }
+
+    const items = [...barMap.values()].sort((a, b) =>
+      b.lastSent - a.lastSent || a.label.localeCompare(b.label));
+
+    $("usage-bars").replaceChildren(
+      ...items.map((b) => usageCircleEl(b.id, b.label, b.sent, b.limit, b.plan))
     );
   }
 
@@ -103,7 +246,14 @@
   $("version").textContent = "v" + chrome.runtime.getManifest().version;
   paintToggles(cache && cache.settings);
   paintPlan(!!(cache && cache.pro), cache && cache.masked, (cache && cache.trialUntil) || 0);
-  if (cache && cache.stats) paintStats(cache.stats.total, cache.stats.rows);
+  // Always paint usage bars — the fallback inside paintUsageBars shows default
+  // platforms even without data so the bars are never invisible on first open.
+  paintUsageBars(
+    (cache && cache.stats && cache.stats.total) || 0,
+    (cache && cache.stats && cache.stats.rows) || [],
+    (cache && cache.stats && cache.stats.usage) || {},
+    (cache && cache.stats && cache.stats.synced) || []
+  );
   if (cache && cache.licenseNote) paintLicenseState({ ...cache.licenseNote, sticky: true });
 
   /* ---------- authoritative async load ---------- */
@@ -123,7 +273,21 @@
       .sort((a, b) => b[1].windowed - a[1].windowed)
       .map(([host, h]) => [String(h.platform || host), h.windowed, h.total || 0]);
     const total = rows.reduce((s, [, n]) => s + n, 0);
-    paintStats(total, rows);
+
+    // usage tracking: messages sent per platform in the rolling window
+    const usageMap = {};
+    for (const [k, v] of Object.entries(all)) {
+      if (k.startsWith("usage:") && v && Array.isArray(v.sent)) {
+        usageMap[k.slice(6)] = v;
+      }
+    }
+
+    // Detect which platforms the user has synced (recall-sync checkpoint keys)
+    const syncedPlatforms = Object.keys(all)
+      .filter((k) => k.startsWith("recall-sync-") && !k.includes("progress") && !k.includes("ledger") && !k.includes("work") && !k.includes("run") && !k.includes("profile"))
+      .map((k) => k.replace("recall-sync-", ""));
+
+    paintUsageBars(total, rows, usageMap, syncedPlatforms);
 
     // The worker decides; the popup only renders. Asking it here rather than
     // recomputing locally means one verdict, and the one that gates the data.
@@ -171,7 +335,7 @@
     const seatCount = licenseKind === "dodo"
       ? Object.keys((await self.LCTDodo.readSeats()).seats).length : 0;
     paintPlan(pro, masked, trialUntil);
-    saveCache({ pro, masked, trialUntil, licenseKind, seatCount, settings: settings || null, stats: { total, rows } });
+    saveCache({ pro, masked, trialUntil, licenseKind, seatCount, settings: settings || null, stats: { total, rows, usage: usageMap, synced: syncedPlatforms } });
   }
 
   /* ---------- settings ---------- */
@@ -681,7 +845,7 @@
   try {
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area === "local" && Object.keys(changes).some((k) =>
-        k.startsWith("stats:") || k === "settings" || k === "license" || k === "trial")) {
+        k.startsWith("stats:") || k.startsWith("usage:") || k === "settings" || k === "license" || k === "trial")) {
         load();
       }
       if ((area === "local" && PLAT_IDS.some((id) => changes[syncProgKey(id)])) ||
