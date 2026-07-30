@@ -86,7 +86,12 @@
      down against a nominal busy window and the legend beside it reports what
      was sent rather than inventing a remainder. */
 
-  const USAGE_WINDOW_MS = 3 * 60 * 60 * 1000; // 3 hours
+  /** Milliseconds since midnight local time — the "Today" window. */
+  function msSinceMidnight() {
+    const now = new Date();
+    const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    return now - midnight;
+  }
   const SVG_NS = "http://www.w3.org/2000/svg";
   const DIAL_BOX = 120;      // svg viewBox units, square
   const DIAL_PX = 80;        // rendered size — needed to size the centre readout
@@ -109,8 +114,8 @@
   // read as that platform without the legend, far enough that it is our mark
   // and not theirs. Kept in step with --p-* in recall.css.
   const PROVIDERS = {
-    chatgpt:    { color: "#19b884", limit: 80,   plan: "Plus" },
-    claude:     { color: "#e0805c", limit: 45,   plan: "Pro" },
+    chatgpt:    { color: "#19b884", limit: null,  plan: "Free" },
+    claude:     { color: "#e0805c", limit: null,  plan: "Free" },
     gemini:     { color: "#4a8ef6", limit: null,  plan: "Free" },
     deepseek:   { color: "#7b82fd", limit: null,  plan: "Free" },
     grok:       { color: "#dcdce4", limit: null,  plan: "Free" },
@@ -130,9 +135,12 @@
   };
 
   const KNOWN_PLATFORMS = [
-    { id: "chatgpt", label: "ChatGPT" },
-    { id: "claude",  label: "Claude" },
-    { id: "gemini",  label: "Gemini" }
+    { id: "chatgpt",    label: "ChatGPT" },
+    { id: "claude",     label: "Claude" },
+    { id: "gemini",     label: "Gemini" },
+    { id: "deepseek",   label: "DeepSeek" },
+    { id: "grok",       label: "Grok" },
+    { id: "perplexity", label: "Perplexity" }
   ];
 
   /* Published ceilings, by plan. A paid tier states its allowance, so the ring
@@ -149,8 +157,8 @@
     const key = String(plan || "").toLowerCase();
     const table = PLAN_LIMITS[id] || {};
     if (table[key]) return table[key];
-    if (key === "free") return null;
-    return (PROVIDERS[id] || {}).limit ?? null;
+    // Unknown or free plan: no published cap. Never assume a paid limit.
+    return null;
   }
 
   /* Two accounts on one platform share a hue and separate on lightness: the
@@ -270,20 +278,14 @@
       dial.classList.add("has-core");
       const core = document.createElement("div");
       core.className = "usage-core";
-      // The figure agrees with the rings around it: messages still in hand,
-      // totalled over the accounts that publish a ceiling. With no capped
-      // account on the dial there is no remainder to total, so it falls back
-      // to the count sent — which is the only honest figure at that point.
-      const capped = items.filter((it) => it.limit);
-      const total = capped.length
-        ? capped.reduce((s, it) => s + Math.max(it.limit - it.sent, 0), 0)
-        : items.reduce((s, it) => s + it.sent, 0);
+      // The figure shows total messages used today across all platforms.
+      const total = items.reduce((s, it) => s + it.sent, 0);
       const num = document.createElement("span");
       num.className = "usage-core-num";
       num.textContent = total.toLocaleString();
       const cap = document.createElement("span");
       cap.className = "usage-core-cap";
-      cap.textContent = capped.length ? "left" : "sent";
+      cap.textContent = "used";
       core.append(num, cap);
       dial.append(core);
     }
@@ -298,7 +300,7 @@
 
     const head = document.createElement("span");
     head.className = "usage-legend-head";
-    head.textContent = `Last ${USAGE_WINDOW_MS / 36e5} hours`;
+    head.textContent = "Today";
     legend.append(head);
 
     for (const it of items) {
@@ -319,16 +321,15 @@
       plan.textContent = it.note || it.plan || "Free";
       name.append(plan);
 
-      // The number matches the ring: what is left where there is a ceiling to
-      // subtract from, what was sent where there isn't. Each carries its own
-      // word, so the two never get read as the same quantity.
+      // The number shows how many messages were used today. If there is a
+      // published limit, the denominator is shown so the user knows the ceiling.
       const val = document.createElement("span");
       val.className = "usage-val";
       const num = document.createElement("b");
-      num.textContent = String(it.limit ? Math.max(it.limit - it.sent, 0) : it.sent);
+      num.textContent = String(it.sent);
       const cap = document.createElement("span");
       cap.className = "usage-cap";
-      cap.textContent = it.limit ? `/${it.limit} left` : " sent";
+      cap.textContent = it.limit ? ` / ${it.limit} used` : " used";
       val.append(num, cap);
 
       row.append(pip, name, val);
@@ -345,10 +346,11 @@
    * @param {Object} usageMap — { hostname: { sent, platform, id } }
    * @param {string[]} syncedPlatforms — platform ids from recall-sync checkpoints
    */
+  let dialPainted = false;
   function paintUsage(windowedTotal, statRows, usageMap, syncedPlatforms) {
     $("stat-windowed").textContent = (windowedTotal || 0).toLocaleString();
 
-    const cutoff = Date.now() - USAGE_WINDOW_MS;
+    const cutoff = Date.now() - msSinceMidnight();
     const barMap = new Map();
 
     // A ring is one ACCOUNT, not one platform: the ceiling being counted
@@ -365,7 +367,7 @@
         const acct = cut < 0 ? "" : String(scope).slice(cut + 1);
         const id = rec.id || HOST_TO_ID[host] || host;
         const label = rec.platform || ID_TO_LABEL[id] || id;
-        const sent = Array.isArray(rec.sent) ? rec.sent.filter((ts) => ts > cutoff).length : 0;
+        const sent = Array.isArray(rec.sent) ? rec.sent.filter((ts) => ts >= cutoff).length : 0;
         const info = PROVIDERS[id] || {};
         seat(id);
         barMap.set(id + "|" + acct, {
@@ -403,13 +405,14 @@
         limit: info.limit ?? null, plan: info.plan || "Free", account: "", ordinal: 0, lastSent: 0 });
     }
 
-    // 4. Fallback: show default platforms
-    if (barMap.size === 0) {
-      for (const p of KNOWN_PLATFORMS) {
-        const info = PROVIDERS[p.id] || {};
-        barMap.set(p.id + "|", { id: p.id, acct: "", label: p.label, sent: 0,
-          limit: info.limit ?? null, plan: info.plan || "Free", account: "", ordinal: 0, lastSent: 0 });
-      }
+    // 4. Always show known platforms — Gemini, ChatGPT, Claude etc. appear
+    //    even without data so the user knows they are supported and tracked.
+    for (const p of KNOWN_PLATFORMS) {
+      if (covered(p.id)) continue;
+      const info = PROVIDERS[p.id] || {};
+      seat(p.id);
+      barMap.set(p.id + "|", { id: p.id, acct: "", label: p.label, sent: 0,
+        limit: info.limit ?? null, plan: info.plan || "Free", account: "", ordinal: 0, lastSent: 0 });
     }
 
     // Only say which account when there is more than one to confuse: a single
@@ -437,6 +440,11 @@
 
     const panel = document.createElement("div");
     panel.className = "usage-panel";
+    // After the first paint the arcs are already in place — replaying the
+    // sweep animation on every storage-change repaint is the visible
+    // "multiple refresh" glitch. Suppress it from the second paint on.
+    if (dialPainted) panel.classList.add("no-intro");
+    dialPainted = true;
     panel.append(usageDialEl(items), usageLegendEl(items));
     $("usage-bars").replaceChildren(panel);
   }

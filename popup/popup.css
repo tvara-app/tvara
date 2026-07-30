@@ -312,6 +312,11 @@ main { padding: 0 var(--gutter); }
 @media (prefers-reduced-motion: reduce) {
   .usage-arc, .usage-bead, .usage-bead.hot { animation: none; }
 }
+/* Subsequent repaints (async load, storage changes) must not replay the
+   intro sweep — .no-intro is set from the second paintUsage call on. */
+.no-intro .usage-arc,
+.no-intro .usage-bead,
+.no-intro .usage-bead.hot { animation: none; }
 
 
 /* ---------- the row stack: one icon column, hairline separated ---------- */

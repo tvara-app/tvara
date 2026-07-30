@@ -145,7 +145,7 @@
      On first tick (or after a chat switch) the current count is a baseline —
      we never count pre-existing messages as newly sent. Writes are throttled
      at the same 1.5s cadence as pushStats to avoid hammering storage. */
-  const USAGE_WINDOW_MS = 3 * 60 * 60 * 1000; // 3 hours
+  const USAGE_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours — pruning horizon; popup filters to "today"
   const ACCOUNT_TTL_MS = 5 * 60 * 1000;
   let prevUserMsgCount = -1; // -1 = baseline not yet established
   let usageTimer = null;
