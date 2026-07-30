@@ -34,6 +34,32 @@
     return dedupe(results);
   }
 
+  /* ---------- provider-assigned message ids ----------
+     The backfill walker and the minimap's seek both have to say "this is the
+     same message as before" across a remount, and a provider id is the only
+     key that survives one. A text-derived key moves while an answer streams —
+     and a walker whose "did the host hand us a page?" test reads a moving key
+     never stops asking for pages.
+
+     Two id shapes cover every host that assigns one: ChatGPT's
+     data-message-id, and Gemini's r_<hex> response ids. A host with neither
+     returns "" and the callers fall back deliberately, rather than being handed
+     a key that only looks stable. Same probe timeline.js keyOf() runs; the two
+     are meant to stay in step. */
+  const R_ID = /^r_[0-9a-f]+$/i;
+
+  function stableKey(el) {
+    if (!el || !el.getAttribute) return "";
+    const withId = el.hasAttribute("data-message-id")
+      ? el
+      : (el.querySelector && el.querySelector("[data-message-id]"));
+    if (withId) return withId.getAttribute("data-message-id") || "";
+    if (el.id && R_ID.test(el.id)) return el.id;
+    const rid = el.querySelector && el.querySelector('[id^="r_"], [id^="R_"]');
+    if (rid && R_ID.test(rid.id)) return rid.id;
+    return "";
+  }
+
   const TEXTY = 20;   // chars that make a child look like a message, not chrome
 
   const textyChildren = (el) => {
@@ -165,6 +191,7 @@
     {
       id: "chatgpt",
       roleStable: true,   // data-message-author-role, set at mount
+      virtualizes: true,  // mounts only the recent tail — see history-loader.js
       convPath: /^\/c\//,
       label: "ChatGPT",
       hostRe: /(^|\.)chatgpt\.com$|(^|\.)chat\.openai\.com$/,
@@ -225,6 +252,7 @@
     {
       id: "claude",
       roleStable: true,   // the user-message testid, set at mount
+      virtualizes: true,
       convPath: /^\/chat\//,
       label: "Claude",
       hostRe: /(^|\.)claude\.ai$/,
@@ -245,6 +273,7 @@
     {
       id: "gemini",
       roleStable: true,   // the custom element's own tag name
+      virtualizes: true,
       convPath: /^\/app\/./,
       label: "Gemini",
       hostRe: /(^|\.)gemini\.google\.com$/,
@@ -378,6 +407,7 @@
     {
       id: "grok",
       roleStable: true,   // data-role / alignment class, set at mount
+      virtualizes: true,
       convPath: /^\/(c|chat)\/./,
       label: "Grok",
       hostRe: /(^|\.)grok\.com$/,
@@ -449,8 +479,44 @@
     return ADAPTERS.find((a) => a.hostRe.test(host)) || null;
   }
 
+  /* ---------- which account is this page? ----------
+     Only for hosts the worker cannot ask a provider about. Perplexity used to
+     be one of them and no longer is — it has a sync adapter now, and its
+     /api/auth/session names the signed-in user outright, so a hint from here
+     would be a second, competing answer to a question the provider already
+     answers. The hint never leaves the extension raw: the worker
+     salts and hashes it exactly like a provider account id, and the result is
+     the same opaque tag everything else is keyed by. It only has to be STABLE
+     per account — it is never shown, parsed, or sent anywhere.
+
+     Google multi-login is the case that matters: two Gemini accounts really are
+     open side by side in one profile, distinguished by /u/N in the path. */
+  const ACCOUNT_HINTS = {
+    gemini() {
+      const seat = location.pathname.match(/^\/u\/(\d+)(?:\/|$)/);
+      if (seat) return "u" + seat[1];
+      // Signed-in Google pages carry the account in the switcher's label. The
+      // first email-shaped string is the active account.
+      for (const el of document.querySelectorAll('a[aria-label*="@"], [aria-label*="Google Account"]')) {
+        const found = String(el.getAttribute("aria-label") || "").match(/[\w.+-]+@[\w.-]+\.\w+/);
+        if (found) return found[0];
+      }
+      return "";
+    }
+  };
+
+  function accountHint(adapter) {
+    const read = adapter && ACCOUNT_HINTS[adapter.id];
+    if (!read) return "";
+    try { return String(read() || "").slice(0, 120); } catch { return ""; }
+  }
+
   // adapters without an explicit composer() use the generic resolver
   for (const a of ADAPTERS) if (!a.composer) a.composer = () => pickComposer([]);
+  // …and without an explicit stableKey() use the shared id probe. A host that
+  // assigns ids in some third shape overrides this; one that assigns none at
+  // all needs no override, because the shared probe already returns "".
+  for (const a of ADAPTERS) if (!a.stableKey) a.stableKey = stableKey;
 
   /* role() is a subtree query on most hosts, and four callers ask for every
      message on a timer — the minimap's meta, the chat card's record, the
@@ -472,5 +538,5 @@
     };
   }
 
-  self.LCTAdapters = { detect, findScroller, pickComposer };
+  self.LCTAdapters = { detect, findScroller, pickComposer, accountHint, stableKey };
 })();

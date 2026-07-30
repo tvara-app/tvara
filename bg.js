@@ -25,7 +25,7 @@ try { importScripts("lib/license.js", "lib/dodo.js", "lib/entitlement.js"); }
 catch (_) { /* tests load bg.js bare */ }
 
 const DB_NAME = "lct-recall";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const MAX_MSG_CHARS = 4000;   // per message — plenty for search, bounds disk
 const MAX_MSGS = 6000;        // per chat
 const MAX_RESULTS = 60;
@@ -49,6 +49,12 @@ function db() {
       // deserializing message bodies. On a large archive that is the difference
       // between reading a few hundred KB and the entire database.
       if (!s.indexNames.contains("sourceUpdatedAt")) s.createIndex("sourceUpdatedAt", "sourceUpdatedAt");
+      // Which account a chat came from, paired with its revision so ONE key walk
+      // answers both "what does this account hold" and "at which revision".
+      // A record with no `acct` is absent from this index by definition — that
+      // is what "not attributed to anybody yet" means, and it is why an
+      // unattributed chat can never become another account's deletion candidate.
+      if (!s.indexNames.contains("acctRev")) s.createIndex("acctRev", ["acct", "sourceUpdatedAt"]);
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => { dbPromise = null; reject(req.error); };
@@ -72,12 +78,18 @@ function clampChat(chat) {
     t: String(m.t || "").slice(0, MAX_MSG_CHARS),
     ts: typeof m.ts === "number" ? m.ts : 0
   }));
+  const acct = String(chat.acct || "").slice(0, 32);
   return {
     // mv=1 promises BOTH: every message carries its id, and nothing was dropped
     // by the MAX_MSGS window. Anything less cannot be an index source.
     // (`t` is still clamped to MAX_MSG_CHARS — norm() in minimap.js saturates at
     // 900 chars, so an archive-served tick is pixel-identical to a live one.)
     mv: msgs.length && src.length <= MAX_MSGS && msgs.every((m) => m.i) ? 1 : 0,
+    // Deliberately omitted rather than set empty when unknown: "absent from the
+    // acctRev index" is the single, uniform meaning of unattributed, whether the
+    // record predates attribution or was just written by a page that could not
+    // name its account.
+    ...(acct ? { acct } : {}),
     id: String(chat.id || "").slice(0, 600),
     host: String(chat.host || "").slice(0, 100),
     path: String(chat.path || "").slice(0, 500),
@@ -109,8 +121,15 @@ async function upsert(chat) {
   // for a 30-message fragment a few seconds later. Only a write that carries a
   // provider revision is allowed to shrink a record.
   const shrinks = !isMeta && !chat.sourceUpdatedAt;
+  // A page writing a chat it has open rarely knows which account it belongs to,
+  // and a write that dropped the attribution would quietly hand the record back
+  // to "unattributed" — undoing a sweep's only safety rail. Read first, carry
+  // the stored account forward.
+  let existing = null;
+  if (isMeta || shrinks || !chat.acct) {
+    existing = await reqP(tx(d, "readonly").get(id));
+  }
   if (isMeta || shrinks) {
-    const existing = await reqP(tx(d, "readonly").get(id));
     const keep = existing && existing.n > 0 &&
       (isMeta || existing.n > chat.msgs.length);
     if (keep) {
@@ -121,7 +140,7 @@ async function upsert(chat) {
       return { ok: true, kept: true };
     }
   }
-  const clamped = clampChat(chat);
+  const clamped = clampChat(chat.acct ? chat : { ...chat, acct: existing && existing.acct });
   // imports/sync carry the chat's real last-activity time — keep it
   if ((chat.keepTimes || isMeta) && chat.updatedAt) clamped.updatedAt = chat.updatedAt;
   await reqP(tx(d, "readwrite").put(clamped));
@@ -178,7 +197,9 @@ async function importBatch(chats) {
         stored.push(id);
         continue;
       }
-      const clamped = clampChat(chat);
+      // Same rule as upsert(): a restore carries no account, and must not strip
+      // one that a sync already established.
+      const clamped = clampChat(chat.acct ? chat : { ...chat, acct: previous && previous.acct });
       if ((chat.keepTimes || isMeta) && chat.updatedAt) clamped.updatedAt = chat.updatedAt;
       await reqP(wStore.put(clamped));
       ok++;
@@ -343,6 +364,94 @@ async function platformCount(host, prefix) {
   return reqP(tx(d, "readonly").count(IDBKeyRange.bound(start, start + "￿")));
 }
 
+/* ---------- per-account views of the archive ----------
+ *
+ * People run several accounts on the same provider precisely because a free
+ * tier runs out, so two accounts sharing one hostname is the normal case, not
+ * an exotic one. Two questions that look alike have to be answered from
+ * DIFFERENT sets, and conflating them is a data-loss bug:
+ *
+ *   "have I already got this chat?"  — every record under the host, whoever
+ *                                      owns it. Ids are provider-global, so an
+ *                                      id already held is never re-downloaded.
+ *   "what does THIS account hold?"   — only records attributed to it. Deletion
+ *                                      and coverage must use this one: a second
+ *                                      account's first complete listing would
+ *                                      otherwise nominate the first account's
+ *                                      entire history as vanished.
+ */
+
+/** Range over every `[acct, <revision>]` key. `[]` sorts above every number and
+ *  string in IndexedDB's key order, so this covers the account exactly. */
+const acctRange = (acct) => IDBKeyRange.bound([acct], [acct, []]);
+
+/** id → archived revision, for ONE account. Key-cursor only: no record bodies. */
+async function accountIndex(host, prefix, acct) {
+  const index = new Map();
+  if (!acct) return index;
+  const d = await db();
+  const start = host + prefix;
+  return new Promise((resolve) => {
+    let store;
+    try { store = tx(d, "readonly"); } catch { return resolve(index); }
+    if (!store.indexNames.contains("acctRev")) return resolve(index);
+    let cur;
+    try { cur = store.index("acctRev").openKeyCursor(acctRange(acct)); }
+    catch { return resolve(index); }
+    cur.onerror = () => resolve(index);
+    cur.onsuccess = () => {
+      const c = cur.result;
+      if (!c) return resolve(index);
+      const id = c.primaryKey;
+      if (typeof id === "string" && id.startsWith(start)) {
+        index.set(id, Number(Array.isArray(c.key) ? c.key[1] : 0) || 0);
+      }
+      c.continue();
+    };
+  });
+}
+
+/** How many chats this account owns — a keyed count, so the fetch loop can
+ *  refresh coverage without walking the archive again. */
+async function accountCount(acct) {
+  if (!acct) return 0;
+  const d = await db();
+  try {
+    const store = tx(d, "readonly");
+    if (!store.indexNames.contains("acctRev")) return 0;
+    return await reqP(store.index("acctRev").count(acctRange(acct)));
+  } catch { return 0; }
+}
+
+/**
+ * Stamp records with the account whose listing just named them.
+ *
+ * Appearing in an account's listing is positive proof of ownership — that is
+ * the ONLY evidence used here. Records the listing did not mention keep
+ * whatever they had (usually nothing), which is what makes the migration safe:
+ * an unattributed record is invisible to every account's deletion sweep until
+ * some account's listing claims it.
+ *
+ * Capped per pass because adoption rewrites whole records, and an archive of
+ * thousands would otherwise turn one pass into a multi-megabyte rewrite.
+ */
+async function adoptRecords(recordIds, acct, limit = BG_ADOPT_MAX) {
+  const claimed = [];
+  if (!acct || !recordIds.length) return { claimed, more: false };
+  const d = await db();
+  for (const recordId of recordIds) {
+    if (claimed.length >= limit) return { claimed, more: true };
+    try {
+      const rec = await reqP(tx(d, "readonly").get(recordId));
+      if (!rec || rec.acct === acct) continue;
+      rec.acct = acct;
+      await reqP(tx(d, "readwrite").put(rec));
+      claimed.push(recordId);
+    } catch { /* one row refusing to move must not stop the pass */ }
+  }
+  return { claimed, more: false };
+}
+
 /* ---------- stats / wipe ---------- */
 
 async function stats() {
@@ -382,7 +491,14 @@ const BG_HOST_POLICY = {
   "chatgpt.com":       { concurrency: 4, minIntervalMs: 320, listDelayMs: 600 },
   "claude.ai":         { concurrency: 4, minIntervalMs: 300, listDelayMs: 450 },
   "chat.deepseek.com": { concurrency: 3, minIntervalMs: 400, listDelayMs: 500 },
-  "grok.com":          { concurrency: 3, minIntervalMs: 400, listDelayMs: 500 }
+  "grok.com":          { concurrency: 3, minIntervalMs: 400, listDelayMs: 500 },
+  // Deliberately the slowest of the set. Perplexity sits behind Cloudflare and
+  // its read endpoints publish no limit, so the only signal we would get for
+  // going too fast is the user's own session being challenged.
+  "www.perplexity.ai": { concurrency: 2, minIntervalMs: 700, listDelayMs: 800 },
+  // One batchexecute call per conversation, and Google notices patterns. Paced
+  // between the fast hosts and Perplexity's deliberate crawl.
+  "gemini.google.com": { concurrency: 3, minIntervalMs: 450, listDelayMs: 600 }
 };
 const BG_FETCH_ATTEMPTS = 4;
 const BG_RATE_TRIP = 3;                          // consecutive 429s → circuit opens
@@ -398,7 +514,7 @@ const BG_SYNC_LIST_PAGE = 100;
 const BG_SYNC_BATCH = 15;
 const BG_SYNC_OVERLAP_MS = 5 * 60 * 1000;
 const BG_RUN_STALE_MS = 90 * 1000;
-const BG_PLATFORM_IDS = new Set(["chatgpt", "claude", "deepseek", "grok"]);
+const BG_PLATFORM_IDS = new Set(["chatgpt", "claude", "deepseek", "grok", "perplexity", "gemini"]);
 const BG_SYNC_FLAG = (p) => "recall-sync-" + p;     // { lastFull: ms } — chrome.storage.local
 const BG_SYNC_PROG = (p) => "recall-sync-progress:" + p;
 const BG_SYNC_LEDGER = "lct-recall-sync-ledger-v2";
@@ -408,6 +524,18 @@ const BG_RECOVERY = "lct-recall-recovery-v1";
 const BG_INSTALL = "lct-recall-install-v1";
 const BG_RUN = "lct-recall-sync-run-v1";
 const BG_ACTIVE_ACCOUNT = "lct-recall-active-account-v1";
+// Local-only, never mirrored to storage.sync: the account roster this browser
+// has seen, so the UI can say "your second ChatGPT" without the worker ever
+// persisting who that is. Labels here are masked before they are written.
+const BG_ACCOUNTS = "lct-recall-accounts-v1";
+const BG_ACCT_MAX = 8;            // accounts remembered per platform, LRU beyond
+const ACCT_LEN = 16;              // hex chars of the account tag stamped on rows
+const BG_ADOPT_MAX = 300;         // records re-stamped per pass — see adoptRecords
+// A listing whose oldest chat matches the archive this much is the same account
+// that simply lost its anchor, not a different one. See resolveAnchor().
+const BG_ANCHOR_OVERLAP = 0.5;
+const BG_LEDGER_MAX = 32;         // checkpoints kept, newest first
+const BG_LEDGER_BYTES = 7000;     // under storage.sync's 8KB-per-item cap
 // Outstanding-work journal. Local-only and never roamed: it is meaningful only
 // against this browser's archive index, and it is far too large for sync's
 // 8KB-per-item cap.
@@ -460,10 +588,19 @@ function cleanCheckpoint(value) {
   if (!BG_PLATFORM_IDS.has(platform) || !Number.isFinite(safeWatermark) || safeWatermark <= 0 ||
       !Number.isFinite(completedAt) || completedAt <= 0) return null;
   return {
-    version: 4,
+    version: 5,
     platform,
     safeWatermark,
     completedAt,
+    // The oldest chat this account's listing showed. Providers that refuse to
+    // name the signed-in account are told apart by it — see resolveAnchor().
+    anchor: String(value.anchor || "").slice(0, 200),
+    // Whether `coverage` counts this ACCOUNT's chats or every chat under the
+    // host. v4 and earlier counted the host, and reading that as an account's
+    // coverage would either trust a wiped archive or force a pointless rebuild.
+    // An unscoped checkpoint therefore declares coverage unknown exactly once;
+    // the next pass re-establishes it against the account's own rows.
+    acctScoped: value.acctScoped === true,
     lastResult: String(value.lastResult || "delta").slice(0, 32),
     archived: Math.max(0, Math.floor(Number(value.archived) || 0)),
     // v3 and earlier only ever wrote a checkpoint after a fully clean pass, so
@@ -477,7 +614,8 @@ function cleanCheckpoint(value) {
     // coverage can. If the archive now holds fewer chats than the checkpoint
     // promised, the index was lost and the watermark must not be trusted.
     coverage: Math.max(0, Math.floor(Number(value.coverage) || 0)),
-    coverageKnown: value.coverageKnown === true || Number(value.coverage) > 0
+    coverageKnown: value.acctScoped === true &&
+      (value.coverageKnown === true || Number(value.coverage) > 0)
   };
 }
 
@@ -492,13 +630,23 @@ function cleanLedger(value) {
       Array.isArray(value.checkpoints)) return { version: 2, checkpoints: {} };
   const checkpoints = {};
   // 64 checkpoints overflowed storage.sync's 8KB-per-item cap, which silently
-  // dropped the whole ledger. 8 covers every platform across two accounts.
+  // dropped the whole ledger. A flat count of 8 was the fix, but it was sized
+  // for two accounts and someone juggling four free tiers plus a couple of
+  // Claude orgs blows through it — losing a checkpoint means re-downloading
+  // that account's whole history. Fill to the byte budget instead, newest
+  // first, so the cap is the real constraint rather than a guess about it.
   const ranked = Object.entries(value.checkpoints)
     .sort((a, b) => (Number(b[1] && b[1].completedAt) || 0) - (Number(a[1] && a[1].completedAt) || 0))
-    .slice(0, 8);
+    .slice(0, BG_LEDGER_MAX);
+  let bytes = 2;
   for (const [key, raw] of ranked) {
     const checkpoint = cleanCheckpoint(raw);
-    if (checkpoint) checkpoints[String(key).slice(0, 200)] = checkpoint;
+    if (!checkpoint) continue;
+    const id = String(key).slice(0, 200);
+    const cost = JSON.stringify({ [id]: checkpoint }).length;
+    if (bytes + cost > BG_LEDGER_BYTES) break;
+    checkpoints[id] = checkpoint;
+    bytes += cost;
   }
   return { version: 2, checkpoints };
 }
@@ -578,18 +726,99 @@ async function digest(text) {
   return Array.from(new Uint8Array(value), (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+// Never persist raw account identifiers. The provider identity is salted and
+// hashed so a checkpoint cannot leak the user's account value.
+async function identityCheckpointKey(adapter, identity) {
+  return adapter.id + ":" + await digest((await profileSalt()) + "|" + adapter.id + "|" + String(identity));
+}
+
 async function accountCheckpointKey(adapter, ctx) {
-  // Never persist raw account identifiers. The provider identity is salted and
-  // hashed so a checkpoint cannot leak the user's account value.
-  //
   // The identity MUST be stable across sessions. Earlier builds fell back to
   // the raw cookie header when a provider exposed no account id — session
   // cookies rotate, so every rotation minted a new checkpoint key and the whole
-  // history was swept again. Providers without an account id now share one
-  // per-browser key; a mismatched account is caught by the coverage diff, which
-  // compares against the archive itself rather than a timestamp.
+  // history was swept again. Providers that expose no account id start on one
+  // per-browser key and are separated afterwards by resolveAnchor(), which asks
+  // the archive rather than the clock.
   const identity = String(ctx && ctx.account || "").trim() || "device";
-  return adapter.id + ":" + await digest((await profileSalt()) + "|" + adapter.id + "|" + identity);
+  return identityCheckpointKey(adapter, identity);
+}
+
+/**
+ * The short tag stamped on every archived row.
+ *
+ * Deliberately derived from the SAME hash as the checkpoint key: an upgrade
+ * must not orphan a single existing checkpoint, or every user re-downloads
+ * their entire history on the release that adds multi-account support.
+ * Truncation only shortens what is repeated on every row.
+ */
+function tagOfKey(checkpointKey) {
+  const at = String(checkpointKey).indexOf(":");
+  return String(checkpointKey).slice(at + 1, at + 1 + ACCT_LEN);
+}
+
+async function accountTag(adapter, ctx) {
+  return tagOfKey(await accountCheckpointKey(adapter, ctx));
+}
+
+/* ---------- the account roster ----------
+ * Enough to label a ring in the popup and no more. An email is masked before it
+ * is stored, and anything that is not an email contributes no label at all —
+ * an opaque provider uuid tells the user nothing, so the UI counts instead. */
+
+let accountsWrite = Promise.resolve();
+
+function maskHandle(value) {
+  const raw = String(value || "").trim();
+  const at = raw.indexOf("@");
+  if (at <= 0 || at === raw.length - 1) return "";   // not an email: no useful label
+  const user = raw.slice(0, at);
+  const domain = raw.slice(at + 1).slice(0, 40);
+  const head = user.slice(0, 1);
+  const tail = user.length > 2 ? user.slice(-1) : "";
+  return `${head}••${tail}@${domain}`;
+}
+
+async function readAccounts() {
+  try {
+    const store = await chrome.storage.local.get(BG_ACCOUNTS);
+    const all = store[BG_ACCOUNTS];
+    return all && typeof all === "object" && !Array.isArray(all) ? all : {};
+  } catch { return {}; }
+}
+
+/** Record that this account exists and was seen just now. Ordinals are assigned
+ *  on first sight and never reused, so "Account 2" keeps meaning the same one. */
+async function noteAccount(platformId, acct, meta = {}) {
+  if (!acct) return null;
+  let result = null;
+  const work = async () => {
+    const all = await readAccounts();
+    const platform = all[platformId] && typeof all[platformId] === "object" ? { ...all[platformId] } : {};
+    const prev = platform[acct] || {};
+    const used = new Set(Object.values(platform).map((a) => Number(a && a.ordinal) || 0));
+    let ordinal = Number(prev.ordinal) || 0;
+    while (!ordinal || (used.has(ordinal) && !prev.ordinal)) ordinal = ordinal ? ordinal + 1 : 1;
+    const label = maskHandle(meta.handle) || String(prev.label || "");
+    platform[acct] = {
+      ordinal,
+      label: label.slice(0, 60),
+      plan: String(meta.plan || prev.plan || "").slice(0, 24),
+      limit: Number.isFinite(Number(meta.limit)) ? Number(meta.limit) : (Number(prev.limit) || null),
+      identified: meta.identified === undefined ? prev.identified !== false : !!meta.identified,
+      firstSeen: Number(prev.firstSeen) || Date.now(),
+      lastSeen: Date.now()
+    };
+    // An account the user abandoned should not crowd out the ones in use, but
+    // the roster must stay small: it is read on every popup open.
+    const kept = Object.entries(platform)
+      .sort((a, b) => (Number(b[1].lastSeen) || 0) - (Number(a[1].lastSeen) || 0))
+      .slice(0, BG_ACCT_MAX);
+    result = platform[acct];
+    await chrome.storage.local.set({ [BG_ACCOUNTS]: { ...all, [platformId]: Object.fromEntries(kept) } });
+  };
+  accountsWrite = accountsWrite.then(work, work);
+  await accountsWrite;
+  return result;
 }
 
 async function readCheckpoint(adapter, ctx) {
@@ -975,11 +1204,14 @@ async function bgFetch(url, opts = {}) {
       if (circuitOpen) throw lastRate;
       continue;   // retry in place so the caller's slot isn't burned
     }
-    if (r.status === 401 || r.status === 403) throw new BgError("auth", "unauthorized");
-    if (r.status === 404 || r.status === 410) throw new BgError("gone", "http " + r.status);
+    if (r.status === 401 || r.status === 403) throw new BgError("auth", "unauthorized", { status: r.status });
+    if (r.status === 404 || r.status === 410) throw new BgError("gone", "http " + r.status, { status: r.status });
     if (!r.ok) {
       if (r.status >= 500 && attempt < BG_FETCH_ATTEMPTS - 1) { await sleep(backoffDelay(attempt, 0)); continue; }
-      throw new BgError("net", "http " + r.status);
+      // The status rides along because not every provider spells "this
+      // conversation is gone" as a 404 — Perplexity says 400 — and an adapter
+      // can only reclassify what it can see.
+      throw new BgError("net", "http " + r.status, { status: r.status });
     }
     noteOk(host);
     return r;
@@ -1015,6 +1247,12 @@ async function walkScheme(adapter, opts, scheme) {
   const metas = [];
   const seen = new Set();
   let complete = false, ordered = true, previous = Infinity, hitOld = false, paged = false;
+  /* "The provider listed conversations and we understood none of them" is a
+     different fact from "the account is empty", and it is the one that hides.
+     An adapter whose id field gets renamed produces metas with no id, every one
+     is skipped here, and the walk ends looking exactly like a clean listing of
+     an empty account. Counted so the caller can tell the two apart. */
+  let sawItems = 0, namedItems = 0;
 
   for (let page = 0; page < BG_LIST_MAX_PAGES; page++) {
     if (page) await sleep(delayMs);
@@ -1028,8 +1266,11 @@ async function walkScheme(adapter, opts, scheme) {
 
     let fresh = 0;
     for (const it of items) {
+      sawItems++;
       const meta = toMeta(it);
-      if (!meta || !meta.id || seen.has(meta.id)) continue;
+      if (!meta || !meta.id) continue;
+      namedItems++;
+      if (seen.has(meta.id)) continue;
       seen.add(meta.id);
       fresh++;
       if (meta.updatedAt > previous) ordered = false;
@@ -1047,7 +1288,7 @@ async function walkScheme(adapter, opts, scheme) {
     if (hitOld && ordered) { complete = true; break; }    // newest-first, past the watermark
   }
   metas.sort((a, b) => b.updatedAt - a.updatedAt);
-  return { metas, complete, paged };
+  return { metas, complete, paged, unreadable: sawItems > 0 && namedItems === 0 };
 }
 
 async function readScheme(host) {
@@ -1104,7 +1345,7 @@ async function pageThrough(adapter, opts) {
     if (attempt.complete) return attempt;   // one page held the whole history
   }
   if (!opts.noCache) await rememberScheme(adapter.host, null);
-  return best || { metas: [], complete: false, paged: false };
+  return best || { metas: [], complete: false, paged: false, unreadable: false };
 }
 
 /**
@@ -1163,6 +1404,213 @@ function chatgptMsgs(conv) {
   return msgs;                            // branch order IS reading order — no sort
 }
 
+/* ---------- Gemini ----------
+ * Gemini has no REST API. Its own web app talks to `batchexecute`, a generic
+ * Google RPC transport, and everything about it is positional: the request is
+ * JSON nested inside a JSON string, and the reply is a stream of
+ * length-prefixed frames whose payloads are also JSON inside a JSON string,
+ * read by index rather than by name.
+ *
+ * That makes it the most fragile adapter here by a wide margin, so the rule for
+ * every step below is the same: a shape we do not recognise raises, and never
+ * returns a plausible-looking empty result. `unreadable` in walkScheme and
+ * BgError("shape") exist for exactly this surface — a silent Gemini would look
+ * identical to a signed-out one.
+ *
+ * Verified against Google's own client behaviour as documented by the
+ * gemini_webapi project; the rpc ids and index positions are its findings.
+ */
+const GEMINI_BATCH_PATH = "/_/BardChatUi/data/batchexecute";
+const GEMINI_RPC_LIST = "MaZiqc";     // list conversations
+const GEMINI_RPC_READ = "hNvQHb";     // read one conversation
+const GEMINI_LIST_MAX = 400;          // conversations asked for per shelf
+const GEMINI_TURN_MAX = 2000;         // turns asked for per conversation
+/* Gemini keeps pinned and unpinned conversations on separate shelves and one
+   call returns only one of them. Both, or half a history goes unarchived —
+   and, worse, a listing missing half the account would look complete to the
+   sweep. The trailing triple is [pinned, cursor, unknown]. */
+const GEMINI_SHELVES = [1, 0];
+
+let geminiReqid = 0;
+
+/** End (exclusive) of the JSON array or object starting at `from`.
+ *
+ *  String- and escape-aware, because a bracket inside somebody's message would
+ *  otherwise be read as closing the frame. */
+function geminiValueEnd(body, from) {
+  let depth = 0, inString = false, escaped = false;
+  for (let i = from; i < body.length; i++) {
+    const ch = body[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "[" || ch === "{") depth++;
+    else if (ch === "]" || ch === "}") { if (--depth === 0) return i + 1; }
+  }
+  return -1;   // unbalanced — a truncated frame
+}
+
+/** Strip the `)]}'` guard, then walk Google's length-prefixed frames.
+ *
+ *  The length markers are SKIPPED rather than trusted. Sources disagree on
+ *  whether the count includes one surrounding newline or both, and a
+ *  one-character error there does not lose one frame — it desynchronises the
+ *  scan and every later frame with it. The JSON value's own extent is
+ *  unambiguous, so that is what decides where a frame ends; the digits are
+ *  just something to step over. It also means a reply that arrives unframed,
+ *  as a single bare array, needs no special case. */
+function geminiFrames(text) {
+  let body = String(text || "");
+  if (body.startsWith(")]}'")) body = body.slice(4);
+
+  const frames = [];
+  const space = /\s/;
+  let at = 0;
+  while (at < body.length) {
+    while (at < body.length && space.test(body[at])) at++;
+    while (at < body.length && body[at] >= "0" && body[at] <= "9") at++;
+    while (at < body.length && space.test(body[at])) at++;
+    if (body[at] !== "[") break;
+    const end = geminiValueEnd(body, at);
+    if (end <= at) break;
+    try { frames.push(JSON.parse(body.slice(at, end))); } catch { /* skip this frame */ }
+    at = end;
+  }
+  return frames;
+}
+
+/** Every `wrb.fr` payload for one rpc id, already un-nested from its JSON
+ *  string. Index 2 is the payload; index 1 names the rpc that produced it, and
+ *  it is checked, because a batch reply carries other envelopes too. */
+function geminiPayloads(text, rpcid) {
+  const out = [];
+  for (const frame of geminiFrames(text)) {
+    for (const part of (Array.isArray(frame) ? frame : [])) {
+      if (!Array.isArray(part) || part[0] !== "wrb.fr" || part[1] !== rpcid) continue;
+      if (typeof part[2] !== "string" || !part[2]) continue;
+      try { out.push(JSON.parse(part[2])); } catch { /* not this envelope */ }
+    }
+  }
+  return out;
+}
+
+/** Gemini timestamps arrive as [seconds, nanos]. */
+function geminiTime(value) {
+  if (!Array.isArray(value) || !value.length) return 0;
+  const secs = Number(value[0]) || 0;
+  if (secs <= 0) return 0;
+  return Math.round(secs * 1000 + (Number(value[1]) || 0) / 1e6);
+}
+
+/** Read a positional path out of a batchexecute payload. Everything in these
+ *  replies is addressed by index, and any hop can legitimately be absent, so a
+ *  miss is undefined rather than a throw. */
+function geminiAt(node, path) {
+  let at = node;
+  for (const step of path) {
+    if (!Array.isArray(at)) return undefined;
+    at = at[step];
+  }
+  return at;
+}
+
+const GEMINI_AT_RE = /"SNlM0e":\s*"(.*?)"/;
+const GEMINI_BL_RE = /"cfb2h":\s*"(.*?)"/;
+const GEMINI_SID_RE = /"FdrFJe":\s*"(.*?)"/;
+
+/* ---------- Grok ---------- */
+const GROK_RESPONSE_BATCH = 50;    // the batch size grok.com's own client uses
+
+/**
+ * A Grok timestamp. ISO 8601 with a zone is what it sends today.
+ *
+ * Numbers are tolerated deliberately: this is an undocumented endpoint, and a
+ * build that switched to epoch millis — or seconds — would otherwise zero every
+ * date silently, which reads downstream as "this chat was never updated" and
+ * quietly freezes it out of every future delta.
+ */
+function xaiTime(value) {
+  if (value == null || value === "") return 0;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || value <= 0) return 0;
+    return value < 1e12 ? Math.round(value * 1000) : Math.round(value);
+  }
+  const ms = Date.parse(String(value));
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+/* ---------- Perplexity ----------
+   Every Perplexity request the app makes carries these, and it costs nothing
+   to look like the app rather than like something else. */
+const PPLX_Q = "?version=2.18&source=default";
+const PPLX_HEADERS = { "x-app-apiclient": "default", "x-app-apiversion": "2.18" };
+
+/**
+ * Perplexity stamps naive ISO with no zone: "2026-02-17T08:02:14.816554".
+ *
+ * Date.parse reads that as LOCAL time, so the same thread would carry a
+ * different updatedAt in every timezone — and it is compared against a
+ * watermark that is a Date.now(), i.e. UTC. West of Greenwich that skew reads
+ * as "updated in the future" and the chat is re-fetched every pass; east of it
+ * the chat falls behind the watermark and is never fetched again. Pin it.
+ */
+function pplxTime(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return 0;
+  const ms = Date.parse(/(?:Z|[+-]\d{2}:?\d{2})$/.test(raw) ? raw : raw + "Z");
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+/**
+ * The assistant's half of one Perplexity turn.
+ *
+ * Three spellings, and they are not interchangeable: `text` is the answer as a
+ * plain string, `answer` is the SAME answer wrapped in a JSON-encoded string
+ * (so reading it raw archives `{"answer":"…"}` as the message body), and a
+ * schematized reply has neither and carries it in a block instead. Read them
+ * in that order and never fall back to the raw wrapper.
+ */
+function pplxAnswer(entry) {
+  const plain = String(entry.text || "").trim();
+  if (plain) return plain;
+
+  if (typeof entry.answer === "string" && entry.answer) {
+    try {
+      const parsed = JSON.parse(entry.answer);
+      const text = String((parsed && parsed.answer) || "").trim();
+      if (text) return text;
+    } catch { /* not the wrapper shape — fall through to blocks */ }
+  }
+
+  for (const block of (Array.isArray(entry.blocks) ? entry.blocks : [])) {
+    if (!block || block.intended_usage !== "ask_text") continue;
+    const text = String((block.markdown_block && block.markdown_block.answer) || "").trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+/** Claude states the tier in the org's capabilities, so the plan costs no extra
+ *  request — and a plan is what decides the usage ceiling the popup draws. */
+function claudeOrgCtx(org) {
+  const caps = Array.isArray(org && org.capabilities) ? org.capabilities.map(String) : [];
+  const plan = caps.includes("claude_max") ? "Max"
+    : caps.includes("claude_pro") ? "Pro"
+    : caps.includes("raven") || caps.includes("claude_team") ? "Team" : "Free";
+  return {
+    org: org.uuid,
+    account: org.uuid,
+    identified: true,
+    // Personal orgs are named after the account's email; masked before storage.
+    handle: String((org && org.name) || ""),
+    plan
+  };
+}
+
 const BG_ADAPTERS = [
   {
     id: "chatgpt", label: "ChatGPT", base: "https://chatgpt.com",
@@ -1171,9 +1619,15 @@ const BG_ADAPTERS = [
       const r = await bgFetch(this.base + "/api/auth/session");
       const j = await bgJson(r);
       if (!j || !j.accessToken) throw new BgError("auth", "not signed in");
+      const account = j.user?.id || j.user?.email || j.account?.id || "";
       return {
         tok: j.accessToken,
-        account: j.user?.id || j.user?.email || j.account?.id || ""
+        account,
+        // The session names the signed-in user, so two accounts are told apart
+        // outright and never have to be inferred from what they hold.
+        identified: !!account,
+        handle: String(j.user?.email || ""),
+        plan: String(j.user?.plan || j.account?.plan_type || "")
       };
     },
     async get(ctx, path) {
@@ -1234,9 +1688,18 @@ const BG_ADAPTERS = [
     async prepare() {
       const r = await bgFetch(this.base + "/api/organizations");
       const orgs = await bgJson(r);
-      const org = Array.isArray(orgs) ? (orgs.find((o) => o && o.uuid) || orgs[0]) : null;
-      if (!org || !org.uuid) throw new BgError("auth", "not signed in");
-      return { org: org.uuid, account: org.uuid };
+      const list = (Array.isArray(orgs) ? orgs : []).filter((o) => o && o.uuid);
+      const org = list[0];
+      if (!org) throw new BgError("auth", "not signed in");
+      return { ...claudeOrgCtx(org), orgs: list };
+    },
+    // One Claude login can own several organisations, and chats live in exactly
+    // one of them. Syncing only the first quietly archived nothing from the
+    // others — from the user's side, indistinguishable from a backup that lost
+    // their work. Each org is its own account here, with its own checkpoint.
+    accounts(ctx) {
+      const list = Array.isArray(ctx.orgs) && ctx.orgs.length ? ctx.orgs : [{ uuid: ctx.org }];
+      return list.map((org) => ({ ...ctx, ...claudeOrgCtx(org) }));
     },
     async get(ctx, path) { return bgJson(await bgFetch(this.base + path)); },
     async list(ctx, sinceMs, progress) {
@@ -1271,9 +1734,14 @@ const BG_ADAPTERS = [
   {
     id: "deepseek", label: "DeepSeek", base: "https://chat.deepseek.com",
     host: "chat.deepseek.com", prefix: "/chat/",
+    // No endpoint here names the signed-in account, so every account on this
+    // host would share one device-level tag; the page's hint can do better.
+    namesAccount: false,
     async prepare() {
       await bgFetch(this.base + "/api/v0/chat/list?count=1");
-      return {};
+      // No endpoint here names the signed-in user, so accounts are separated
+      // after the listing instead — see resolveAnchor().
+      return { identified: false };
     },
     async get(ctx, path) { return bgJson(await bgFetch(this.base + path)); },
     async list(ctx, sinceMs, progress) {
@@ -1304,9 +1772,12 @@ const BG_ADAPTERS = [
   {
     id: "grok", label: "Grok", base: "https://grok.com",
     host: "grok.com", prefix: "/chat/",
+    // No endpoint here names the signed-in account, so every account on this
+    // host would share one device-level tag; the page's hint can do better.
+    namesAccount: false,
     async prepare() {
       await bgFetch(this.base + "/rest/app-chat/conversations?limit=1");
-      return {};
+      return { identified: false };   // as DeepSeek — resolveAnchor() separates them
     },
     async get(ctx, path) { return bgJson(await bgFetch(this.base + path)); },
     async list(ctx, sinceMs, progress) {
@@ -1317,19 +1788,276 @@ const BG_ADAPTERS = [
           return data.conversations || data.items || (Array.isArray(data) ? data : []);
         },
         toMeta: (it) => ({
-          id: it.id || it.conversation_id, title: it.title || it.name || "",
-          createdAt: it.created_at ? new Date(it.created_at).getTime() : 0,
-          updatedAt: it.updated_at ? new Date(it.updated_at).getTime() : Date.now()
+          // Grok spells every one of these in camelCase, and nothing else in
+          // this file does. An earlier build read it.id / created_at /
+          // updated_at — all three absent — so every meta came back without an
+          // id, walkScheme dropped the entire listing as unusable, and the
+          // platform archived nothing while reporting no error at all. The
+          // snake_case spellings are kept only as a fallback.
+          id: String(it.conversationId || it.id || it.conversation_id || ""),
+          title: String(it.title || it.name || ""),
+          createdAt: xaiTime(it.createTime || it.created_at),
+          updatedAt: xaiTime(it.modifyTime || it.updated_at) || Date.now()
+        })
+      });
+    },
+    /**
+     * Grok never hands over a conversation's messages with the conversation.
+     * Two steps: the ids of its response nodes, then their bodies in batches.
+     * The single GET an earlier build made returns metadata with no messages
+     * in it whatsoever, so `data.messages || data.turns` was always empty and
+     * every Grok chat archived as a title with nothing under it.
+     */
+    async detail(ctx, id) {
+      const conv = "/rest/app-chat/conversations/" + encodeURIComponent(id);
+      const nodes = await this.get(ctx, conv + "/response-node?includeThreads=true");
+      const ids = (nodes.responseNodes || nodes.response_nodes || [])
+        .map((n) => n && String(n.responseId || n.response_id || ""))
+        .filter(Boolean);
+
+      const msgs = [];
+      for (let at = 0; at < ids.length; at += GROK_RESPONSE_BATCH) {
+        if (at) await sleep(policyFor(this.host).listDelayMs);
+        const batch = ids.slice(at, at + GROK_RESPONSE_BATCH);
+        const data = await bgJson(await bgFetch(this.base + conv + "/load-responses", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ responseIds: batch })
+        }));
+        const responses = Array.isArray(data.responses) ? data.responses.slice() : [];
+
+        // The node listing IS the reading order, so the requested order is the
+        // one to keep — but only reorder when every item can actually be
+        // placed. A partial match would interleave a conversation worse than
+        // leaving it exactly as the server sent it.
+        const rank = new Map(batch.map((rid, i) => [rid, i]));
+        const placed = responses.map((m) => rank.get(String(
+          (m && (m.responseId || m.response_id)) || "")));
+        if (placed.every((p) => p !== undefined)) {
+          responses.sort((a, b) =>
+            rank.get(String(a.responseId || a.response_id)) -
+            rank.get(String(b.responseId || b.response_id)));
+        }
+
+        for (const m of responses) {
+          const text = String((m && (m.message || m.content || m.text)) || "").trim();
+          if (!text) continue;
+          msgs.push({
+            r: /user|human/i.test(String((m.sender || m.role) || "")) ? "user" : "assistant",
+            t: text,
+            ts: Math.floor(xaiTime(m.createTime || m.created_at) / 1000)
+          });
+        }
+      }
+      return msgs;
+    }
+  },
+  {
+    id: "gemini", label: "Gemini", base: "https://gemini.google.com",
+    // The record id is the /app/<cid> URL, which is also what the Google Takeout
+    // importer on the recall page builds — so a synced chat and an imported one
+    // are the same row rather than two copies of the same conversation.
+    host: "gemini.google.com", prefix: "/app/",
+    // No endpoint here names the signed-in account, so every account on this
+    // host would share one device-level tag; the page's hint can do better.
+    namesAccount: false,
+    async prepare() {
+      // batchexecute's tokens live only in the app shell's HTML — no JSON
+      // endpoint carries them — so this one request is deliberately not JSON.
+      const r = await bgFetch(this.base + "/app", {
+        headers: { Accept: "text/html,application/xhtml+xml,*/*" }
+      });
+      const html = await r.text();
+      const at = (GEMINI_AT_RE.exec(html) || [])[1] || "";
+      // No token means the shell rendered signed-out. An auth failure, not a
+      // shape change — the two want different remedies from the user.
+      if (!at) throw new BgError("auth", "not signed in");
+      return {
+        at,
+        bl: (GEMINI_BL_RE.exec(html) || [])[1] || "",
+        sid: (GEMINI_SID_RE.exec(html) || [])[1] || "",
+        // Nothing in the shell names the account dependably, so accounts here
+        // are told apart afterwards by what they hold — as DeepSeek and Grok are.
+        identified: false
+      };
+    },
+    async rpc(ctx, rpcid, payload) {
+      geminiReqid = (geminiReqid || Math.floor(Math.random() * 90000) + 10000) + 100000;
+      const params = new URLSearchParams({
+        rpcids: rpcid, "source-path": "/app", hl: "en",
+        _reqid: String(geminiReqid), rt: "c"
+      });
+      if (ctx.bl) params.set("bl", ctx.bl);
+      if (ctx.sid) params.set("f.sid", ctx.sid);
+      const r = await bgFetch(this.base + GEMINI_BATCH_PATH + "?" + params.toString(), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+          "X-Same-Domain": "1"
+        },
+        // Three levels of nesting, the innermost one a JSON string: the batch,
+        // the envelope list, then the envelope. "generic" is the ordering slot a
+        // single-rpc batch uses.
+        body: new URLSearchParams({
+          "f.req": JSON.stringify([[[rpcid, JSON.stringify(payload), null, "generic"]]]),
+          at: ctx.at
+        }).toString()
+      });
+      return r.text();
+    },
+    async list(ctx, sinceMs, progress) {
+      const metas = [];
+      const seen = new Set();
+      let sawRows = 0, named = 0, truncated = false, shelf = 0;
+
+      for (const pinned of GEMINI_SHELVES) {
+        if (shelf++) await sleep(policyFor(this.host).listDelayMs);
+        const payloads = geminiPayloads(
+          await this.rpc(ctx, GEMINI_RPC_LIST, [GEMINI_LIST_MAX, null, [pinned, null, 1]]),
+          GEMINI_RPC_LIST);
+        // No envelope for the rpc we asked for is not an empty account — it is a
+        // transport or a shape this build no longer speaks.
+        if (!payloads.length) throw new BgError("shape", "provider listing not understood");
+
+        let rowsHere = 0;
+        for (const payload of payloads) {
+          const rows = Array.isArray(payload) && Array.isArray(payload[2]) ? payload[2] : [];
+          for (const row of rows) {
+            if (!Array.isArray(row)) continue;
+            rowsHere++; sawRows++;
+            const cid = String(row[0] || "");
+            if (!cid) continue;
+            named++;
+            if (seen.has(cid)) continue;
+            seen.add(cid);
+            const updatedAt = geminiTime(row[5]) || Date.now();
+            if (sinceMs && updatedAt <= sinceMs) continue;
+            metas.push({ id: cid, title: String(row[1] || ""), createdAt: 0, updatedAt });
+          }
+        }
+        // LIST_CHATS takes a COUNT, not a cursor. A shelf that returns exactly
+        // as many rows as it was asked for may have more behind it, and a
+        // listing that might be partial must never be called complete — the
+        // sweep would read everything it omitted as deleted upstream.
+        if (rowsHere >= GEMINI_LIST_MAX) truncated = true;
+        progress(metas.length, 0, `Listing chats… ${metas.length}`);
+      }
+
+      metas.sort((a, b) => b.updatedAt - a.updatedAt);
+      return { metas, complete: !truncated, unreadable: sawRows > 0 && named === 0 };
+    },
+    async detail(ctx, id) {
+      const payloads = geminiPayloads(
+        await this.rpc(ctx, GEMINI_RPC_READ, [id, GEMINI_TURN_MAX, null, 1, [1], [4], null, 1]),
+        GEMINI_RPC_READ);
+      if (!payloads.length) throw new BgError("shape", "provider conversation not understood");
+
+      const turns = payloads.map((p) => geminiAt(p, [0])).find(Array.isArray);
+      // A conversation holding no turns is legitimate — one opened and
+      // abandoned. An envelope with no turns ARRAY at all is not, but it is
+      // also indistinguishable here from the former, so treat it as empty and
+      // let the listing's own checks be the ones that raise.
+      if (!turns) return [];
+
+      const msgs = [];
+      // Gemini answers newest-turn-first. Walk it backwards so the archive
+      // reads in the order the conversation actually happened.
+      for (let i = turns.length - 1; i >= 0; i--) {
+        const turn = turns[i];
+        if (!Array.isArray(turn)) continue;
+        const ask = String(geminiAt(turn, [2, 0, 0]) || "").trim();
+        if (ask) msgs.push({ r: "user", t: ask, ts: 0 });
+        // The first candidate is the one the page shows; the rest are alternate
+        // drafts the reader never saw.
+        const best = geminiAt(turn, [3, 0, 0]);
+        // Index 22 is where a "card" answer keeps its text instead of index 1.
+        const reply = String(geminiAt(best, [1, 0]) || geminiAt(best, [22, 0]) || "").trim();
+        if (reply) msgs.push({ r: "assistant", t: reply, ts: 0 });
+      }
+      return msgs;
+    }
+  },
+  {
+    id: "perplexity", label: "Perplexity", base: "https://www.perplexity.ai",
+    // The thread slug IS the /search/ URL segment, so a record id here is the
+    // address of the page it came from — same rule as every other adapter.
+    host: "www.perplexity.ai", prefix: "/search/",
+    async prepare() {
+      const j = await bgJson(await bgFetch(this.base + "/api/auth/session" + PPLX_Q,
+        { headers: PPLX_HEADERS }));
+      const user = (j && j.user) || null;
+      if (!user || !user.id) throw new BgError("auth", "not signed in");
+      // Unlike DeepSeek and Grok, Perplexity names the signed-in user, so two
+      // accounts are told apart outright and never inferred from what they hold.
+      return { account: String(user.id), identified: true, handle: String(user.email || "") };
+    },
+    /** One page of the thread list. POST, with a JSON body — the same endpoint
+     *  answers 400 to a bare GET. */
+    async listPage(offset, limit) {
+      const j = await bgJson(await bgFetch(this.base + "/rest/thread/list_ask_threads" + PPLX_Q, {
+        method: "POST",
+        headers: { ...PPLX_HEADERS, "Content-Type": "application/json" },
+        body: JSON.stringify({ limit, offset, ascending: false, search_term: "" })
+      }));
+      return Array.isArray(j) ? j : (j && Array.isArray(j.entries) ? j.entries : []);
+    },
+    async peek(ctx, sinceMs) {
+      const [newest] = await this.listPage(0, 1);
+      if (!newest) return { hasNew: false, newestMs: 0 };
+      const upd = pplxTime(newest.last_query_datetime) || Date.now();
+      return { hasNew: upd > sinceMs, newestMs: upd };
+    },
+    async list(ctx, sinceMs, progress) {
+      return pageThrough(this, {
+        pageSize: 50, sinceMs, progress,
+        // Perplexity pages by an offset in the POST BODY, not a query param, so
+        // none of the shared query-string schemes can describe it. One scheme,
+        // whose "param" is the offset itself — walkScheme still owns every exit
+        // condition, so the watermark is as safe here as anywhere else.
+        schemes: [{ id: "pplx-body-offset", param: (page, size) => String(page * size) }],
+        fetchPage: (param, limit) => this.listPage(Number(param) || 0, limit),
+        toMeta: (it) => ({
+          id: String(it.slug || it.uuid || ""),
+          title: String(it.title || ""),
+          // The listing carries no creation time at all — only the last query.
+          createdAt: 0,
+          updatedAt: pplxTime(it.last_query_datetime) || Date.now()
         })
       });
     },
     async detail(ctx, id) {
-      const data = await this.get(ctx, "/rest/app-chat/conversations/" + id);
       const msgs = [];
-      for (const m of (data.messages || data.turns || [])) {
-        const role = /user|human/i.test(m.role || m.sender || "") ? "user" : "assistant";
-        const text = (m.content || m.text || m.message || "").trim();
-        if (text) msgs.push({ r: role, t: text, ts: m.created_at ? Math.floor(new Date(m.created_at).getTime() / 1000) : 0 });
+      let cursor = "";
+      for (let page = 0; page < BG_LIST_MAX_PAGES; page++) {
+        if (page) await sleep(policyFor(this.host).listDelayMs);
+        let j;
+        try {
+          j = await bgJson(await bgFetch(
+            this.base + "/rest/thread/" + encodeURIComponent(id) + PPLX_Q +
+            (cursor ? "&cursor=" + encodeURIComponent(cursor) : ""),
+            { headers: PPLX_HEADERS }));
+        } catch (error) {
+          // Perplexity purges threads after roughly three months, and says so
+          // with a 400 (ENTRY_EXPIRED / ENTRY_DELETED) rather than a 404. Left
+          // as a network error this would be retried every pass forever, on a
+          // thread that is never coming back. It is gone; say so, and let the
+          // sweep tombstone it like any other vanished chat.
+          if (error && error.status === 400) throw new BgError("gone", "http 400", { status: 400 });
+          throw error;
+        }
+        // One entry is a whole turn — the question AND the answer — so it
+        // yields two messages, not one.
+        for (const entry of (j.entries || [])) {
+          const secs = Math.floor((pplxTime(entry.updated_datetime) || 0) / 1000);
+          const query = String(entry.query_str || "").trim();
+          if (query) msgs.push({ r: "user", t: query, ts: secs });
+          const answer = pplxAnswer(entry);
+          if (answer) msgs.push({ r: "assistant", t: answer, ts: secs });
+        }
+        // has_next_page here is the THREAD's, not the listing's — the two use
+        // the same field name for different things.
+        cursor = (j.has_next_page && j.next_cursor) ? String(j.next_cursor) : "";
+        if (!cursor) break;
       }
       return msgs;
     }
@@ -1598,6 +2326,15 @@ async function sweepVanished(adapter, index, listedIds, scanStartedAt, pendingId
     candidates.push(recordId);
   }
   if (!candidates.length) return { vanished: 0 };
+  // Nothing at all came back, yet the account demonstrably holds chats. That is
+  // a session that expired between the handshake and the listing, or a provider
+  // having a bad minute — never a user who deleted their entire history in the
+  // gap between two passes. The proportional guard below cannot catch this on a
+  // small archive, where "everything" is fewer chats than its floor.
+  if (!listedIds.size) {
+    await noteSweepAnomaly(adapter.id, candidates.length, index.size);
+    return { vanished: 0, skipped: candidates.length, reason: "empty-listing" };
+  }
   // A signed-out session, a changed response shape or a half-finished walk can
   // all produce a short listing, and every chat outside it then looks deleted.
   // Anything past a quarter of the archive is treated as a broken listing
@@ -1619,6 +2356,211 @@ async function sweepVanished(adapter, index, listedIds, scanStartedAt, pendingId
     else if (result.queued) queued++;
   }
   return { vanished: candidates.length, removed, queued };
+}
+
+/* ===================== telling accounts apart without being told ============
+ *
+ * DeepSeek and Grok expose no endpoint that names the signed-in user, so every
+ * account on them started out sharing one checkpoint key. That was survivable
+ * while the archive was one undifferentiated pile per host. It is not
+ * survivable now: sign into a second account, and its complete listing would
+ * present the first account's entire history as vanished.
+ *
+ * Session cookies rotate, so they cannot be the identity (an earlier build
+ * tried; every rotation re-swept the whole history). What does not rotate is
+ * what the account HOLDS. The oldest conversation in a complete listing is a
+ * stable, provider-assigned anchor for that account — and it is an id the
+ * archive already stores anyway, so it introduces no new class of data.
+ *
+ * Three outcomes, and the ambiguous one always resolves toward keeping data:
+ *   anchor matches, or none recorded  → same account.
+ *   anchor differs but the listing still overlaps what this account holds
+ *                                     → same account that deleted its oldest
+ *                                       chat. Move the anchor, keep the tag.
+ *   anchor differs and the listing is
+ *   a stranger to the archive         → a DIFFERENT account. Re-key onto its
+ *                                       own checkpoint and suppress the sweep
+ *                                       for this pass: a listing from an
+ *                                       account we have never seen is no
+ *                                       evidence about anybody else's chats.
+ */
+
+/** The oldest chat in a listing. Ties break on id so the anchor is stable. */
+function listingAnchor(metas) {
+  let best = null;
+  for (const meta of metas || []) {
+    if (!meta || !meta.id) continue;
+    const at = Number(meta.createdAt) || Number(meta.updatedAt) || 0;
+    const id = String(meta.id);
+    if (!best || at < best.at || (at === best.at && id < best.id)) best = { id, at };
+  }
+  return best ? best.id : "";
+}
+
+async function resolveAnchor(adapter, provisionalKey, checkpoint, metas, complete) {
+  const anchor = listingAnchor(metas);
+  // A delta lists a window, so its oldest entry says nothing about the account.
+  // An empty listing says even less.
+  if (!complete || !anchor) {
+    return { key: provisionalKey, anchor: (checkpoint && checkpoint.anchor) || "", switched: false };
+  }
+
+  // Every account this browser has already separated on this platform, plus the
+  // key we opened with. Matching against ALL of them is what lets an account be
+  // recognised again on a later pass: the provisional key is the same one for
+  // everybody here, so asking only "is this the account the provisional key
+  // describes?" can discover a second account but never re-find it.
+  const ledger = await readLedger();
+  const known = Object.entries(ledger.checkpoints)
+    .filter(([, c]) => c && c.platform === adapter.id)
+    .map(([key, c]) => ({ key, anchor: String(c.anchor || "") }));
+  if (!known.some((k) => k.key === provisionalKey)) {
+    known.push({ key: provisionalKey, anchor: (checkpoint && checkpoint.anchor) || "" });
+  }
+
+  // 1. An exact anchor match is the account, full stop.
+  const exact = known.find((k) => k.anchor && k.anchor === anchor);
+  if (exact) return { key: exact.key, anchor, switched: exact.key !== provisionalKey };
+
+  // 2. Otherwise the account whose archived chats this listing actually
+  //    overlaps. That survives the anchor moving — which is what happens the
+  //    day somebody deletes their oldest conversation.
+  const prefix = adapter.host + adapter.prefix;
+  let best = null, attributed = 0;
+  for (const candidate of known) {
+    const index = await accountIndex(adapter.host, adapter.prefix, tagOfKey(candidate.key));
+    attributed += index.size;
+    if (!index.size) continue;
+    let overlap = 0;
+    for (const meta of metas) if (index.has(prefix + meta.id)) overlap++;
+    const floor = Math.max(1, Math.min(metas.length, index.size) * BG_ANCHOR_OVERLAP);
+    if (overlap >= floor && (!best || overlap > best.overlap)) best = { key: candidate.key, overlap };
+  }
+  if (best) return { key: best.key, anchor, switched: best.key !== provisionalKey };
+
+  // 3. Nothing on this platform is attributed yet, so there is nobody to be
+  //    mistaken for: keep the key we already had. This is the first pass after
+  //    an upgrade, and re-keying here would abandon a good checkpoint and
+  //    re-download a history that is already on disk.
+  if (!attributed) return { key: provisionalKey, anchor, switched: false };
+
+  // 4. A listing that no account here recognises. Its own checkpoint, and no
+  //    opinion about anybody else's chats this pass.
+  return { key: await identityCheckpointKey(adapter, "anchor:" + anchor), anchor, switched: true };
+}
+
+/* ===================== who is signed in, for a content script ===============
+ *
+ * Usage counting is per ACCOUNT because the limit is per account — that is the
+ * whole reason people keep a second one. A page therefore has to know which
+ * account it is looking at before it can count anything, and it must not pay a
+ * provider round trip to find out on every message sent.
+ *
+ * So the worker answers, and caches: one handshake per host per TTL, shared by
+ * every tab. A page on a provider we do not sync (no adapter — Gemini) supplies
+ * its own hint from the URL or the page chrome, which is salted and hashed here
+ * exactly like a provider id, so the same rule holds everywhere: raw account
+ * identifiers are never stored.
+ *
+ * The two paths are alternatives, never a fallback for one another: they salt
+ * different identities, so the same person would tag as two accounts depending
+ * on which one answered. A host with an adapter is therefore identified by the
+ * adapter or not at all — a failed handshake yields an empty tag and the page
+ * counts per host, which is what it did before accounts existed.
+ */
+
+const ACCT_CACHE_TTL = 5 * 60 * 1000;
+const acctCache = new Map();      // host -> { at, value }
+
+async function accountForHost(host, hint = "") {
+  const key = host + "|" + hint;
+  const hit = acctCache.get(key);
+  if (hit && Date.now() - hit.at < ACCT_CACHE_TTL) return hit.value;
+
+  const adapter = BG_ADAPTERS.find((a) => a.host === host);
+  let value = { acct: "", label: "", ordinal: 0, plan: "", identified: false };
+
+  /* Prefer whichever source can actually name the account, not whichever is
+     nearer. An adapter flagged `namesAccount: false` has no endpoint that says
+     who is signed in, so every account on that host collapses to one
+     device-level tag — while the page, looking at the account switcher or the
+     /u/N seat, can tell two of them apart. Gemini is the case that makes this
+     matter: two Google accounts really are open side by side in one profile,
+     and a shared tag counts both against one limit. It also saves the prepare()
+     round trip we would only discard. */
+  const preferHint = !!hint && (!adapter || adapter.namesAccount === false);
+
+  /* Nothing to check the hint against here — but a hint is still stable per
+     account, which is all a usage tally needs. */
+  const fromHint = async () => {
+    const platformId = PAGE_PLATFORMS[host] || host;
+    const acct = tagOfKey(await identityCheckpointKey({ id: platformId }, "hint:" + hint));
+    const meta = await noteAccount(platformId, acct, { handle: hint, identified: false });
+    return {
+      acct, label: (meta && meta.label) || "", ordinal: (meta && meta.ordinal) || 1,
+      plan: "", identified: false
+    };
+  };
+
+  try {
+    if (preferHint) {
+      value = await fromHint();
+    } else if (adapter) {
+      try {
+        const ctx = await adapter.prepare();
+        const acct = await accountTag(adapter, ctx);
+        const meta = await noteAccount(adapter.id, acct, {
+          handle: ctx.handle, plan: ctx.plan, identified: ctx.identified !== false
+        });
+        value = {
+          acct, label: (meta && meta.label) || "", ordinal: (meta && meta.ordinal) || 1,
+          plan: (meta && meta.plan) || "", identified: ctx.identified !== false
+        };
+      } catch (error) {
+        /* The adapter could not answer — the host permission was declined, the
+           session lapsed, the provider changed shape. The two paths salt
+           different identities, so this is a FALLBACK and never an alternative:
+           preferring the hint while the adapter still works would tag the same
+           person twice. Here the choice is the hint or nothing, and Gemini is
+           the case that makes it matter — two Google accounts really are open
+           side by side, and per-host counting cannot tell them apart. */
+        if (!hint) throw error;
+        value = await fromHint();
+      }
+    } else if (hint) {
+      value = await fromHint();
+    }
+  } catch {
+    // Signed out, offline, or the provider changed shape. An empty tag is a
+    // valid answer: the page falls back to counting per host, which is what it
+    // did before accounts existed.
+    value = { acct: "", label: "", ordinal: 0, plan: "", identified: false };
+  }
+  acctCache.set(key, { at: Date.now(), value });
+  return value;
+}
+
+// Hosts we count usage on but do not sync from. Keyed here so a usage tally and
+// a sync checkpoint can never disagree about what a platform is called.
+const PAGE_PLATFORMS = {
+  "gemini.google.com": "gemini",
+  "www.perplexity.ai": "perplexity",
+  "chatgpt.com": "chatgpt",
+  "chat.openai.com": "chatgpt",
+  "claude.ai": "claude",
+  "chat.deepseek.com": "deepseek",
+  "grok.com": "grok"
+};
+
+const USAGE_PREFIX = "usage:";
+
+/** Every per-account usage tally. Cleared with the archive. */
+async function clearUsage() {
+  try {
+    const all = await chrome.storage.local.get(null);
+    const keys = Object.keys(all).filter((k) => k.startsWith(USAGE_PREFIX));
+    if (keys.length) await chrome.storage.local.remove(keys);
+  } catch { /* nothing to clear it from */ }
 }
 
 async function sweepDue(platformId) {
@@ -1757,7 +2699,7 @@ async function finishPlatform(adapter, checkpointKey, checkpoint, result, fields
   const completedAt = Date.now();
   await saveCheckpoint(checkpointKey, {
     ...checkpoint,
-    version: 4,
+    version: 5,
     platform: adapter.id,
     completedAt,
     lastResult: result,
@@ -1815,43 +2757,104 @@ async function tabPresence(host) {
  *      which still downloads nothing already archived, because rule 1 outranks
  *      it.
  */
+/**
+ * One platform, however many accounts are signed into it.
+ *
+ * The gates that belong to the HOST — rate-limit cooldown, and staying out of
+ * the way while the user is on the site — are answered once here. Everything
+ * downstream of a session belongs to an ACCOUNT, and each gets its own pass:
+ * its own checkpoint, its own outstanding-work journal, its own view of the
+ * archive. A Claude login with three organisations is three passes.
+ */
 async function bgSyncPlatform(adapter, run, opts = {}) {
   const auto = opts.reason === "auto";
+
+  // 1. host cooling down from an earlier 429 — say so, don't grind
+  const cooldownUntil = await loadCooldown(adapter.host);
+  if (cooldownUntil > Date.now()) {
+    await chrome.storage.local.set({
+      [BG_SYNC_PROG(adapter.id)]: {
+        state: "paused", phase: "paused", runId: run.id, platform: adapter.id,
+        done: 0, total: 0, cooldownUntil,
+        msg: `${adapter.label} is rate-limiting — resumes automatically`, at: Date.now()
+      }
+    });
+    return { ok: true, result: "cooling-down" };
+  }
+
+  // 2. never compete with the user's own browsing on an unattended pass
+  const tabs = await tabPresence(adapter.host);
+  if (auto && tabs.active) {
+    await chrome.storage.local.set({
+      [BG_SYNC_PROG(adapter.id)]: {
+        state: "deferred", phase: "deferred", runId: run.id, platform: adapter.id,
+        done: 0, total: 0, msg: `Waiting until you're done on ${adapter.label}`, at: Date.now()
+      }
+    });
+    return { ok: true, result: "deferred" };
+  }
+
+  let contexts;
+  try {
+    await writeProgress(adapter, run, { phase: "checking", attempted: 0, total: 0, msg: "Connecting…" }, { force: true });
+    const primary = await adapter.prepare();
+    contexts = (adapter.accounts ? await adapter.accounts(primary) : [primary]).filter(Boolean);
+    if (!contexts.length) contexts = [primary];
+  } catch (error) {
+    return reportPlatformError(adapter, run, error, { attempted: 0, total: 0, succeeded: 0, failed: 0 });
+  }
+
+  const results = [];
+  for (let seat = 0; seat < contexts.length; seat++) {
+    results.push(await bgSyncAccount(adapter, run, opts, contexts[seat], tabs,
+      { seat, seats: contexts.length }));
+    // Two accounts on one host back to back is still one host being asked
+    // twice; pace them like any other pair of listing requests.
+    if (seat + 1 < contexts.length) await sleep(policyFor(adapter.host).listDelayMs);
+  }
+  return mergeAccountResults(results);
+}
+
+/** One verdict for a platform from one verdict per account. The most
+ *  "unfinished" outcome wins, because that is what schedules a resume. */
+function mergeAccountResults(results) {
+  if (results.length === 1) return results[0];
+  const failure = results.find((r) => r && !r.ok);
+  if (failure) {
+    return { ok: false, error: failure.error, signedOut: !!failure.signedOut, accounts: results.length };
+  }
+  const rank = ["rate-limited", "partial", "reconcile", "sweep", "delta", "up-to-date"];
+  return {
+    ok: true,
+    result: rank.find((name) => results.some((r) => r && r.result === name)) || "up-to-date",
+    archived: results.reduce((sum, r) => sum + (Number(r && r.archived) || 0), 0),
+    left: results.reduce((sum, r) => sum + (Number(r && r.left) || 0), 0),
+    accounts: results.length
+  };
+}
+
+async function bgSyncAccount(adapter, run, opts, ctx, tabs, seat = { seat: 0, seats: 1 }) {
   let attempted = 0, succeeded = 0, failed = 0, total = 0;
   try {
-    // 1. host cooling down from an earlier 429 — say so, don't grind
-    const cooldownUntil = await loadCooldown(adapter.host);
-    if (cooldownUntil > Date.now()) {
-      await chrome.storage.local.set({
-        [BG_SYNC_PROG(adapter.id)]: {
-          state: "paused", phase: "paused", runId: run.id, platform: adapter.id,
-          done: 0, total: 0, cooldownUntil,
-          msg: `${adapter.label} is rate-limiting — resumes automatically`, at: Date.now()
-        }
-      });
-      return { ok: true, result: "cooling-down" };
-    }
-
-    // 2. never compete with the user's own browsing on an unattended pass
-    const tabs = await tabPresence(adapter.host);
-    if (auto && tabs.active) {
-      await chrome.storage.local.set({
-        [BG_SYNC_PROG(adapter.id)]: {
-          state: "deferred", phase: "deferred", runId: run.id, platform: adapter.id,
-          done: 0, total: 0, msg: `Waiting until you're done on ${adapter.label}`, at: Date.now()
-        }
-      });
-      return { ok: true, result: "deferred" };
-    }
-
-    await writeProgress(adapter, run, { phase: "checking", attempted: 0, total: 0, msg: "Connecting…" }, { force: true });
-    const ctx = await adapter.prepare();
-    const { key: checkpointKey, checkpoint } = await readCheckpoint(adapter, ctx);
-    const job = await readJob(checkpointKey);
+    const { key: provisionalKey, checkpoint: provisionalCheckpoint } = await readCheckpoint(adapter, ctx);
+    let checkpointKey = provisionalKey;
+    let checkpoint = provisionalCheckpoint;
+    let job = await readJob(checkpointKey);
+    let acct = tagOfKey(checkpointKey);
     await setActiveAccount(adapter, checkpointKey);
+    await noteAccount(adapter.id, acct, {
+      handle: ctx.handle, plan: ctx.plan, identified: ctx.identified !== false
+    });
 
-    await writeProgress(adapter, run, { phase: "checking", attempted: 0, total: 0, msg: "Reading your local archive…" });
+    await writeProgress(adapter, run, { phase: "checking", attempted: 0, total: 0,
+      msg: seat.seats > 1
+        ? `Reading your local archive… (account ${seat.seat + 1} of ${seat.seats})`
+        : "Reading your local archive…" });
+    // Two views, two jobs. `index` answers "already held?" across every account
+    // on the host so nothing is downloaded twice; `acctIndex` answers "held by
+    // THIS account?", and only it may drive deletion and coverage.
     const index = await archiveIndex(adapter.host, adapter.prefix);
+    let acctIndex = await accountIndex(adapter.host, adapter.prefix, acct);
     const covered = checkpoint && checkpoint.coverageKnown ? Number(checkpoint.coverage) || 0 : -1;
     // The journal may run AHEAD of pendingCount (it flushes far more often than
     // the sync ledger), never behind. scanStartedAt proves both came from the
@@ -1859,31 +2862,42 @@ async function bgSyncPlatform(adapter, run, opts = {}) {
     const pendingOk = !(checkpoint && checkpoint.pendingCount) ||
       !!(job && job.scanStartedAt === checkpoint.safeWatermark &&
          job.pending.length <= checkpoint.pendingCount);
+    // Coverage is compared against what THIS account holds. Against the whole
+    // host it was worse than useless once a second account existed: the second
+    // account's rows padded the count, so the check that exists to notice a
+    // wiped archive could no longer notice one.
     const trustWatermark = !!(checkpoint && checkpoint.safeWatermark &&
-      covered >= 0 && index.size >= covered && pendingOk);
+      covered >= 0 && acctIndex.size >= covered && pendingOk);
     // A delta listing cannot see a deletion: a chat the user removed simply is
     // not in the window, exactly like a chat that never changed. Once a day the
     // pass lists everything instead, purely so vanished chats can be noticed.
     // It costs listing requests only — rule 1 still downloads nothing already
     // archived.
-    const sweeping = trustWatermark && index.size > 0 && await sweepDue(adapter.id) &&
+    const sweeping = trustWatermark && acctIndex.size > 0 && await sweepDue(adapter.id) &&
       (await deletionPolicy()) !== "keep";
-    const sinceMs = trustWatermark && !sweeping ? Math.max(0, checkpoint.safeWatermark - BG_SYNC_OVERLAP_MS) : 0;
+    // A provider that will not name the signed-in account is re-identified from
+    // its listing every pass, so the listing has to be a complete one. Listing
+    // is cheap — rule 1 still downloads nothing already archived — and the
+    // alternative is writing one account's chats under another's name.
+    const mustIdentify = ctx.identified === false;
+    const sinceMs = trustWatermark && !sweeping && !mustIdentify
+      ? Math.max(0, checkpoint.safeWatermark - BG_SYNC_OVERLAP_MS) : 0;
     const mode = sweeping ? "sweep" : trustWatermark ? "delta" : "reconcile";
-    const carried = trustWatermark && job ? job.pending : [];
+    let carried = trustWatermark && job ? job.pending : [];
     // Captured BEFORE listing on purpose: a chat that shifts pages mid-listing
     // still has a revision >= this, so the next pass re-lists it.
     const scanStartedAt = Date.now();
 
     // 3. one request to answer "anything new?" on a routine pass. Skipped while
     //    sweeping — "nothing new" says nothing about what was removed.
-    if (trustWatermark && !sweeping && !carried.length && adapter.peek) {
+    if (trustWatermark && !sweeping && !mustIdentify && !carried.length && adapter.peek) {
       const { hasNew } = await adapter.peek(ctx, sinceMs);
       if (!hasNew) {
         await finishPlatform(adapter, checkpointKey,
-          { ...checkpoint, safeWatermark: scanStartedAt, pendingCount: 0, passState: "clean", runId: run.id },
+          { ...checkpoint, safeWatermark: scanStartedAt, pendingCount: 0, passState: "clean",
+            runId: run.id, acctScoped: true },
           "up-to-date", { attempted: 0, total: 0, succeeded: 0, failed: 0 },
-          "Everything is already backed up", index.size);
+          "Everything is already backed up", acctIndex.size);
         return { ok: true, result: "up-to-date", mode };
       }
     }
@@ -1897,17 +2911,77 @@ async function bgSyncPlatform(adapter, run, opts = {}) {
         : index.size ? "Rebuilding the archive index…" : "Building the first archive index…" });
 
     const listed = await adapter.list(ctx, sinceMs, progress);
+    // The provider named conversations and this adapter recognised none of
+    // them — a field it reads has been renamed upstream. That is not an empty
+    // account, and reporting it as a clean pass is how Grok came to archive
+    // nothing at all while every check came back green. Fail loudly, before
+    // anything is written and before the watermark can move past chats that
+    // were never actually seen.
+    if (listed.unreadable) throw new BgError("shape", "provider listing not understood");
     const metas = listed.metas || [];
     const complete = listed.complete !== false;
+    const prefix = adapter.host + adapter.prefix;
 
-    // 3b. The listing covered the whole history, so anything archived and not in
-    //     it is gone upstream. Never destructive by itself — noteVanished()
-    //     honours the user's policy, and the default is to ask.
-    if (sinceMs === 0 && complete && metas.length <= BG_PENDING_MAX) {
-      const prefix = adapter.host + adapter.prefix;
-      const listedIds = new Set(metas.map((m) => prefix + m.id));
+    // 3a. Whose listing was that? Providers that name the account answered this
+    //     before the first request; the rest are identified by what they hold.
+    let anchor = (checkpoint && checkpoint.anchor) || "";
+    let strangerAccount = false;
+    if (mustIdentify) {
+      const resolved = await resolveAnchor(adapter, checkpointKey, checkpoint, metas, complete);
+      anchor = resolved.anchor;
+      if (resolved.switched) {
+        // A different account than the checkpoint we opened with. Everything
+        // account-shaped has to be re-read under its own key before a single
+        // byte is written, and its pending set is not ours to carry.
+        checkpointKey = resolved.key;
+        checkpoint = (await readLedger()).checkpoints[checkpointKey] || null;
+        job = await readJob(checkpointKey);
+        acct = tagOfKey(checkpointKey);
+        acctIndex = await accountIndex(adapter.host, adapter.prefix, acct);
+        carried = [];
+        strangerAccount = true;
+        await setActiveAccount(adapter, checkpointKey);
+        await noteAccount(adapter.id, acct, { identified: false });
+      }
+    }
+
+    const listedIds = new Set(metas.map((m) => prefix + m.id));
+
+    // 3b. Appearing in this account's listing is proof of ownership, and the
+    //     only proof used. It is also what migrates an archive built before
+    //     chats were attributed at all: whatever the listing names, the account
+    //     claims. Anything it does not name keeps whatever it had — which for a
+    //     legacy row is nothing, and an unattributed row is invisible to every
+    //     account's sweep. That is the property that makes this safe to ship.
+    if (metas.length) {
+      const orphans = [];
+      for (const id of listedIds) {
+        if (index.has(id) && acctIndex.get(id) === undefined) orphans.push(id);
+      }
+      if (orphans.length) {
+        const { claimed, more } = await adoptRecords(orphans, acct);
+        for (const id of claimed) acctIndex.set(id, index.get(id) || 0);
+        if (more) {
+          await writeProgress(adapter, run, { phase: "checking", attempted: 0, total: 0,
+            msg: "Matching archived chats to this account…" });
+        }
+      }
+    }
+
+    // 3c. The listing covered the whole history, so anything THIS ACCOUNT holds
+    //     and the listing does not name is gone upstream. Never destructive by
+    //     itself — noteVanished() honours the user's policy, and the default is
+    //     to ask.
+    //
+    //     Scoped to the account for a blunt reason: on a complete listing the
+    //     host-wide archive index put every other account's chats up for
+    //     deletion, and a first sync of a second account is always a complete
+    //     listing. A stranger account is skipped outright — a listing from an
+    //     account we have never seen before is evidence about nobody.
+    const sweepAllowed = (sweeping || !trustWatermark) && !strangerAccount;
+    if (sinceMs === 0 && complete && sweepAllowed && metas.length <= BG_PENDING_MAX) {
       const pendingIds = new Set(carried.map((p) => p.id));
-      await sweepVanished(adapter, index, listedIds, scanStartedAt, pendingIds);
+      await sweepVanished(adapter, acctIndex, listedIds, scanStartedAt, pendingIds);
       await markSwept(adapter.id);
     }
 
@@ -1924,9 +2998,10 @@ async function bgSyncPlatform(adapter, run, opts = {}) {
     if (!work.length) {
       await finishPlatform(adapter, checkpointKey,
         { ...checkpoint, safeWatermark: complete ? scanStartedAt : (checkpoint?.safeWatermark || 0),
-          pendingCount: 0, passState: complete ? "clean" : "partial", runId: run.id },
+          pendingCount: 0, passState: complete ? "clean" : "partial", runId: run.id,
+          anchor, acctScoped: true },
         "up-to-date", { attempted: metas.length, total: metas.length, succeeded: 0, failed: 0 },
-        "Everything is already backed up", index.size);
+        "Everything is already backed up", await accountCount(acct));
       return { ok: true, result: "up-to-date", mode };
     }
 
@@ -1938,9 +3013,9 @@ async function bgSyncPlatform(adapter, run, opts = {}) {
     //    single chat still leave a resumable checkpoint behind.
     await writeJob(checkpointKey, { platform: adapter.id, scanStartedAt, pending: work,
       tombstones: job ? job.tombstones : [] });
-    const baseCoverage = await platformCount(adapter.host, adapter.prefix);
+    const baseCoverage = await accountCount(acct);
     await saveCheckpoint(checkpointKey, {
-      version: 4, platform: adapter.id,
+      version: 5, platform: adapter.id, anchor, acctScoped: true,
       safeWatermark: complete && !overflow ? scanStartedAt : (checkpoint?.safeWatermark || 0),
       completedAt: Date.now(), lastResult: mode,
       archived: checkpoint?.archived || 0,
@@ -1995,7 +3070,11 @@ async function bgSyncPlatform(adapter, run, opts = {}) {
             createdAt: item.createdAt, updatedAt: item.rev,
             // Always the LISTED revision: stamping the fetch time would claim a
             // revision we never verified and mask the next real update.
-            sourceUpdatedAt: item.rev, msgs
+            sourceUpdatedAt: item.rev,
+            // The account whose listing produced this chat. Written at the same
+            // moment as the chat itself, so a row is never in the archive
+            // without knowing who it belongs to.
+            acct, msgs
           };
           if (msgs.length < 2) { record.msgs = []; record.meta = true; }
           importQueue.push(record);
@@ -2029,7 +3108,7 @@ async function bgSyncPlatform(adapter, run, opts = {}) {
     await flushQueue(true);
     if (fatal) throw fatal;
 
-    const coverage = await platformCount(adapter.host, adapter.prefix);
+    const coverage = await accountCount(acct);
     const remaining = await readJob(checkpointKey);
     const left = remaining ? remaining.pending.length : 0;
 
@@ -2038,7 +3117,7 @@ async function bgSyncPlatform(adapter, run, opts = {}) {
       // the next pass picks up exactly what is left.
       const until = hostEntry(adapter.host).cooldownUntil;
       await saveCheckpoint(checkpointKey, {
-        ...(checkpoint || {}), version: 4, platform: adapter.id,
+        ...(checkpoint || {}), version: 5, platform: adapter.id, anchor, acctScoped: true,
         safeWatermark: complete && !overflow ? scanStartedAt : (checkpoint?.safeWatermark || 0),
         completedAt: Date.now(),
         lastResult: circuitOpen ? "rate-limited" : budgetHit ? "budget" : "partial",
@@ -2061,7 +3140,7 @@ async function bgSyncPlatform(adapter, run, opts = {}) {
     }
 
     await finishPlatform(adapter, checkpointKey,
-      { ...(checkpoint || {}),
+      { ...(checkpoint || {}), anchor, acctScoped: true,
         safeWatermark: complete && !overflow ? scanStartedAt : (checkpoint?.safeWatermark || 0),
         archived, pendingCount: 0,
         passState: complete && !overflow ? "clean" : "partial",
@@ -2072,27 +3151,40 @@ async function bgSyncPlatform(adapter, run, opts = {}) {
       coverage);
     return { ok: true, result: mode, archived };
   } catch (error) {
-    const reason = String((error && error.message) || error);
-    const signedOut = reason.includes("unauthorized") || reason.includes("not signed in") ||
-      /unexpected provider response|invalid provider response/i.test(reason);
-    const rateLimited = (error && error.kind) === "rate";
-    const message = reason.includes("unauthorized") || reason.includes("not signed in")
-      ? `Not signed in`
-      : /unexpected token\s*['"]?<?|valid json|json\.parse|unexpected provider response|invalid provider response/i.test(reason)
-        ? `Needs an active session`
-        : rateLimited
-          ? `${adapter.label} is rate-limiting — resumes automatically`
-          : `Couldn't reach ${adapter.label}`;
-    progressPending = null;
-    await chrome.storage.local.set({
-      [BG_SYNC_PROG(adapter.id)]: {
-        state: rateLimited ? "paused" : "error", phase: rateLimited ? "paused" : "error",
-        runId: run.id, platform: adapter.id,
-        done: attempted, attempted, total, succeeded, failed, msg: message, signedOut, at: Date.now()
-      }
-    });
-    return { ok: false, error: reason, signedOut };
+    return reportPlatformError(adapter, run, error, { attempted, total, succeeded, failed });
   }
+}
+
+/** One place that turns a thrown pass into something the UI can say out loud —
+ *  shared by the session handshake and by each account's own pass. */
+async function reportPlatformError(adapter, run, error, fields) {
+  const { attempted = 0, total = 0, succeeded = 0, failed = 0 } = fields || {};
+  const reason = String((error && error.message) || error);
+  const signedOut = reason.includes("unauthorized") || reason.includes("not signed in") ||
+    /unexpected provider response|invalid provider response/i.test(reason);
+  const rateLimited = (error && error.kind) === "rate";
+  // A reachable provider that answered in a shape we no longer parse. Saying
+  // "couldn't reach" there sends the user to check their connection about
+  // something only a new build can fix.
+  const shapeChanged = (error && error.kind) === "shape";
+  const message = reason.includes("unauthorized") || reason.includes("not signed in")
+    ? `Not signed in`
+    : /unexpected token\s*['"]?<?|valid json|json\.parse|unexpected provider response|invalid provider response/i.test(reason)
+      ? `Needs an active session`
+      : rateLimited
+        ? `${adapter.label} is rate-limiting — resumes automatically`
+        : shapeChanged
+          ? `${adapter.label} changed its API — this needs a toolkit update`
+          : `Couldn't reach ${adapter.label}`;
+  progressPending = null;
+  await chrome.storage.local.set({
+    [BG_SYNC_PROG(adapter.id)]: {
+      state: rateLimited ? "paused" : "error", phase: rateLimited ? "paused" : "error",
+      runId: run.id, platform: adapter.id,
+      done: attempted, attempted, total, succeeded, failed, msg: message, signedOut, at: Date.now()
+    }
+  });
+  return { ok: false, error: reason, signedOut };
 }
 
 async function bgSyncAll(opts = {}) {
@@ -2143,6 +3235,7 @@ async function bgSyncStatus() {
   const store = await chrome.storage.local.get(keys);
   const activeAccounts = store[BG_ACTIVE_ACCOUNT] && typeof store[BG_ACTIVE_ACCOUNT] === "object"
     ? store[BG_ACTIVE_ACCOUNT] : {};
+  const roster = await readAccounts();
   const platforms = {};
   for (const adapter of BG_ADAPTERS) {
     // Do not show another signed-in account's checkpoint as this account's
@@ -2152,12 +3245,33 @@ async function bgSyncStatus() {
     const checkpoint = activeKey ? ledger.checkpoints[activeKey] || null : null;
     const progress = store[BG_SYNC_PROG(adapter.id)] || null;
     const phase = progress?.phase || (checkpoint ? "up-to-date" : "needs-sync");
+    // Every account this browser has synced on the platform, so a row can say
+    // "two accounts" instead of silently describing whichever one went last.
+    // Matched by tag because the roster stores the short form of the same hash.
+    const seen = roster[adapter.id] && typeof roster[adapter.id] === "object" ? roster[adapter.id] : {};
+    const byTag = new Map(Object.entries(ledger.checkpoints)
+      .filter(([, c]) => c && c.platform === adapter.id)
+      .map(([key, c]) => [tagOfKey(key), c]));
+    const accounts = Object.entries(seen)
+      .sort((a, b) => (Number(a[1].ordinal) || 0) - (Number(b[1].ordinal) || 0))
+      .map(([acct, meta]) => ({
+        acct,
+        ordinal: Number(meta.ordinal) || 0,
+        label: String(meta.label || ""),
+        plan: String(meta.plan || ""),
+        active: acct === tagOfKey(activeKey),
+        archived: Number(byTag.get(acct)?.coverage) || 0,
+        completedAt: Number(byTag.get(acct)?.completedAt) || 0,
+        synced: byTag.has(acct)
+      }));
     platforms[adapter.id] = {
       label: adapter.label,
       progress,
       flag: store[BG_SYNC_FLAG(adapter.id)] || null,
       checkpoint,
-      phase
+      phase,
+      accounts,
+      archivedAll: accounts.reduce((sum, a) => sum + a.archived, 0)
     };
   }
   const deletions = await deletionsList();
@@ -2215,7 +3329,16 @@ function summarize(platforms, running, recovery, runId) {
       checkedAt: 0, connected: entries.filter((p) => !(p.progress && p.progress.signedOut)).length };
   }
 
-  const connected = entries.filter((p) => !(p.progress && p.progress.signedOut));
+  /* A platform this browser has never checked is UNKNOWN, not connected —
+     there is no evidence yet that the user has an account there at all.
+     Counting one as a provider still "left to check" is what turned adding a
+     fifth adapter into every existing user being told, on update, that the
+     finished archive they had was suddenly incomplete. The window is short by
+     construction: one sync pass gives every platform a progress record either
+     way — archived, or signed out — and it rejoins the count on its own
+     evidence rather than on our having shipped it. */
+  const known = entries.filter((p) => p.progress || p.checkpoint);
+  const connected = known.filter((p) => !(p.progress && p.progress.signedOut));
   const failing = connected.filter((p) => p.progress && p.progress.state === "error");
   if (failing.length) {
     return {
@@ -2262,7 +3385,12 @@ async function wipeRecall() {
   // "Delete everything" has to mean the backup key material too, or a wiped
   // browser would keep writing readable archives of whatever comes next.
   await chrome.storage.local.remove(localKeys.concat([BG_SYNC_WORK, BG_HOST_COOLDOWN, BG_PAGE_SCHEME,
-    BG_DELETIONS, BG_SWEEP_STATE, BG_AUTOBACKUP, BG_AUTOBACKUP_STATE, BG_RESTORE_GUARD]));
+    BG_DELETIONS, BG_SWEEP_STATE, BG_AUTOBACKUP, BG_AUTOBACKUP_STATE, BG_RESTORE_GUARD,
+    // The account roster and every per-account usage tally are part of
+    // "delete everything" — they describe who was signed in, which is exactly
+    // what a wipe is meant to remove.
+    BG_ACCOUNTS]));
+  await clearUsage();
   await removeDurable([BG_SYNC_LEDGER, BG_BACKUP_MARKER, BG_SYNC_PROFILE]);
   await paintDeletionBadge(0);
   try { await chrome.alarms.clear(BG_AUTOBACKUP_ALARM); } catch { /* alarms unavailable */ }
@@ -2800,6 +3928,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         msgs: chatgptMsgs(msg.conv || {}),
         entries: indexFromMsgs(chatgptMsgs(msg.conv || {}))
       };
+      case "account-for":        return accountForHost(String(msg.host || ""), String(msg.hint || "").slice(0, 120));
+      case "account-roster":     return { accounts: await readAccounts() };
       case "recall-sync-status": return bgSyncStatus();
       case "recall-backup-state": return backupState();
       case "recall-backup-mark": return markBackup(msg.meta);

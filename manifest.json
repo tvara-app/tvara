@@ -19,7 +19,9 @@
     "https://chat.openai.com/*",
     "https://claude.ai/*",
     "https://chat.deepseek.com/*",
-    "https://grok.com/*"
+    "https://grok.com/*",
+    "https://www.perplexity.ai/*",
+    "https://gemini.google.com/*"
   ],
   "background": {
     "service_worker": "bg.js"

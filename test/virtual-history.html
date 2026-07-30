@@ -34,6 +34,15 @@
     const DEAD_AFTER = num("deadAfter", Infinity);
     const ANCHORS = q.get("anchor") === "1";
     const WITH_INDEX = q.get("index") === "1";
+    /* A host that assigns its messages NO id of any kind — Claude and Grok,
+       not ChatGPT. There is nothing stable to key a row by, so the loader has
+       to fall back to its text, and `stream` then does the thing that breaks:
+       rewrites the newest message continuously, the way a streaming answer
+       does. A loader that keys its "did another page arrive?" test on the
+       tail's TEXT reads every one of those rewrites as a fresh page, never
+       stalls, and runs to its ceiling on a conversation it already finished. */
+    const BARE = q.get("bare") === "1";
+    const STREAM = q.get("stream") === "1";
 
     const scroller = document.getElementById("virtual-scroller");
     const chat = document.getElementById("chat");
@@ -50,10 +59,12 @@
       const el = document.createElement("article");
       const user = index % 2 === 0;
       el.className = "msg " + (user ? "user" : "assistant");
-      el.id = "v-" + String(index + 1).padStart(3, "0");
       el.setAttribute("data-lct-message", "");
       el.setAttribute("data-lct-role", user ? "user" : "assistant");
-      el.setAttribute("data-message-id", idOf(index));
+      if (!BARE) {
+        el.id = "v-" + String(index + 1).padStart(3, "0");
+        el.setAttribute("data-message-id", idOf(index));
+      }
       el.innerHTML = `<div class="meta">${user ? "You" : "AI"} · turn ${index + 1}</div><div>${bodyOf(index)}</div>`;
       return el;
     }
@@ -102,9 +113,42 @@
     scroller.scrollTop = scroller.scrollHeight;
     lastTop = scroller.scrollTop;
 
+    /* A NEW answer, still arriving, while the crawl runs above it.
+       Modelled the way a real one behaves and not merely as "some text
+       changes": the row is appended ONCE (one childList mutation, which any
+       observer legitimately sees) and then grows from empty, two characters at
+       a time. Growing from empty is the part that matters — a key taken from
+       the row's first 160 characters is rewritten by every one of those ticks
+       until the answer outgrows 160 characters, which on a real answer is
+       the whole life of the crawl. Appending to an ALREADY long row would
+       change nothing a prefix key can see, and would quietly test nothing.
+
+       One character every 250ms, deliberately: the prefix therefore keeps
+       moving for ~40 seconds, which is far longer than any crawl of this
+       fixture takes. That is what makes the assertion two-sided instead of a
+       race — a loader that ignores the tail finishes in a couple of seconds, and
+       one that watches it cannot finish at all while the answer is still
+       arriving. */
+    let streamed = 0;
+    if (STREAM) {
+      const row = document.createElement("article");
+      row.className = "msg assistant";
+      row.setAttribute("data-lct-message", "");
+      row.setAttribute("data-lct-role", "assistant");
+      const body = document.createElement("div");
+      row.appendChild(body);
+      chat.appendChild(row);
+      const tick = setInterval(() => {
+        if (body.textContent.length > 300) return clearInterval(tick);
+        body.textContent += "a";
+        streamed++;
+      }, 250);
+    }
+
     window.__virtualHistory = {
       get loads() { return loads; },
       get first() { return first; },
+      get streamed() { return streamed; },
       total: TOTAL,
       motion,
       resetMotion() { motion.events = 0; motion.distance = 0; motion.maxTop = 0; motion.framesAboveTop = 0; }
@@ -130,7 +174,7 @@
     requestAnimationFrame(() => {
       const top = scroller.getBoundingClientRect().top;
       const bottom = scroller.getBoundingClientRect().bottom;
-      const anchor = [...chat.querySelectorAll("[data-message-id]")].find((el) => {
+      const anchor = [...chat.querySelectorAll(BARE ? "[data-lct-message]" : "[data-message-id]")].find((el) => {
         const r = el.getBoundingClientRect();
         return r.bottom > top && r.top < bottom;
       });

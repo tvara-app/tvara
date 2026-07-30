@@ -209,34 +209,78 @@ try {
   t("A5 first-paint cache is present and holds NO key, NO full email",
     uiCache.length > 2 && !uiCache.includes("LCT1.") && !uiCache.includes("test@example.com"));
 
-  // A5b — a query must never expand the fixed popup surface. Results replace
-  // the archive-check row and are deliberately a compact preview.
+  // A5b — the results list holds every match and is itself the scroller. Two
+  // things must both hold: the document must never become the scroller (html
+  // and body are overflow:hidden, so anything past the pane is clipped, not
+  // reachable), and the list must be scrollable to the last match with no
+  // scrollbar taking up width. Twelve chats is more than the surface can show
+  // at once, which is the whole point of the case.
   await pop.evaluate(() => new Promise((resolve) => chrome.runtime.sendMessage({
     type: "recall-import",
-    chats: [{
-      id: "chatgpt.com/c/popup-layout", host: "chatgpt.com", path: "/c/popup-layout",
-      platform: "ChatGPT", title: "Popup layout regression", n: 2,
-      createdAt: Date.now(), updatedAt: Date.now(),
-      msgs: [{ r: "user", t: "fixed popup layout" }, { r: "assistant", t: "The popup must never grow when results appear." }]
-    }]
+    chats: Array.from({ length: 12 }, (_, i) => ({
+      id: `chatgpt.com/c/popup-layout-${i}`, host: "chatgpt.com", path: `/c/popup-layout-${i}`,
+      platform: "ChatGPT", title: `Popup layout regression ${i + 1}`, n: 2,
+      createdAt: Date.now() - i * 6e4, updatedAt: Date.now() - i * 6e4,
+      msgs: [{ r: "user", t: "fixed popup layout" },
+             { r: "assistant", t: "The popup must never grow past the pane Chrome gave it." }]
+    }))
   }, resolve)));
-  await pop.setViewportSize({ width: 380, height: 560 });
+  // 600px is Chrome's real ceiling for a popup pane, so that is the surface the
+  // panel has to fit inside.
+  await pop.setViewportSize({ width: 380, height: 600 });
   await pop.fill("#recall-query", "popup");
   await pop.waitForSelector("#recall-results .recall-result");
-  const popupMetrics = await pop.evaluate(() => ({
-    rootScroll: document.documentElement.scrollHeight,
-    rootClient: document.documentElement.clientHeight,
-    bodyScroll: document.body.scrollHeight,
-    bodyClient: document.body.clientHeight
-  }));
+  const popupMetrics = await pop.evaluate(() => {
+    const box = document.getElementById("recall-results");
+    return {
+      rows: box.querySelectorAll(".recall-result").length,
+      meta: document.getElementById("recall-query-meta").textContent,
+      boxScroll: box.scrollHeight, boxClient: box.clientHeight,
+      bar: box.offsetWidth - box.clientWidth,
+      edge: box.classList.contains("more-below"),
+      rootScroll: document.documentElement.scrollHeight,
+      rootClient: document.documentElement.clientHeight,
+      bodyScroll: document.body.scrollHeight,
+      bodyClient: document.body.clientHeight
+    };
+  });
+  t("A5b popup search lists every match, not a preview",
+    popupMetrics.rows === 12 && popupMetrics.meta === "12 chats", JSON.stringify(popupMetrics));
   // The root is the real scroller and stays strict. body is allowed one pixel:
   // its height lands on a fractional boundary and rounds either way between
   // runs. A genuine regression here is tens of pixels, not one.
-  t("A5b popup search keeps its fixed panel height",
+  t("A5b popup search keeps the panel inside the pane",
     popupMetrics.rootScroll <= popupMetrics.rootClient &&
     popupMetrics.bodyScroll <= popupMetrics.bodyClient + 1,
     JSON.stringify(popupMetrics));
+  t("A5b the list is the scroller, with no scrollbar and a fade to say so",
+    popupMetrics.boxScroll > popupMetrics.boxClient + 20 &&
+    popupMetrics.bar === 0 && popupMetrics.edge, JSON.stringify(popupMetrics));
+  // Scrolling has to reach the twelfth match, not stall partway. The scroll
+  // event that repaints the edges is asynchronous, so read the classes after it
+  // has landed rather than in the same block that moved the list.
+  await pop.evaluate(() => {
+    const box = document.getElementById("recall-results");
+    box.scrollTop = box.scrollHeight;
+  });
+  await pop.waitForFunction(() =>
+    document.getElementById("recall-results").classList.contains("more-above"));
+  const popupScrolled = await pop.evaluate(() => {
+    const box = document.getElementById("recall-results");
+    const last = box.lastElementChild.getBoundingClientRect();
+    return { top: Math.round(box.scrollTop), end: box.scrollHeight - box.clientHeight,
+             lastInView: last.bottom <= box.getBoundingClientRect().bottom + 1,
+             above: box.classList.contains("more-above"),
+             below: box.classList.contains("more-below") };
+  });
+  t("A5b the last match is reachable by scrolling",
+    popupScrolled.top === popupScrolled.end && popupScrolled.lastInView &&
+    popupScrolled.above && !popupScrolled.below, JSON.stringify(popupScrolled));
+  // Clearing the query hands the surface back to the rows it borrowed from.
   await pop.fill("#recall-query", "");
+  await pop.waitForFunction(() => !document.body.classList.contains("searching"));
+  t("A5b clearing the query gives the rows below their room back",
+    await pop.isVisible("#sync-history") && await pop.isVisible("footer"));
   await pop.setViewportSize({ width: 900, height: 800 });
 
   // A6 — screenshots: pro state, dark + light
@@ -1054,6 +1098,46 @@ try {
   t("B2c minimap keeps the complete map after the host recycles old DOM rows", true);
   await virtual.close();
 
+  /* B2c2 — the same crawl on a host that assigns its messages NO id, while an
+     answer streams into the tail. That is every host except ChatGPT: Claude,
+     Gemini and Grok all page their transcript and none of them hands out a
+     data-message-id. With nothing stable to key a row by, the loader falls back
+     to the row's text — and if it lets the TAIL's text decide whether another
+     page arrived, each streamed token reads as a fresh page, the stall counter
+     never fills, and the crawl runs to its four-minute ceiling on a
+     conversation it finished mounting seconds ago. */
+  const bare = await ctx.newPage();
+  trackErrors(bare);
+  await bare.goto("http://127.0.0.1:8917/test/virtual-history.html?bare=1&stream=1&total=120&page=20");
+  // 20s against a crawl that takes ~3s once the tail is ignored, and against a
+  // streamed prefix that keeps moving for ~40s if it is not. Neither side of
+  // that is close to the line.
+  let bareComplete = true;
+  try {
+    await bare.waitForFunction(() =>
+      document.documentElement.dataset.lctHistoryState === "complete", null, { timeout: 20000 });
+  } catch { bareComplete = false; }
+  t("B2c2 an id-less host with a streaming tail still concludes its crawl", bareComplete,
+    await bare.evaluate(() => document.documentElement.dataset.lctHistoryState || "(none)"));
+  const bareState = await bare.evaluate(() => ({
+    count: document.querySelectorAll("[data-lct-message]").length,
+    total: window.__virtualHistory.total,
+    first: window.__virtualHistory.first,
+    ids: document.querySelectorAll("[data-message-id]").length,
+    streamed: window.__virtualHistory.streamed
+  }));
+  // total + 1: every turn of the conversation, plus the answer that was still
+  // streaming underneath the crawl.
+  t("B2c2 it reached the oldest turn, not merely a quiet one",
+    bareState.count === bareState.total + 1 && bareState.first === 0, JSON.stringify(bareState));
+  // Both halves of the premise, asserted rather than assumed: a fixture that
+  // quietly kept its ids, or quietly stopped streaming, would pass the test
+  // above without ever exercising the path it exists for.
+  t("B2c2 the fixture really assigned no message ids", bareState.ids === 0, String(bareState.ids));
+  t("B2c2 the tail really was still streaming during the crawl", bareState.streamed > 0,
+    String(bareState.streamed));
+  await bare.close();
+
   /* B2d — a reader who scrolls mid-crawl cancels it, and must not be punished
      for it. The backfill used to be one-shot per route: one stray wheel and
      that conversation never finished loading its history for the whole session.
@@ -1228,9 +1312,13 @@ try {
   await pop.reload();
   // the popup live-repaints on storage changes, so a stats write landing
   // after popup-open still shows up — this wait covers that path too
-  await pop.waitForFunction(() => document.querySelector("#stat-hosts .host-row"), null, { timeout: 20000 });
+  // The per-host row list was replaced by the usage dial; the live figure the
+  // popup now paints from that same stats write is the windowed count.
+  await pop.waitForFunction(() =>
+    Number((document.getElementById("stat-windowed")?.textContent || "0").replace(/\D/g, "")) > 100,
+    null, { timeout: 20000 });
   // the popup groups thousands (toLocaleString), so "1500" paints as "1,500"
-  t("B9 popup shows 'N of 150x'", /of 1\D?50\d/.test(await pop.textContent("#stat-hosts")));
+  t("B9 popup shows the windowed count", /^[\d,]+$/.test((await pop.textContent("#stat-windowed")).trim()));
   t("B9 popup repaints live from storage changes", true); // reaching here proves it
 
   /* ============ B10. Chat Card (sidebar hover insights) ============ */

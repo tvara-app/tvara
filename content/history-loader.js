@@ -43,8 +43,13 @@
     return document.documentElement.hasAttribute("data-lct-virtual-history");
   }
 
+  /* Which hosts mount only a window of a long conversation. Declared by the
+     adapter rather than tested by id here: ChatGPT was never special, it was
+     just the one that had been checked. Claude, Gemini and Grok virtualize too,
+     and on those the minimap, the in-chat search and the outline were quietly
+     describing the recent tail as if it were the whole conversation. */
   function supported(adapter) {
-    return adapter && (adapter.id === "chatgpt" || testVirtualHost());
+    return !!adapter && (adapter.virtualizes === true || testVirtualHost());
   }
 
   function rootScroller(scroller) {
@@ -69,20 +74,42 @@
     return rootScroller(scroller) ? 0 : scroller.getBoundingClientRect().top;
   }
 
-  function messageKey(el) {
+  /* Identify one message. A provider id when the host assigns one, and only
+     then a text prefix — which is a real key for the OLDEST message (settled
+     long ago) and a poor one for the newest (it moves while an answer
+     streams). Both callers below are built around that asymmetry. */
+  function messageKey(adapter, el) {
     if (!el) return "";
-    return el.getAttribute("data-message-id") ||
+    const stable = adapter && adapter.stableKey ? adapter.stableKey(el) : "";
+    return stable ||
       el.getAttribute("data-testid") ||
       el.id ||
       ((el.textContent || "").trim().slice(0, 160));
   }
 
-  function signature(messages) {
+  /**
+   * "Is this the same mounted window as a moment ago?" — the one test that
+   * decides whether the host answered our request for another page.
+   *
+   * The tail is keyed by provider id ONLY, never by text. Paging up is proved
+   * by the count and the FIRST message — the last one contributes nothing to
+   * that, and on a host with no ids its key would be its own text. An answer
+   * arriving underneath the crawl rewrites that key on every token, the walk
+   * reads each rewrite as another page, and the stall counter it needs in order
+   * to stop can never fill. It is not a permanent hang: messageKey only reads
+   * the first 160 characters, so the walk frees itself once the answer outgrows
+   * them. It is worse than a hang would be — a walk that ends when an unrelated
+   * message happens to get long enough, having spent the interval asking a host
+   * for pages it ran out of at the start. ChatGPT never had the problem, which
+   * is the only reason it went unnoticed: data-message-id is always there.
+   */
+  function signature(adapter, messages) {
     if (!messages.length) return "0";
-    return messages.length + "|" + messageKey(messages[0]) + "|" + messageKey(messages[messages.length - 1]);
+    const tail = adapter && adapter.stableKey ? adapter.stableKey(messages[messages.length - 1]) : "";
+    return messages.length + "|" + messageKey(adapter, messages[0]) + "|" + tail;
   }
 
-  function captureAnchor(messages, scroller) {
+  function captureAnchor(adapter, messages, scroller) {
     const top = viewportTop(scroller);
     const bottom = rootScroller(scroller) ? innerHeight : scroller.getBoundingClientRect().bottom;
     const visible = messages.find((el) => {
@@ -92,7 +119,7 @@
     const r = visible.getBoundingClientRect();
     const max = maxScrollTop(scroller);
     return {
-      key: messageKey(visible),
+      key: messageKey(adapter, visible),
       text: (visible.textContent || "").trim().slice(0, 160),
       offset: r.top - top,
       ratio: max ? scrollTopOf(scroller) / max : 0,
@@ -100,8 +127,8 @@
     };
   }
 
-  function findAnchor(messages, anchor) {
-    let match = messages.find((el) => messageKey(el) === anchor.key);
+  function findAnchor(adapter, messages, anchor) {
+    let match = messages.find((el) => messageKey(adapter, el) === anchor.key);
     if (!match && anchor.text) {
       match = messages.find((el) => (el.textContent || "").trim().slice(0, 160) === anchor.text);
     }
@@ -134,7 +161,7 @@
         if (task.cancelled || task.route !== location.href) return finish(false);
         if (scroller && scrollTopOf(scroller) > TOP_EPSILON) moveTo(scroller, 0);
         let next = before;
-        try { next = signature(adapter.messages()); } catch (_) {}
+        try { next = signature(adapter, adapter.messages()); } catch (_) {}
         if (next !== before) finish(true);
       });
       let container = null;
@@ -166,7 +193,7 @@
     const until = opts.until || (() => false);
     const onStep = opts.onStep || (() => {});
     let previous = "";
-    try { previous = signature(adapter.messages()); } catch (_) {}
+    try { previous = signature(adapter, adapter.messages()); } catch (_) {}
     let stalled = 0;
     let progressed = false;
     const samples = [];
@@ -190,7 +217,7 @@
       if (task.cancelled || task.route !== location.href) return "cancelled";
 
       let next = previous;
-      try { next = signature(adapter.messages()); } catch (_) { return "exhausted"; }
+      try { next = signature(adapter, adapter.messages()); } catch (_) { return "exhausted"; }
       if (changed || next !== previous) {
         if (samples.length < 12) samples.push(Math.max(1, Date.now() - startedAt));
         previous = next;
@@ -288,7 +315,7 @@
       await pause(90);
       let messages = [];
       try { messages = adapter.messages(); } catch (_) { return; }
-      const el = findAnchor(messages, anchor);
+      const el = findAnchor(adapter, messages, anchor);
       if (!el || !el.isConnected) continue;
       el.scrollIntoView({ behavior: "auto", block: "start" });
       const drift = el.getBoundingClientRect().top - viewportTop(scroller) - anchor.offset;
@@ -326,7 +353,7 @@
        when the host stops answering. */
 
     task.scroller = scroller;
-    task.anchor = captureAnchor(messages, scroller);
+    task.anchor = captureAnchor(adapter, messages, scroller);
     setStatus("running");
 
     const outcome = await pageUp(adapter, task, scroller, {
@@ -453,9 +480,17 @@
     attachCancellation(task);
     setSeekStatus("running");
 
+    /* The seek target comes from the provider's own index, so it is a provider
+       id — match it against the same id probe the walk uses rather than
+       against data-message-id alone. That attribute is ChatGPT's spelling of
+       an id, not every host's, and hardcoding it here is what confined seek to
+       ChatGPT even once the walk itself was general. */
     const found = () => {
-      try { return document.querySelector('[data-message-id="' + CSS.escape(target.id) + '"]'); }
-      catch (_) { return null; }
+      try {
+        const direct = document.querySelector('[data-message-id="' + CSS.escape(target.id) + '"]');
+        if (direct) return direct;
+        return adapter.messages().find((el) => adapter.stableKey(el) === target.id) || null;
+      } catch (_) { return null; }
     };
 
     const label = () => {

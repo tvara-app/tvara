@@ -111,11 +111,16 @@ body {
 
 /* ---------- header ---------- */
 
+/* The whole panel is tuned to one hard constraint: Chrome gives a popup a
+   fixed surface and scrolls anything past it. Every padding below is chosen so
+   the free state — the tallest one, upsell card and all — lands inside it. Add
+   a row or a card here and something else has to give. */
+
 header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px var(--gutter) 6px;
+  padding: 6px var(--gutter) 4px;
 }
 .brand { display: flex; align-items: center; gap: 9px; min-width: 0; }
 .mark {
@@ -159,84 +164,153 @@ main { padding: 0 var(--gutter); }
   flex-wrap: wrap;
   align-items: baseline;
   gap: 6px;
-  padding: 2px 0 6px;
+  padding: 0 0 4px;
+  line-height: 1.15;
 }
-.pulse-num { font-size: 20px; font-weight: 400; letter-spacing: -.035em; font-variant-numeric: tabular-nums; }
+.pulse-num { font-size: 18px; font-weight: 400; letter-spacing: -.035em; font-variant-numeric: tabular-nums; }
 .pulse-label { color: var(--ink-dim); font-size: 11.5px; }
-/* ---------- usage circles ---------- */
+/* ---------- usage dial ----------
+   Rings nested into one object, read outward-in by recency. Each track is its
+   own ring's colour held at a whisper rather than a shared grey, so an empty
+   ring still says which platform it belongs to; the gaps run wide so the dial
+   breathes like the rest of the panel instead of stacking into a solid disc.
+   The legend borrows the row stack's hairlines — it is the same list, smaller. */
 
-#usage-bars {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 12px 22px;
-  flex-basis: 100%;
-}
-#usage-bars:not(:empty) { margin-top: 12px; margin-bottom: 8px; }
+#usage-bars { flex-basis: 100%; }
+#usage-bars:not(:empty) { margin-top: 6px; margin-bottom: 2px; }
 
-.usage-circle {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 5px;
-  min-width: 86px;
-}
+.usage-panel { display: flex; align-items: center; gap: 15px; }
 
-/* The SVG ring */
-.usage-ring {
+.usage-dial {
   position: relative;
-  width: 64px;
-  height: 64px;
+  width: 80px;
+  height: 80px;
+  flex: none;
 }
-.usage-ring svg { display: block; width: 64px; height: 64px; }
-.usage-ring-track {
-  fill: none;
-  stroke: rgb(255 255 255 / .08);
-  stroke-width: 3.2;
+/* The dial sits in its own pool of light — the field's warmth, gathered. */
+.usage-dial::before {
+  content: "";
+  position: absolute;
+  inset: -10px;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgb(255 177 133 / .085), rgb(255 177 133 / 0) 76%);
 }
-.usage-ring-fill {
+.usage-dial svg { position: relative; width: 100%; height: 100%; }
+
+.usage-track { fill: none; opacity: .14; }
+.usage-track.open { stroke-linecap: round; opacity: .4; }   /* dotted: no published cap */
+.usage-dial.dense .usage-track.open { opacity: .26; }
+/* Spent to the cap. It stays dim — the ring is empty because the allowance
+   is — and carries the warning in its colour instead. Brightening it here
+   would draw exactly the shape that means "untouched". */
+.usage-track.spent { opacity: .34; }
+
+/* The lit arc is the allowance still in hand, so it unfurls forward from the
+   head of the count rather than sweeping the ring from twelve. */
+.usage-arc {
   fill: none;
-  stroke-width: 3.2;
   stroke-linecap: round;
-  transition: stroke-dashoffset .7s var(--ease);
+  animation: arc-sweep .9s var(--ease) both;
+  animation-delay: calc(var(--i) * 80ms);
 }
-/* Count text centered inside the ring */
-.usage-ring-count {
+@keyframes arc-sweep { from { stroke-dasharray: 0 var(--circ); } }
+
+/* The bead: a highlight riding the head of the count, not a second ring. */
+.usage-bead {
+  fill: #fff;
+  opacity: .9;
+  animation: bead-in .45s var(--ease) both;
+  animation-delay: calc(var(--i) * 80ms + .62s);
+}
+@keyframes bead-in { from { opacity: 0; } }
+.usage-bead.hot { animation: bead-in .45s var(--ease) both, bead-hot 1.9s ease-in-out .9s infinite alternate; }
+@keyframes bead-hot {
+  from { opacity: .55; }
+  to   { opacity: 1; filter: drop-shadow(0 0 3px var(--danger)); }
+}
+
+/* The hole reads out only when it can hold the figure and its caption — and it
+   holds both or neither, because the caption is what says which quantity the
+   figure is. Everything in here is sized off --hole so the pair shrinks into a
+   crowded dial rather than dropping half of itself. */
+.usage-core {
   position: absolute;
   inset: 0;
-  display: grid;
-  place-items: center;
-  font-size: 15px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  color: var(--ink);
-  line-height: 1;
+  display: none;
+  align-content: center;
+  justify-items: center;
+  gap: clamp(1px, calc(var(--hole) * .045), 3px);
   pointer-events: none;
 }
+.usage-dial.has-core .usage-core { display: grid; }
+.usage-core-num {
+  font-size: clamp(12px, calc(var(--hole) * .3), 21px);
+  font-weight: 400;
+  letter-spacing: -.035em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.usage-core-cap {
+  color: var(--ink-faint);
+  font-size: clamp(6px, calc(var(--hole) * .105), 7.5px);
+  letter-spacing: .14em;
+  line-height: 1;
+  text-transform: uppercase;
+}
 
-/* Labels below */
-.usage-circle-name {
-  font-size: 12px;
+/* ---------- the legend ---------- */
+
+.usage-legend { display: grid; min-width: 0; flex: 1; align-content: center; }
+.usage-legend-head {
+  padding-bottom: 3px;
+  color: var(--ink-faint);
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+
+.usage-row {
+  display: grid;
+  grid-template-columns: 9px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 3px 0;
+  border-top: 1px solid var(--line-soft);
+}
+
+/* A hollow pip — the dial's own vocabulary at 9px. Broken open where the
+   track is dotted, for the same reason: that plan has no edge to reach. */
+.usage-pip {
+  width: 9px;
+  height: 9px;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+}
+.usage-pip.open { border-top-color: transparent; transform: rotate(45deg); }
+
+.usage-name {
+  overflow: hidden;
+  font-size: 11.5px;
   font-weight: 500;
-  letter-spacing: .01em;
-  line-height: 1;
+  letter-spacing: -.012em;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
-.usage-circle-plan {
-  font-size: 10px;
-  color: var(--ink-dim);
-  line-height: 1;
-  white-space: nowrap;
-}
+.usage-plan { margin-left: 6px; color: var(--ink-faint); font-size: 9.5px; font-weight: 400; }
 
-/* Warning state */
-.usage-circle.over90 .usage-ring-fill {
-  animation: ring-pulse 2.2s ease-in-out infinite alternate;
+.usage-val {
+  color: var(--ink-faint);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -.012em;
+  white-space: nowrap;
 }
-.usage-circle.over90 .usage-ring-count { color: var(--danger); }
-@keyframes ring-pulse {
-  from { filter: brightness(1) drop-shadow(0 0 0 transparent); }
-  to   { filter: brightness(1.3) drop-shadow(0 0 3px currentColor); }
+.usage-val b { color: var(--ink); font-weight: 500; }
+.usage-row.hot .usage-val b { color: var(--danger); }
+
+@media (prefers-reduced-motion: reduce) {
+  .usage-arc, .usage-bead, .usage-bead.hot { animation: none; }
 }
 
 
@@ -249,9 +323,9 @@ main { padding: 0 var(--gutter); }
   grid-template-columns: var(--icon-col) minmax(0, 1fr) auto;
   align-items: center;
   width: 100%;
-  min-height: 38px;
+  min-height: 32px;
   gap: var(--icon-gap);
-  padding: 5px 0;
+  padding: 2px 0;
   border: 0;
   border-top: 1px solid var(--line-soft);
   background: transparent;
@@ -272,13 +346,16 @@ main { padding: 0 var(--gutter); }
 }
 .row-icon svg { width: 16px; height: 16px; }
 
+/* Tight leading, not tight padding: these are one-line labels, so the space
+   between the title and its sub-line is what a row can give back without the
+   icon column and the switch closing in on the text. */
 .row-text { display: grid; min-width: 0; gap: 1px; }
-.row-title { font-size: 12.5px; font-weight: 500; letter-spacing: -.012em; }
+.row-title { font-size: 12.5px; font-weight: 500; letter-spacing: -.012em; line-height: 1.25; }
 .row-sub {
   overflow: hidden;
   color: var(--ink-faint);
   font-size: 10.5px;
-  line-height: 1.3;
+  line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -366,11 +443,37 @@ main { padding: 0 var(--gutter); }
 #recall-query::-webkit-search-cancel-button { display: none; }
 #recall-query-meta { flex: none; color: var(--ink-faint); font-size: 9px; font-variant-numeric: tabular-nums; }
 
-/* A fixed ceiling on the preview keeps the whole panel inside Chrome's popup
-   height no matter what the query returns. */
-#recall-results { display: grid; gap: 1px; max-height: 84px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none; }
-#recall-results::-webkit-scrollbar { width: 0; }
+/* The list holds every match and scrolls; --recall-room is the height the
+   surface can actually spare, measured in popup.js because only a measurement
+   knows. The fallback stands in for the frame before that lands. */
+#recall-results {
+  display: grid;
+  gap: 1px;
+  max-height: var(--recall-room, 84px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  -webkit-mask-image: var(--edge, none);
+  mask-image: var(--edge, none);
+}
+#recall-results::-webkit-scrollbar { display: none; }
 #recall-results:not(:empty) { margin-top: 6px; }
+
+/* No bar, so the edge itself reports the rest: the side the list can still
+   travel towards fades, and stops fading once that end is reached. */
+#recall-results.more-below { --edge: linear-gradient(to bottom, #000 calc(100% - 20px), transparent); }
+#recall-results.more-above { --edge: linear-gradient(to bottom, transparent, #000 20px); }
+#recall-results.more-above.more-below {
+  --edge: linear-gradient(to bottom, transparent, #000 20px, #000 calc(100% - 20px), transparent);
+}
+
+/* A live result set owns the rest of the panel: the rows under it stand down and
+   it takes their room, so the popup finds the height without growing past the
+   pane Chrome gave it. Everything above the query row is left alone — the field
+   being typed into must not move out from under the cursor. */
+body.searching .row-panel ~ *,
+body.searching main > .rows ~ *,
+body.searching footer { display: none; }
 .recall-result {
   display: grid;
   min-width: 0;
@@ -398,8 +501,8 @@ main { padding: 0 var(--gutter); }
 /* ---------- pro / state ---------- */
 
 .pro-card, .state-card {
-  margin-top: 6px;
-  padding: 8px 10px;
+  margin-top: 5px;
+  padding: 7px 10px;
   border: 1px solid var(--line);
   border-radius: 11px;
   background: var(--glass);
@@ -407,12 +510,12 @@ main { padding: 0 var(--gutter); }
 .pro-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .pro-title { font-size: 12px; font-weight: 500; }
 .price-pill { color: var(--ember); font-size: 9.5px; white-space: nowrap; }
-.pro-note { margin-top: 4px; color: var(--ink-faint); font-size: 10px; line-height: 1.3; }
+.pro-note { margin-top: 3px; color: var(--ink-faint); font-size: 10px; line-height: 1.3; }
 .pro-note.active { color: var(--ok); }
 
-.license-row { display: flex; gap: 6px; margin-top: 6px; }
+.license-row { display: flex; gap: 6px; margin-top: 5px; }
 .license-row input, .license-row button, #trial-start, .ghost {
-  min-height: 28px;
+  min-height: 26px;
   border: 1px solid var(--line);
   border-radius: 8px;
   font: 500 10.5px/1 var(--sans);
@@ -437,7 +540,7 @@ main { padding: 0 var(--gutter); }
 }
 #trial-start {
   width: 100%;
-  margin-top: 6px;
+  margin-top: 5px;
   border-color: transparent;
   background: var(--ink);
   color: #16090d;
@@ -512,7 +615,7 @@ body.dm-open #pro-active, body.dm-open #trial-active { display: none !important;
 /* ---------- footer ---------- */
 
 footer {
-  padding: 6px var(--gutter) 8px;
+  padding: 4px var(--gutter) 6px;
   color: var(--ink-faint);
   font-size: 9px;
   text-align: center;

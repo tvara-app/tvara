@@ -20,6 +20,21 @@
   --signal-warm: #ff8a6b;
   --danger: #ff7a7a;
 
+  /* Each provider, in its own colour — recognisably theirs, deliberately not
+     theirs exactly. Every one sits a step off the real brand hue: near enough
+     that the row is read as that platform before the name is, far enough that
+     nothing here can be mistaken for the mark itself. Where two brands land
+     close together (Gemini's blue, DeepSeek's indigo) they are parted a little
+     further than the brands part themselves, so six can share one list.
+     Shared with the popup's usage rings, so a platform is the same colour
+     wherever the toolkit talks about it. */
+  --p-chatgpt: #19b884;      /* their green, a shade cooler */
+  --p-claude: #e0805c;       /* their terracotta, lifted off the brand coral */
+  --p-gemini: #4a8ef6;       /* their blue, a shade deeper */
+  --p-deepseek: #7b82fd;     /* their indigo, lifted to part from Gemini's blue */
+  --p-grok: #dcdce4;         /* their monochrome, cooled and held back off white */
+  --p-perplexity: #1fadc6;   /* their peacock teal, pulled bluer */
+
   --sans: "Helvetica Neue", Helvetica, "Inter", system-ui, -apple-system, Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
   --ease: cubic-bezier(.22, 1, .36, 1);
@@ -418,19 +433,51 @@ button:disabled { cursor: default; opacity: .4; }
   border-top: 1px solid var(--line-soft);
 }
 .sync-row b { display: flex; align-items: center; gap: 9px; font-size: 12.5px; font-weight: 500; }
+/* The row wears its provider's colour: the dot, and a hairline down the left
+   edge that only shows once the platform is actually holding something. State
+   still wins — an error is red on every provider, because which platform broke
+   matters less than the fact that one did. */
+.sync-row { --accent: var(--ink-faint); position: relative; }
+.sync-row[data-platform="chatgpt"]    { --accent: var(--p-chatgpt); }
+.sync-row[data-platform="claude"]     { --accent: var(--p-claude); }
+.sync-row[data-platform="gemini"]     { --accent: var(--p-gemini); }
+.sync-row[data-platform="deepseek"]   { --accent: var(--p-deepseek); }
+.sync-row[data-platform="grok"]       { --accent: var(--p-grok); }
+.sync-row[data-platform="perplexity"] { --accent: var(--p-perplexity); }
+
 .sync-row b::before {
   content: "";
   width: 5px;
   height: 5px;
   flex: none;
   border-radius: 50%;
-  background: var(--ink-faint);
+  background: color-mix(in oklab, var(--accent), transparent 55%);
   transition: background .35s var(--ease), box-shadow .35s var(--ease);
 }
-.sync-row[data-phase="up-to-date"] b::before { background: var(--signal); box-shadow: 0 0 0 3px rgb(255 93 138 / .16); }
-.sync-row[data-phase="error"] b::before { background: var(--danger); }
+.sync-row[data-phase="up-to-date"] b::before {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent), transparent 84%);
+}
+.sync-row[data-phase="up-to-date"]::after {
+  content: "";
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  left: -8px;
+  width: 2px;
+  border-radius: 2px;
+  background: color-mix(in oklab, var(--accent), transparent 68%);
+}
+.sync-row[data-phase="error"] b::before { background: var(--danger); box-shadow: none; }
 .sync-row[data-phase="syncing"] b::before,
-.sync-row[data-phase="checking"] b::before { background: var(--signal-warm); animation: pulse 1.5s var(--ease) infinite; }
+.sync-row[data-phase="checking"] b::before {
+  background: var(--accent);
+  animation: sync-pulse 1.5s var(--ease) infinite;
+}
+@keyframes sync-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--accent), transparent 50%); }
+  50%      { box-shadow: 0 0 0 5px color-mix(in oklab, var(--accent), transparent 100%); }
+}
 @keyframes pulse {
   0%, 100% { box-shadow: 0 0 0 0 rgb(255 138 107 / .5); }
   55%      { box-shadow: 0 0 0 5px rgb(255 138 107 / 0); }

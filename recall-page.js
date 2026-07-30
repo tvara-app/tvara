@@ -642,7 +642,7 @@
    * The archive deliberately outlives the provider unless the user says
    * otherwise, so every removal is a decision made here. */
 
-  const PLATFORM_NAMES = { chatgpt: "ChatGPT", claude: "Claude", deepseek: "DeepSeek", grok: "Grok", gemini: "Gemini" };
+  const PLATFORM_NAMES = { chatgpt: "ChatGPT", claude: "Claude", deepseek: "DeepSeek", grok: "Grok", gemini: "Gemini", perplexity: "Perplexity" };
 
   function deletionRow(item) {
     const row = document.createElement("div");
@@ -738,7 +738,9 @@
     { id: "chatgpt", label: "ChatGPT" },
     { id: "claude", label: "Claude" },
     { id: "deepseek", label: "DeepSeek" },
-    { id: "grok", label: "Grok" }
+    { id: "grok", label: "Grok" },
+    { id: "perplexity", label: "Perplexity" },
+    { id: "gemini", label: "Gemini" }
   ];
   const progKey = (id) => "recall-sync-progress:" + id;
   const activeAccountKey = "lct-recall-active-account-v1";
@@ -764,6 +766,7 @@
       row = document.createElement("div");
       row.id = "sync-row-" + app.id;
       row.className = "sync-row";
+      row.dataset.platform = app.id;   // picks the provider's accent in the CSS
       $("sync-rows").appendChild(row);
     }
     return row;

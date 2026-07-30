@@ -56,6 +56,7 @@
       $("recall-query").value = "";
       $("recall-query-meta").textContent = "";
       $("recall-results").replaceChildren();
+      sizeRecallResults(false);
     }
   }
 
@@ -66,24 +67,54 @@
     $("toggle-history").checked = !!(s && s.history === true);
   }
 
-  /* ---------- usage circles ----------
-     Per-provider circular progress rings showing messages sent in a rolling
-     window. Always visible for every platform the user has synced with.
-     Each ring shows: count in centre, platform name below, plan tier below. */
+  /* ---------- usage dial ----------
+     One nested dial rather than a row of loose circles: the platform used
+     most recently takes the outermost ring and the rest fall inward, so the
+     whole reading is a single object instead of a scoreboard. Ring weight and
+     spacing are derived from how many platforms there are, so the dial is
+     always the same size on the panel and the hole stays legible.
+
+     Each ring reads as WHAT IS LEFT, not what has been spent: the lit arc is
+     the allowance still in hand, and the bead is the head of the count,
+     travelling clockwise from twelve as messages go out. So a full ring means
+     an untouched window and a dark one means you are out — the direction a
+     user cares about, in the direction they can act on.
+
+     A published cap (ChatGPT, Claude) draws against its real ceiling on a
+     solid track. A platform with no published cap draws on a dotted track and
+     never closes the loop: its allowance is unpublished, so the ring counts
+     down against a nominal busy window and the legend beside it reports what
+     was sent rather than inventing a remainder. */
 
   const USAGE_WINDOW_MS = 3 * 60 * 60 * 1000; // 3 hours
   const SVG_NS = "http://www.w3.org/2000/svg";
-  const RING_R = 15;                           // radius
-  const RING_C = 2 * Math.PI * RING_R;        // circumference ≈ 94.25
+  const DIAL_BOX = 120;      // svg viewBox units, square
+  const DIAL_PX = 80;        // rendered size — needed to size the centre readout
+  const RING_OUTER = 54;     // centreline radius of the outermost ring
+  // [stroke, gap] by ring count. The gaps run generous on purpose: the air
+  // between arcs is what keeps four of them readable at 110px.
+  const RING_GEOM = [null, [10, 0], [10, 5], [9.5, 4.5], [7.5, 3], [6.5, 2.6], [5.6, 2.2]];
+  const MAX_RINGS = RING_GEOM.length - 1;
+  const UNCAPPED_REF = 100;  // messages that read as a busy window
+  const UNCAPPED_MAX = .8;   // span of an uncapped ring — it never closes
+  const ARC_MIN = .035;      // a last message still leaves something lit
+  // The figure and its caption stand or fall together: "125" alone was legible
+  // back when a number could only ever mean messages sent, but it now means
+  // whichever of left/sent the dial is counting, and an unlabelled one would be
+  // a guess. Both scale with the hole instead, and both leave at the same size.
+  const CORE_MIN = 26;       // px of hole needed before the centre reads out
 
-  // Provider configuration: color, default limit, default plan label.
+  // Provider configuration: ring colour, default limit, default plan label.
+  // Each colour sits a step off its brand hue — near enough that the ring is
+  // read as that platform without the legend, far enough that it is our mark
+  // and not theirs. Kept in step with --p-* in recall.css.
   const PROVIDERS = {
-    chatgpt:    { color: "#10a37f", limit: 80,   plan: "Plus" },
-    claude:     { color: "#d97757", limit: 45,   plan: "Pro" },
-    gemini:     { color: "#4285f4", limit: null,  plan: "Free" },
-    deepseek:   { color: "#4d6bfe", limit: null,  plan: "Free" },
-    grok:       { color: "#c8c8c8", limit: null,  plan: "Free" },
-    perplexity: { color: "#20808d", limit: null,  plan: "Free" }
+    chatgpt:    { color: "#19b884", limit: 80,   plan: "Plus" },
+    claude:     { color: "#e0805c", limit: 45,   plan: "Pro" },
+    gemini:     { color: "#4a8ef6", limit: null,  plan: "Free" },
+    deepseek:   { color: "#7b82fd", limit: null,  plan: "Free" },
+    grok:       { color: "#dcdce4", limit: null,  plan: "Free" },
+    perplexity: { color: "#1fadc6", limit: null,  plan: "Free" }
   };
 
   const HOST_TO_ID = {
@@ -104,127 +135,310 @@
     { id: "gemini",  label: "Gemini" }
   ];
 
-  function usageCircleEl(providerId, platformLabel, sent, limit, plan) {
-    const info = PROVIDERS[providerId] || PROVIDERS.chatgpt;
-    const color = info.color;
+  /* Published ceilings, by plan. A paid tier states its allowance, so the ring
+     can draw against a real edge. A free tier's is dynamic and undocumented —
+     drawing a made-up ceiling there would be worse than drawing none, so free
+     accounts get the open, uncapped ring and an honest count instead. An
+     unknown plan keeps the platform default, which is what shipped before. */
+  const PLAN_LIMITS = {
+    chatgpt: { plus: 80, pro: 200 },
+    claude:  { pro: 45, max: 225, team: 45 }
+  };
 
-    const wrap = document.createElement("div");
-    wrap.className = "usage-circle";
+  function limitFor(id, plan) {
+    const key = String(plan || "").toLowerCase();
+    const table = PLAN_LIMITS[id] || {};
+    if (table[key]) return table[key];
+    if (key === "free") return null;
+    return (PROVIDERS[id] || {}).limit ?? null;
+  }
 
-    // Percentage for the ring arc — 0 sent means 0 arc progress (lore-accurate)
-    const raw = limit ? sent / limit : (sent > 0 ? 0.15 : 0);
-    const pct = sent > 0 ? Math.max(raw, 0.04) : 0;
-    if (limit && raw >= 0.9) wrap.classList.add("over90");
+  /* Two accounts on one platform share a hue and separate on lightness: the
+     ring still reads as "that platform" at a glance, and the legend beside it
+     is what tells them apart. */
+  function ringColor(id, ordinal) {
+    const base = (PROVIDERS[id] || PROVIDERS.chatgpt).color;
+    if (!ordinal || ordinal <= 1) return base;
+    const step = (ordinal - 1) % 4;
+    if (step === 1) return `color-mix(in oklab, ${base}, #fff 30%)`;
+    // The darkening step stays shallow: these bases carry the brands' own
+    // saturation now, and a deeper cut drops the third ring off a dark field.
+    if (step === 2) return `color-mix(in oklab, ${base}, #000 18%)`;
+    if (step === 3) return `color-mix(in oklab, ${base}, #fff 52%)`;
+    return base;
+  }
 
-    // SVG ring
-    const ring = document.createElement("div");
-    ring.className = "usage-ring";
-    const svg = document.createElementNS(SVG_NS, "svg");
-    svg.setAttribute("viewBox", "0 0 36 36");
+  /** Where a ring stands. `spent` is how far round the head has travelled and
+   *  `left` is the arc still lit ahead of it — the two are what get drawn, and
+   *  only `left` is coloured. A capped plan measures both against its real
+   *  ceiling and can run the whole loop; an uncapped one travels against a
+   *  nominal busy window over a span that stops short of closing, so a ring
+   *  right round always means "untouched cap" and nothing else. */
+  function arcOf(sent, limit) {
+    const span = limit ? 1 : UNCAPPED_MAX;
+    const used = Math.min((sent || 0) / (limit || UNCAPPED_REF), 1);
+    // A floor on the remainder so the last few of a large allowance still read
+    // as some — 1 of 225 left is a third of a degree otherwise. Only a capped
+    // plan is allowed to reach nothing, because only there is nothing true; an
+    // uncapped one that runs past the reference window has not hit a wall, so
+    // it keeps a residue lit rather than going dark on a guess.
+    let left = span * (1 - used);
+    if (left < ARC_MIN && (left > 0 || !limit)) left = ARC_MIN;
+    return { spent: span - left, left };
+  }
 
-    // Track circle (background)
-    const track = document.createElementNS(SVG_NS, "circle");
-    track.setAttribute("cx", "18"); track.setAttribute("cy", "18");
-    track.setAttribute("r", String(RING_R));
-    track.setAttribute("class", "usage-ring-track");
+  function svgEl(tag, attrs) {
+    const el = document.createElementNS(SVG_NS, tag);
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, String(v));
+    return el;
+  }
 
-    // Fill circle (progress arc)
-    const fill = document.createElementNS(SVG_NS, "circle");
-    fill.setAttribute("cx", "18"); fill.setAttribute("cy", "18");
-    fill.setAttribute("r", String(RING_R));
-    fill.setAttribute("class", "usage-ring-fill");
-    fill.style.stroke = color;
-    fill.style.strokeDasharray = String(RING_C);
-    fill.style.strokeDashoffset = String(RING_C * (1 - Math.min(pct, 1)));
-    // Rotate -90° so the arc starts from the top
-    fill.setAttribute("transform", "rotate(-90 18 18)");
+  /** The nested dial. `items` are already ordered outermost-first. */
+  function usageDialEl(items) {
+    const n = items.length;
+    const [w, gap] = RING_GEOM[n];
+    const c = DIAL_BOX / 2;
+    const innerEdge = RING_OUTER - (n - 1) * (w + gap) - w / 2;
+    const holePx = innerEdge * 2 * (DIAL_PX / DIAL_BOX);
 
-    svg.append(track, fill);
+    const dial = document.createElement("div");
+    // Past four rings the dotted guidelines start stacking into moiré, so a
+    // crowded dial holds them further back.
+    dial.className = "usage-dial" + (n >= 5 ? " dense" : "");
+    dial.style.setProperty("--hole", holePx.toFixed(1) + "px");
 
-    // Count text inside the ring
-    const countEl = document.createElement("span");
-    countEl.className = "usage-ring-count";
-    countEl.textContent = limit ? `${sent}` : `${sent}`;
-    ring.append(svg, countEl);
+    // The legend beside the dial carries every number in text, so the drawing
+    // itself is decorative to a screen reader.
+    const svg = svgEl("svg", { viewBox: `0 0 ${DIAL_BOX} ${DIAL_BOX}`, "aria-hidden": "true" });
 
-    // Platform name
-    const nameEl = document.createElement("span");
-    nameEl.className = "usage-circle-name";
-    nameEl.textContent = platformLabel;
-    nameEl.style.color = color;
+    items.forEach((it, i) => {
+      const r = RING_OUTER - i * (w + gap);
+      const circ = 2 * Math.PI * r;
 
-    // Plan label (e.g. "0/80 · Plus")
-    const planEl = document.createElement("span");
-    planEl.className = "usage-circle-plan";
-    const planParts = [];
-    if (limit) planParts.push(`${sent}/${limit}`);
-    planParts.push(plan || "Free");
-    planEl.textContent = planParts.join(" · ");
+      // Rotated so every ring starts at twelve o'clock and counts clockwise.
+      const g = svgEl("g", { transform: `rotate(-90 ${c} ${c})` });
 
-    wrap.append(ring, nameEl, planEl);
-    return wrap;
+      const track = svgEl("circle", {
+        cx: c, cy: c, r: r.toFixed(2),
+        class: "usage-track" + (it.limit ? "" : " open") + (it.out ? " spent" : "")
+      });
+      // Out of allowance: the channel is left dim — it is empty, and that is
+      // the point — and only its colour changes.
+      track.style.stroke = it.out ? "var(--danger)" : it.color;
+      // A capped plan gets a full-width channel to empty out of. An uncapped
+      // one gets a dotted guideline at half weight — a path, not a vessel.
+      track.style.strokeWidth = it.limit ? w : (w * .44).toFixed(2);
+      if (!it.limit) track.style.strokeDasharray = `.1 ${(w * .72).toFixed(2)}`;
+      g.append(track);
+
+      if (it.left > 0) {
+        // The lit arc is what is LEFT: it begins where the head has reached and
+        // runs forward, so spending eats it from twelve o'clock round.
+        const len = circ * it.left;
+        const arc = svgEl("circle", { cx: c, cy: c, r: r.toFixed(2), class: "usage-arc" });
+        arc.style.stroke = it.color;
+        arc.style.strokeWidth = w;
+        arc.style.strokeDasharray = `${len.toFixed(2)} ${(circ - len).toFixed(2)}`;
+        arc.style.strokeDashoffset = (-circ * it.spent).toFixed(2);
+        arc.style.setProperty("--circ", circ.toFixed(2));   // the sweep-in's start
+        arc.style.setProperty("--i", i);                    // stagger, outermost first
+        g.append(arc);
+      }
+
+      if (it.spent > 0 && it.left > 0) {
+        // A bead marks the head of the count — the one highlight in the dial,
+        // and what tells you at a glance which ring moved last.
+        const a = 2 * Math.PI * it.spent;
+        const bead = svgEl("circle", {
+          cx: (c + r * Math.cos(a)).toFixed(2),
+          cy: (c + r * Math.sin(a)).toFixed(2),
+          r: (w * .19).toFixed(2),
+          class: "usage-bead" + (it.hot ? " hot" : "")
+        });
+        bead.style.setProperty("--i", i);
+        g.append(bead);
+      }
+
+      svg.append(g);
+    });
+
+    dial.append(svg);
+
+    // The hole reads out while it can hold the figure; past that the arcs are
+    // the whole story and the core stays quiet.
+    if (holePx >= CORE_MIN) {
+      dial.classList.add("has-core");
+      const core = document.createElement("div");
+      core.className = "usage-core";
+      // The figure agrees with the rings around it: messages still in hand,
+      // totalled over the accounts that publish a ceiling. With no capped
+      // account on the dial there is no remainder to total, so it falls back
+      // to the count sent — which is the only honest figure at that point.
+      const capped = items.filter((it) => it.limit);
+      const total = capped.length
+        ? capped.reduce((s, it) => s + Math.max(it.limit - it.sent, 0), 0)
+        : items.reduce((s, it) => s + it.sent, 0);
+      const num = document.createElement("span");
+      num.className = "usage-core-num";
+      num.textContent = total.toLocaleString();
+      const cap = document.createElement("span");
+      cap.className = "usage-core-cap";
+      cap.textContent = capped.length ? "left" : "sent";
+      core.append(num, cap);
+      dial.append(core);
+    }
+
+    return dial;
+  }
+
+  /** The named list beside the dial — same order as the rings, outermost first. */
+  function usageLegendEl(items) {
+    const legend = document.createElement("div");
+    legend.className = "usage-legend";
+
+    const head = document.createElement("span");
+    head.className = "usage-legend-head";
+    head.textContent = `Last ${USAGE_WINDOW_MS / 36e5} hours`;
+    legend.append(head);
+
+    for (const it of items) {
+      const row = document.createElement("div");
+      row.className = "usage-row" + (it.hot ? " hot" : "");
+
+      // A hollow pip, and a broken one where the track is dotted: the legend
+      // repeats the dial's own vocabulary at 9px.
+      const pip = document.createElement("span");
+      pip.className = "usage-pip" + (it.limit ? "" : " open");
+      pip.style.color = it.color;
+
+      const name = document.createElement("span");
+      name.className = "usage-name";
+      name.textContent = it.label;
+      const plan = document.createElement("span");
+      plan.className = "usage-plan";
+      plan.textContent = it.note || it.plan || "Free";
+      name.append(plan);
+
+      // The number matches the ring: what is left where there is a ceiling to
+      // subtract from, what was sent where there isn't. Each carries its own
+      // word, so the two never get read as the same quantity.
+      const val = document.createElement("span");
+      val.className = "usage-val";
+      const num = document.createElement("b");
+      num.textContent = String(it.limit ? Math.max(it.limit - it.sent, 0) : it.sent);
+      const cap = document.createElement("span");
+      cap.className = "usage-cap";
+      cap.textContent = it.limit ? `/${it.limit} left` : " sent";
+      val.append(num, cap);
+
+      row.append(pip, name, val);
+      legend.append(row);
+    }
+
+    return legend;
   }
 
   /**
-   * Paint the usage circles and the windowed total.
+   * Paint the usage dial and the windowed total.
    * @param {number} windowedTotal
    * @param {Array} statRows — [[platform, windowed, total], ...]
    * @param {Object} usageMap — { hostname: { sent, platform, id } }
    * @param {string[]} syncedPlatforms — platform ids from recall-sync checkpoints
    */
-  function paintUsageBars(windowedTotal, statRows, usageMap, syncedPlatforms) {
+  function paintUsage(windowedTotal, statRows, usageMap, syncedPlatforms) {
     $("stat-windowed").textContent = (windowedTotal || 0).toLocaleString();
 
     const cutoff = Date.now() - USAGE_WINDOW_MS;
     const barMap = new Map();
 
-    // 1. Seed from usage data (sent timestamps)
+    // A ring is one ACCOUNT, not one platform: the ceiling being counted
+    // against belongs to the account, so two free tiers on one host are two
+    // readings and never a sum.
+    const seats = new Map();          // platform id -> how many accounts seen
+    const seat = (id) => seats.set(id, (seats.get(id) || 0) + 1);
+
+    // 1. Seed from usage data (sent timestamps), keyed host|account
     if (usageMap) {
-      for (const [host, rec] of Object.entries(usageMap)) {
+      for (const [scope, rec] of Object.entries(usageMap)) {
+        const cut = String(scope).indexOf("|");
+        const host = cut < 0 ? String(scope) : String(scope).slice(0, cut);
+        const acct = cut < 0 ? "" : String(scope).slice(cut + 1);
         const id = rec.id || HOST_TO_ID[host] || host;
         const label = rec.platform || ID_TO_LABEL[id] || id;
         const sent = Array.isArray(rec.sent) ? rec.sent.filter((ts) => ts > cutoff).length : 0;
         const info = PROVIDERS[id] || {};
-        barMap.set(id, { id, label, sent, limit: info.limit ?? null,
-          plan: info.plan || "Free",
-          lastSent: sent > 0 ? Math.max(...rec.sent) : 0 });
+        seat(id);
+        barMap.set(id + "|" + acct, {
+          id, acct, label, sent,
+          limit: limitFor(id, rec.plan),
+          plan: rec.plan || info.plan || "Free",
+          account: String(rec.label || ""),
+          ordinal: Number(rec.ordinal) || 0,
+          lastSent: sent > 0 ? Math.max(...rec.sent) : 0
+        });
       }
     }
+
+    // A platform that has an account on it needs no bare placeholder beside it.
+    const covered = (id) => seats.has(id);
 
     // 2. Merge stats-only platforms
     for (const [label] of (statRows || [])) {
       const entry = Object.entries(HOST_TO_ID).find(([, v]) =>
         v === label.toLowerCase() || label.toLowerCase().startsWith(v));
       const pid = entry ? entry[1] : label.toLowerCase();
-      if (barMap.has(pid)) continue;
+      if (covered(pid)) continue;
       const info = PROVIDERS[pid] || {};
-      barMap.set(pid, { id: pid, label, sent: 0, limit: info.limit ?? null,
-        plan: info.plan || "Free", lastSent: 0 });
+      seat(pid);
+      barMap.set(pid + "|", { id: pid, acct: "", label, sent: 0, limit: info.limit ?? null,
+        plan: info.plan || "Free", account: "", ordinal: 0, lastSent: 0 });
     }
 
     // 3. Seed from synced platforms
     for (const pid of (syncedPlatforms || [])) {
-      if (barMap.has(pid)) continue;
+      if (covered(pid)) continue;
       const info = PROVIDERS[pid] || {};
-      barMap.set(pid, { id: pid, label: ID_TO_LABEL[pid] || pid, sent: 0,
-        limit: info.limit ?? null, plan: info.plan || "Free", lastSent: 0 });
+      seat(pid);
+      barMap.set(pid + "|", { id: pid, acct: "", label: ID_TO_LABEL[pid] || pid, sent: 0,
+        limit: info.limit ?? null, plan: info.plan || "Free", account: "", ordinal: 0, lastSent: 0 });
     }
 
     // 4. Fallback: show default platforms
     if (barMap.size === 0) {
       for (const p of KNOWN_PLATFORMS) {
         const info = PROVIDERS[p.id] || {};
-        barMap.set(p.id, { id: p.id, label: p.label, sent: 0,
-          limit: info.limit ?? null, plan: info.plan || "Free", lastSent: 0 });
+        barMap.set(p.id + "|", { id: p.id, acct: "", label: p.label, sent: 0,
+          limit: info.limit ?? null, plan: info.plan || "Free", account: "", ordinal: 0, lastSent: 0 });
       }
     }
 
-    const items = [...barMap.values()].sort((a, b) =>
-      b.lastSent - a.lastSent || a.label.localeCompare(b.label));
+    // Only say which account when there is more than one to confuse: a single
+    // ChatGPT does not need to be told apart from anything.
+    for (const item of barMap.values()) {
+      const many = (seats.get(item.id) || 0) > 1;
+      item.note = many
+        ? (item.account || `Account ${item.ordinal || 1}`)
+        : (item.plan || "Free");
+    }
 
-    $("usage-bars").replaceChildren(
-      ...items.map((b) => usageCircleEl(b.id, b.label, b.sent, b.limit, b.plan))
-    );
+    // Most recently used first: that platform gets the outermost ring and the
+    // top legend row. Beyond MAX_RINGS the dial stops being readable, so the
+    // quietest platforms drop off rather than shaving every ring thinner.
+    const items = [...barMap.values()]
+      .sort((a, b) => b.lastSent - a.lastSent || a.label.localeCompare(b.label))
+      .slice(0, MAX_RINGS)
+      .map((b) => ({
+        ...b,
+        ...arcOf(b.sent, b.limit),
+        color: ringColor(b.id, (seats.get(b.id) || 0) > 1 ? b.ordinal : 0),
+        hot: !!(b.limit && b.sent / b.limit >= .9),
+        out: !!(b.limit && b.sent >= b.limit)
+      }));
+
+    const panel = document.createElement("div");
+    panel.className = "usage-panel";
+    panel.append(usageDialEl(items), usageLegendEl(items));
+    $("usage-bars").replaceChildren(panel);
   }
 
   /* ---------- first-paint cache ----------
@@ -246,9 +460,9 @@
   $("version").textContent = "v" + chrome.runtime.getManifest().version;
   paintToggles(cache && cache.settings);
   paintPlan(!!(cache && cache.pro), cache && cache.masked, (cache && cache.trialUntil) || 0);
-  // Always paint usage bars — the fallback inside paintUsageBars shows default
-  // platforms even without data so the bars are never invisible on first open.
-  paintUsageBars(
+  // Always paint the dial — the fallback inside paintUsage shows default
+  // platforms even without data, so the rings are never absent on first open.
+  paintUsage(
     (cache && cache.stats && cache.stats.total) || 0,
     (cache && cache.stats && cache.stats.rows) || [],
     (cache && cache.stats && cache.stats.usage) || {},
@@ -287,7 +501,7 @@
       .filter((k) => k.startsWith("recall-sync-") && !k.includes("progress") && !k.includes("ledger") && !k.includes("work") && !k.includes("run") && !k.includes("profile"))
       .map((k) => k.replace("recall-sync-", ""));
 
-    paintUsageBars(total, rows, usageMap, syncedPlatforms);
+    paintUsage(total, rows, usageMap, syncedPlatforms);
 
     // The worker decides; the popup only renders. Asking it here rather than
     // recomputing locally means one verdict, and the one that gates the data.
@@ -619,6 +833,63 @@
     return date.toLocaleDateString(undefined, opts);
   }
 
+  /* How much height the list gets.
+
+     Chrome hands a popup one fixed pane, sizes it to the document and clips
+     whatever runs past it — html and body are overflow:hidden, so a list that
+     overshoots is not scrolled, it is gone. The list therefore cannot simply
+     grow: while a query is live the rows below it stand down (see body.searching
+     in popup.css) and it takes exactly the room they gave up, scrolling inside
+     it for the rest. Nothing above the query row moves, so the field the user is
+     typing into stays where they put the cursor.
+
+     What is left over has to be measured rather than written down: the panel's
+     height moves with plan, sync state, account count and dial size. CSS reads
+     the answer back as --recall-room. */
+
+  /* Chrome caps a popup at 600px tall and sizes the pane to the document under
+     that — so the allowance is 600, NOT the pane we happen to have on open,
+     which is only as tall as the content that was in it. Measuring the live pane
+     would hand back the room the list is trying to claim. A few pixels stay in
+     hand because the pane comes off a fractional layout and rounding either way
+     must not tip it over the cap. */
+  const POPUP_CEILING = 596;
+  const RECALL_MIN_ROOM = 126;   // three rows — under that the list is a peephole
+
+  function sizeRecallResults(live) {
+    const box = $("recall-results");
+    if (!live) {
+      document.body.classList.remove("searching");
+      box.style.removeProperty("--recall-room");
+      box.classList.remove("more-above", "more-below");
+      return;
+    }
+    // Flattened, and with nothing standing down, so what gets measured is the
+    // surface as it is and the list at its natural height.
+    box.style.setProperty("--recall-room", "0px");
+    document.body.classList.remove("searching");
+    const want = box.scrollHeight;
+    const asIs = POPUP_CEILING - document.body.getBoundingClientRect().height;
+    // The rows below only give up their room when the list actually needs it. A
+    // single hit asking the whole panel to clear out would shrink the popup for
+    // nothing, so a list that already fits is simply left where it is.
+    const borrow = want > asIs;
+    document.body.classList.toggle("searching", borrow);
+    const room = borrow ? POPUP_CEILING - document.body.getBoundingClientRect().height : asIs;
+    box.style.setProperty("--recall-room", `${Math.max(RECALL_MIN_ROOM, Math.floor(room))}px`);
+    markRecallEdges();
+  }
+
+  /* The scrollbar is hidden on purpose, which leaves the edges as the only thing
+     that can say there is more — so whichever way the list can still travel
+     fades out, and stops fading once that end is reached. */
+  function markRecallEdges() {
+    const box = $("recall-results");
+    const hidden = box.scrollHeight - box.clientHeight;
+    box.classList.toggle("more-above", box.scrollTop > 2);
+    box.classList.toggle("more-below", hidden - box.scrollTop > 2);
+  }
+
   function recallResult(res) {
     const button = document.createElement("button");
     button.type = "button";
@@ -654,6 +925,7 @@
       $("recall-results").replaceChildren();
       $("recall-results").removeAttribute("aria-busy");
       $("recall-query-meta").textContent = "";
+      sizeRecallResults(false);
       return;
     }
     $("recall-query-meta").textContent = "Searching…";
@@ -663,10 +935,13 @@
     $("recall-results").removeAttribute("aria-busy");
     if (!res || res.err || q !== $("recall-query").value.trim()) return;
     const results = res.results || [];
-    // The popup is a command surface, and it must stay inside Chrome's popup
-    // height. It previews the two strongest matches; the adjacent open button
-    // leads to the full archive workspace.
-    $("recall-results").replaceChildren(...results.slice(0, 2).map(recallResult));
+    // Every match the archive returned, not a preview of the top two: the count
+    // beside the box and the list under it now say the same thing, and anything
+    // past the visible edge is a scroll away. Back to the top on each new query
+    // — a refined search that lands you halfway down its own results is a bug.
+    $("recall-results").replaceChildren(...results.map(recallResult));
+    $("recall-results").scrollTop = 0;
+    sizeRecallResults(results.length > 0);
     $("recall-query-meta").textContent = results.length
       ? `${results.length} chat${results.length === 1 ? "" : "s"}`
       : `no matches`;
@@ -682,8 +957,10 @@
     $("recall-query").value = "";
     $("recall-query-meta").textContent = "";
     $("recall-results").replaceChildren();
+    sizeRecallResults(false);
     $("recall-query").blur();
   });
+  $("recall-results").addEventListener("scroll", markRecallEdges, { passive: true });
 
   // Shortcuts are the browser's (remappable per device/OS/browser) — send the
   // user straight to the page where they can view or change them.
