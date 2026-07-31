@@ -67,7 +67,9 @@
       ],
       "js": [
         "lib/store.js",
+        "lib/quota.js",
         "content/adapters.js",
+        "content/quota.js",
         "content/engine.js",
         "content/nav.js",
         "content/history-loader.js",
@@ -98,6 +100,22 @@
       ],
       "world": "MAIN",
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://claude.ai/*",
+        "https://gemini.google.com/*",
+        "https://www.perplexity.ai/*",
+        "https://chat.deepseek.com/*",
+        "https://grok.com/*"
+      ],
+      "js": [
+        "content/inject/quota-probe.js"
+      ],
+      "world": "MAIN",
+      "run_at": "document_start"
     }
   ],
   "commands": {

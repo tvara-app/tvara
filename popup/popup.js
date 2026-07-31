@@ -65,33 +65,32 @@
     $("toggle-minimap").checked = !s || s.minimap !== false;
     $("toggle-time").checked = !s || s.time !== false;
     $("toggle-history").checked = !!(s && s.history === true);
+    // Default on. It is the mechanism that makes the allowance panel truthful
+    // rather than decorative, so the panel is meaningless with it off.
+    $("toggle-quota").checked = !s || s.quota !== false;
   }
 
-  /* ---------- usage dial ----------
-     One nested dial rather than a row of loose circles: the platform used
-     most recently takes the outermost ring and the rest fall inward, so the
-     whole reading is a single object instead of a scoreboard. Ring weight and
-     spacing are derived from how many platforms there are, so the dial is
-     always the same size on the panel and the hole stays legible.
+  /* ---------- allowance dial ----------
+     One nested dial rather than a row of loose circles: the account with the
+     least left takes the outermost ring and the rest fall inward, so the whole
+     reading is a single object instead of a scoreboard. Ring weight and spacing
+     are derived from how many rings there are, so the dial is always the same
+     size on the panel and the hole stays legible.
 
-     Each ring reads as WHAT IS LEFT, not what has been spent: the lit arc is
-     the allowance still in hand, and the bead is the head of the count,
-     travelling clockwise from twelve as messages go out. So a full ring means
-     an untouched window and a dark one means you are out — the direction a
-     user cares about, in the direction they can act on.
+     WHAT THE RINGS MEAN, AND WHY THIS IS THE ONLY THING THEY CAN MEAN.
+     Every arc is a PERCENTAGE OF ALLOWANCE STILL LEFT, as the provider itself
+     reports it — see lib/quota.js. It used to be a count of user-message DOM
+     nodes over a ceiling typed into a table here, and that could not work:
+     these providers meter a rolling window weighted by TOKENS, not messages, so
+     "31 of 45 messages" was a number with no referent. A share of the window is
+     what they publish and what a user can act on.
 
-     A published cap (ChatGPT, Claude) draws against its real ceiling on a
-     solid track. A platform with no published cap draws on a dotted track and
-     never closes the loop: its allowance is unpublished, so the ring counts
-     down against a nominal busy window and the legend beside it reports what
-     was sent rather than inventing a remainder. */
+     A row with a reported share draws a solid track it can empty out of. A row
+     the provider has told us nothing about draws a dotted track and NO arc at
+     all — not a nominal one, not an estimate. An empty dotted ring means "not
+     reported", and that is the whole point: the panel is allowed to say it does
+     not know, and it is never allowed to draw a figure nobody sent us. */
 
-  /** Milliseconds since midnight local time — the "Today" window. */
-  function msSinceMidnight() {
-    const now = new Date();
-    const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    return now - midnight;
-  }
   const SVG_NS = "http://www.w3.org/2000/svg";
   const DIAL_BOX = 120;      // svg viewBox units, square
   const DIAL_PX = 80;        // rendered size — needed to size the centre readout
@@ -100,40 +99,31 @@
   // between arcs is what keeps four of them readable at 110px.
   const RING_GEOM = [null, [10, 0], [10, 5], [9.5, 4.5], [7.5, 3], [6.5, 2.6], [5.6, 2.2]];
   const MAX_RINGS = RING_GEOM.length - 1;
-  const UNCAPPED_REF = 100;  // messages that read as a busy window
-  const UNCAPPED_MAX = .8;   // span of an uncapped ring — it never closes
-  const ARC_MIN = .035;      // a last message still leaves something lit
-  // The figure and its caption stand or fall together: "125" alone was legible
-  // back when a number could only ever mean messages sent, but it now means
-  // whichever of left/sent the dial is counting, and an unlabelled one would be
-  // a guess. Both scale with the hole instead, and both leave at the same size.
+  const ARC_MIN = .035;      // 1% left still leaves something lit to see
+  const LOW_PCT = 15;        // at or under this a row reads as running out
+  // The figure and its caption stand or fall together: a bare "62" could be a
+  // count, a percentage or a countdown. Both scale with the hole and both leave
+  // at the same size.
   const CORE_MIN = 26;       // px of hole needed before the centre reads out
 
-  // Provider configuration: ring colour, default limit, default plan label.
-  // Each colour sits a step off its brand hue — near enough that the ring is
-  // read as that platform without the legend, far enough that it is our mark
-  // and not theirs. Kept in step with --p-* in recall.css.
+  // Ring colour per provider. Each sits a step off its brand hue — near enough
+  // that the ring is read as that platform without the legend, far enough that
+  // it is our mark and not theirs. Kept in step with --p-* in recall.css.
   const PROVIDERS = {
-    chatgpt:    { color: "#19b884", limit: null,  plan: "Free" },
-    claude:     { color: "#e0805c", limit: null,  plan: "Free" },
-    gemini:     { color: "#4a8ef6", limit: null,  plan: "Free" },
-    deepseek:   { color: "#7b82fd", limit: null,  plan: "Free" },
-    grok:       { color: "#dcdce4", limit: null,  plan: "Free" },
-    perplexity: { color: "#1fadc6", limit: null,  plan: "Free" }
+    chatgpt:    { color: "#19b884" },
+    claude:     { color: "#e0805c" },
+    gemini:     { color: "#4a8ef6" },
+    deepseek:   { color: "#7b82fd" },
+    grok:       { color: "#dcdce4" },
+    perplexity: { color: "#1fadc6" }
   };
 
-  const HOST_TO_ID = {
-    "chatgpt.com": "chatgpt", "chat.openai.com": "chatgpt",
-    "claude.ai": "claude", "gemini.google.com": "gemini",
-    "chat.deepseek.com": "deepseek", "grok.com": "grok",
-    "www.perplexity.ai": "perplexity"
-  };
-
-  const ID_TO_LABEL = {
-    chatgpt: "ChatGPT", claude: "Claude", gemini: "Gemini",
-    deepseek: "DeepSeek", grok: "Grok", perplexity: "Perplexity"
-  };
-
+  /* The platform whitelist, and the ONLY source of rows on this panel.
+     It is a whitelist because the previous build derived platforms by stripping
+     a prefix off any storage key that started with "recall-sync-" and filtering
+     a few suffixes by substring — so a leftover key from an older version was
+     rendered as a provider called "request". Nothing that is not one of these
+     six can reach the dial now. */
   const KNOWN_PLATFORMS = [
     { id: "chatgpt",    label: "ChatGPT" },
     { id: "claude",     label: "Claude" },
@@ -142,24 +132,8 @@
     { id: "grok",       label: "Grok" },
     { id: "perplexity", label: "Perplexity" }
   ];
-
-  /* Published ceilings, by plan. A paid tier states its allowance, so the ring
-     can draw against a real edge. A free tier's is dynamic and undocumented —
-     drawing a made-up ceiling there would be worse than drawing none, so free
-     accounts get the open, uncapped ring and an honest count instead. An
-     unknown plan keeps the platform default, which is what shipped before. */
-  const PLAN_LIMITS = {
-    chatgpt: { plus: 80, pro: 200 },
-    claude:  { pro: 45, max: 225, team: 45 }
-  };
-
-  function limitFor(id, plan) {
-    const key = String(plan || "").toLowerCase();
-    const table = PLAN_LIMITS[id] || {};
-    if (table[key]) return table[key];
-    // Unknown or free plan: no published cap. Never assume a paid limit.
-    return null;
-  }
+  const KNOWN_IDS = new Set(KNOWN_PLATFORMS.map((p) => p.id));
+  const ID_TO_LABEL = Object.fromEntries(KNOWN_PLATFORMS.map((p) => [p.id, p.label]));
 
   /* Two accounts on one platform share a hue and separate on lightness: the
      ring still reads as "that platform" at a glance, and the legend beside it
@@ -178,21 +152,67 @@
 
   /** Where a ring stands. `spent` is how far round the head has travelled and
    *  `left` is the arc still lit ahead of it — the two are what get drawn, and
-   *  only `left` is coloured. A capped plan measures both against its real
-   *  ceiling and can run the whole loop; an uncapped one travels against a
-   *  nominal busy window over a span that stops short of closing, so a ring
-   *  right round always means "untouched cap" and nothing else. */
-  function arcOf(sent, limit) {
-    const span = limit ? 1 : UNCAPPED_MAX;
-    const used = Math.min((sent || 0) / (limit || UNCAPPED_REF), 1);
-    // A floor on the remainder so the last few of a large allowance still read
-    // as some — 1 of 225 left is a third of a degree otherwise. Only a capped
-    // plan is allowed to reach nothing, because only there is nothing true; an
-    // uncapped one that runs past the reference window has not hit a wall, so
-    // it keeps a residue lit rather than going dark on a guess.
-    let left = span * (1 - used);
-    if (left < ARC_MIN && (left > 0 || !limit)) left = ARC_MIN;
-    return { spent: span - left, left };
+   *  only `left` is coloured. A row with no reported share returns nothing to
+   *  draw, which is what leaves the dotted track empty. */
+  function arcOf(pctLeft) {
+    if (pctLeft === null || pctLeft === undefined) return { spent: 0, left: 0 };
+    const frac = Math.max(0, Math.min(1, pctLeft / 100));
+    // A floor so a nearly-empty allowance still reads as some rather than
+    // vanishing — but only above zero. Actually empty must look empty.
+    let left = frac;
+    if (left > 0 && left < ARC_MIN) left = ARC_MIN;
+    return { spent: 1 - left, left };
+  }
+
+  /** "4:20 PM" today, "Tue 4:20 PM" beyond it. A reset is only useful as a
+   *  wall-clock time, and the day only matters when it is not this one. */
+  function resetLabel(resetAt) {
+    if (!resetAt) return "";
+    const at = new Date(resetAt);
+    if (!Number.isFinite(at.getTime())) return "";
+    const now = new Date();
+    const time = at.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    const sameDay = at.getFullYear() === now.getFullYear()
+      && at.getMonth() === now.getMonth() && at.getDate() === now.getDate();
+    if (sameDay) return time;
+    const day = at.toLocaleDateString(undefined, { weekday: "short" });
+    return `${day} ${time}`;
+  }
+
+  /** How long ago we heard, for the provenance tooltip. A percentage from four
+   *  hours ago is not wrong, but the user is entitled to know its age. */
+  function agoLabel(at) {
+    if (!at) return "never";
+    const secs = Math.max(0, Math.round((Date.now() - at) / 1000));
+    if (secs < 45) return "just now";
+    if (secs < 5400) return `${Math.round(secs / 60)} min ago`;
+    const hrs = secs / 3600;
+    if (hrs < 36) return `${Math.round(hrs)} h ago`;
+    return `${Math.round(hrs / 24)} d ago`;
+  }
+
+  /** The tooltip that makes a number auditable: which mechanism read it, which
+   *  arithmetic produced it, and when. Every figure on this panel can be traced
+   *  to a provider field, and this is where the user sees that. */
+  function provenance(item) {
+    if (!item.reported) {
+      return item.checked
+        ? "This provider published no allowance figure for your account."
+        : "Not checked yet — open the site, or run Check now in the diagnostics panel.";
+    }
+    const bits = [];
+    bits.push(item.pctLeft === null
+      ? "Reset time reported; remaining share not published."
+      : `${item.pctLeft}% of the allowance left.`);
+    if (item.unit) bits.push(`Metered in ${item.unit}s.`);
+    if (item.remaining !== null && item.limit !== null) {
+      bits.push(`Provider figure: ${item.remaining} of ${item.limit}.`);
+    }
+    bits.push(`Source: ${item.source === "observed" ? "read from the site's own response" : "asked the provider directly"}.`);
+    if (item.basis) bits.push(`Derived as ${item.basis}.`);
+    bits.push(`Read ${agoLabel(item.observedAt)}.`);
+    if (item.resetAt) bits.push(`Window resets ${resetLabel(item.resetAt)}.`);
+    return bits.join(" ");
   }
 
   function svgEl(tag, attrs) {
@@ -228,15 +248,16 @@
 
       const track = svgEl("circle", {
         cx: c, cy: c, r: r.toFixed(2),
-        class: "usage-track" + (it.limit ? "" : " open") + (it.out ? " spent" : "")
+        class: "usage-track" + (it.reported ? "" : " open") + (it.out ? " spent" : "")
       });
       // Out of allowance: the channel is left dim — it is empty, and that is
       // the point — and only its colour changes.
       track.style.stroke = it.out ? "var(--danger)" : it.color;
-      // A capped plan gets a full-width channel to empty out of. An uncapped
-      // one gets a dotted guideline at half weight — a path, not a vessel.
-      track.style.strokeWidth = it.limit ? w : (w * .44).toFixed(2);
-      if (!it.limit) track.style.strokeDasharray = `.1 ${(w * .72).toFixed(2)}`;
+      // A reported share gets a full-width channel to empty out of. A row with
+      // nothing reported gets a dotted guideline at half weight — a path, not a
+      // vessel, and it stays empty.
+      track.style.strokeWidth = it.reported ? w : (w * .44).toFixed(2);
+      if (!it.reported) track.style.strokeDasharray = `.1 ${(w * .72).toFixed(2)}`;
       g.append(track);
 
       if (it.left > 0) {
@@ -278,14 +299,24 @@
       dial.classList.add("has-core");
       const core = document.createElement("div");
       core.className = "usage-core";
-      // The figure shows total messages used today across all platforms.
-      const total = items.reduce((s, it) => s + it.sent, 0);
+      // The TIGHTEST allowance, not a sum: percentages of different windows do
+      // not add up to anything, and the number a user needs is the one that is
+      // going to stop them first. With nothing reported there is no figure to
+      // show, and an em dash says so rather than a zero that would read as
+      // "you are out".
+      const reporting = items.filter((it) => it.pctLeft !== null);
       const num = document.createElement("span");
       num.className = "usage-core-num";
-      num.textContent = total.toLocaleString();
       const cap = document.createElement("span");
       cap.className = "usage-core-cap";
-      cap.textContent = "used";
+      if (reporting.length) {
+        const low = reporting.reduce((m, it) => Math.min(m, it.pctLeft), 100);
+        num.textContent = low + "%";
+        cap.textContent = "left";
+      } else {
+        num.textContent = "—";
+        cap.textContent = "no data";
+      }
       core.append(num, cap);
       dial.append(core);
     }
@@ -300,17 +331,19 @@
 
     const head = document.createElement("span");
     head.className = "usage-legend-head";
-    head.textContent = "Today";
+    head.textContent = "Allowance left";
     legend.append(head);
 
     for (const it of items) {
       const row = document.createElement("div");
       row.className = "usage-row" + (it.hot ? " hot" : "");
+      // Every figure is auditable: hovering a row says where it came from.
+      row.title = provenance(it);
 
       // A hollow pip, and a broken one where the track is dotted: the legend
       // repeats the dial's own vocabulary at 9px.
       const pip = document.createElement("span");
-      pip.className = "usage-pip" + (it.limit ? "" : " open");
+      pip.className = "usage-pip" + (it.reported ? "" : " open");
       pip.style.color = it.color;
 
       const name = document.createElement("span");
@@ -318,19 +351,35 @@
       name.textContent = it.label;
       const plan = document.createElement("span");
       plan.className = "usage-plan";
-      plan.textContent = it.note || it.plan || "Free";
+      plan.textContent = it.note;
       name.append(plan);
 
-      // The number shows how many messages were used today. If there is a
-      // published limit, the denominator is shown so the user knows the ceiling.
+      /* The value column, in the three states this panel can honestly be in:
+           - a reported share            → "62% left" + when it resets
+           - a reset but no share        → "resets 4:20 PM"
+           - nothing from the provider   → "not reported"
+         The third is a real state, not a failure to render, and writing a
+         number there is the exact dishonesty this rewrite removes. */
       const val = document.createElement("span");
       val.className = "usage-val";
-      const num = document.createElement("b");
-      num.textContent = String(it.sent);
-      const cap = document.createElement("span");
-      cap.className = "usage-cap";
-      cap.textContent = it.limit ? ` / ${it.limit} used` : " used";
-      val.append(num, cap);
+      if (it.pctLeft !== null) {
+        const num = document.createElement("b");
+        num.textContent = it.pctLeft + "%";
+        const cap = document.createElement("span");
+        cap.className = "usage-cap";
+        cap.textContent = it.resetAt ? ` left · ${resetLabel(it.resetAt)}` : " left";
+        val.append(num, cap);
+      } else if (it.resetAt) {
+        const cap = document.createElement("span");
+        cap.className = "usage-cap";
+        cap.textContent = `resets ${resetLabel(it.resetAt)}`;
+        val.append(cap);
+      } else {
+        const cap = document.createElement("span");
+        cap.className = "usage-cap muted";
+        cap.textContent = it.checked ? "not published" : "not reported";
+        val.append(cap);
+      }
 
       row.append(pip, name, val);
       legend.append(row);
@@ -340,102 +389,101 @@
   }
 
   /**
-   * Paint the usage dial and the windowed total.
-   * @param {number} windowedTotal
-   * @param {Array} statRows — [[platform, windowed, total], ...]
-   * @param {Object} usageMap — { hostname: { sent, platform, id } }
-   * @param {string[]} syncedPlatforms — platform ids from recall-sync checkpoints
+   * Paint the allowance dial and the windowed total.
+   *
+   * @param {number} windowedTotal — speed-engine figure, unrelated to allowance
+   * @param {Object} quota — the worker's quota-state reply
    */
   let dialPainted = false;
-  function paintUsage(windowedTotal, statRows, usageMap, syncedPlatforms) {
+  function paintUsage(windowedTotal, quota) {
     $("stat-windowed").textContent = (windowedTotal || 0).toLocaleString();
 
-    const cutoff = Date.now() - msSinceMidnight();
-    const barMap = new Map();
+    const records = (quota && Array.isArray(quota.records) ? quota.records : [])
+      // The whitelist gate. A record for anything that is not one of the six
+      // known providers is not rendered, whatever wrote it.
+      .filter((rec) => rec && KNOWN_IDS.has(rec.id));
+    const checked = (quota && quota.checked) || {};
 
-    // A ring is one ACCOUNT, not one platform: the ceiling being counted
-    // against belongs to the account, so two free tiers on one host are two
-    // readings and never a sum.
+    const rowMap = new Map();
     const seats = new Map();          // platform id -> how many accounts seen
     const seat = (id) => seats.set(id, (seats.get(id) || 0) + 1);
 
-    // 1. Seed from usage data (sent timestamps), keyed host|account
-    if (usageMap) {
-      for (const [scope, rec] of Object.entries(usageMap)) {
-        const cut = String(scope).indexOf("|");
-        const host = cut < 0 ? String(scope) : String(scope).slice(0, cut);
-        const acct = cut < 0 ? "" : String(scope).slice(cut + 1);
-        const id = rec.id || HOST_TO_ID[host] || host;
-        const label = rec.platform || ID_TO_LABEL[id] || id;
-        const sent = Array.isArray(rec.sent) ? rec.sent.filter((ts) => ts >= cutoff).length : 0;
-        const info = PROVIDERS[id] || {};
-        seat(id);
-        barMap.set(id + "|" + acct, {
-          id, acct, label, sent,
-          limit: limitFor(id, rec.plan),
-          plan: rec.plan || info.plan || "Free",
-          account: String(rec.label || ""),
-          ordinal: Number(rec.ordinal) || 0,
-          lastSent: sent > 0 ? Math.max(...rec.sent) : 0
-        });
+    // 1. A row per ACCOUNT that has a reading. Per account because the
+    //    allowance belongs to the account — two logins on one host are two
+    //    windows and never a sum.
+    for (const rec of records) {
+      const win = rec.window || null;
+      const key = rec.id + "|" + (rec.acct || "");
+      seat(rec.id);
+      rowMap.set(key, {
+        id: rec.id,
+        acct: rec.acct || "",
+        label: ID_TO_LABEL[rec.id] || rec.id,
+        plan: rec.plan || "",
+        account: "",
+        ordinal: 0,
+        reported: !!win,
+        pctLeft: win && win.pctLeft !== null && win.pctLeft !== undefined ? win.pctLeft : null,
+        resetAt: (win && win.resetAt) || 0,
+        remaining: win && win.remaining !== undefined ? win.remaining : null,
+        limit: win && win.limit !== undefined ? win.limit : null,
+        unit: (win && win.unit) || "",
+        basis: (win && win.basis) || "",
+        source: (win && win.source) || rec.source || "",
+        observedAt: (win && win.observedAt) || rec.observedAt || 0,
+        checked: !!checked[rec.id]
+      });
+    }
+
+    // 2. A placeholder for every supported provider with no reading, so the
+    //    panel says which platforms it covers. These draw an empty dotted ring
+    //    and read "not reported" — never a zero.
+    for (const p of KNOWN_PLATFORMS) {
+      if (seats.has(p.id)) continue;
+      seat(p.id);
+      rowMap.set(p.id + "|", {
+        id: p.id, acct: "", label: p.label, plan: "", account: "", ordinal: 0,
+        reported: false, pctLeft: null, resetAt: 0, remaining: null, limit: null,
+        unit: "", basis: "", source: "", observedAt: 0,
+        checked: !!checked[p.id]
+      });
+    }
+
+    // Only name the account when there is more than one to confuse: a single
+    // ChatGPT does not need to be told apart from anything. Otherwise the plan
+    // is the more useful subtitle, and "—" where even that is unknown.
+    let ordinals = new Map();
+    for (const item of rowMap.values()) {
+      const many = (seats.get(item.id) || 0) > 1;
+      if (many) {
+        const next = (ordinals.get(item.id) || 0) + 1;
+        ordinals.set(item.id, next);
+        item.ordinal = next;
+        item.note = item.plan ? `${item.plan} · ${next}` : `Account ${next}`;
+      } else {
+        item.note = item.plan || "";
       }
     }
 
-    // A platform that has an account on it needs no bare placeholder beside it.
-    const covered = (id) => seats.has(id);
-
-    // 2. Merge stats-only platforms
-    for (const [label] of (statRows || [])) {
-      const entry = Object.entries(HOST_TO_ID).find(([, v]) =>
-        v === label.toLowerCase() || label.toLowerCase().startsWith(v));
-      const pid = entry ? entry[1] : label.toLowerCase();
-      if (covered(pid)) continue;
-      const info = PROVIDERS[pid] || {};
-      seat(pid);
-      barMap.set(pid + "|", { id: pid, acct: "", label, sent: 0, limit: info.limit ?? null,
-        plan: info.plan || "Free", account: "", ordinal: 0, lastSent: 0 });
-    }
-
-    // 3. Seed from synced platforms
-    for (const pid of (syncedPlatforms || [])) {
-      if (covered(pid)) continue;
-      const info = PROVIDERS[pid] || {};
-      seat(pid);
-      barMap.set(pid + "|", { id: pid, acct: "", label: ID_TO_LABEL[pid] || pid, sent: 0,
-        limit: info.limit ?? null, plan: info.plan || "Free", account: "", ordinal: 0, lastSent: 0 });
-    }
-
-    // 4. Always show known platforms — Gemini, ChatGPT, Claude etc. appear
-    //    even without data so the user knows they are supported and tracked.
-    for (const p of KNOWN_PLATFORMS) {
-      if (covered(p.id)) continue;
-      const info = PROVIDERS[p.id] || {};
-      seat(p.id);
-      barMap.set(p.id + "|", { id: p.id, acct: "", label: p.label, sent: 0,
-        limit: info.limit ?? null, plan: info.plan || "Free", account: "", ordinal: 0, lastSent: 0 });
-    }
-
-    // Only say which account when there is more than one to confuse: a single
-    // ChatGPT does not need to be told apart from anything.
-    for (const item of barMap.values()) {
-      const many = (seats.get(item.id) || 0) > 1;
-      item.note = many
-        ? (item.account || `Account ${item.ordinal || 1}`)
-        : (item.plan || "Free");
-    }
-
-    // Most recently used first: that platform gets the outermost ring and the
-    // top legend row. Beyond MAX_RINGS the dial stops being readable, so the
-    // quietest platforms drop off rather than shaving every ring thinner.
-    const items = [...barMap.values()]
-      .sort((a, b) => b.lastSent - a.lastSent || a.label.localeCompare(b.label))
+    /* Least left first: the allowance about to run out earns the outermost ring
+       and the top legend row, because it is the one that will stop you. Rows
+       with nothing reported sort last — they are context, not news. Beyond
+       MAX_RINGS the dial stops being readable, so the quietest drop off rather
+       than shaving every ring thinner. */
+    const items = [...rowMap.values()]
+      .sort((a, b) => {
+        if (a.reported !== b.reported) return a.reported ? -1 : 1;
+        const ap = a.pctLeft === null ? 101 : a.pctLeft;
+        const bp = b.pctLeft === null ? 101 : b.pctLeft;
+        return ap - bp || a.label.localeCompare(b.label);
+      })
       .slice(0, MAX_RINGS)
       .map((b) => ({
         ...b,
-        ...arcOf(b.sent, b.limit),
+        ...arcOf(b.pctLeft),
         color: ringColor(b.id, (seats.get(b.id) || 0) > 1 ? b.ordinal : 0),
-        hot: !!(b.limit && b.sent / b.limit >= .9),
-        out: !!(b.limit && b.sent >= b.limit)
+        hot: b.pctLeft !== null && b.pctLeft <= LOW_PCT && b.pctLeft > 0,
+        out: b.pctLeft === 0
       }));
 
     const panel = document.createElement("div");
@@ -468,13 +516,14 @@
   $("version").textContent = "v" + chrome.runtime.getManifest().version;
   paintToggles(cache && cache.settings);
   paintPlan(!!(cache && cache.pro), cache && cache.masked, (cache && cache.trialUntil) || 0);
-  // Always paint the dial — the fallback inside paintUsage shows default
-  // platforms even without data, so the rings are never absent on first open.
+  // Always paint the dial — the placeholder rows inside paintUsage cover every
+  // supported platform even without data, so the rings are never absent on
+  // first open. The cached reading is repainted from the worker a frame later;
+  // it is a percentage of a rolling window, so a stale one is shown with its
+  // age in the row tooltip rather than presented as current.
   paintUsage(
     (cache && cache.stats && cache.stats.total) || 0,
-    (cache && cache.stats && cache.stats.rows) || [],
-    (cache && cache.stats && cache.stats.usage) || {},
-    (cache && cache.stats && cache.stats.synced) || []
+    (cache && cache.quota) || null
   );
   if (cache && cache.licenseNote) paintLicenseState({ ...cache.licenseNote, sticky: true });
 
@@ -496,20 +545,26 @@
       .map(([host, h]) => [String(h.platform || host), h.windowed, h.total || 0]);
     const total = rows.reduce((s, [, n]) => s + n, 0);
 
-    // usage tracking: messages sent per platform in the rolling window
-    const usageMap = {};
-    for (const [k, v] of Object.entries(all)) {
-      if (k.startsWith("usage:") && v && Array.isArray(v.sent)) {
-        usageMap[k.slice(6)] = v;
-      }
+    /* The allowance panel. The worker owns this — it is the only place that
+       holds the account tag and the provider readings together, and asking it
+       rather than reassembling storage keys here is what killed the phantom
+       "request" platform: this popup no longer derives providers from key
+       names at all. */
+    const quota = await send({ type: "quota-state" });
+    paintUsage(total, quota);
+
+    /* Opening the popup is exactly when a stale percentage matters, so ask the
+       provider for a fresh one — but only for platforms we already have a
+       reading or a signed-in session for, and the worker's own one-per-minute
+       floor still applies. Fire-and-forget: the reply lands as a storage change
+       and repaints, so a slow provider never holds the panel closed. */
+    const refreshable = new Set(
+      ((quota && quota.records) || []).map((r) => r && r.id).filter(Boolean)
+    );
+    for (const id of Object.keys((quota && quota.checked) || {})) refreshable.add(id);
+    for (const id of refreshable) {
+      send({ type: "quota-refresh", platform: id, reason: "popup" });
     }
-
-    // Detect which platforms the user has synced (recall-sync checkpoint keys)
-    const syncedPlatforms = Object.keys(all)
-      .filter((k) => k.startsWith("recall-sync-") && !k.includes("progress") && !k.includes("ledger") && !k.includes("work") && !k.includes("run") && !k.includes("profile"))
-      .map((k) => k.replace("recall-sync-", ""));
-
-    paintUsage(total, rows, usageMap, syncedPlatforms);
 
     // The worker decides; the popup only renders. Asking it here rather than
     // recomputing locally means one verdict, and the one that gates the data.
@@ -557,7 +612,8 @@
     const seatCount = licenseKind === "dodo"
       ? Object.keys((await self.LCTDodo.readSeats()).seats).length : 0;
     paintPlan(pro, masked, trialUntil);
-    saveCache({ pro, masked, trialUntil, licenseKind, seatCount, settings: settings || null, stats: { total, rows, usage: usageMap, synced: syncedPlatforms } });
+    saveCache({ pro, masked, trialUntil, licenseKind, seatCount, settings: settings || null,
+      stats: { total, rows }, quota: quota || null });
   }
 
   /* ---------- settings ---------- */
@@ -567,15 +623,26 @@
       enabled: $("toggle-enabled").checked,
       minimap: $("toggle-minimap").checked,
       time: $("toggle-time").checked,
-      history: $("toggle-history").checked
+      history: $("toggle-history").checked,
+      quota: $("toggle-quota").checked
     };
     saveCache({ settings });
     await chrome.storage.local.set({ settings });
   }
 
-  for (const id of ["toggle-enabled", "toggle-minimap", "toggle-time", "toggle-history"]) {
+  for (const id of ["toggle-enabled", "toggle-minimap", "toggle-time", "toggle-history", "toggle-quota"]) {
     $(id).addEventListener("change", saveSettings);
   }
+
+  /* The allowance figures are only worth trusting if they can be checked, so the
+     check is one click from the number itself. stopPropagation because the link
+     sits inside the toggle's own <label> — without it, opening the page would
+     also flip the switch. */
+  $("quota-diag-link").addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    chrome.tabs.create({ url: chrome.runtime.getURL("diag/quota.html") });
+  });
 
   /* ---------- trial ---------- */
 
@@ -1129,8 +1196,11 @@
   // Live repaint
   try {
     chrome.storage.onChanged.addListener((changes, area) => {
+      // `quota:` is what makes the panel live: a reading landing while the popup
+      // is open — from a send in another tab, or the refresh we asked for on
+      // open — repaints the dial instead of waiting for the next open.
       if (area === "local" && Object.keys(changes).some((k) =>
-        k.startsWith("stats:") || k.startsWith("usage:") || k === "settings" || k === "license" || k === "trial")) {
+        k.startsWith("stats:") || k.startsWith("quota:") || k === "settings" || k === "license" || k === "trial")) {
         load();
       }
       if ((area === "local" && PLAT_IDS.some((id) => changes[syncProgKey(id)])) ||

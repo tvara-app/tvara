@@ -8,6 +8,12 @@
  * fetch/XHR hooks, no writes to page state. If ChatGPT's internals change,
  * this finds nothing and the extension falls back to its local
  * first-seen clock (content/timeline.js).
+ *
+ * The no-hooks rule holds here and is relaxed in exactly one other file:
+ * content/inject/quota-probe.js observes response headers to report how much of
+ * a plan's allowance is left, because no amount of DOM reading can produce that
+ * number. Its own header sets out the terms it works under. Nothing else in the
+ * extension touches the network from the page's world.
  */
 (() => {
   "use strict";

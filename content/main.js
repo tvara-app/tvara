@@ -130,105 +130,23 @@
     }, 1500);
   }
 
-  /* ---------- usage tracking ----------
-     Counts user-sent messages per ACCOUNT in a rolling 3-hour window.
+  /* ---------- allowance tracking lives elsewhere now ----------
+     There used to be a usage tally here: it counted user-message elements each
+     tick and treated any increase as messages sent. It is gone, and it is worth
+     saying why so it does not come back.
 
-     Per account, not per site, because the limit being counted against is per
-     account — which is the whole reason somebody keeps a second one. Two free
-     tiers on one host counted together produce a number that describes neither.
+     It could not be made correct. On every host that mounts only a
+     conversation's tail — ChatGPT, Claude, Gemini and Grok all set
+     `virtualizes` — scrolling up mounts older turns, the count rises, and
+     reading an old chat registered as sending dozens of messages. Regenerating,
+     editing and switching branches moved it too. And even a perfect count would
+     not have converted into an allowance, because these providers meter a
+     rolling window weighted by tokens rather than a number of messages.
 
-     The worker resolves and caches the account (one provider handshake per host
-     per five minutes, shared by every tab), so the send path never waits on the
-     network. Until it answers, or when nobody is signed in, the tally falls
-     back to the host-wide key — the pre-account behaviour, never a lost count.
-
-     On first tick (or after a chat switch) the current count is a baseline —
-     we never count pre-existing messages as newly sent. Writes are throttled
-     at the same 1.5s cadence as pushStats to avoid hammering storage. */
-  const USAGE_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours — pruning horizon; popup filters to "today"
-  const ACCOUNT_TTL_MS = 5 * 60 * 1000;
-  let prevUserMsgCount = -1; // -1 = baseline not yet established
-  let usageTimer = null;
-  let usagePending = 0;
-  let account = null;        // { acct, label, ordinal, plan }
-  let accountAt = 0;
-  let accountPromise = null;
-
-  function resetUsageBaseline() { prevUserMsgCount = -1; }
-
-  /** The account this page belongs to. Cached per page; the worker caches per
-   *  browser. A signed-out or unknown answer is cached too — retrying a failing
-   *  handshake on every message is how you get rate-limited. */
-  function currentAccount() {
-    if (account && Date.now() - accountAt < ACCOUNT_TTL_MS) return Promise.resolve(account);
-    if (accountPromise) return accountPromise;
-    accountPromise = new Promise((resolve) => {
-      let settled = false;
-      const done = (value) => {
-        if (settled) return;
-        settled = true;
-        account = value && value.acct ? value : { acct: "", label: "", ordinal: 0, plan: "" };
-        accountAt = Date.now();
-        accountPromise = null;
-        resolve(account);
-      };
-      // The worker can be asleep or the extension mid-reload; never hang the
-      // caller on it.
-      setTimeout(() => done(null), 4000);
-      try {
-        chrome.runtime.sendMessage(
-          { type: "account-for", host: location.hostname, hint: self.LCTAdapters.accountHint(adapter) },
-          (reply) => { void chrome.runtime.lastError; done(reply); }
-        );
-      } catch { done(null); }
-    });
-    return accountPromise;
-  }
-
-  /** One tally per account per host. The host stays in the key so a tally can
-   *  still be attributed when the account is unknown. */
-  const usageKey = (acct) => "usage:" + location.hostname + (acct ? "|" + acct : "");
-
-  function trackUsage(messages) {
-    let userCount = 0;
-    for (const el of messages) {
-      if (adapter.role(el) === "user") userCount++;
-    }
-    // First tick or chat switch: snapshot existing count, don't record it.
-    if (prevUserMsgCount < 0) { prevUserMsgCount = userCount; return; }
-
-    const delta = userCount - prevUserMsgCount;
-    prevUserMsgCount = userCount;
-    if (delta <= 0) return; // deletion or no change
-
-    usagePending += delta;
-    if (usageTimer) return;
-    usageTimer = setTimeout(async () => {
-      usageTimer = null;
-      const batch = usagePending;
-      usagePending = 0;
-      const who = await currentAccount();
-      const key = usageKey(who.acct);
-      const legacy = "usage:" + location.hostname;
-      // Carry the pre-account tally into whichever account was signed in when
-      // this build first ran. Anything else discards the window the user is
-      // looking at right now, mid-afternoon, for no reason they can see.
-      const wanted = key === legacy ? [key] : [key, legacy];
-      const data = await store.get(wanted);
-      const rec = (data && data[key]) || (key !== legacy ? data && data[legacy] : null) || { sent: [] };
-      const cutoff = Date.now() - USAGE_WINDOW_MS;
-      const pruned = Array.isArray(rec.sent) ? rec.sent.filter((ts) => ts > cutoff) : [];
-      const now = Date.now();
-      for (let i = 0; i < batch; i++) pruned.push(now);
-      await store.set({ [key]: {
-        sent: pruned, platform: adapter.label, id: adapter.id, updatedAt: now,
-        acct: who.acct || "", label: who.label || "", ordinal: who.ordinal || 0, plan: who.plan || ""
-      } });
-      if (key !== legacy && data && data[legacy]) {
-        try { await chrome.storage.local.remove(legacy); } catch { /* it will be pruned instead */ }
-      }
-    }, 1500);
-  }
+     What replaced it reads the provider's own figure instead:
+     content/inject/quota-probe.js observes the quota data the host app already
+     receives, content/quota.js forwards it, and the worker stores it. Nothing
+     about the allowance is inferred from the DOM any more. */
 
   // Every module here self-throttles internally (minimap caches per-element
   // meta + rAF-batches its draw; chatcard/recall/stats debounce their writes;
@@ -255,7 +173,6 @@
       self.LCTRecall.update(messages);
     }
     pushStats(windowedCount, messages.length);
-    trackUsage(messages);
     injectExportButtons();
     updateCountPill(windowedCount);
     maybeShowAha(messages.length, windowedCount);
@@ -267,7 +184,6 @@
     currentRoute = routeId();
     loadedAt = Date.now(); // suppress save/offer while the host auto-scrolls
     resumeOffered = false;
-    resetUsageBaseline();
     removeChip();
     seedFromProvider();
   }

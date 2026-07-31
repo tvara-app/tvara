@@ -308,6 +308,10 @@ main { padding: 0 var(--gutter); }
 }
 .usage-val b { color: var(--ink); font-weight: 500; }
 .usage-row.hot .usage-val b { color: var(--danger); }
+/* "not reported" is a real state, not a dimmed number: it sits back a step from
+   the reported rows so the eye reads the figures first and does not mistake an
+   absent reading for a low one. */
+.usage-cap.muted { color: var(--ink-faint); opacity: .72; font-style: italic; }
 
 @media (prefers-reduced-motion: reduce) {
   .usage-arc, .usage-bead, .usage-bead.hot { animation: none; }

@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Allowance accuracy — Long Chat Toolkit</title>
+  <link rel="stylesheet" href="quota.css" />
+</head>
+<body>
+  <header class="head">
+    <h1>Allowance accuracy</h1>
+    <p class="lede">
+      Every percentage in the popup comes from a field one of these providers
+      actually sent your browser. This page shows you which field, so you can
+      check it against what the site itself displays. If the two disagree, that
+      is a bug in this extension — the number on the right is the provider's.
+    </p>
+    <div class="actions">
+      <button id="run" class="btn primary">Check every provider now</button>
+      <button id="copy" class="btn">Copy report</button>
+      <span id="status" class="status" role="status" aria-live="polite"></span>
+    </div>
+    <p class="note">
+      Checking asks each provider you are signed into for your current
+      allowance, using the session already in your browser. Nothing is sent
+      anywhere else, and response text is never stored — only key names and
+      numbers, which is all the parser reads.
+    </p>
+  </header>
+
+  <main id="out" class="out">
+    <p class="empty">Press <b>Check every provider now</b> to begin.</p>
+  </main>
+
+  <template id="tpl-platform">
+    <section class="card">
+      <div class="card-head">
+        <span class="dot"></span>
+        <h2 class="name"></h2>
+        <span class="verdict"></span>
+      </div>
+
+      <div class="shown">
+        <div class="shown-fig">
+          <b class="pct">—</b>
+          <span class="pct-cap">left</span>
+        </div>
+        <div class="shown-meta">
+          <div class="line basis"></div>
+          <div class="line reset"></div>
+          <div class="line age"></div>
+        </div>
+      </div>
+
+      <div class="compare">
+        <label>
+          What does the site itself say is left?
+          <span class="hint">Open the provider and find its own usage display, or the notice it shows as you approach a limit. Enter the percentage it reports.</span>
+          <span class="field">
+            <input type="number" min="0" max="100" step="1" class="claim" placeholder="e.g. 62" />
+            <span class="pc">%</span>
+            <button class="btn small check">Compare</button>
+          </span>
+        </label>
+        <div class="delta" role="status" aria-live="polite"></div>
+      </div>
+
+      <details class="endpoints">
+        <summary><span class="ep-count"></span></summary>
+        <div class="ep-list"></div>
+      </details>
+    </section>
+  </template>
+
+  <script src="../lib/quota.js"></script>
+  <script src="quota.js"></script>
+</body>
+</html>

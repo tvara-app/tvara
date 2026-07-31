@@ -4,14 +4,15 @@
   "description": "Make long AI chats fast again.",
   "type": "module",
   "scripts": {
-    "test": "node test/test-license.mjs && node test/test-parsers.mjs && node test/test-extension.mjs",
+    "test": "node test/test-license.mjs && node test/test-parsers.mjs && node test/test-quota.mjs && node test/test-extension.mjs",
     "test:parsers": "node test/test-parsers.mjs",
     "test:license": "node test/test-license.mjs",
     "test:extension": "node test/test-extension.mjs",
     "genkey": "node tools/genkey.mjs",
     "pack": "node tools/pack.mjs",
     "shoot-store": "node test/shoot-store.mjs",
-    "test:accounts": "node test/test-accounts.mjs"
+    "test:accounts": "node test/test-accounts.mjs",
+    "test:quota": "node test/test-quota.mjs"
   },
   "devDependencies": {
     "playwright": "^1.50.0"

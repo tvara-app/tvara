@@ -20,6 +20,9 @@
 
 // One implementation of the backup envelope, shared with the Recall page.
 try { importScripts("lib/backup-crypto.js"); } catch (_) { /* tests load bg.js bare */ }
+// Provider allowance parsing, shared with the content scripts and the popup so
+// a percentage cannot mean one thing here and another on screen.
+try { importScripts("lib/quota.js"); } catch (_) { /* tests load bg.js bare */ }
 // Licence verification. Order matters: entitlement.js calls into LCTLicense.
 try { importScripts("lib/license.js", "lib/dodo.js", "lib/entitlement.js"); }
 catch (_) { /* tests load bg.js bare */ }
@@ -2554,13 +2557,422 @@ const PAGE_PLATFORMS = {
 
 const USAGE_PREFIX = "usage:";
 
-/** Every per-account usage tally. Cleared with the archive. */
+/** Every per-account usage tally. Cleared with the archive.
+ *
+ *  `usage:` keys are the retired DOM-count tally. Nothing writes them any more
+ *  (see the quota section below for what replaced them and why); this stays so
+ *  that clearing the archive still removes them from installs that have them. */
 async function clearUsage() {
   try {
     const all = await chrome.storage.local.get(null);
-    const keys = Object.keys(all).filter((k) => k.startsWith(USAGE_PREFIX));
+    const keys = Object.keys(all).filter(
+      (k) => k.startsWith(USAGE_PREFIX) || k.startsWith(QUOTA_PREFIX)
+    );
     if (keys.length) await chrome.storage.local.remove(keys);
   } catch { /* nothing to clear it from */ }
+}
+
+/* ============================ provider quota ==============================
+ *
+ * What is left of the user's allowance, according to the provider.
+ *
+ * This replaced a DOM-node counter, and the reason is worth keeping written
+ * down, because the counter looked like it worked. It counted user-message
+ * elements each tick and treated any increase as messages sent. On the four
+ * hosts that mount only a conversation's tail (ChatGPT, Claude, Gemini, Grok)
+ * scrolling up mounts old turns, so reading an old chat registered as sending
+ * dozens of messages. And even with a perfect count it could not have been
+ * right: these providers meter a rolling window weighted by TOKENS, not
+ * messages, so no message count converts into an allowance. The old panel then
+ * divided that count by a ceiling typed into a table by hand.
+ *
+ * So we ask the provider. Two mechanisms, one store:
+ *
+ *   OBSERVED — content/inject/quota-probe.js reads the quota headers and limit
+ *   payloads the host app already receives. Free, and exact at the instant the
+ *   allowance moves, because it is the app's own data.
+ *
+ *   POLLED — the endpoints below, called with the user's session the same way
+ *   the history sync does. This is what catches messages sent on a phone or in
+ *   another browser, which no in-page mechanism can ever see.
+ *
+ * The endpoint list is CANDIDATES, not knowledge. These are private, unversioned
+ * endpoints; nobody outside the provider knows their shape and it changes. So
+ * discovery is empirical: probe the candidates, keep the ones that actually
+ * return something quota-shaped for this account, and poll only those. A
+ * provider that answers nothing reports nothing, and the popup says so — the
+ * one outcome we will not produce is a plausible number with no source.
+ */
+
+const QUOTA_PREFIX = "quota:";
+const QUOTA_PROBE_KEY = "lct-quota-probe-v1";   // learned endpoints, per platform
+const QUOTA_POLL_MIN_MS = 60 * 1000;            // never hit a provider oftener
+const QUOTA_CTX_TTL = 5 * 60 * 1000;
+const QUOTA_STALE_MS = 12 * 60 * 60 * 1000;
+const QUOTA_PROBE_TTL = 24 * 60 * 60 * 1000;    // re-discover once a day
+
+const quotaKey = (id, acct) => QUOTA_PREFIX + id + "|" + (acct || "");
+
+const quotaCtx = new Map();        // host -> { ctx, at }
+const quotaPolledAt = new Map();   // id -> ms
+const quotaInflight = new Map();   // id -> Promise
+
+/**
+ * Candidate allowance endpoints.
+ *
+ * `needsOrg` paths are templated with the organisation uuid the adapter's
+ * prepare() already resolved. `auth: "bearer"` reuses the access token the
+ * ChatGPT adapter fetches; everything else rides on cookies, which bgFetch
+ * attaches.
+ *
+ * Gemini has no entry on purpose rather than by omission: its app talks over a
+ * batched RPC with no readable allowance endpoint, and Google publishes no
+ * message ceiling for it. Observation is the only route there, and if the app
+ * never states a remaining share, Gemini honestly has none to show.
+ */
+const QUOTA_ENDPOINTS = {
+  chatgpt: [
+    { path: "/backend-api/conversation_limit", auth: "bearer" },
+    { path: "/backend-api/models?history_and_training_disabled=false", auth: "bearer" },
+    { path: "/backend-api/subscriptions", auth: "bearer" },
+    { path: "/backend-api/accounts/check/v4-2023-04-27", auth: "bearer" },
+    { path: "/backend-api/me", auth: "bearer" },
+    { path: "/public-api/conversation_limit", auth: "bearer" }
+  ],
+  claude: [
+    { path: "/api/bootstrap" },
+    { path: "/api/organizations/{org}/usage", needsOrg: true },
+    { path: "/api/organizations/{org}/rate_limits", needsOrg: true },
+    { path: "/api/organizations/{org}/usage_limits", needsOrg: true },
+    { path: "/api/organizations/{org}", needsOrg: true },
+    { path: "/api/account" }
+  ],
+  grok: [
+    // Grok's own UI renders "queries remaining" from a POST, so the probe has
+    // to be able to send a body to find it at all.
+    { path: "/rest/rate-limits", method: "POST", body: { requestKind: "DEFAULT", modelName: "grok-4" } },
+    { path: "/rest/rate-limits", method: "POST", body: { requestKind: "DEFAULT", modelName: "grok-3" } },
+    { path: "/rest/subscriptions" },
+    { path: "/rest/app-chat/rate-limits", method: "POST", body: { requestKind: "DEFAULT" } }
+  ],
+  perplexity: [
+    { path: "/rest/user/settings" },
+    { path: "/api/auth/session" },
+    { path: "/rest/user/limits" }
+  ],
+  deepseek: [
+    { path: "/api/v0/users/current" },
+    { path: "/api/v0/chat/rate_limit" }
+  ]
+};
+
+function quotaAdapter(idOrHost) {
+  return BG_ADAPTERS.find((a) => a.id === idOrHost || a.host === idOrHost) || null;
+}
+
+async function quotaPrepare(adapter) {
+  const hit = quotaCtx.get(adapter.host);
+  if (hit && Date.now() - hit.at < QUOTA_CTX_TTL) return hit.ctx;
+  const ctx = await adapter.prepare();
+  quotaCtx.set(adapter.host, { ctx, at: Date.now() });
+  return ctx;
+}
+
+/** One candidate, called once. Returns what it found and what it cost, because
+ *  the probe report has to be able to say "this endpoint is gone" as clearly as
+ *  it says "this one works". */
+async function quotaTry(adapter, ctx, endpoint) {
+  const org = ctx && (ctx.org || ctx.account) ? String(ctx.org || ctx.account) : "";
+  if (endpoint.needsOrg && !org) return { path: endpoint.path, skipped: "no organisation" };
+
+  const path = endpoint.path.replace("{org}", encodeURIComponent(org));
+  const url = adapter.base + path;
+  const headers = {};
+  if (endpoint.auth === "bearer") {
+    if (!ctx || !ctx.tok) return { path, skipped: "no token" };
+    headers.Authorization = "Bearer " + ctx.tok;
+  }
+  const init = { method: endpoint.method || "GET", headers };
+  if (endpoint.body) {
+    init.body = JSON.stringify(endpoint.body);
+    headers["Content-Type"] = "application/json";
+  }
+
+  try {
+    const response = await bgFetch(url, init);
+    if (!response.ok) return { path, status: response.status, ok: false };
+    const json = await bgJson(response);
+    const windows = self.LCTQuota.fromJson(json, {});
+    return {
+      path, status: response.status, ok: true,
+      method: init.method,
+      body: endpoint.body || null,
+      needsOrg: !!endpoint.needsOrg,
+      auth: endpoint.auth || "cookie",
+      windows,
+      // The redacted shape is what makes a wrong reading diagnosable: it shows
+      // which keys the provider sent without carrying any prose.
+      sample: self.LCTQuota.redact(json, 0)
+    };
+  } catch (error) {
+    return { path, ok: false, error: String((error && error.message) || error) };
+  }
+}
+
+/**
+ * Discover which candidates work for this account, and remember.
+ *
+ * Runs at most daily per platform. The stored report is also exactly what the
+ * diagnostics panel shows the user, so "what did we learn" and "what can I
+ * verify" are the same record rather than two that can disagree.
+ */
+async function quotaProbe(platformId, opts = {}) {
+  const adapter = quotaAdapter(platformId);
+  const candidates = QUOTA_ENDPOINTS[platformId] || [];
+  const at = Date.now();
+  if (!adapter || !candidates.length) {
+    return { id: platformId, at, endpoints: [], working: [],
+      note: adapter ? "no candidate endpoints — observation only" : "unknown platform" };
+  }
+
+  let ctx = null;
+  try {
+    ctx = await quotaPrepare(adapter);
+  } catch (error) {
+    return { id: platformId, at, endpoints: [], working: [],
+      note: "not signed in or provider unreachable",
+      error: String((error && error.message) || error) };
+  }
+
+  const endpoints = [];
+  for (const endpoint of candidates) {
+    endpoints.push(await quotaTry(adapter, ctx, endpoint));
+    // Probing is a courtesy call on somebody else's server. bgFetch already
+    // paces per host; this keeps a six-endpoint sweep from looking like a scan.
+    await sleep(250);
+  }
+
+  const working = endpoints
+    .filter((e) => e.ok && e.windows && e.windows.length)
+    .map((e) => ({ path: e.path, method: e.method || "GET", body: e.body || null,
+      needsOrg: !!e.needsOrg, auth: e.auth || "cookie" }));
+
+  const report = {
+    id: platformId, at, plan: (ctx && ctx.plan) || "", endpoints, working,
+    note: working.length ? "" : "provider published no allowance for this account"
+  };
+
+  if (!opts.dryRun) {
+    try {
+      const { [QUOTA_PROBE_KEY]: held } = await chrome.storage.local.get(QUOTA_PROBE_KEY);
+      const all = held && typeof held === "object" ? held : {};
+      all[platformId] = report;
+      await chrome.storage.local.set({ [QUOTA_PROBE_KEY]: all });
+    } catch { /* the reading still returns, it just is not remembered */ }
+  }
+  return report;
+}
+
+/** The endpoints we know work here, discovering them first if we never have. */
+async function quotaLearned(platformId) {
+  let report = null;
+  try {
+    const { [QUOTA_PROBE_KEY]: held } = await chrome.storage.local.get(QUOTA_PROBE_KEY);
+    report = held && held[platformId] ? held[platformId] : null;
+  } catch { /* fall through to a fresh probe */ }
+
+  const fresh = report && Date.now() - (report.at || 0) < QUOTA_PROBE_TTL;
+  if (fresh) return report.working || [];
+
+  // Either we have never looked, or what we learned is a day old and these
+  // endpoints move. Re-discover — it is a handful of calls, once.
+  const next = await quotaProbe(platformId);
+  return next.working || [];
+}
+
+/**
+ * Read the provider's current allowance and store it.
+ *
+ * Deduplicated per platform: four tabs sending at once must produce one call,
+ * not four, and the second caller wants the first call's answer anyway.
+ */
+async function quotaPoll(platformId, reason = "manual") {
+  const inflight = quotaInflight.get(platformId);
+  if (inflight) return inflight;
+
+  const last = quotaPolledAt.get(platformId) || 0;
+  if (reason !== "manual" && Date.now() - last < QUOTA_POLL_MIN_MS) {
+    return { id: platformId, skipped: "polled recently" };
+  }
+
+  const run = (async () => {
+    const adapter = quotaAdapter(platformId);
+    if (!adapter) return { id: platformId, skipped: "unknown platform" };
+
+    const working = await quotaLearned(platformId);
+    if (!working.length) return { id: platformId, skipped: "no working endpoint" };
+
+    let ctx;
+    try { ctx = await quotaPrepare(adapter); }
+    catch { return { id: platformId, skipped: "not signed in" }; }
+
+    const windows = [];
+    for (const endpoint of working) {
+      const result = await quotaTry(adapter, ctx, endpoint);
+      if (result.ok && result.windows) windows.push(...result.windows);
+    }
+    quotaPolledAt.set(platformId, Date.now());
+    if (!windows.length) return { id: platformId, skipped: "provider reported nothing" };
+
+    const acct = await quotaAcctFor(adapter, ctx);
+    await quotaStore(platformId, acct, {
+      id: platformId, acct, plan: (ctx && ctx.plan) || "",
+      windows, observedAt: Date.now(), source: "polled"
+    });
+    return { id: platformId, windows: windows.length };
+  })();
+
+  quotaInflight.set(platformId, run);
+  try { return await run; }
+  finally { quotaInflight.delete(platformId); }
+}
+
+/** The account tag a reading belongs to. Same tag the archive uses, so a
+ *  quota row and a synced account are the same account. */
+async function quotaAcctFor(adapter, ctx) {
+  try { return await accountTag(adapter, ctx); }
+  catch { return ""; }
+}
+
+/** Merge a reading into the stored record. The single writer — see
+ *  content/quota.js for why this is not done in the content script. */
+async function quotaStore(platformId, acct, reading) {
+  const key = quotaKey(platformId, acct);
+  try {
+    const held = await chrome.storage.local.get(key);
+    const merged = self.LCTQuota.merge(held[key] || null, reading, { staleMs: QUOTA_STALE_MS });
+    // An unchanged reading must not be written. chrome.storage fires onChanged
+    // on every set, the popup repaints on quota keys, and the popup asks for a
+    // refresh when it opens — writing a byte-identical record would make those
+    // three into a repaint loop. A re-read that says the same thing is not news.
+    if (held[key] && JSON.stringify(held[key]) === JSON.stringify(merged)) return merged;
+    await chrome.storage.local.set({ [key]: merged });
+    return merged;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fold in what a content script saw the host app receive.
+ *
+ * The account is resolved here from the host, which means an observation made
+ * before the account handshake completes lands on the host-wide tag and a later
+ * one lands on the account — the same fallback the archive uses. Both describe
+ * the same person; only the label differs.
+ */
+async function quotaObserved(host, observations, hint = "") {
+  const platformId = PAGE_PLATFORMS[host] || "";
+  if (!platformId || !Array.isArray(observations) || !observations.length) return { ok: false };
+
+  const windows = [];
+  let at = 0;
+  for (const item of observations.slice(0, 24)) {
+    if (!item || typeof item !== "object") continue;
+    at = Math.max(at, Number(item.at) || 0);
+    try {
+      if (item.kind === "headers" && item.headers) {
+        windows.push(...self.LCTQuota.fromHeaders(item.headers, {}));
+      } else if (item.kind === "body" && item.json) {
+        windows.push(...self.LCTQuota.fromJson(item.json, {}));
+      }
+    } catch { /* one malformed observation must not drop the batch */ }
+  }
+  if (!windows.length) return { ok: true, windows: 0 };
+
+  // The observation already happened; resolving the account must not be allowed
+  // to lose it, so a failed handshake stores against the host-wide tag.
+  let acct = "";
+  let plan = "";
+  try {
+    const who = await accountForHost(host, hint);
+    acct = who.acct || "";
+    plan = who.plan || "";
+  } catch { /* host-wide tag it is */ }
+
+  await quotaStore(platformId, acct, {
+    id: platformId, acct, plan,
+    windows, observedAt: at || Date.now(), source: "observed"
+  });
+  return { ok: true, windows: windows.length };
+}
+
+/** Every stored reading, for the popup. Shaped for rendering, not for storage:
+ *  the popup gets the one window it should draw plus the provenance it needs to
+ *  be honest about where the figure came from. */
+async function quotaState() {
+  const out = [];
+  let probes = {};
+  try {
+    const all = await chrome.storage.local.get(null);
+    probes = all[QUOTA_PROBE_KEY] || {};
+    for (const [key, record] of Object.entries(all)) {
+      if (!key.startsWith(QUOTA_PREFIX) || !record || typeof record !== "object") continue;
+      const win = self.LCTQuota.primary(record, {});
+      out.push({
+        id: record.id || key.slice(QUOTA_PREFIX.length).split("|")[0],
+        acct: record.acct || "",
+        plan: record.plan || "",
+        observedAt: record.observedAt || 0,
+        source: record.source || "",
+        window: win
+          ? { key: win.key, label: win.label, pctLeft: win.pctLeft, resetAt: win.resetAt,
+              basis: win.basis, unit: win.unit, remaining: win.remaining, limit: win.limit,
+              observedAt: win.observedAt || 0, source: win.source || "" }
+          : null,
+        windows: (record.windows || []).length
+      });
+    }
+  } catch { /* an empty state renders as "not reported", which is true */ }
+
+  // Which platforms have been asked at all, so the popup can distinguish
+  // "nothing published" from "never checked".
+  const checked = {};
+  for (const [id, report] of Object.entries(probes)) {
+    checked[id] = { at: report.at || 0, working: (report.working || []).length,
+      note: report.note || "" };
+  }
+  return { records: out, checked, observable: Object.keys(PAGE_PLATFORMS) };
+}
+
+/** The comparison report the diagnostics panel renders. Runs a live probe so
+ *  the user is checking what the provider says right now against what we show
+ *  right now — a stale probe would make a disagreement unattributable. */
+async function quotaDiagnose(platformId) {
+  /* Every supported platform, not only the ones with candidate endpoints. A
+     provider we cannot poll still belongs on this page: Gemini reports nothing
+     readable, and the user is entitled to see that stated rather than to find
+     it missing and wonder whether it was forgotten. */
+  const ids = platformId
+    ? [platformId]
+    : Array.from(new Set(Object.values(PAGE_PLATFORMS))).filter((id) => quotaAdapter(id));
+  const out = [];
+  for (const id of ids) {
+    const probe = await quotaProbe(id);
+    const acct = await (async () => {
+      const adapter = quotaAdapter(id);
+      if (!adapter) return "";
+      try { return await quotaAcctFor(adapter, await quotaPrepare(adapter)); }
+      catch { return ""; }
+    })();
+    let stored = null;
+    try {
+      const key = quotaKey(id, acct);
+      stored = (await chrome.storage.local.get(key))[key] || null;
+    } catch { /* nothing stored yet */ }
+    out.push({ id, acct, probe, stored, shown: stored ? self.LCTQuota.primary(stored, {}) : null });
+  }
+  return { at: Date.now(), platforms: out };
 }
 
 async function sweepDue(platformId) {
@@ -3929,6 +4341,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         entries: indexFromMsgs(chatgptMsgs(msg.conv || {}))
       };
       case "account-for":        return accountForHost(String(msg.host || ""), String(msg.hint || "").slice(0, 120));
+      // The allowance panel. `quota-observed` is the page handing over numbers
+      // the provider already sent it; `quota-refresh` is us asking the provider
+      // directly, which is the only path that sees sends from another device.
+      case "quota-observed":     return quotaObserved(String(msg.host || ""), msg.observations || [], String(msg.hint || "").slice(0, 120));
+      case "quota-refresh":      return quotaPoll(PAGE_PLATFORMS[String(msg.host || "")] || String(msg.platform || ""), String(msg.reason || "manual"));
+      case "quota-state":        return quotaState();
+      case "quota-probe":        return quotaProbe(String(msg.platform || ""), { dryRun: !!msg.dryRun });
+      case "quota-diagnose":     return quotaDiagnose(String(msg.platform || ""));
+      // The parsers are pure, and a silent regression in them is what turns a
+      // real percentage into a plausible wrong one. Reachable so the test page
+      // can assert them without a provider.
+      case "quota-selftest":     return {
+        json: self.LCTQuota.fromJson(msg.json || {}, { now: Number(msg.now) || undefined }),
+        headers: self.LCTQuota.fromHeaders(msg.headers || {}, { now: Number(msg.now) || undefined }),
+        merged: self.LCTQuota.merge(msg.prev || null, msg.reading || null, { now: Number(msg.now) || undefined }),
+        primary: self.LCTQuota.primary(msg.record || null, { now: Number(msg.now) || undefined })
+      };
       case "account-roster":     return { accounts: await readAccounts() };
       case "recall-sync-status": return bgSyncStatus();
       case "recall-backup-state": return backupState();
