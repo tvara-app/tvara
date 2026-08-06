@@ -266,10 +266,14 @@
   // times a second for a conversation that has not changed.
   let cacheSig = "";
 
-  function refresh() {
+  // `msgs`: the list the engine just scanned. Re-querying the document for a
+  // list the caller is already holding cost a full selector sweep per tick for
+  // as long as the bar stayed open. Falls back for any caller without one.
+  function refresh(msgs) {
     if (!isOpen) return;
-    let msgs;
-    try { msgs = adapter.messages(); } catch (_) { return; }
+    if (!msgs) {
+      try { msgs = adapter.messages(); } catch (_) { return; }
+    }
     const last = msgs[msgs.length - 1];
     const sig = msgs.length + ":" + (last ? (last.textContent || "").length : 0);
     if (sig === cacheSig) return;

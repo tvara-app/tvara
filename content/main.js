@@ -178,7 +178,7 @@
     updateCountPill(windowedCount);
     maybeShowAha(messages.length, windowedCount);
     maybeOfferResume(messages);
-    self.LCTSearch.refresh();
+    self.LCTSearch.refresh(messages);
   }
 
   function onChatSwitch() {

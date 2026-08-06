@@ -7,6 +7,9 @@
 (() => {
   "use strict";
 
+  // Only for lists that can repeat/hold nulls: .closest()/.parentElement maps,
+  // concatenations. Raw querySelectorAll is already unique + document order —
+  // passing one here allocated the message list 4× on the hottest path.
   const dedupe = (els) => Array.from(new Set(els.filter(Boolean)));
 
   /**
@@ -48,16 +51,28 @@
      are meant to stay in step. */
   const R_ID = /^r_[0-9a-f]+$/i;
 
+  // Two subtree queries per miss, spent on every mounted message each page the
+  // walker pulls. An id cannot change, so cache a hit for good. A MISS is not
+  // cached — a message mounting before its id lands would stay keyless.
+  const keyMemo = new WeakMap();
+
   function stableKey(el) {
     if (!el || !el.getAttribute) return "";
+    const hit = keyMemo.get(el);
+    if (hit !== undefined) return hit;
+
     const withId = el.hasAttribute("data-message-id")
       ? el
       : (el.querySelector && el.querySelector("[data-message-id]"));
-    if (withId) return withId.getAttribute("data-message-id") || "";
-    if (el.id && R_ID.test(el.id)) return el.id;
-    const rid = el.querySelector && el.querySelector('[id^="r_"], [id^="R_"]');
-    if (rid && R_ID.test(rid.id)) return rid.id;
-    return "";
+    let key = "";
+    if (withId) key = withId.getAttribute("data-message-id") || "";
+    else if (el.id && R_ID.test(el.id)) key = el.id;
+    else {
+      const rid = el.querySelector && el.querySelector('[id^="r_"], [id^="R_"]');
+      if (rid && R_ID.test(rid.id)) key = rid.id;
+    }
+    if (key) keyMemo.set(el, key);
+    return key;
   }
 
   const TEXTY = 20;   // chars that make a child look like a message, not chrome
@@ -234,28 +249,20 @@
         // Layer 1 (current, stable): div elements with data-message-id
         // As of 2025–2026, ChatGPT wraps each message in a div with
         // data-message-id and data-message-author-role attributes.
-        let els = dedupe(Array.from(
-          document.querySelectorAll('[data-message-id]')
-        ));
+        let els = Array.from(document.querySelectorAll('[data-message-id]'));
         if (els.length) return els;
 
         // Layer 2: data-message-author-role without data-message-id
         // (in case the id attribute is dropped but role remains)
-        els = dedupe(Array.from(
-          document.querySelectorAll('[data-message-author-role]')
-        ));
+        els = Array.from(document.querySelectorAll('[data-message-author-role]'));
         if (els.length) return els;
 
         // Layer 3 (legacy): article-based conversation turns
-        els = dedupe(Array.from(
-          document.querySelectorAll('article[data-testid^="conversation-turn"]')
-        ));
+        els = Array.from(document.querySelectorAll('article[data-testid^="conversation-turn"]'));
         if (els.length) return els;
 
         // Layer 4 (legacy variant): div-based conversation turns
-        els = dedupe(Array.from(
-          document.querySelectorAll('div[data-testid^="conversation-turn"]')
-        ));
+        els = Array.from(document.querySelectorAll('div[data-testid^="conversation-turn"]'));
         if (els.length) return els;
 
         // Layer 5 (last resort): structural — densest child-list with text.
@@ -354,19 +361,19 @@
       // class partials → shadow DOM piercing → shared heuristic.
       messages() {
         // Layer 1: original custom elements (still work on some builds)
-        let els = dedupe(Array.from(document.querySelectorAll("user-query, model-response")));
+        let els = Array.from(document.querySelectorAll("user-query, model-response"));
         if (els.length) return els;
 
         // Layer 2: ARIA / data-attribute based selectors
-        els = dedupe(Array.from(document.querySelectorAll(
+        els = Array.from(document.querySelectorAll(
           '[data-message-id], [role="listitem"][data-content-type], message-content'
-        )));
+        ));
         if (els.length) return els;
 
         // Layer 3: structural class-name partials for conversation turns
-        els = dedupe(Array.from(document.querySelectorAll(
+        els = Array.from(document.querySelectorAll(
           '.conversation-container > div, [class*="turn-container"], [class*="response-container"]'
-        )));
+        ));
         if (els.length >= 2) return els;
 
         // Layer 4: shadow DOM piercing — search open shadow roots
@@ -410,15 +417,15 @@
       // → structural thread children → shared heuristic.
       messages() {
         // Layer 1: data attributes (stable if present)
-        let els = dedupe(Array.from(document.querySelectorAll(
+        let els = Array.from(document.querySelectorAll(
           '[data-lct-message], [data-testid*="message"], [data-testid*="answer"], [data-testid*="query"]'
-        )));
+        ));
         if (els.length) return els;
 
         // Layer 2: original class-name partials (may still work on some deploys)
-        els = dedupe(Array.from(document.querySelectorAll(
+        els = Array.from(document.querySelectorAll(
           'div[class*="PromptBlock"], div[class*="AnswerBlock"], div[class*="ConversationBlock"]'
-        )));
+        ));
         if (els.length) return els;
 
         /* Layer 3: the turn row, found by walking up from real answer content.
@@ -540,9 +547,9 @@
       // HTML → shared heuristic.
       messages() {
         // Layer 1: data attributes / ARIA roles
-        let els = dedupe(Array.from(document.querySelectorAll(
+        let els = Array.from(document.querySelectorAll(
           '[data-testid*="message"], [role="listitem"], [data-message-id]'
-        )));
+        ));
         if (els.length >= 2) return els;
 
         // Layer 2: original class-name partials
@@ -554,7 +561,7 @@
         if (els.length >= 2) return els;
 
         // Layer 3: semantic HTML elements inside main
-        els = dedupe(Array.from(document.querySelectorAll('main article, main section > div > div')));
+        els = Array.from(document.querySelectorAll('main article, main section > div > div'));
         if (els.length >= 2) return els;
 
         // Layer 4: shared heuristic (last resort)

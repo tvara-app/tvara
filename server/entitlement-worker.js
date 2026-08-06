@@ -198,6 +198,24 @@ async function claimSeat(env, keyFp, devFp) {
   }
 }
 
+/* ---------- archive stamp secret ---------- */
+
+/**
+ * A stable per-licence secret: HMAC(ARCHIVE_SECRET, keyFp). Same value for
+ * every token this licence is ever issued, so a backup sealed today still
+ * verifies after the token renews. Derived from a secret only this Worker
+ * holds — a client cannot compute it, which is what makes the stamp mean
+ * something.
+ */
+async function archiveSecret(env, keyFp) {
+  const raw = String(env.ARCHIVE_SECRET || env.SIGNING_KEY || "");
+  if (!raw) return "";
+  const key = await crypto.subtle.importKey(
+    "raw", enc.encode(raw), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const mac = await crypto.subtle.sign("HMAC", key, enc.encode("lct-archive-v1:" + keyFp));
+  return btoa(String.fromCharCode(...new Uint8Array(mac)));
+}
+
 /* ---------- signing ---------- */
 
 let signingKey = null;
@@ -282,6 +300,7 @@ export default {
       plan: "pro",
       feat: FEATURES,
       email: check.email || "",
+      ks: await archiveSecret(env, keyFp),
       iat: now,
       exp: now + TTL_MS,
       jti: crypto.randomUUID()

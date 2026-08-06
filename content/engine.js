@@ -140,9 +140,39 @@
     if (onUpdate) onUpdate(messages, count);
   }
 
+  // Trailing debounce on ONE reused timer. A streaming answer mutates the DOM
+  // continuously, and re-arming a timeout per mutation batch churned hundreds
+  // of timer allocations a second to schedule a single rescan.
+  let rescanDue = 0;
+
   function scheduleRescan() {
-    clearTimeout(rescanTimer);
-    rescanTimer = setTimeout(rescan, RESCAN_MS);
+    rescanDue = Date.now() + RESCAN_MS;
+    if (rescanTimer) return;
+    rescanTimer = setTimeout(fireRescan, RESCAN_MS);
+  }
+
+  function fireRescan() {
+    const left = rescanDue - Date.now();
+    if (left > 0) { rescanTimer = setTimeout(fireRescan, left); return; }
+    rescanTimer = null;
+    rescan();
+  }
+
+  // Only an element joining or leaving the page can change what adapter
+  // .messages() returns — every adapter selector matches elements. Text-node
+  // churn is most of what streaming emits, and rescanning on it walked the
+  // whole conversation to rebuild a list that could not have changed. Text
+  // EDITED in place never reached us anyway: characterData is not observed.
+  function hasElement(nodes) {
+    for (let i = 0; i < nodes.length; i++) if (nodes[i].nodeType === 1) return true;
+    return false;
+  }
+
+  function onMutations(records) {
+    for (let i = 0; i < records.length; i++) {
+      const r = records[i];
+      if (hasElement(r.addedNodes) || hasElement(r.removedNodes)) return scheduleRescan();
+    }
   }
 
   function unwindowAll() {
@@ -151,27 +181,32 @@
     while (asleep.length) asleep[0].classList.remove(CLASS);   // live collection
   }
 
+  function checkRoute() {
+    if (document.hidden || location.href === lastHref) return;
+    lastHref = location.href;
+    unwindowAll();
+    nearSet = new WeakSet();
+    observedSet = new WeakSet();
+    classifiedSet = new WeakSet();
+    if (io) { io.disconnect(); io = null; }
+    scheduleRescan();
+  }
+
   function start(a, updateCb) {
     adapter = a;
     onUpdate = updateCb || null;
     enabled = true;
 
-    observer = new MutationObserver(scheduleRescan);
+    observer = new MutationObserver(onMutations);
     observer.observe(document.body, { childList: true, subtree: true });
 
-    // SPA route changes (new chat opened without a page load)
+    // SPA route changes (new chat opened without a page load). Polled because a
+    // content script cannot see the page's own history calls from its isolated
+    // world. A hidden tab has nobody navigating it, so the poll idles there and
+    // the visibility flip catches anything that moved while it was away.
     clearInterval(spaTimer);
-    spaTimer = setInterval(() => {
-      if (location.href !== lastHref) {
-        lastHref = location.href;
-        unwindowAll();
-        nearSet = new WeakSet();
-        observedSet = new WeakSet();
-        classifiedSet = new WeakSet();
-        if (io) { io.disconnect(); io = null; }
-        scheduleRescan();
-      }
-    }, 1000);
+    spaTimer = setInterval(checkRoute, 1000);
+    document.addEventListener("visibilitychange", checkRoute);
 
     rescan();
   }
@@ -184,7 +219,9 @@
     io = null;
     clearInterval(spaTimer);
     spaTimer = null;
+    document.removeEventListener("visibilitychange", checkRoute);
     clearTimeout(rescanTimer);
+    rescanTimer = null;
     nearSet = new WeakSet();
     tailSet = new WeakSet();
     observedSet = new WeakSet();

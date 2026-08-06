@@ -707,9 +707,38 @@
 
   /* ---------- authoritative async load ---------- */
 
+  /* Ask for exactly the keys this panel paints, never the whole store. The
+     archive ledger, per-conversation timestamps and saved reading positions
+     share local storage, and get(null) deserialized every one of them before
+     the popup could show anything — the heavier someone's archive, the slower
+     it opened. A stats key is "stats:" + the hostname main.js is running on, so
+     the content-script matches are the complete list. Derived from the manifest
+     rather than typed out, so it cannot drift when a platform is added. */
+  const STATS_KEYS = (() => {
+    const out = new Set();
+    try {
+      for (const cs of chrome.runtime.getManifest().content_scripts || []) {
+        for (const m of cs.matches || []) {
+          const after = m.split("://")[1];
+          if (after) out.add("stats:" + after.split("/")[0]);
+        }
+      }
+    } catch { /* no manifest access: the breakdown renders empty, nothing breaks */ }
+    return [...out];
+  })();
+
+  /* Bumped whenever this popup settles the entitlement itself — activating a
+     licence, starting a trial. A load() carries the value it started with, and
+     drops its own plan paint if that moved underneath it. See the guard below
+     for why a stale paint is not cosmetic. */
+  let planGen = 0;
+
   async function load() {
-    const all = await chrome.storage.local.get(null);
-    const { settings, license, trial } = all;
+    let gen = planGen;
+    // The trial clock is NOT read here: the worker's entitlement verdict below
+    // is the only authority on it, and a second copy could disagree.
+    const all = await chrome.storage.local.get(["settings", "license", ...STATS_KEYS]);
+    const { settings, license } = all;
 
     paintToggles(settings);
 
@@ -765,7 +794,19 @@
 
     // The worker decides; the popup only renders. Asking it here rather than
     // recomputing locally means one verdict, and the one that gates the data.
-    const verdict = await send({ type: "entitlement-state" });
+    /* Activation writes the licence FIRST and mints the token a round trip
+       later — and writing the licence is what woke this load(), through the
+       storage.onChanged listener at the bottom of this file. So this verdict
+       can predate the token, and painting it flips a just-activated popup back
+       to Free, shows "Activation didn't finish", and caches that as the next
+       first paint. Ask again rather than paint what is already out of date;
+       this repaints everything below, so it cannot just bail out either — the
+       Manage-devices button is only ever shown from here. */
+    let verdict = await send({ type: "entitlement-state" });
+    for (let i = 0; i < 3 && gen !== planGen; i++) {
+      gen = planGen;
+      verdict = await send({ type: "entitlement-state" });
+    }
     const trialUntil = (verdict && verdict.trial && verdict.trial.until) || 0;
     const pro = !!(verdict && verdict.entitled && verdict.via !== "trial");
     const licenseKind = (verdict && verdict.kind) || null;
@@ -954,6 +995,7 @@
   $("trial-start").addEventListener("click", async () => {
     const t = await send({ type: "trial-start" });
     const until = (t && t.until) || 0;
+    planGen++;   // same race as activation: a load() in flight predates the trial
     paintPlan(false, null, until);
     saveCache({ trialUntil: until });
   });
@@ -1085,6 +1127,9 @@
       // and got nothing, and they need to see why while the popup is still open.
       btn.textContent = "Finishing…";
       const ent = await self.LCTEntitlement.refresh(record, res.deviceId, { force: true });
+      // The token is settled now, either way. Any load() still waiting on a
+      // verdict fetched before this point is stale — see the guard in load().
+      planGen++;
       if (!ent.ok) {
         paintLicenseState(ent.revoked
           ? { text: "That licence is not active.", cls: "err",

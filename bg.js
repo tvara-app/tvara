@@ -20,8 +20,9 @@
 
 // One implementation of the backup envelope, shared with the Recall page.
 try { importScripts("lib/backup-crypto.js"); } catch (_) { /* tests load bg.js bare */ }
-// Provider allowance parsing, shared with the content scripts and the popup so
-// a percentage cannot mean one thing here and another on screen.
+// Provider allowance parsing. The worker is the only reader: content scripts
+// forward raw responses and the popup asks for quota-state, so nothing else
+// needs it in-page. diag/quota.html loads it directly to exercise the parser.
 try { importScripts("lib/quota.js"); } catch (_) { /* tests load bg.js bare */ }
 // Licence verification. Order matters: entitlement.js calls into LCTLicense.
 try { importScripts("lib/license.js", "lib/dodo.js", "lib/entitlement.js"); }
@@ -348,18 +349,25 @@ async function importBatch(chats) {
 
 function score(chat, words) {
   // every word must appear somewhere; score = total hits, title hits ×3
-  let total = 0;
+  // Messages outer, words inner — inverted nesting re-lowercased the whole
+  // chat once per word. Tally only: caching cased bodies trades CPU for heap.
+  const nw = words.length;
+  const hits = new Array(nw).fill(0);
   const title = chat.title.toLowerCase();
-  for (const w of words) {
-    let hits = 0;
-    for (const m of chat.msgs) {
-      let i = -1;
-      const t = m.t.toLowerCase();
-      while ((i = t.indexOf(w, i + 1)) !== -1) hits++;
+  for (let j = 0; j < nw; j++) if (title.includes(words[j])) hits[j] = 3;
+
+  for (const m of chat.msgs) {
+    const t = m.t.toLowerCase();
+    for (let j = 0; j < nw; j++) {
+      const w = words[j];
+      for (let at = t.indexOf(w); at !== -1; at = t.indexOf(w, at + 1)) hits[j]++;
     }
-    if (title.includes(w)) hits += 3;
-    if (!hits) return 0; // AND semantics
-    total += hits;
+  }
+
+  let total = 0;
+  for (let j = 0; j < nw; j++) {
+    if (!hits[j]) return 0; // AND semantics
+    total += hits[j];
     // meta-only chats (synced titles, text not archived yet) rank below
     // full-text matches naturally: they can only ever score title hits
   }
@@ -784,6 +792,35 @@ function cleanLedger(value) {
     bytes += cost;
   }
   return { version: 2, checkpoints };
+}
+
+/**
+ * Values under a key prefix, without deserializing the rest of local storage.
+ *
+ * The store also holds the archive ledger, the sync journal and the deletion
+ * list, so a get(null) to reach a handful of quota keys paid to parse all of
+ * it — on the popup's open path, where it is felt. storage.getKeys() lists key
+ * names alone; where it is missing (Chrome < 130, Firefox < 138) this is the
+ * old full read, so behaviour is identical and only the cost differs.
+ */
+let localKeysUnavailable = false;
+
+async function listLocalKeys() {
+  const area = chrome.storage.local;
+  if (!localKeysUnavailable && typeof area.getKeys === "function") {
+    try { return await area.getKeys(); } catch { localKeysUnavailable = true; }
+  }
+  try { return Object.keys(await area.get(null)); } catch { return []; }
+}
+
+async function getByPrefix(prefix, extraKeys) {
+  if (localKeysUnavailable || typeof chrome.storage.local.getKeys !== "function") {
+    try { return await chrome.storage.local.get(null); } catch { return {}; }
+  }
+  const wanted = (await listLocalKeys()).filter((k) => k.startsWith(prefix));
+  for (const k of extraKeys || []) if (!wanted.includes(k)) wanted.push(k);
+  if (!wanted.length) return {};
+  try { return await chrome.storage.local.get(wanted); } catch { return {}; }
 }
 
 // Reads cover both areas and writes mirror: a sync-only read missed values
@@ -2841,8 +2878,9 @@ const USAGE_PREFIX = "usage:";
  *  that clearing the archive still removes them from installs that have them. */
 async function clearUsage() {
   try {
-    const all = await chrome.storage.local.get(null);
-    const keys = Object.keys(all).filter(
+    // key names only — the values are about to be deleted, so reading them back
+    // out of the store first was the one cost this could avoid
+    const keys = (await listLocalKeys()).filter(
       (k) => k.startsWith(USAGE_PREFIX) || k.startsWith(QUOTA_PREFIX)
     );
     if (keys.length) await chrome.storage.local.remove(keys);
@@ -3337,7 +3375,7 @@ async function quotaState() {
   const out = [];
   let probes = {};
   try {
-    const all = await chrome.storage.local.get(null);
+    const all = await getByPrefix(QUOTA_PREFIX, [QUOTA_PROBE_KEY]);
     probes = all[QUOTA_PROBE_KEY] || {};
     for (const [key, record] of Object.entries(all)) {
       if (!key.startsWith(QUOTA_PREFIX) || !record || typeof record !== "object") continue;
@@ -4588,7 +4626,7 @@ async function runAutoBackup(reason) {
       chats,
       ledger: durable.ledger || { version: 2, checkpoints: {} },
       profile: durable.profile || null
-    }, { keyring: config.keyring });
+    }, { keyring: config.keyring, ...(await stampCreds()) });
 
     if (sealed.json.length > BG_AUTOBACKUP_MAX_BYTES) {
       await note({ lastError: "This archive is too large for automatic backup. Export it from the Recall page.", lastCheckedAt: Date.now() });
@@ -4846,6 +4884,7 @@ const PAID = Object.freeze({
      mounted messages. Delete these two lines to give the archive away. */
   "chat-archive": "archive.backup",
   "chat-search": "archive.search",
+  "archive-stamp": "archive.backup",
   "recall-restore-ledger": "archive.restore",
   "recall-restore-guard": "archive.restore",
   "recall-restore-guard-fail": "archive.restore",
@@ -4873,15 +4912,29 @@ async function trialState() {
     } catch { /* dead context */ }
   }
   const startedAt = Number(rec && rec.startedAt) || 0;
-  if (!startedAt) return { started: false, active: false, spent: false, until: 0 };
+  if (!startedAt) return { started: false, active: false, spent: false, until: 0, ks: "" };
   const until = startedAt + TRIAL_MS;
-  return { started: true, active: Date.now() < until, spent: Date.now() >= until, until };
+  return { started: true, active: Date.now() < until, spent: Date.now() >= until, until,
+    ks: String((rec && rec.ks) || "") };
 }
 
 async function startTrial() {
   const cur = await trialState();
   if (cur.started) return cur;                       // one per profile, ever
-  const rec = { startedAt: Date.now(), v: 2 };
+
+  // Ask the issuer first. It remembers this device across reinstalls and
+  // storage wipes, so a returning user gets their ORIGINAL start date back
+  // rather than a fresh week. Offline, we fall back to our own clock — a
+  // 7-day trial is not worth refusing to work without a network.
+  let startedAt = 0, verified = false, trialKs = "";
+  try {
+    const deviceFp = await self.LCTEntitlement.sha256Hex(await self.LCTDodo.ensureDeviceId());
+    const server = await self.LCTEntitlement.registerTrial(deviceFp);
+    if (server) { startedAt = server.startedAt; verified = true; trialKs = server.ks || ""; }
+  } catch { /* issuer unreachable */ }
+
+  const rec = { startedAt: startedAt || Date.now(), v: 2,
+    ...(verified ? { verified: true } : {}), ...(trialKs ? { ks: trialKs } : {}) };
   // Both stores: sync is the durable record, local is the offline fallback.
   try { await chrome.storage.sync.set({ [TRIAL_KEY]: rec }); } catch { /* quota/offline */ }
   try { await chrome.storage.local.set({ [TRIAL_KEY]: rec }); } catch { /* dead context */ }
@@ -4952,6 +5005,67 @@ async function entitlementVerdict() {
   // A dead licence still leaves an unspent trial usable.
   if (trial.active) return { entitled: true, via: "trial", trial, features: self.LCTEntitlement.FEATURES.slice(), reason: res.reason };
   return { ...res, via: "none", trial };
+}
+
+/**
+ * Stamp credentials, off the same verdict the gate uses — so a trial seals a
+ * real backup and a locked install seals nothing. Pro takes the per-licence
+ * secret from its token (stable across renewals, portable to a reinstall);
+ * trial takes the one the issuer minted for its device.
+ */
+async function stampSecret() {
+  const v = await entitlementVerdict();
+  if (!v.entitled) return null;
+  if (v.via === "trial") {
+    if (v.trial && v.trial.ks) return v.trial.ks;
+    // Offline trial: no issuer secret to anchor to. Mint one locally and keep
+    // it, so the file still verifies on the way back in. Weaker than the Pro
+    // secret (not server-derived, not portable) — but reaching this at all
+    // means passing requireEntitlement, which a locked install cannot.
+    return ensureLocalStampSecret();
+  }
+  if (v.kind === "lct1") {
+    const got = await chrome.storage.local.get("license");
+    const key = got && got.license && got.license.key;
+    return key ? await self.LCTEntitlement.sha256Hex("lct1-archive:" + key, 32) : null;
+  }
+  return v.ks || null;
+}
+
+const LOCAL_STAMP_KEY = "lct-stamp-local-v1";
+
+async function ensureLocalStampSecret() {
+  try {
+    const got = await chrome.storage.local.get(LOCAL_STAMP_KEY);
+    const cur = got && got[LOCAL_STAMP_KEY];
+    if (typeof cur === "string" && cur.length >= 40) return cur;
+  } catch { /* dead context */ }
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  const secret = btoa(String.fromCharCode(...bytes));
+  try { await chrome.storage.local.set({ [LOCAL_STAMP_KEY]: secret }); } catch { /* dead context */ }
+  return secret;
+}
+
+async function stampCreds() {
+  const secret = await stampSecret();
+  if (!secret) return { stampKey: null, stampSub: "" };
+  let bytes;
+  try {
+    bytes = Uint8Array.from(atob(secret.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+  } catch { bytes = new TextEncoder().encode(secret); }
+  let stampKey = null;
+  try {
+    stampKey = await crypto.subtle.importKey("raw", bytes, { name: "HMAC", hash: "SHA-256" },
+      false, ["sign", "verify"]);
+  } catch { /* unusable secret */ }
+  let stampSub = "";
+  try {
+    const got = await chrome.storage.local.get("license");
+    if (got && got.license && got.license.key) {
+      stampSub = await self.LCTEntitlement.sha256Hex(got.license.key);
+    }
+  } catch { /* dead context */ }
+  return { stampKey, stampSub, secret };
 }
 
 async function requireEntitlement(feature) {
@@ -5046,6 +5160,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
          two of them is the failure that matters: a seat with no entitlement is
          someone who paid and got nothing. */
       case "license-activate": return activateLicenseKey(msg && msg.key);
+      // The page seals the file (it holds the passphrase), but the secret that
+      // stamps it comes from here, behind the gate.
+      case "archive-stamp": {
+        const { secret, stampSub } = await stampCreds();
+        return secret ? { ok: true, secret, sub: stampSub } : { err: "locked" };
+      }
       case "trial-state":  return trialState();
       case "trial-start":  return startTrial();
       // Content scripts cannot read chrome.commands, and the first-run hint
