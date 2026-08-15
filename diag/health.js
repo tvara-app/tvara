@@ -125,6 +125,13 @@
           h.distinctIds ? `${h.distinctIds.distinct} ids for ${h.distinctIds.of} elements`
                         : "this platform assigns no ids"),
         row("counted twice (a message inside a message)", String(h.nested ?? 0)),
+        row("elements with actual text in them",
+          h.substance
+            ? `${h.substance.real} real · ${h.substance.tiny} near-empty · ${h.substance.empty} empty` +
+              (h.substance.sampled < h.messages ? ` (of the first ${h.substance.sampled})` : "")
+            : "n/a"),
+        row("elements the host is not rendering at all",
+          h.substance ? String(h.substance.unrendered) : "n/a"),
         row("asleep right now", String(h.sleeping)),
         row("prompt box found", yn(h.composer)),
         row("scroll container found", yn(h.scroller)),
@@ -160,6 +167,17 @@
           wrap.append(line);
         }
         el.append(wrap);
+      }
+      // An element with no text is not a message anyone can read. If a host
+      // leaves placeholders behind for turns it has not mounted, every count we
+      // show — the minimap, "N asleep", the outline — is counting ghosts.
+      if (h.substance && h.substance.empty) {
+        const n = document.createElement("p");
+        n.className = "consequence";
+        n.textContent = `${h.substance.empty} matched element(s) contain no text at all ` +
+          `(${h.substance.emptyUser} filed as yours, ${h.substance.emptyAssistant} as the model's). ` +
+          "Those are placeholders, not messages — and every count on this card includes them.";
+        el.append(n);
       }
       if (h.distinctIds && h.distinctIds.distinct < h.distinctIds.of) {
         const n = document.createElement("p");

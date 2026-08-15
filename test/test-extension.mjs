@@ -2693,6 +2693,10 @@ try {
     Array.isArray(direct.shapes) && direct.shapes.length > 0 &&
       direct.shapes[0][0].startsWith("div"),
     JSON.stringify(direct.shapes));
+  t("B15 the report separates real messages from empty placeholders",
+    direct.substance && direct.substance.real === direct.substance.sampled &&
+      direct.substance.empty === 0 && direct.substance.sampled <= direct.messages,
+    JSON.stringify(direct.substance));
   t("B15 the shapes carry structure, never text or ids",
     JSON.stringify(direct.shapes).length < 400 &&
       !/architectural|Question \d/.test(JSON.stringify(direct.shapes)),
@@ -2702,6 +2706,26 @@ try {
 
   // The point of the whole instrument: break what the platform is supposed to
   // ship, and it must say DEGRADED rather than keep reporting health.
+  // A host that leaves empty placeholders behind for turns it has not mounted
+  // makes every count on the card a count of ghosts. Empty one and require the
+  // report to separate it from the messages anyone can actually read.
+  await page.evaluate(() => {
+    const el = document.querySelectorAll("[data-lct-message]")[3];
+    el.setAttribute("data-lct-stash", el.innerHTML);
+    el.innerHTML = "";
+  });
+  const ghosted = await askHealth();
+  t("B15 an empty placeholder is counted as one, not as a message",
+    ghosted.substance.empty === 1 && ghosted.substance.real === ghosted.substance.sampled - 1,
+    JSON.stringify(ghosted.substance));
+  t("B15 the shape list shows which side the placeholder was filed under",
+    JSON.stringify(ghosted.shapes).includes("[empty]"), JSON.stringify(ghosted.shapes));
+  await page.evaluate(() => {
+    const el = document.querySelector("[data-lct-stash]");
+    el.innerHTML = el.getAttribute("data-lct-stash");
+    el.removeAttribute("data-lct-stash");
+  });
+
   // Roles moving out of reach is a SEPARATE failure from messages moving: the
   // headline stays green because the message selector still matches, and only
   // the role count betrays it. Strip the role attribute and require the report

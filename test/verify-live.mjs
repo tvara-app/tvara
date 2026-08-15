@@ -216,6 +216,11 @@ ${wanted.length} tab${wanted.length === 1 ? "" : "s"} open. Before pressing Ente
         ["distinct messages behind those elements", h.distinctIds
           ? `${h.distinctIds.distinct} ids for ${h.distinctIds.of} elements` : "no ids on this platform"],
         ["counted twice", String(h.nested ?? 0)],
+        ["elements with actual text", h.substance
+          ? `${h.substance.real} real · ${h.substance.tiny} near-empty · ${h.substance.empty} empty` +
+            (h.substance.sampled < h.messages ? ` (of the first ${h.substance.sampled})` : "")
+          : "n/a"],
+        ["not rendered at all", h.substance ? String(h.substance.unrendered) : "n/a"],
         ["what was matched", (h.shapes || []).map(([sh, n]) => `${n}× ${sh}`).join("  |  ") || "n/a"],
         ["asleep right now", String(h.sleeping)],
         ["prompt box found", yn(h.composer)],

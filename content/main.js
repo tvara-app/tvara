@@ -674,6 +674,11 @@
       }
       if (el.hasAttribute?.("data-message-id")) s += "[data-message-id]";
       if (el.classList?.contains("sr-only") || el.getAttribute?.("aria-hidden") === "true") s += "[hidden]";
+      // The question the counts raised: are these nodes MESSAGES, or the empty
+      // placeholders a virtualizing host leaves behind for turns it has not
+      // mounted? An element with no text is not a message anyone can read.
+      if (!(el.textContent || "").trim()) s += "[empty]";
+      else if ((el.textContent || "").trim().length < 8) s += "[tiny]";
       return s;
     };
     const shapes = {};
@@ -683,7 +688,33 @@
         shapes[k] = (shapes[k] || 0) + 1;
       } catch { /* skip */ }
     }
-    const shapeList = Object.entries(shapes).sort((a, b) => b[1] - a[1]).slice(0, 6);
+    const shapeList = Object.entries(shapes).sort((a, b) => b[1] - a[1]).slice(0, 8);
+
+    /* Substance, per side. A count of elements is not a count of messages, and
+       the difference between them is where a phantom lives. The rect read costs
+       a layout, so it is capped and only paid on demand — this whole report is
+       something a person clicked a button to get. */
+    const SAMPLE = 400;
+    const substance = { empty: 0, tiny: 0, real: 0, unrendered: 0,
+                        emptyUser: 0, emptyAssistant: 0,
+                        // Both this and the shape list read the first SAMPLE
+                        // elements. A capped number presented as a total is the
+                        // kind of tidy lie this whole page exists to catch.
+                        sampled: Math.min(messages.length, SAMPLE) };
+    for (const el of messages.slice(0, SAMPLE)) {
+      try {
+        const text = (el.textContent || "").trim();
+        if (!text) {
+          substance.empty++;
+          adapter.role(el) === "user" ? substance.emptyUser++ : substance.emptyAssistant++;
+        } else if (text.length < 8) substance.tiny++;
+        else substance.real++;
+        // An asleep message keeps its frozen height, so zero here means the
+        // host is not rendering it at all — not that we put it to sleep.
+        const r = el.getBoundingClientRect?.();
+        if (r && r.height === 0) substance.unrendered++;
+      } catch { /* skip */ }
+    }
 
     /* The other way a count goes wrong: an outer and an inner node both match,
        so one turn is counted twice. Cheap to detect — a message that sits
@@ -725,6 +756,7 @@
       roleRead,
       roleFrom,
       distinctIds,
+      substance,
       shapes: shapeList,
       nested,
       sleeping,
