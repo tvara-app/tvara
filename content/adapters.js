@@ -585,14 +585,13 @@
   for (const a of ADAPTERS) {
     const raw = a.messages.bind(a);
     a.rawMessages = raw;             // what the selectors matched, before judgement
-    a.messages = () => {
-      const all = raw() || [];
-      const kept = all.filter(substantive);
-      // Never let the filter empty the room: if a host renders a conversation
-      // in some way this test cannot see, showing every element beats showing
-      // none, and the health page reports the discrepancy either way.
-      return kept.length ? kept : all;
-    };
+    // No "if nothing survives, show everything" escape hatch. An element with
+    // neither text nor media has nothing for any feature here to use: its
+    // minimap tick is blank, its search entry is empty, its export line is a
+    // heading with no body. A chat still mounting its first turns would flash
+    // a full map of nothing and then collapse to the real count — which is the
+    // phantom bug again, briefly. Nothing to show means show nothing.
+    a.messages = () => (raw() || []).filter(substantive);
   }
 
   // adapters without an explicit composer() use the generic resolver
