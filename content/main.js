@@ -608,6 +608,11 @@
   function health() {
     let messages = [];
     try { messages = adapter.messages() || []; } catch (e) { /* adapter threw */ }
+    // What the selectors matched before the empty-turn filter ran, so the gap
+    // between "elements on the page" and "messages" is visible rather than
+    // quietly absorbed.
+    let matched = messages.length;
+    try { matched = (adapter.rawMessages ? adapter.rawMessages() : messages).length; } catch { /* keep */ }
 
     let canonical = 0;
     if (adapter.canon) {
@@ -742,6 +747,8 @@
       platform: adapter.label,     // "ChatGPT", not a capitalised hostname
       inConversation: adapter.convPath ? adapter.convPath.test(location.pathname) : null,
       messages: messages.length,
+      matched,
+      dropped: Math.max(0, matched - messages.length),
       canonical,
       // The headline. "degraded" is not an error — it is the early warning that
       // used to arrive as a support email six weeks late.

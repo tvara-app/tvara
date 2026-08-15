@@ -110,6 +110,10 @@
       const yn = (x) => x === null ? "n/a" : x === "threw" ? "the lookup failed" : x ? "yes" : "no";
       el.append(
         row("messages seen", String(h.messages)),
+        row("elements matched, before empty turns were dropped",
+          h.matched === undefined ? "n/a"
+            : h.dropped ? `${h.matched} — ${h.dropped} dropped as unmounted placeholders`
+            : String(h.matched)),
         row("matching the platform's own attributes", `${h.canonical} of ${h.messages}`),
         row("roles read", `${h.roles.user} yours · ${h.roles.assistant} the model's`),
         row("roles taken from the page itself",

@@ -2706,25 +2706,55 @@ try {
 
   // The point of the whole instrument: break what the platform is supposed to
   // ship, and it must say DEGRADED rather than keep reporting health.
-  // A host that leaves empty placeholders behind for turns it has not mounted
-  // makes every count on the card a count of ghosts. Empty one and require the
-  // report to separate it from the messages anyone can actually read.
+  /* Unmounted turns. A live ChatGPT conversation matched 195 elements carrying
+     a role and a message id, 122 of which contained nothing at all — the node a
+     virtualizing host leaves behind for a turn it has not rendered. Counted as
+     messages, they put 122 phantom ticks on the minimap, listed themselves in
+     the outline and rode into exports. */
+  const before = await askHealth();
   await page.evaluate(() => {
-    const el = document.querySelectorAll("[data-lct-message]")[3];
-    el.setAttribute("data-lct-stash", el.innerHTML);
-    el.innerHTML = "";
+    const all = document.querySelectorAll("[data-lct-message]");
+    for (let i = 0; i < 5; i++) {
+      all[i].setAttribute("data-lct-stash", all[i].innerHTML);
+      all[i].innerHTML = "";
+    }
   });
+  await page.waitForTimeout(400);
   const ghosted = await askHealth();
-  t("B15 an empty placeholder is counted as one, not as a message",
-    ghosted.substance.empty === 1 && ghosted.substance.real === ghosted.substance.sampled - 1,
-    JSON.stringify(ghosted.substance));
-  t("B15 the shape list shows which side the placeholder was filed under",
-    JSON.stringify(ghosted.shapes).includes("[empty]"), JSON.stringify(ghosted.shapes));
+  t("B15 empty turns are dropped, not counted as messages",
+    ghosted.messages === before.messages - 5 && ghosted.dropped === 5,
+    JSON.stringify({ was: before.messages, now: ghosted.messages, dropped: ghosted.dropped }));
+  t("B15 the report still shows what the selectors matched",
+    ghosted.matched === before.messages, JSON.stringify(ghosted.matched));
+  t("B15 the minimap stops drawing the dropped turns",
+    await page.evaluate(() => Number(
+      document.getElementById("lct-mm-canvas")?.getAttribute("aria-valuemax"))) < before.messages,
+    await page.getAttribute("#lct-mm-canvas", "aria-valuemax"));
+
+  /* The trade this filter must not make: a message whose whole content is an
+     image has no text either, and dropping those would swap one wrong count for
+     another. */
   await page.evaluate(() => {
-    const el = document.querySelector("[data-lct-stash]");
-    el.innerHTML = el.getAttribute("data-lct-stash");
-    el.removeAttribute("data-lct-stash");
+    const el = document.querySelectorAll("[data-lct-message]")[0];
+    el.innerHTML = '<img alt="" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">';
   });
+  await page.waitForTimeout(400);
+  const withImage = await askHealth();
+  t("B15 an image-only message is kept, not swept up with the placeholders",
+    withImage.messages === before.messages - 4 && withImage.dropped === 4,
+    JSON.stringify({ now: withImage.messages, dropped: withImage.dropped }));
+
+  await page.evaluate(() => {
+    for (const el of document.querySelectorAll("[data-lct-stash]")) {
+      el.innerHTML = el.getAttribute("data-lct-stash");
+      el.removeAttribute("data-lct-stash");
+    }
+  });
+  await page.waitForTimeout(400);
+  const restored = await askHealth();
+  t("B15 a turn rejoins the moment the host puts content in it",
+    restored.messages === before.messages && restored.dropped === 0,
+    JSON.stringify({ now: restored.messages, dropped: restored.dropped }));
 
   // Roles moving out of reach is a SEPARATE failure from messages moving: the
   // headline stays green because the message selector still matches, and only

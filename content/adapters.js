@@ -555,6 +555,46 @@
     try { return String(read() || "").slice(0, 120); } catch { return ""; }
   }
 
+  /* ---------- empty turns are not messages ----------
+     Measured on a live ChatGPT conversation: 195 elements carried a role and a
+     message id, and 122 of them contained nothing at all. These hosts mount
+     only the tail of a conversation and leave a node behind for every turn they
+     have not rendered — a node that is a promise of a message, not a message.
+
+     Counting them put 122 phantom ticks on the minimap (each one hovering as
+     "Image / attachment", because there was no text to preview), listed them in
+     the outline, inflated "N asleep", and carried them into exports.
+
+     Applied here, once, rather than in seven adapters: an element with nothing
+     in it is not a message on any platform. A turn that is merely UNMOUNTED
+     rejoins the moment the host puts content in it, and one that is genuinely
+     mid-stream rejoins on its first token — neither needs to be guessed about.
+
+     The media test is the reason this is not just a text check: a message whose
+     whole content is an image or an audio clip has no text either, and dropping
+     those would trade one wrong count for another. */
+  const MEDIA = "img,video,audio,canvas,picture,object,embed,iframe," +
+                '[data-testid*="attachment" i],[class*="attachment" i],[aria-label*="image" i]';
+
+  function substantive(el) {
+    if (!el || !el.nodeType) return false;
+    if ((el.textContent || "").trim()) return true;
+    try { return !!el.querySelector(MEDIA); } catch { return false; }
+  }
+
+  for (const a of ADAPTERS) {
+    const raw = a.messages.bind(a);
+    a.rawMessages = raw;             // what the selectors matched, before judgement
+    a.messages = () => {
+      const all = raw() || [];
+      const kept = all.filter(substantive);
+      // Never let the filter empty the room: if a host renders a conversation
+      // in some way this test cannot see, showing every element beats showing
+      // none, and the health page reports the discrepancy either way.
+      return kept.length ? kept : all;
+    };
+  }
+
   // adapters without an explicit composer() use the generic resolver
   for (const a of ADAPTERS) if (!a.composer) a.composer = () => pickComposer([]);
   // …and without an explicit stableKey() use the shared id probe. A host that
