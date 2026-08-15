@@ -182,7 +182,7 @@ ${wanted.length} tab${wanted.length === 1 ? "" : "s"} open. Before pressing Ente
   // Same verdict language as the health page, so a report pasted from either
   // reads identically.
   const cards = answers.map(({ host, report: h }) => {
-    const base = { title: h?.adapter || host, rows: [] };
+    const base = { title: h?.platform || h?.adapter || host, rows: [] };
     if (!h) return { ...base, cls: "bad", verdict: "no answer — reload that tab and re-run" };
     if (h.error) return { ...base, cls: "bad", verdict: "the adapter threw: " + h.error };
     if (!h.messages) {
@@ -198,7 +198,7 @@ ${wanted.length} tab${wanted.length === 1 ? "" : "s"} open. Before pressing Ente
       : (/mixed/.test(h.selectors) || rolesGuessed || h.nested) ? "warn" : "good";
     const yn = (x) => x === null ? "n/a" : x === "threw" ? "the lookup failed" : x ? "yes" : "no";
     return {
-      cls, title: h.adapter,
+      cls, title: h.platform || h.adapter,
       verdict: cls === "good" ? "matching this platform's own markup"
         : cls === "bad" ? "running on a fallback layer — this platform has changed"
         : rolesGuessed ? `roles guessed for ${h.messages - h.roleRead} of ${h.messages} messages`
@@ -210,7 +210,13 @@ ${wanted.length} tab${wanted.length === 1 ? "" : "s"} open. Before pressing Ente
         ["roles read", `${h.roles.user} yours · ${h.roles.assistant} the model's`],
         ["roles taken from the page itself",
           typeof h.roleRead === "number" ? `${h.roleRead} of ${h.messages}` : "inferred on this platform"],
+        ["where that role was found", h.roleFrom
+          ? `${h.roleFrom.self} on the message · ${h.roleFrom.ancestor} on a wrapper · ${h.roleFrom.descendant} inside it · ${h.roleFrom.none} nowhere`
+          : "n/a"],
+        ["distinct messages behind those elements", h.distinctIds
+          ? `${h.distinctIds.distinct} ids for ${h.distinctIds.of} elements` : "no ids on this platform"],
         ["counted twice", String(h.nested ?? 0)],
+        ["what was matched", (h.shapes || []).map(([sh, n]) => `${n}× ${sh}`).join("  |  ") || "n/a"],
         ["asleep right now", String(h.sleeping)],
         ["prompt box found", yn(h.composer)],
         ["scroll container found", yn(h.scroller)],

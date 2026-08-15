@@ -2680,6 +2680,23 @@ try {
     JSON.stringify({ read: direct.roleRead, of: direct.messages }));
   t("B15 the report notices a turn counted twice", direct.nested === 0,
     String(direct.nested));
+  // When a count or a split makes no sense, these are the lines that say what
+  // the page is actually made of.
+  t("B15 the report says WHERE each role was found",
+    direct.roleFrom && direct.roleFrom.self + direct.roleFrom.ancestor +
+      direct.roleFrom.descendant + direct.roleFrom.none === direct.messages,
+    JSON.stringify(direct.roleFrom));
+  t("B15 the report counts distinct provider ids behind the elements",
+    direct.distinctIds === null || direct.distinctIds.distinct === direct.distinctIds.of,
+    JSON.stringify(direct.distinctIds));
+  t("B15 the report shows the shapes it matched",
+    Array.isArray(direct.shapes) && direct.shapes.length > 0 &&
+      direct.shapes[0][0].startsWith("div"),
+    JSON.stringify(direct.shapes));
+  t("B15 the shapes carry structure, never text or ids",
+    JSON.stringify(direct.shapes).length < 400 &&
+      !/architectural|Question \d/.test(JSON.stringify(direct.shapes)),
+    JSON.stringify(direct.shapes));
   t("B15 the report carries no message text",
     !JSON.stringify(direct).includes("architectural"));
 

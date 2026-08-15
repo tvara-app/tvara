@@ -69,7 +69,7 @@
     const head = document.createElement("div");
     head.className = "head";
     const title = document.createElement("h2");
-    title.textContent = (h && h.adapter) || new URL(tab.url || "https://?").hostname;
+    title.textContent = (h && (h.platform || h.adapter)) || new URL(tab.url || "https://?").hostname;
     const pill = document.createElement("span");
     pill.className = "pill";
     pill.textContent = v.text;
@@ -116,6 +116,14 @@
           h.roleRead === null || h.roleRead === undefined
             ? "not available on this platform — inferred"
             : `${h.roleRead} of ${h.messages}`),
+        row("where that role was found",
+          h.roleFrom
+            ? `${h.roleFrom.self} on the message · ${h.roleFrom.ancestor} on a wrapper · ` +
+              `${h.roleFrom.descendant} inside it · ${h.roleFrom.none} nowhere`
+            : "n/a"),
+        row("distinct messages behind those elements",
+          h.distinctIds ? `${h.distinctIds.distinct} ids for ${h.distinctIds.of} elements`
+                        : "this platform assigns no ids"),
         row("counted twice (a message inside a message)", String(h.nested ?? 0)),
         row("asleep right now", String(h.sleeping)),
         row("prompt box found", yn(h.composer)),
@@ -134,6 +142,31 @@
         n.textContent = `${h.messages - h.roleRead} message(s) had no role marker where we look for one, ` +
           "so their side of the conversation was guessed. The minimap, the outline and the " +
           "export all read that guess.";
+        el.append(n);
+      }
+      // The shapes that were matched, in plain sight. When a count or a split
+      // makes no sense, this is the line that says what the page is actually
+      // made of — structural attributes only, no text and no ids.
+      if (Array.isArray(h.shapes) && h.shapes.length) {
+        const wrap = document.createElement("details");
+        wrap.className = "shapes";
+        const sum = document.createElement("summary");
+        sum.textContent = "what was matched";
+        wrap.append(sum);
+        for (const [shape, n] of h.shapes) {
+          const line = document.createElement("div");
+          line.className = "shape";
+          line.textContent = `${String(n).padStart(4, " ")} × ${shape}`;
+          wrap.append(line);
+        }
+        el.append(wrap);
+      }
+      if (h.distinctIds && h.distinctIds.distinct < h.distinctIds.of) {
+        const n = document.createElement("p");
+        n.className = "consequence";
+        n.textContent = `${h.distinctIds.of - h.distinctIds.distinct} element(s) repeat a message id another ` +
+          "element already claimed — the same turn is being counted more than once, as siblings rather " +
+          "than as one inside the other.";
         el.append(n);
       }
       if (h.nested) {

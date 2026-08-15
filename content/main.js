@@ -630,15 +630,60 @@
        look, and every turn quietly falls through to the heuristics. So count
        how many roles were actually READ, and say so. */
     let roleRead = null;
+    // WHERE the role came from, not just whether it came. A live chat reported
+    // 195 of 195 roles read and a split of 185 to 10 — both cannot be true of a
+    // conversation, so the next question is which node answered.
+    const roleFrom = { self: 0, ancestor: 0, descendant: 0, none: 0 };
     if (adapter.roleCanon) {
       roleRead = 0;
       for (const el of messages) {
         try {
-          if (el.closest?.(adapter.roleCanon) || el.matches?.(adapter.roleCanon) ||
-              el.querySelector?.(adapter.roleCanon)) roleRead++;
-        } catch { /* a selector this browser dislikes counts as unread */ }
+          if (el.matches?.(adapter.roleCanon)) { roleFrom.self++; roleRead++; }
+          else if (el.closest?.(adapter.roleCanon)) { roleFrom.ancestor++; roleRead++; }
+          else if (el.querySelector?.(adapter.roleCanon)) { roleFrom.descendant++; roleRead++; }
+          else roleFrom.none++;
+        } catch { roleFrom.none++; }
       }
     }
+
+    /* Two matched nodes reporting the same provider id are the same message
+       counted twice — and unlike the nested case, they can be siblings, which
+       is why a containment check alone said everything was fine. */
+    let distinctIds = null;
+    if (self.LCTAdapters.stableKey) {
+      const ids = new Set();
+      let withId = 0;
+      for (const el of messages) {
+        try {
+          const k = self.LCTAdapters.stableKey(el);
+          if (k) { ids.add(k); withId++; }
+        } catch { /* skip */ }
+      }
+      distinctIds = withId ? { distinct: ids.size, of: withId } : null;
+    }
+
+    /* A handful of shapes, so a redesign can be READ rather than guessed at.
+       Structural attributes only — a role, a turn marker, a testid, and the
+       mere PRESENCE of an id. No text, no ids, nothing that identifies a
+       conversation. */
+    const SHAPE_ATTRS = ["data-message-author-role", "data-turn", "data-testid"];
+    const shapeOf = (el) => {
+      let s = (el.tagName || "?").toLowerCase();
+      for (const a of SHAPE_ATTRS) {
+        if (el.hasAttribute?.(a)) s += `[${a}=${String(el.getAttribute(a) || "").slice(0, 24)}]`;
+      }
+      if (el.hasAttribute?.("data-message-id")) s += "[data-message-id]";
+      if (el.classList?.contains("sr-only") || el.getAttribute?.("aria-hidden") === "true") s += "[hidden]";
+      return s;
+    };
+    const shapes = {};
+    for (const el of messages.slice(0, 400)) {
+      try {
+        const k = shapeOf(el);
+        shapes[k] = (shapes[k] || 0) + 1;
+      } catch { /* skip */ }
+    }
+    const shapeList = Object.entries(shapes).sort((a, b) => b[1] - a[1]).slice(0, 6);
 
     /* The other way a count goes wrong: an outer and an inner node both match,
        so one turn is counted twice. Cheap to detect — a message that sits
@@ -663,6 +708,7 @@
       host: location.hostname,
       path: location.pathname.replace(/[^/]{12,}/g, "…"),   // never the chat id
       adapter: adapter.id,
+      platform: adapter.label,     // "ChatGPT", not a capitalised hostname
       inConversation: adapter.convPath ? adapter.convPath.test(location.pathname) : null,
       messages: messages.length,
       canonical,
@@ -677,6 +723,9 @@
       // null = this platform has no positive marker for both sides, so roles
       // are inferred by design and a lopsided split means nothing.
       roleRead,
+      roleFrom,
+      distinctIds,
+      shapes: shapeList,
       nested,
       sleeping,
       // Each probe is guarded on its own: a report that dies because one lookup
