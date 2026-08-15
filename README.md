@@ -125,3 +125,18 @@ conversation id, and copies a paste-ready report.
 That is also how to check a live site after any change here — the test suite
 runs against mock providers and a synthetic page, so it can prove the logic and
 never the selectors.
+
+To check every platform at once, in a browser that is nobody else's:
+
+```bash
+npm run verify:login   # once — sign in to your test accounts in a throwaway profile
+npm run verify:live    # thereafter — opens each site, prints a verdict per platform
+npm run verify:live -- --only chatgpt,claude
+```
+
+It runs the real extension in its own Chrome profile under `~/.lct-verify`
+(`rm -rf ~/.lct-verify` forgets everything, sessions included), asks the
+extension's service worker for the same health report the popup shows, and
+writes `test/.work/live/report.md` — counts and verdicts, no message text, no
+conversation ids. Google refuses to sign in inside an automated browser, so
+check Gemini by hand with the Health page.
