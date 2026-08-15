@@ -19,6 +19,9 @@
   .sub { color: var(--muted); font-size: 19px; max-width: 620px; margin: 0 auto; }
   .cta { display: inline-block; margin-top: 28px; padding: 13px 28px; border-radius: 10px; background: var(--accent); color: #0b0e14; font-weight: 700; text-decoration: none; }
   .cta.alt { background: transparent; color: var(--accent); border: 1px solid var(--accent); margin-left: 10px; }
+  .buy-btn { display: block; margin-top: 22px; text-align: center; }
+  .buy-btn.pending { background: transparent; border: 1px dashed var(--line); color: var(--muted); font-weight: 500; cursor: default; }
+  .buy-sub { margin-top: 10px; text-align: center; color: var(--muted); font-size: 13px; }
   .badge { display: inline-block; margin-top: 18px; padding: 5px 14px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); font-size: 13.5px; }
   section { padding: 44px 0; border-top: 1px solid var(--line); }
   h2 { font-size: 26px; margin-bottom: 22px; }
@@ -76,6 +79,7 @@
 </section>
 
 <section id="pricing">
+  <a id="buy"></a>
   <h2>Pricing</h2>
   <div class="price-row">
     <div class="price">
@@ -99,6 +103,22 @@
         <li>All future Pro updates included</li>
         <li>No account and no subscription — a key, not a login</li>
       </ul>
+      <!-- ══════════════════════════════════════════════════════════════════
+           THE PAYMENT LINK LIVES HERE, AND ONLY HERE.
+
+           The extension's Buy buttons all point at this page (#buy) rather
+           than at a checkout URL, so changing provider, product or price is
+           an edit to this one line — not a new store review.
+
+           Paste the Dodo payment link below, replacing the whole href. Until
+           then the button honestly says the store is not open yet, which is
+           better than a dead checkout.
+           ══════════════════════════════════════════════════════════════════ -->
+      <a class="cta buy-btn" id="checkout"
+         href="https://checkout.dodopayments.com/buy/REPLACE_WITH_PRODUCT_ID">
+        Get Pro — $9 once
+      </a>
+      <p class="buy-sub">Instant licence key by email. 5 devices. No subscription.</p>
     </div>
   </div>
   <p style="margin-top:14px;">Payments are processed by our merchant of record. After purchase you receive a license key by email; paste it into the extension popup to activate. Activating registers that device with the licence server — it sends your key and a device label such as &ldquo;Chrome &middot; macOS&rdquo;, never a cookie and never any conversation text. After that a licensed copy re-checks at most once a month, and it never withdraws Pro because a check failed to get through. See <a href="#devices">devices</a>.</p>
@@ -154,5 +174,23 @@
 </footer>
 
 </div>
+
+<script>
+/* If the payment link above is still the placeholder, say so plainly rather
+   than sending a willing buyer to a dead checkout. This is the failure mode
+   worth designing for: the day the extension goes live is the day this page
+   gets traffic, and a broken Buy button converts a customer into a bounce. */
+(function () {
+  var a = document.getElementById("checkout");
+  if (!a || a.href.indexOf("REPLACE_WITH") === -1) return;
+  a.classList.add("pending");
+  a.removeAttribute("href");
+  a.textContent = "Checkout opens with the store launch";
+  var sub = a.nextElementSibling;
+  if (sub) sub.innerHTML = 'Want it before then? Email ' +
+    '<a href="mailto:tharuntejandhe@gmail.com?subject=Long%20Chat%20Toolkit%20Pro">tharuntejandhe@gmail.com</a> ' +
+    'and I\'ll send you a licence key directly.';
+})();
+</script>
 </body>
 </html>

@@ -289,14 +289,39 @@
     if (changed) reindexCatalog();
   }
 
+  /* textContent welds block elements together: a heading followed by a
+     paragraph reads back as "Fixing the slow rollupTwo things", which is what
+     the hover preview showed. innerText would fix it and force a layout for
+     every message on the page, which is exactly what this file is written to
+     avoid — so walk the nodes and put the boundary back by hand, stopping as
+     soon as there is more text than a preview can show. */
+  const BLOCK = /^(DIV|P|LI|UL|OL|H[1-6]|PRE|TABLE|TR|TD|BLOCKQUOTE|SECTION|ARTICLE|HEADER|FOOTER|BR|HR)$/;
+
+  function previewText(node, out, cap) {
+    for (const child of node.childNodes) {
+      if (out.join("").length >= cap) return;
+      if (child.nodeType === 3) {
+        out.push(child.nodeValue);
+      } else if (child.nodeType === 1) {
+        const block = BLOCK.test(child.tagName);
+        if (block && out.length && !/\s$/.test(out[out.length - 1])) out.push(" ");
+        previewText(child, out, cap);
+        if (block) out.push(" ");
+      }
+    }
+  }
+
   function metaFor(el, adapter, isTail) {
     let meta = metaCache.get(el);
     if (!meta || isTail) {
       const text = (el.textContent || "").trim();
+      const parts = [];
+      previewText(el, parts, 140);
+      const readable = parts.join("").replace(/\s+/g, " ").trim();
       meta = {
         role: safeRole(adapter, el),
         hasCode: !!el.querySelector("pre"),
-        snippet: text.slice(0, 80) || "Image / attachment",
+        snippet: readable.slice(0, 80) || "Image / attachment",
         len: text.length      // drives tick width — see norm()
       };
       metaCache.set(el, meta);

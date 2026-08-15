@@ -24,8 +24,6 @@ const RL_MAX = 20;              // requests per key per window
 const RL_WINDOW_S = 3600;
 const DODO_TIMEOUT_MS = 8000;
 const MAX_CLOCK_SKEW_MS = 5 * 60 * 1000;  // reject requests older than 5 min
-const TRIAL_TTL_MS = 7 * 864e5;           // 7 days — must match client
-const TRIAL_RL_MAX = 5;                   // trial registrations per device per day
 
 /* ---------- codec ---------- */
 
@@ -46,13 +44,20 @@ async function sha256Hex(value, bytes = 16) {
 /**
  * Only our own extension may call this. ALLOWED_ORIGINS is a comma-separated
  * env var of chrome-extension://<id> / moz-extension://<uuid> values.
- * Absent = allow any extension origin (dev only — set it in production).
+ *
+ * An unset list used to mean "any extension may call" — convenient in dev, and
+ * a standing invitation on a live worker that spends KV writes and an upstream
+ * API call per request. It now fails CLOSED in live mode: a deploy that forgot
+ * the variable refuses everyone, including us, which is a bug we find in the
+ * first minute rather than one we find on a bill. Test mode keeps the open
+ * default so a scratch deploy is still one command.
  */
 function originAllowed(origin, env) {
   if (!origin) return false;
   if (!/^(chrome|moz)-extension:\/\/[a-z0-9-]+$/i.test(origin)) return false;
   const list = String(env.ALLOWED_ORIGINS || "").split(",").map((s) => s.trim()).filter(Boolean);
-  return list.length === 0 || list.includes(origin);
+  if (list.length) return list.includes(origin);
+  return env.DODO_MODE === "test";
 }
 
 function corsHeaders(origin) {
@@ -204,45 +209,10 @@ export default {
 
     const url = new URL(request.url);
 
-    // ---------- trial registration ----------
-    if (url.pathname === "/trial") {
-      let body;
-      try { body = await request.json(); } catch { return json({ error: "bad json" }, 400, origin); }
-
-      const devFp = String((body && body.device) || "");
-      if (!/^[a-f0-9]{16,64}$/.test(devFp)) return json({ error: "bad device" }, 400, origin);
-
-      // Rate limit: prevent mass trial registration from one device
-      if (env.RL) {
-        const bucket = `trial-rl:${devFp}:${Math.floor(Date.now() / 864e5)}`;
-        try {
-          const seen = Number(await env.RL.get(bucket)) || 0;
-          if (seen >= TRIAL_RL_MAX) return json({ error: "slow down" }, 429, origin);
-          await env.RL.put(bucket, String(seen + 1), { expirationTtl: 86400 });
-        } catch { /* KV down — degrade open */ }
-      }
-
-      // Check if this device already used a trial
-      if (env.RL) {
-        const trialKey = `trial:${devFp}`;
-        try {
-          const existing = await env.RL.get(trialKey, "json");
-          if (existing && existing.startedAt) {
-            // Already has a trial — return the existing one
-            return json({ already: true, startedAt: existing.startedAt }, 200, origin);
-          }
-          // Register new trial
-          const rec = { startedAt: Date.now(), device: devFp };
-          await env.RL.put(trialKey, JSON.stringify(rec), { expirationTtl: Math.ceil(TRIAL_TTL_MS / 1000) + 86400 });
-          return json({ ok: true, startedAt: rec.startedAt }, 201, origin);
-        } catch {
-          // KV unavailable — allow the trial client-side only
-          return json({ ok: true, startedAt: Date.now(), kvDown: true }, 201, origin);
-        }
-      }
-      return json({ ok: true, startedAt: Date.now() }, 201, origin);
-    }
-
+    /* There was a /trial registry here. Nothing ever called it: the trial is a
+       date in storage.sync, which already survives the local wipe it was meant
+       to defend against, and a second gate that no client consults is not a
+       gate — it is an unauthenticated KV writer with our name on the bill. */
     if (url.pathname !== "/entitlement") return json({ error: "not found" }, 404, origin);
 
     let body;
@@ -259,9 +229,12 @@ export default {
     // Reject replayed requests: the client sends a timestamp; if it is older
     // than MAX_CLOCK_SKEW_MS the request was either captured and replayed, or
     // the client's clock is wildly off. Both are reason to refuse.
-    if (clientTs > 0) {
-      const drift = Math.abs(Date.now() - clientTs);
-      if (drift > MAX_CLOCK_SKEW_MS) return json({ error: "clock skew" }, 400, origin);
+    //
+    // Required, not optional. An optional freshness check is one a replayer
+    // defeats by deleting the field — and every client we ship sends it.
+    if (!clientTs) return json({ error: "stale request" }, 400, origin);
+    if (Math.abs(Date.now() - clientTs) > MAX_CLOCK_SKEW_MS) {
+      return json({ error: "clock skew" }, 400, origin);
     }
 
     const keyFp = await sha256Hex(licenseKey);

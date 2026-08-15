@@ -106,6 +106,12 @@
     $("q").focus();
   });
 
+  // Someone who already knows they want it should not have to go back to the
+  // popup to find out where to pay.
+  $("buy-pro").addEventListener("click", () => {
+    location.href = self.LCTProduct.BUY;
+  });
+
   /* ---------- search ---------- */
 
   let queryTimer = null;

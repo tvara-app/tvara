@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Long Chat Toolkit — you're set up</title>
+  <link rel="icon" href="icons/icon48.png" />
+  <link rel="stylesheet" href="welcome.css" />
+</head>
+<body>
+  <main class="wrap">
+    <header class="head">
+      <img src="icons/icon128.png" alt="" width="52" height="52" />
+      <div>
+        <h1>You're set up.</h1>
+        <p class="sub">Open any long chat on ChatGPT, Claude, Gemini, DeepSeek, Grok or Perplexity. It starts working the moment the page loads — nothing to configure.</p>
+      </div>
+    </header>
+
+    <section class="card keys">
+      <h2>Three shortcuts worth knowing</h2>
+      <p class="hint">These are your browser's own shortcuts — remap any of them from <a href="#" id="shortcuts-link">the shortcuts page</a>.</p>
+      <ul id="key-list">
+        <li data-cmd="in-chat-search">
+          <kbd class="k">…</kbd>
+          <span class="kt"><b>Search this conversation</b>Every message, including the ones the site has unloaded.</span>
+        </li>
+        <li data-cmd="open-recall">
+          <kbd class="k">…</kbd>
+          <span class="kt"><b>Total Recall</b>One search box for every chat you've had, on every platform.</span>
+        </li>
+        <li data-cmd="open-bridge">
+          <kbd class="k">…</kbd>
+          <span class="kt"><b>Context Bridge</b>Pull a past answer from any AI straight into the prompt you're writing.</span>
+        </li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2>What happens on its own</h2>
+      <ul class="plain">
+        <li><b>Long chats stop lagging.</b> Messages you can't see are put to sleep and wake instantly when you scroll back. Nothing is deleted, ever. Free on every platform, forever.</li>
+        <li><b>Your chats get archived, locally.</b> The archive builds itself in the background so Total Recall has something to search. It lives in this browser and has nowhere else to go — there is no Long Chat Toolkit server.</li>
+        <li><b>A minimap, an outline, timestamps and stars</b> appear on the chats themselves. Hover the right edge.</li>
+      </ul>
+    </section>
+
+    <section class="card cta-card">
+      <div class="cta-copy">
+        <h2>Everything unlocked for 7 days</h2>
+        <p class="hint" id="trial-copy">One click. No signup, no card, no account — the trial is a date in this browser's own storage.</p>
+      </div>
+      <div class="cta-actions">
+        <button id="trial-start" type="button">Start free trial</button>
+        <button id="buy-pro" class="ghost" type="button">or $9 once, forever</button>
+      </div>
+    </section>
+
+    <section class="card open-row">
+      <h2>Try it on a real chat</h2>
+      <div class="chips">
+        <button class="chip" data-url="https://chatgpt.com/">ChatGPT</button>
+        <button class="chip" data-url="https://claude.ai/">Claude</button>
+        <button class="chip" data-url="https://gemini.google.com/">Gemini</button>
+        <button class="chip" data-url="https://chat.deepseek.com/">DeepSeek</button>
+        <button class="chip" data-url="https://grok.com/">Grok</button>
+        <button class="chip" data-url="https://www.perplexity.ai/">Perplexity</button>
+      </div>
+    </section>
+
+    <footer class="foot">
+      <span>Everything stays on this device.</span>
+      <span class="dot">·</span><a href="#" id="guide-link">User guide</a>
+      <span class="dot">·</span><a href="#" id="privacy-link">Privacy</a>
+      <span class="dot">·</span><a href="#" id="source-link">Source</a>
+    </footer>
+  </main>
+
+  <script src="lib/product.js"></script>
+  <script src="welcome.js"></script>
+</body>
+</html>

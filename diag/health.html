@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Long Chat Toolkit — health check</title>
+  <link rel="icon" href="../icons/icon48.png" />
+  <link rel="stylesheet" href="health.css" />
+</head>
+<body>
+  <main class="wrap">
+    <h1>Health check</h1>
+    <p class="lede">
+      These sites redesign without warning. The toolkit is built to degrade quietly
+      rather than break the page — so when a selector stops matching, everything
+      still <em>looks</em> fine while running on a fallback.
+      This tells you which it is, on whichever chat tab you have open.
+    </p>
+
+    <div class="actions">
+      <button id="run" type="button">Check the open chat tabs</button>
+      <button id="copy" class="ghost" type="button" hidden>Copy report</button>
+    </div>
+
+    <p id="status" class="status"></p>
+    <div id="out"></div>
+
+    <details class="note">
+      <summary>What this reads</summary>
+      <p>
+        It asks each open chat tab to describe itself: which platform adapter is
+        running, how many messages it can see, whether those messages still match
+        the platform's own attributes, and whether the composer and scroller were
+        found. No message text is read, and the conversation id is stripped from
+        the path before it is shown. Nothing is sent anywhere — the report is
+        built in your browser and only leaves it if you copy and paste it.
+      </p>
+    </details>
+  </main>
+  <script src="health.js"></script>
+</body>
+</html>

@@ -21,7 +21,9 @@
     "https://chat.deepseek.com/*",
     "https://grok.com/*",
     "https://www.perplexity.ai/*",
-    "https://gemini.google.com/*"
+    "https://gemini.google.com/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
   ],
   "background": {
     "service_worker": "bg.js"

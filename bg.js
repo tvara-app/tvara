@@ -4131,6 +4131,25 @@ try {
   wake();   // the worker is respawned constantly; keep it alive
 } catch (_) { /* alarms API unavailable */ }
 
+/* ---------- first run ----------
+   An extension whose whole value is three keystrokes and a background archive
+   is invisible until someone is told about it. One tab, on a fresh install
+   only: never on an update (that is someone else's tab being stolen) and never
+   twice (the flag is checked before the tab is opened, and a second install
+   onto the same profile finds it already set). */
+try {
+  chrome.runtime.onInstalled.addListener(async (details) => {
+    if (!details || details.reason !== "install") return;
+    try {
+      const KEY = "lct-welcomed-v1";
+      const got = await chrome.storage.local.get(KEY);
+      if (got && got[KEY]) return;
+      await chrome.storage.local.set({ [KEY]: Date.now() });
+      chrome.tabs.create({ url: chrome.runtime.getURL("welcome.html") });
+    } catch (_) { /* storage or tabs unavailable — silence beats a broken install */ }
+  });
+} catch (_) { /* onInstalled unavailable */ }
+
 // Clicking the "a chat was deleted" toast has to land on the decision itself,
 // not on a page where the user has to go hunting for it.
 try {
@@ -4316,6 +4335,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       case "trial-state":  return trialState();
       case "trial-start":  return startTrial();
+      // Content scripts cannot read chrome.commands, and the first-run hint
+      // must print the keys the browser actually bound rather than the ones
+      // the manifest asked for.
+      case "commands":
+        try { return chrome.commands.getAll(); } catch { return []; }
       case "recall-upsert":      return upsert(msg.chat);
       case "recall-import":      return importBatch(msg.chats);
       case "recall-search":      return search(msg.q, msg.long);

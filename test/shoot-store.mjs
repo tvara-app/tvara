@@ -43,6 +43,18 @@ function extId() {
 await new Promise((r) => setTimeout(r, 1200));
 const ID = extId();
 
+/* The popup page exists from the start because it is the only context with
+   chrome.* APIs — the demo page has none. Shortcuts are fired through the same
+   storage bus the test suite uses rather than as real keystrokes: a browser
+   command binding is not reliably deliverable to a headless window, and a shot
+   run that silently fails to open the panel is worse than one that errors. */
+const pop = await ctx.newPage();
+await pop.goto(`chrome-extension://${ID}/popup/popup.html`);
+const fireCmd = async (page, name) => {
+  await page.bringToFront();
+  await pop.evaluate((n) => chrome.storage.local.set({ "lct-cmd": { name: n, at: Date.now() } }), name);
+};
+
 /* ---------- caption banner, injected into the live page ---------- */
 async function caption(page, text) {
   await page.evaluate((t) => {
@@ -68,14 +80,34 @@ const shoot = (page, name) =>
   page.screenshot({ path: join(OUT, name), scale: "css" }); // css scale → exactly 1280×800
 
 /* ---------- shots 1–5: the demo conversation ---------- */
+// The first-run hint is correct behaviour and wrong for a store shot: these
+// images show the product in use, not its first four seconds. Marking it seen
+// before the page loads is the same thing every real second visit does.
+await pop.evaluate(() => chrome.storage.local.set({ "lct-hint-v1": Date.now() }));
+
 const page = await ctx.newPage();
 await page.goto("http://127.0.0.1:8918/test/demo.html");
 await page.waitForSelector("#lct-minimap", { timeout: 10000 });
 await page.waitForTimeout(1800); // engine settles, count pill fills
 
-// 1 — hero
+// 1 — hero. The minimap rests as a 13px strip until it is touched, so the
+// shot that is supposed to sell the product was a picture of an ordinary chat
+// with a faint line down one edge. Hover it: this is the state a user is
+// looking at whenever the map matters, and the count pill is only drawn here.
+// Two moves, in this order: the strip has to be touched before anything inside
+// it becomes visible, and then the pointer has to leave the canvas — otherwise
+// the message preview sits across the conversation in the hero image.
+await page.locator("#lct-minimap").hover();
+await page.waitForSelector("#lct-mm-toggle", { state: "visible" });
+await page.locator("#lct-mm-toggle").hover();
+await page.waitForFunction(() => {
+  const c = document.getElementById("lct-mm-count");
+  return c && getComputedStyle(c).visibility === "visible" && /\d/.test(c.textContent);
+}, null, { timeout: 8000 }).catch(() => {});
+await page.waitForTimeout(500);   // the width transition finishes
 await caption(page, "1,500 messages. Zero lag. Nothing deleted.");
 await shoot(page, "1-hero.png");
+await page.mouse.move(640, 400);  // leave the map at rest for the next shots
 
 // 2 — timestamps (hover tag). Messages present at first load are honestly
 // "sent before install" — so add a NEW message and let the timeline stamp it
@@ -103,7 +135,7 @@ await caption(page, "Finally: WHEN every message was said.");
 await shoot(page, "5-timestamps.png");
 
 // 3 — search with hits
-await page.keyboard.press("Meta+Shift+KeyF");
+await fireCmd(page, "in-chat-search");
 await page.waitForSelector("#lct-search.lct-s-open");
 await page.fill("#lct-search input", "recurring");
 await page.waitForFunction(() => {
@@ -124,6 +156,10 @@ for (let i = 0; i < 10; i++) {
   if (await page.locator("#lct-star").isVisible()) break;
 }
 await page.click("#lct-star");
+// The minimap rests as a thin strip and only shows its buttons on hover —
+// so the shot has to hover it first, exactly as a hand would.
+await page.locator("#lct-minimap").hover();
+await page.waitForSelector('#lct-export-bar button[data-act="outline"]', { state: "visible" });
 await page.click('#lct-export-bar button[data-act="outline"]');
 await page.waitForSelector("#lct-outline.lct-o-open");
 await page.waitForTimeout(300);
@@ -131,52 +167,71 @@ await caption(page, "Auto table of contents — every prompt, every heading.");
 await shoot(page, "2-outline.png");
 await page.click("#lct-outline .lct-o-close");
 
-const pop = await ctx.newPage(); // popup page has chrome.* APIs; the demo page does not
-await pop.goto(`chrome-extension://${ID}/popup/popup.html`);
 
 /* ---------- shot 7: Total Recall overlay — the golden feature ---------- */
 // trial on (Recall is Pro/trial) + a few sample archive records so the shot
 // shows what it's FOR: one query, results across platforms.
+// Start the trial the way a person does — through the worker. This used to
+// write a `trial` key by hand, which stopped meaning anything when the trial
+// moved to a worker-owned, sync-backed record, and the shots quietly became
+// pictures of a locked panel.
+await pop.evaluate(() => new Promise((res) =>
+  chrome.runtime.sendMessage({ type: "trial-start" }, res)));
+await page.waitForFunction(() => !!window.chrome, null).catch(() => {});
 await pop.evaluate(() => new Promise((res) => {
-  chrome.storage.local.set({ trial: { startedAt: Date.now() } }, () => {
-    const mk = (host, path, platform, title, text, n, days) => ({
+  chrome.storage.local.set({ __lct_shot: 1 }, () => {
+    // Each sample chat carries its OWN question. Three rows repeating one
+    // sentence read as a mock-up; the shot has to look like an archive.
+    const mk = (host, path, platform, title, ask, text, n, days) => ({
       id: host + path, host, path, platform, title, n,
       createdAt: Date.now() - days * 864e5, updatedAt: Date.now() - days * 864e5,
       msgs: [
-        { r: "user", t: "How should I design the database schema for this?", ts: 0 },
+        { r: "user", t: ask, ts: 0 },
         { r: "assistant", t: text, ts: 0 }
       ]
     });
     chrome.runtime.sendMessage({
       type: "recall-import",
       chats: [
-        mk("chatgpt.com", "/c/demo-1", "ChatGPT", "Budget tracker database schema",
-           "For the budget tracker, keep the database schema to three tables: accounts, transactions in integer cents, and monthly budget rollups.", 214, 42),
+        mk("chatgpt.com", "/c/demo-1", "ChatGPT", "Verifying Stripe webhooks",
+           "How do I check a webhook signature without a library?",
+           "Compute the HMAC over the RAW body — parsing to JSON first is what breaks a webhook signature check — then compare in constant time.", 214, 42),
         mk("claude.ai", "/chat/demo-2", "Claude", "Refactoring the sync service",
-           "Before touching the sync service, pin down the database schema migrations — otherwise the refactor will race the writers.", 385, 11),
-        mk("gemini.google.com", "/app/demo-3", "Gemini", "Study notes: normalization",
-           "Third normal form means every column depends on the key — your database schema for the tracker already satisfies it.", 92, 3)
+           "The webhook signature fails in staging but passes locally. Why?",
+           "Your staging proxy re-encodes the body, so the webhook signature is computed over bytes the sender never signed. Verify before any middleware touches it.", 385, 11),
+        mk("gemini.google.com", "/app/demo-3", "Gemini", "Notes: HMAC and replay",
+           "What stops someone replaying a captured webhook?",
+           "A webhook signature proves who sent it, not when — the timestamp in the signed payload is what makes a replay detectable.", 92, 3)
       ]
     }, res);
   });
 }));
 await page.waitForTimeout(600);
-await page.keyboard.press("Control+Shift+KeyK");
+await fireCmd(page, "open-recall");
 await page.waitForSelector("#lct-recall.lct-r-open", { timeout: 8000 });
-await page.fill("#lct-recall input", "database schema");
+await page.fill("#lct-recall input", "webhook signature");
 await page.waitForFunction(() =>
   document.querySelectorAll("#lct-recall .lct-r-item").length >= 3, null, { timeout: 8000 });
+// Rows animate in on a per-row delay. Shooting the moment the third one exists
+// caught them mid-fade, and the flagship screenshot showed one ghost row under
+// a header that said four. Wait for the animation to finish, not for the DOM.
+await page.waitForFunction(() => {
+  const items = [...document.querySelectorAll("#lct-recall .lct-r-item")];
+  return items.length >= 3 && items.every((el) => Number(getComputedStyle(el).opacity) === 1);
+}, null, { timeout: 8000 });
+await page.waitForTimeout(350);
 await caption(page, "Total Recall: search EVERY chat on EVERY platform. 100% local.");
 await shoot(page, "7-recall.png");
 await page.keyboard.press("Escape");
 
 /* ---------- shot 8: Context Bridge — the v0.6 headline ---------- */
 await page.waitForTimeout(300);
-await page.keyboard.press("Control+Shift+KeyU");
+await fireCmd(page, "open-bridge");
 await page.waitForSelector("#lct-bridge.lct-b-open", { timeout: 8000 });
-await page.fill("#lct-bridge input", "database schema");
+await page.fill("#lct-bridge input", "webhook signature");
 await page.waitForFunction(() =>
   document.querySelectorAll("#lct-bridge .lct-b-item").length >= 2, null, { timeout: 8000 });
+await page.waitForTimeout(350);   // let the rows finish arriving, as above
 // pre-check two passages so the shot shows the pick-then-insert flow
 await page.evaluate(() => {
   const boxes = document.querySelectorAll("#lct-bridge .lct-b-item input[type=checkbox]");

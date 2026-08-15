@@ -137,6 +137,8 @@
         <p class="pro-note">Total Recall, Context Bridge and every tool on Claude &amp; Gemini. Offline licence, no account.</p>
         <button id="trial-start" hidden>Start 7-day free trial</button>
         <p id="trial-note" class="pro-note" hidden></p>
+        <button id="buy-pro" class="buy" type="button">Get Pro — $9 once, forever</button>
+        <p class="pro-note" id="buy-note">Already bought it? Paste your key.</p>
         <div class="license-row">
           <input type="text" id="license-input" placeholder="Licence key" autocomplete="off" spellcheck="false" />
           <button id="license-activate">Activate</button>
@@ -176,10 +178,11 @@
     </main>
 
     <footer>
-      <span>Local archive · <a href="#" id="shortcuts-link">Shortcuts</a> · <a href="https://github.com/Tharuntejandhe/long-chat-toolkit" target="_blank" rel="noopener">Source</a></span>
+      <span>Local archive · <a href="#" id="shortcuts-link">Shortcuts</a> · <a href="#" id="health-link">Health</a> · <a href="#" id="help-link">Help</a> · <a href="https://github.com/Tharuntejandhe/long-chat-toolkit" target="_blank" rel="noopener">Source</a><a href="#" id="rate-link" hidden> · Rate it</a></span>
     </footer>
   </div>
 
+  <script src="../lib/product.js"></script>
   <script src="../lib/license.js"></script>
   <script src="../lib/dodo.js"></script>
   <script src="../lib/entitlement.js"></script>

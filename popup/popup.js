@@ -30,6 +30,10 @@
 
     const startBtn = $("trial-start");
     const note = $("trial-note");
+    const buy = $("buy-pro");
+    // Before the trial, the free week is the better ask and buying is the quiet
+    // second option. Once it is spent, buying IS the ask.
+    if (buy) buy.classList.toggle("primary", !pro && !trialActive && trialUntil > 0);
     if (pro) return;
     if (trialActive) {
       const days = Math.max(1, Math.ceil((trialUntil - Date.now()) / 864e5));
@@ -1046,6 +1050,39 @@
       : "chrome://extensions/shortcuts";
     chrome.tabs.create({ url });
   });
+
+  // Buying happens on our own pricing page, not inside the popup: a checkout
+  // iframe in a 380px panel is a worse place to hand over a card than a full
+  // tab, and it keeps the payment provider out of the extension entirely.
+  $("buy-pro").addEventListener("click", () => {
+    chrome.tabs.create({ url: self.LCTProduct.BUY });
+    window.close();
+  });
+  $("help-link").addEventListener("click", (e) => {
+    e.preventDefault();
+    chrome.tabs.create({ url: self.LCTProduct.HELP });
+  });
+
+  // "Is it still working on the site itself?" — answerable in one click rather
+  // than by a support thread of screenshots.
+  $("health-link").addEventListener("click", (e) => {
+    e.preventDefault();
+    chrome.tabs.create({ url: chrome.runtime.getURL("diag/health.html") });
+  });
+
+  // Shown only on a store-installed copy — an unpacked build has no store page,
+  // and a "Rate it" link that lands on a 404 is worse than no link.
+  {
+    const store = self.LCTProduct.storeUrl();
+    if (store) {
+      const link = $("rate-link");
+      link.hidden = false;
+      link.addEventListener("click", (e) => {
+        e.preventDefault();
+        chrome.tabs.create({ url: store });
+      });
+    }
+  }
 
   $("license-activate").addEventListener("click", activate);
   $("license-input").addEventListener("keydown", (e) => {

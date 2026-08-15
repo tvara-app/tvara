@@ -594,6 +594,42 @@
 #lct-bridge .lct-b-insert:hover { background: #ff86a6; }
 #lct-bridge .lct-b-insert:disabled { opacity: 0.45; cursor: default; }
 
+/* ---------- first-run hint ----------
+   Shown once, ever. Docked left of the minimap so it never lands on the resume
+   chip or the note toast, both of which live in the bottom-centre lane. */
+#lct-hint {
+  position: fixed; right: 74px; bottom: 22px;
+  z-index: 2147483003;
+  width: 264px; padding: 13px 15px 12px;
+  border-radius: 13px;
+  /* The shared tokens, so the card follows the HOST page's theme like every
+     other newer surface — not the OS's, which is the mismatch people see. */
+  background: var(--lct-surface-strong);
+  border: 1px solid var(--lct-line);
+  box-shadow: var(--lct-shadow);
+  color: var(--lct-ink);
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  opacity: 0; transform: translateY(10px);
+  transition: opacity .22s ease, transform .22s ease;
+}
+#lct-hint.lct-hint-show { opacity: 1; transform: translateY(0); }
+#lct-hint .lct-hint-title { font-weight: 650; font-size: 12.5px; margin-bottom: 9px; color: var(--lct-accent); }
+#lct-hint .lct-hint-row { display: flex; align-items: center; gap: 9px; margin-top: 6px; font-size: 12px; color: var(--lct-muted); }
+#lct-hint kbd {
+  flex: none; min-width: 52px; padding: 4px 7px; text-align: center;
+  border: 1px solid var(--lct-line); border-bottom-width: 2px; border-radius: 6px;
+  background: var(--lct-accent-soft); color: var(--lct-ink);
+  font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+#lct-hint .lct-hint-ok {
+  margin-top: 11px; width: 100%; padding: 6px 0;
+  border: 1px solid var(--lct-line); border-radius: 8px;
+  background: transparent; color: var(--lct-ink); cursor: pointer;
+  font: 600 11.5px/1 inherit;
+}
+#lct-hint .lct-hint-ok:hover { background: var(--lct-accent-soft); }
+@media (max-width: 640px) { #lct-hint { right: 12px; left: 12px; width: auto; } }
+
 #lct-b-toast {
   position: fixed; left: 50%; bottom: 92px; transform: translateX(-50%) translateY(8px);
   z-index: 2147483647; padding: 9px 16px; border-radius: 999px;

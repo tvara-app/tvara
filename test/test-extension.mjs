@@ -88,7 +88,7 @@ const KEY = `LCT1.${b64url(payload)}.${b64url(sign("sha256", payload, { key: pri
 // Static server for the synthetic page (manifest matches localhost in dev build)
 const server = spawn("python3", ["-m", "http.server", "8917", "--bind", "127.0.0.1"], { cwd: EXT, stdio: "ignore" });
 
-let pass = 0, fail = 0;
+let pass = 0, fail = 0, suiteFinished = false;
 const failed = []; // reprinted at the end: one FAIL in 180 lines scrolls past
 const t = (name, cond, extra = "") => {
   const line = `${name}${cond || !extra ? "" : "  → " + extra}`;
@@ -156,6 +156,31 @@ try {
   t("A1 speed/minimap/time toggles on by default",
     (await pop.isChecked("#toggle-enabled")) && (await pop.isChecked("#toggle-minimap")) && (await pop.isChecked("#toggle-time")));
   t("A1 trial button visible in free state", await pop.isVisible("#trial-start"));
+
+  /* A1b — the purchase path. Until this existed the popup could take a licence
+     key but could not tell anyone where to get one. chrome.tabs.create is
+     stubbed rather than fired: the assertion is about WHICH url we send people
+     to, and a test suite has no business opening the live pricing page. */
+  t("A1b buy button visible in free state", await pop.isVisible("#buy-pro"));
+  const buyUrl = await pop.evaluate(async () => {
+    let sent = null;
+    const real = chrome.tabs.create;
+    chrome.tabs.create = (opts) => { sent = opts.url; };
+    const close = window.close;
+    window.close = () => {};
+    document.getElementById("buy-pro").click();
+    chrome.tabs.create = real;
+    window.close = close;
+    return sent;
+  });
+  t("A1b buy button opens our own pricing page (no hard-coded checkout)",
+    buyUrl === "https://tharuntejandhe.github.io/long-chat-toolkit/#buy", String(buyUrl));
+  t("A1b every outward link comes from one place",
+    await pop.evaluate(() => !!self.LCTProduct && Object.isFrozen(self.LCTProduct)));
+  // An unpacked build has no store page; a "Rate it" link to a 404 is worse
+  // than none, so it stays hidden until the copy came from a store.
+  t("A1b rate link hidden on a non-store install",
+    await pop.evaluate(() => document.getElementById("rate-link").hidden === true));
   t("A1 Total Recall entry row present", await pop.isVisible("#open-recall"));
   t("A1 no emoji anywhere in popup",
     !/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(await pop.evaluate(() => document.body.innerText)));
@@ -927,6 +952,25 @@ try {
       const tip = document.getElementById("lct-mm-tooltip");
       return !!tip && tip.style.display === "block" && /Virtual history message \d+/.test(tip.textContent);
     }));
+
+  // Previews used to be built with textContent, which welds block elements
+  // together: a "#820" label and the paragraph under it came back as
+  // "#820Two things". Hover a MOUNTED message (the synthetic page nests a
+  // label div above the body) and check the boundary survived.
+  await page.bringToFront();
+  await page.hover("#lct-minimap");
+  await page.waitForTimeout(400);
+  const mmb = await page.locator("#lct-mm-canvas").boundingBox();
+  await page.mouse.move(mmb.x + 5, mmb.y + Math.round(mmb.height * 0.5));
+  await page.waitForTimeout(300);
+  const tipText = await page.evaluate(() => {
+    const tip = document.getElementById("lct-mm-tooltip");
+    return tip && tip.style.display === "block" ? tip.textContent : "";
+  });
+  t("B2f the hover preview keeps the gap between blocks",
+    !!tipText && !/#\d+[A-Za-z]/.test(tipText) && !/[a-z][A-Z]/.test(tipText.replace(/ChatGPT|DeepSeek/g, "")),
+    tipText);
+  await page.mouse.move(400, 400);
 
   // The map is the conversation, not the render window: recycling every mounted
   // row must not shrink it, and a new reply must extend it by exactly one.
@@ -2305,6 +2349,11 @@ try {
   await recall.reload();
   await recall.waitForSelector("#core-locked:not([hidden])", { timeout: 5000 });
   t("B11 recall page shows upsell when locked", await recall.isVisible("#core-locked"));
+  // A locked page must offer both doors: the free week AND the way to pay.
+  // Before this, "$9 from the extension popup" was the whole purchase path.
+  t("B14 locked recall page offers a way to buy", await recall.isVisible("#buy-pro"));
+  t("B14 recall buy button points at the pricing page",
+    await recall.evaluate(() => self.LCTProduct.BUY.endsWith("#buy")));
   // the file input itself is hidden by design — its label is the control
   t("B11 locked page still owns import + wipe (user's data)",
     (await recall.isVisible('label[for="import-file"]')) && (await recall.isVisible("#wipe")));
@@ -2349,9 +2398,18 @@ try {
     "lct-entitlement-v2": { token: "LCT2.eyJ2IjoyLCJwbGFuIjoicHJvIn0.AAAA", fetchedAt: Date.now() }
   }));
   const fakeTok = await ask({ type: "entitlement-state" });
-  t("B13 a fabricated token fails on signature",
-    fakeTok && fakeTok.entitled === false && fakeTok.reason === "signature",
+  // Two assertions, because the end-to-end one is legitimately racy: the popup
+  // refreshes on open, the issuer answers 404 for a key it has never seen, and
+  // the worker then drops the token — a correct revocation that arrives while
+  // we are asking. Either refusal is a pass; what must never happen is entry.
+  t("B13 a fabricated token never entitles",
+    fakeTok && fakeTok.entitled === false &&
+    (fakeTok.reason === "signature" || fakeTok.reason === "no-token"),
     JSON.stringify(fakeTok));
+  // …and the verifier itself, asked directly, is not racing anything.
+  t("B13 a fabricated token fails on signature",
+    (await pop.evaluate(() => self.LCTEntitlement.verifyToken(
+      "LCT2.eyJ2IjoyLCJwbGFuIjoicHJvIn0.AAAA"))).reason === "signature");
 
   // A real, correctly-signed token restores everything — proving the refusals
   // above were the gate working, not something incidentally broken.
@@ -2457,14 +2515,167 @@ try {
     /Context from my earlier AI chats:/.test(clip) || /Couldn't insert/.test(toastTxt));
   await page.keyboard.press("Escape");
 
+  /* ---- B14. First run ----
+     The extension's whole value is three keystrokes and a background archive,
+     and both are invisible until someone is told. These assert the telling
+     happens, says something TRUE about this browser's bindings, and happens
+     exactly once. */
+  const WELCOME = POPUP.replace("/popup/popup.html", "/welcome.html");
+  const wel = await ctx.newPage();
+  trackErrors(wel);
+  await wel.goto(WELCOME);
+  await wel.waitForSelector("#key-list li .k:not(:empty)", { timeout: 5000 });
+
+  t("B14 welcome page renders", (await wel.textContent("h1")).includes("set up"));
+  t("B14 welcome page teaches three shortcuts",
+    (await wel.locator("#key-list li").count()) === 3);
+  t("B14 welcome page never shows the placeholder",
+    !(await wel.evaluate(() => document.getElementById("key-list").textContent.includes("…"))));
+
+  // The keys printed must be the ones the BROWSER bound, not the ones the
+  // manifest asked for — Chrome silently drops a suggested key another
+  // extension already holds, and teaching a dead keystroke is worse than
+  // teaching none.
+  const keyTruth = await wel.evaluate(async () => {
+    const bound = new Map((await chrome.commands.getAll()).map((c) => [c.name, c.shortcut]));
+    return [...document.querySelectorAll("#key-list li")].map((li) => ({
+      cmd: li.dataset.cmd,
+      shown: li.querySelector(".k").textContent.trim(),
+      unset: li.querySelector(".k").classList.contains("unset"),
+      bound: bound.get(li.dataset.cmd) || ""
+    }));
+  });
+  t("B14 every printed key matches what the browser actually bound",
+    keyTruth.every((r) => r.bound ? !r.unset : r.shown === "not assigned"),
+    JSON.stringify(keyTruth));
+  t("B14 a key is shown in the platform's own spelling",
+    keyTruth.every((r) => !r.bound || !/Command|Shift$/.test(r.shown)),
+    JSON.stringify(keyTruth.map((r) => r.shown)));
+
+  const welTrial = await wel.evaluate(() =>
+    new Promise((r) => chrome.runtime.sendMessage({ type: "trial-state" }, r)));
+  t("B14 welcome page agrees with the worker about the trial",
+    welTrial.active
+      ? (await wel.evaluate(() => document.getElementById("trial-start").disabled))
+      : true);
+  t("B14 welcome page offers a way to buy",
+    (await wel.isVisible("#buy-pro")) &&
+    (await wel.evaluate(() => self.LCTProduct.BUY.endsWith("#buy"))));
+  await wel.close();
+
+  /* first-run hint: once, ever, and only about keys that exist */
+  const expectedRows = await pop.evaluate(async () => {
+    const bound = await chrome.commands.getAll();
+    return bound.filter((c) => ["in-chat-search", "open-recall"].includes(c.name) && c.shortcut).length;
+  });
+  // Storage is reached from the EXTENSION page: page.evaluate runs in the
+  // synthetic page's main world, where chrome.* deliberately does not exist.
+  await pop.evaluate(() => chrome.storage.local.remove("lct-hint-v1"));
+  await page.reload();
+  await page.waitForFunction(() => !!document.getElementById("lct-minimap"), null, { timeout: 8000 });
+  await page.waitForTimeout(600);
+  const hint = await page.evaluate(() => {
+    const el = document.getElementById("lct-hint");
+    return el ? { rows: el.querySelectorAll(".lct-hint-row").length, text: el.textContent } : null;
+  });
+  t("B14 first visit gets the hint, with only the keys that exist",
+    expectedRows ? (hint && hint.rows === expectedRows) : hint === null,
+    JSON.stringify(hint));
+  t("B14 the hint says what the tool is",
+    !expectedRows || /Long Chat Toolkit is on/.test(hint.text));
+  t("B14 the hint can be dismissed",
+    !expectedRows || await page.evaluate(() => {
+      document.querySelector("#lct-hint .lct-hint-ok").click();
+      return !document.getElementById("lct-hint");
+    }));
+
+  // Second visit: silence. The flag is written BEFORE the card is drawn, so
+  // two tabs racing cannot both decide they are the first.
+  await page.reload();
+  await page.waitForFunction(() => !!document.getElementById("lct-minimap"), null, { timeout: 8000 });
+  await page.waitForTimeout(600);
+  t("B14 the hint never comes back",
+    await page.evaluate(() => !document.getElementById("lct-hint")));
+  t("B14 the once-ever flag is what stops it",
+    await pop.evaluate(async () => !!(await chrome.storage.local.get("lct-hint-v1"))["lct-hint-v1"]));
+
+  /* ---- B15. The health check ----
+     This is the instrument that is supposed to notice a platform redesign
+     before a customer does, so it needs to be right about a page we control
+     and — more importantly — it must NOT report health when the selectors it
+     depends on have stopped matching. */
+  const healthPage = await ctx.newPage();
+  trackErrors(healthPage);
+  await healthPage.goto(POPUP.replace("/popup/popup.html", "/diag/health.html"));
+  await healthPage.waitForSelector(".card, .empty", { timeout: 8000 });
+  t("B15 health page finds the open chat tab",
+    (await healthPage.locator(".card").count()) >= 1,
+    await healthPage.textContent("#out"));
+  const healthText = await healthPage.textContent("#out");
+  t("B15 health page reports the platform as matching",
+    /matching this platform's own markup/.test(healthText), healthText.slice(0, 160));
+  t("B15 health page never prints a conversation id",
+    !/[a-f0-9]{8}-[a-f0-9]{4}/.test(healthText));
+  await healthPage.close();
+
+  // Asked through the EXTENSION page: page.evaluate runs in the synthetic
+  // page's main world, where chrome.* deliberately does not exist.
+  // Several localhost pages are open by now (the virtual-history and demo
+  // harnesses); ask the synthetic page by its exact url, not "the first one".
+  const askHealth = () => pop.evaluate(async (want) => {
+    const tabs = await chrome.tabs.query({ url: "http://127.0.0.1/*" });
+    const tab = tabs.find((x) => x.url === want) || tabs[0];
+    if (!tab) return { error: "no synthetic tab" };
+    return new Promise((res) => chrome.tabs.sendMessage(tab.id, { type: "lct-health" }, res));
+  }, page.url());
+  const direct = await askHealth();
+  t("B15 the report counts the messages the adapter sees",
+    direct.messages > 0 && direct.roles.user + direct.roles.assistant === direct.messages,
+    JSON.stringify({ m: direct.messages, r: direct.roles }));
+  t("B15 the report says which selector layer is carrying it",
+    direct.selectors === "primary", direct.selectors);
+  t("B15 the report finds the composer and the scroller",
+    direct.composer === true && direct.scroller === true);
+  t("B15 the report carries no message text",
+    !JSON.stringify(direct).includes("architectural"));
+
+  // The point of the whole instrument: break what the platform is supposed to
+  // ship, and it must say DEGRADED rather than keep reporting health.
+  // Rename the attribute the platform is supposed to ship, leaving the
+  // elements exactly where they are — which is what a real redesign looks like
+  // from our side. The fallback layer should still find the messages, and the
+  // report must say so instead of continuing to claim health.
+  await page.evaluate(() => {
+    for (const el of document.querySelectorAll("[data-lct-message]")) {
+      el.setAttribute("data-lct-message-renamed", el.getAttribute("data-lct-message"));
+      el.removeAttribute("data-lct-message");
+    }
+  });
+  const degraded = await askHealth();
+  t("B15 a renamed attribute is reported, not absorbed",
+    degraded.messages > 0 && /DEGRADED/.test(degraded.selectors),
+    JSON.stringify({ m: degraded.messages, s: degraded.selectors }));
+  await page.evaluate(() => {
+    for (const el of document.querySelectorAll("[data-lct-message-renamed]")) {
+      el.setAttribute("data-lct-message", el.getAttribute("data-lct-message-renamed"));
+      el.removeAttribute("data-lct-message-renamed");
+    }
+  });
+
   /* ============ C. zero page errors across everything ============ */
   t("C1 zero page/console errors", pageErrors.length === 0, pageErrors.slice(0, 3).join(" | "));
+  suiteFinished = true;
+} catch (e) {
+  // A crash halfway through used to print "N passed, 0 failed" and let the
+  // exception speak for itself — a summary line that reads like a clean run.
+  // The suite that stopped early is a FAILING suite, and says so.
+  t("C0 suite ran to completion", false, String(e && e.stack || e).split("\n").slice(0, 3).join(" | "));
 } finally {
   await ctx.close();
   server.kill();
   // in the finally so an abort mid-run still says what had failed before it
-  console.log(`\n${pass} passed, ${fail} failed`);
+  console.log(`\n${pass} passed, ${fail} failed${suiteFinished ? "" : "  (SUITE DID NOT FINISH)"}`);
   if (fail) console.log("failed:\n  " + failed.join("\n  "));
 }
 
-process.exit(fail ? 1 : 0);
+process.exit(fail || !suiteFinished ? 1 : 0);

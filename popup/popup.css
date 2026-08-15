@@ -523,6 +523,28 @@ body.searching footer { display: none; }
 .pro-note.active { color: var(--ok); }
 
 .license-row { display: flex; gap: 6px; margin-top: 5px; }
+/* The buy button. Secondary while a trial is the better first step (no
+   signup beats a card), primary the moment the trial is spent. */
+#buy-pro {
+  width: 100%;
+  margin-top: 5px;
+  min-height: 26px;
+  border: 1px solid rgb(255 177 133 / .45);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ember);
+  font: 600 10.5px/1 var(--sans);
+  cursor: pointer;
+}
+#buy-pro:hover { background: rgb(255 177 133 / .1); }
+#buy-pro.primary {
+  border-color: transparent;
+  background: var(--ember);
+  color: #16090d;
+}
+#buy-pro.primary:hover { opacity: .88; }
+#buy-note { margin-top: 5px; }
+
 .license-row input, .license-row button, #trial-start, .ghost {
   min-height: 26px;
   border: 1px solid var(--line);

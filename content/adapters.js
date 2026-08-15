@@ -194,6 +194,10 @@
       virtualizes: true,  // mounts only the recent tail — see history-loader.js
       convPath: /^\/c\//,
       label: "ChatGPT",
+      // The layer-1 selector, quoted for the health check: matched messages that
+      // do NOT satisfy it mean this platform has drifted and we are running on
+      // a fallback layer — working, but on borrowed time.
+      canon: "[data-message-id], [data-message-author-role]",
       hostRe: /(^|\.)chatgpt\.com$|(^|\.)chat\.openai\.com$/,
       messages() {
         // Layer 1 (current, stable): div elements with data-message-id
@@ -255,6 +259,10 @@
       virtualizes: true,
       convPath: /^\/chat\//,
       label: "Claude",
+      // The layer-1 selector, quoted for the health check: matched messages that
+      // do NOT satisfy it mean this platform has drifted and we are running on
+      // a fallback layer — working, but on borrowed time.
+      canon: "[data-test-render-count], [data-testid=user-message], .font-claude-message",
       hostRe: /(^|\.)claude\.ai$/,
       messages() {
         let els = Array.from(document.querySelectorAll("[data-test-render-count]"));
@@ -276,6 +284,10 @@
       virtualizes: true,
       convPath: /^\/app\/./,
       label: "Gemini",
+      // The layer-1 selector, quoted for the health check: matched messages that
+      // do NOT satisfy it mean this platform has drifted and we are running on
+      // a fallback layer — working, but on borrowed time.
+      canon: "user-query, model-response",
       hostRe: /(^|\.)gemini\.google\.com$/,
       // Gemini uses Shadow DOM + custom elements that Google changes often.
       // Five fallback layers: custom elements → ARIA/data attrs → structural
@@ -328,6 +340,10 @@
       id: "perplexity",
       convPath: /^\/(search|thread)\//, // Perplexity uses both /search/ and /thread/
       label: "Perplexity",
+      // The layer-1 selector, quoted for the health check: matched messages that
+      // do NOT satisfy it mean this platform has drifted and we are running on
+      // a fallback layer — working, but on borrowed time.
+      canon: "[data-testid*=message], [data-testid*=answer], [data-testid*=query]",
       hostRe: /(^|\.)perplexity\.ai$/,
       // Best-effort: Perplexity's React DOM shifts often with hashed class names.
       // Five fallback layers: data attrs → class partials → prose containers
@@ -390,6 +406,10 @@
       roleStable: true,   // the class name the app renders it with
       convPath: /^\/(a\/)?chat\/./,
       label: "DeepSeek",
+      // The layer-1 selector, quoted for the health check: matched messages that
+      // do NOT satisfy it mean this platform has drifted and we are running on
+      // a fallback layer — working, but on borrowed time.
+      canon: "[class*=chat-message], [class*=message-item], .ds-markdown",
       hostRe: /(^|\.)chat\.deepseek\.com$/,
       // Experimental: DeepSeek hashes its class names per deploy. Semantic
       // hooks first, shared heuristic second, nothing third.
@@ -410,6 +430,10 @@
       virtualizes: true,
       convPath: /^\/(c|chat)\/./,
       label: "Grok",
+      // The layer-1 selector, quoted for the health check: matched messages that
+      // do NOT satisfy it mean this platform has drifted and we are running on
+      // a fallback layer — working, but on borrowed time.
+      canon: "[data-testid*=message], [data-message-id]",
       hostRe: /(^|\.)grok\.com$/,
       // Experimental: Grok's React app with hashed/Tailwind classes.
       // Four fallback layers: data/ARIA attrs → class partials → semantic
@@ -463,12 +487,21 @@
       roleStable: true,   // an explicit data-lct-role attribute
       convPath: /(synthetic|demo)\.html$/,
       label: "Test Page",
+      // The layer-1 selector, quoted for the health check: matched messages that
+      // do NOT satisfy it mean this platform has drifted and we are running on
+      // a fallback layer — working, but on borrowed time.
+      canon: "[data-lct-message]",
       hostRe: /^(localhost|127\.0\.0\.1)$/,
       messages() {
-        return Array.from(document.querySelectorAll("[data-lct-message]"));
+        // Layer 1, and a class-based layer 2 beneath it — the same shape every
+        // real adapter has, so the fallback path is exercised by the tests
+        // rather than only by a live redesign.
+        const els = Array.from(document.querySelectorAll("[data-lct-message]"));
+        return els.length ? els : Array.from(document.querySelectorAll(".msg"));
       },
       role(el) {
-        return el.getAttribute("data-lct-role") || "assistant";
+        return el.getAttribute("data-lct-role") ||
+          (el.classList && el.classList.contains("user") ? "user" : "assistant");
       },
       composer() { return pickComposer(["#t-composer", "#t-composer-ce"]); }
     }

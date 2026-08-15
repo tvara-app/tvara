@@ -68,19 +68,60 @@ content/exporter.js          structured Markdown/JSON extraction (blocks, lists,
 content/search.js            in-chat search over the full message cache (windowed included)
 content/timeline.js          message times: first-seen clock + honest labeling + lazy-mount guard
 content/inject/fiber-times.js ChatGPT exact times — read-only, page-world, no network, auto-degrades
-content/main.js              orchestrator: settings/license/pricing wiring, anchor-based resume
+content/main.js              orchestrator: settings/license/pricing wiring, resume, health report
 bg.js                        archive DB, provider sync, deletion review, scheduled backup
 lib/backup-crypto.js         the .lctbackup envelope — one implementation, both sides
 lib/store.js                 storage wrapper that survives extension reloads
 lib/license.js               license verdict: offline ECDSA (LCT1) or an activation receipt
 lib/dodo.js                  Dodo Payments activation, 5-device seats, monthly re-check
+lib/entitlement.js           LCT2 token: the server-signed half of the paywall
+lib/product.js               every outward-facing URL, in one frozen object
 popup/                       settings UI
+welcome.html/.js/.css        first run: the three shortcuts, as the browser actually bound them
+diag/health.html             adapter health across your open chat tabs
+diag/quota.html              allowance accuracy, checkable against the site itself
+server/entitlement-worker.js the issuer — the one place a client cannot patch
 ```
 
 Design rule: **never break the host page.** Unknown DOM → do nothing. Selector drift → do nothing. Our worst case is the page's normal behavior.
 
-## Store packaging
+## Shipping
 
 ```bash
-node tools/pack.mjs   # → dist/long-chat-toolkit-vX.Y.Z.zip, dev-only localhost matches stripped
+npm test                      # 493 assertions across five suites — all of them, every time
+node tools/preflight.mjs      # can this be submitted and sold today? blockers, with fixes
+node tools/pack.mjs           # → dist/…-vX.Y.Z.zip  (add --firefox for the untested FF build)
+./server/deploy.sh <ext-id>   # the entitlement issuer, deployed and then PROVEN
 ```
+
+**preflight** is the gate. It reads the code, not the plan: version drift between
+the manifest and the zip, a permission the store listing forgets to justify, a
+claim in the README that no longer matches the constant it describes, a price
+with no checkout behind it, a licence issuer that is not actually deployed.
+It exits non-zero while any of that is true.
+
+**pack** refuses to build a zip that references a file it does not contain —
+manifest entries, `<script src>`, and `chrome.runtime.getURL()` alike. The zip
+before this check shipped a `content/recall-sync.js` that had been deleted
+months earlier.
+
+The payment link lives in **one place**: the `#checkout` href on
+`docs/index.html`. Every Buy button in the extension points at that page rather
+than at a checkout URL, so changing provider, product or price never needs a
+store review — and while the link is still the placeholder, the page says so
+instead of sending buyers to a dead checkout.
+
+## When a platform redesigns
+
+These sites change their markup without notice, and the adapters are built to
+degrade quietly rather than break the page — which means a redesign looks like
+"still works" right up until it doesn't. The popup's **Health** link answers the
+real question in one click: for every chat tab you have open, whether the
+messages we found still match that platform's own attributes (`primary`), or
+whether we are running on a fallback layer (`DEGRADED`), plus the composer,
+scroller, role split and sleep count. It reads no message text, strips the
+conversation id, and copies a paste-ready report.
+
+That is also how to check a live site after any change here — the test suite
+runs against mock providers and a synthetic page, so it can prove the logic and
+never the selectors.

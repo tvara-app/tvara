@@ -594,9 +594,164 @@
     } catch (_) { /* extension context already invalidated */ }
   }
 
+  /* ---------- health check ----------
+     These sites redesign without telling anyone, and our adapters are built to
+     degrade quietly rather than break the page — which means the day ChatGPT
+     renames an attribute, everything still "works" on a heuristic fallback and
+     nobody finds out until the minimap looks wrong.
+
+     This answers, in one call, the only question that matters after a
+     redesign: are we still matching what this platform actually ships, or are
+     we limping? It reads the page; it changes nothing. */
+  const probe = (fn) => { try { return fn(); } catch { return "threw"; } };
+
+  function health() {
+    let messages = [];
+    try { messages = adapter.messages() || []; } catch (e) { /* adapter threw */ }
+
+    let canonical = 0;
+    if (adapter.canon) {
+      for (const el of messages) {
+        try {
+          if (el.matches?.(adapter.canon) || el.querySelector?.(adapter.canon) ||
+              el.closest?.(adapter.canon)) canonical++;
+        } catch { /* a selector this browser dislikes counts as no match */ }
+      }
+    }
+
+    const roles = { user: 0, assistant: 0 };
+    for (const el of messages) {
+      try { roles[adapter.role(el) === "user" ? "user" : "assistant"]++; } catch { /* skip */ }
+    }
+
+    // The engine's own marker class — counted from the DOM rather than from a
+    // number we keep, so the report cannot agree with a stale counter.
+    const sleeping = document.getElementsByClassName("lct-cv").length;
+
+    return {
+      at: Date.now(),
+      version: chrome.runtime.getManifest().version,
+      host: location.hostname,
+      path: location.pathname.replace(/[^/]{12,}/g, "…"),   // never the chat id
+      adapter: adapter.id,
+      inConversation: adapter.convPath ? adapter.convPath.test(location.pathname) : null,
+      messages: messages.length,
+      canonical,
+      // The headline. "degraded" is not an error — it is the early warning that
+      // used to arrive as a support email six weeks late.
+      selectors: !messages.length ? "no messages found"
+        : !adapter.canon ? "unknown"
+        : canonical === messages.length ? "primary"
+        : canonical === 0 ? "DEGRADED — running on a fallback layer"
+        : `mixed (${canonical}/${messages.length} canonical)`,
+      roles,
+      sleeping,
+      // Each probe is guarded on its own: a report that dies because one lookup
+      // threw is a report that tells you nothing about the other nine.
+      composer: probe(() => !!(adapter.composer && adapter.composer())),
+      // findScroller walks up from a MESSAGE, not from the adapter — with no
+      // messages there is nothing to walk from, and that is not a failure.
+      scroller: messages.length ? probe(() => !!self.LCTAdapters.findScroller(messages[0])) : null,
+      engine: !!self.LCTEngine.enabled,
+      minimap: !!document.getElementById("lct-minimap"),
+      settings: { enabled: state.enabled, minimap: state.minimap, time: state.time },
+      plan: state.pro ? "pro" : trialActive() ? "trial" : "free"
+    };
+  }
+
+  try {
+    chrome.runtime.onMessage.addListener((msg, _sender, respond) => {
+      if (!msg || msg.type !== "lct-health") return;
+      try { respond(health()); } catch (e) { respond({ error: String(e && e.message || e) }); }
+      return true;
+    });
+  } catch (_) { /* extension context gone */ }
+
+  /* ---------- first-run hint ----------
+     The welcome tab teaches the shortcuts once, in a tab most people close in
+     four seconds. This is the same lesson delivered where it is used, on the
+     first real conversation — once ever, dismissible, and printing the keys
+     the browser actually bound rather than the ones we asked for.
+
+     Docked left of the minimap rather than bottom-centre: that lane already
+     holds the resume chip and the note toast, and a hint that lands on top of
+     "resume where you left off" teaches one thing by hiding another. */
+  const HINT_KEY = "lct-hint-v1";
+
+  function hintKeys(commands) {
+    const mac = navigator.platform.toLowerCase().includes("mac");
+    const pretty = (s) => !s ? null : s
+      .replace(/Command/g, "⌘")
+      .replace(/Shift/g, mac ? "⇧" : "Shift")
+      .replace(/Alt/g, mac ? "⌥" : "Alt")
+      .replace(/\+/g, mac ? "" : "+");
+    const by = new Map((commands || []).map((c) => [c.name, pretty(c.shortcut)]));
+    return [
+      [by.get("in-chat-search"), "search this conversation"],
+      [by.get("open-recall"), "search every chat, everywhere"]
+    ].filter(([k]) => k);   // an unbound command is not worth teaching
+  }
+
+  function showHint(rows) {
+    if (!rows.length || document.getElementById("lct-hint")) return;
+    const card = document.createElement("div");
+    card.id = "lct-hint";
+    card.setAttribute("role", "status");
+
+    const title = document.createElement("div");
+    title.className = "lct-hint-title";
+    title.textContent = "Long Chat Toolkit is on";
+    card.appendChild(title);
+
+    for (const [key, what] of rows) {
+      const row = document.createElement("div");
+      row.className = "lct-hint-row";
+      const kbd = document.createElement("kbd");
+      kbd.textContent = key;
+      const span = document.createElement("span");
+      span.textContent = what;
+      row.append(kbd, span);
+      card.appendChild(row);
+    }
+
+    const close = document.createElement("button");
+    close.className = "lct-hint-ok";
+    close.type = "button";
+    close.textContent = "Got it";
+    const dismiss = () => { clearTimeout(timer); card.remove(); };
+    close.addEventListener("click", dismiss);
+    card.appendChild(close);
+
+    document.documentElement.appendChild(card);
+    requestAnimationFrame(() => card.classList.add("lct-hint-show"));
+    const timer = setTimeout(dismiss, 14000);
+  }
+
+  async function maybeHint() {
+    if (!state.enabled) return;
+    const got = await store.get([HINT_KEY]);
+    // An orphaned content script reads {} from a dead context — which looks
+    // exactly like a first run. Say nothing rather than repeat the lesson on
+    // every page load until the tab is reloaded.
+    if (!store.alive || (got && got[HINT_KEY])) return;
+    // Written BEFORE the card is drawn, so two tabs opening at once cannot both
+    // decide they are the first.
+    await store.set({ [HINT_KEY]: Date.now() });
+    if (!store.alive) return;
+    const commands = await new Promise((res) => {
+      try {
+        chrome.runtime.sendMessage({ type: "commands" }, (r) => {
+          void chrome.runtime.lastError; res(r);
+        });
+      } catch { res(null); }
+    });
+    showHint(hintKeys(commands));
+  }
+
   loadState().then(() => {
     applyState();
     seedFromProvider();
     if (state.enabled) kickVisitSync();
+    maybeHint();
   });
 })();
