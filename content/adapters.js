@@ -198,6 +198,9 @@
       // do NOT satisfy it mean this platform has drifted and we are running on
       // a fallback layer — working, but on borrowed time.
       canon: "[data-message-id], [data-message-author-role]",
+      // Where a POSITIVE role marker exists for both sides, so the health
+      // report can say whether roles were read or guessed.
+      roleCanon: "[data-message-author-role]",
       hostRe: /(^|\.)chatgpt\.com$|(^|\.)chat\.openai\.com$/,
       messages() {
         // Layer 1 (current, stable): div elements with data-message-id
@@ -235,11 +238,13 @@
         return heuristicMessages(null, 4);
       },
       role(el) {
-        // Check the element itself first (current ChatGPT puts role on the message div)
-        if (el.hasAttribute("data-message-author-role")) {
-          return el.getAttribute("data-message-author-role") === "user" ? "user" : "assistant";
-        }
-        // Check descendants
+        // Self, then ANCESTORS, then descendants. The middle step was missing:
+        // when the matched node carried data-message-id but the author role sat
+        // on a wrapper above it, every message fell through to the heuristics
+        // below — and "short and no code block" reads as a user turn, so a real
+        // conversation came back 188 mine to 12 the model's.
+        const own = el.closest && el.closest("[data-message-author-role]");
+        if (own) return own.getAttribute("data-message-author-role") === "user" ? "user" : "assistant";
         const r = el.querySelector("[data-message-author-role]");
         if (r) return r.getAttribute("data-message-author-role") === "user" ? "user" : "assistant";
         // data-testid may encode the role (legacy)
@@ -288,6 +293,9 @@
       // do NOT satisfy it mean this platform has drifted and we are running on
       // a fallback layer — working, but on borrowed time.
       canon: "user-query, model-response",
+      // Where a POSITIVE role marker exists for both sides, so the health
+      // report can say whether roles were read or guessed.
+      roleCanon: "user-query, model-response",
       hostRe: /(^|\.)gemini\.google\.com$/,
       // Gemini uses Shadow DOM + custom elements that Google changes often.
       // Five fallback layers: custom elements → ARIA/data attrs → structural
@@ -491,6 +499,9 @@
       // do NOT satisfy it mean this platform has drifted and we are running on
       // a fallback layer — working, but on borrowed time.
       canon: "[data-lct-message]",
+      // Where a POSITIVE role marker exists for both sides, so the health
+      // report can say whether roles were read or guessed.
+      roleCanon: "[data-lct-role]",
       hostRe: /^(localhost|127\.0\.0\.1)$/,
       messages() {
         // Layer 1, and a class-based layer 2 beneath it — the same shape every

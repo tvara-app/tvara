@@ -76,12 +76,47 @@
     head.append(title, pill);
     el.append(head);
 
+    // "no answer" is nearly always one thing: the tab was open before the
+    // extension was loaded or reloaded, and Chrome does not inject into tabs
+    // that already exist. Telling someone to reload it is not as good as
+    // reloading it, so offer the button and re-ask afterwards.
+    if (!h) {
+      const why = document.createElement("p");
+      why.className = "consequence";
+      why.textContent =
+        "Chrome only injects into pages opened AFTER the extension was loaded. " +
+        "A tab that predates the last reload has none of the toolkit in it — " +
+        "including the part that answers this page.";
+      const fix = document.createElement("button");
+      fix.className = "ghost fix";
+      fix.type = "button";
+      fix.textContent = "Reload that tab and check again";
+      fix.addEventListener("click", async () => {
+        fix.disabled = true;
+        fix.textContent = "Reloading…";
+        try {
+          await chrome.tabs.reload(tab.id);
+          // The content script mounts at document_idle; these sites take a
+          // moment more to paint a conversation worth reporting on.
+          await new Promise((r) => setTimeout(r, 3500));
+        } catch { /* the re-run reports whatever is true now */ }
+        run();
+      });
+      el.append(why, fix);
+      return el;
+    }
+
     if (v.cls !== "bad" || (h && typeof h.messages === "number" && h.roles)) {
       const yn = (x) => x === null ? "n/a" : x === "threw" ? "the lookup failed" : x ? "yes" : "no";
       el.append(
         row("messages seen", String(h.messages)),
         row("matching the platform's own attributes", `${h.canonical} of ${h.messages}`),
         row("roles read", `${h.roles.user} yours · ${h.roles.assistant} the model's`),
+        row("roles taken from the page itself",
+          h.roleRead === null || h.roleRead === undefined
+            ? "not available on this platform — inferred"
+            : `${h.roleRead} of ${h.messages}`),
+        row("counted twice (a message inside a message)", String(h.nested ?? 0)),
         row("asleep right now", String(h.sleeping)),
         row("prompt box found", yn(h.composer)),
         row("scroll container found", yn(h.scroller)),
@@ -90,6 +125,24 @@
         row("plan", h.plan),
         row("version", "v" + h.version)
       );
+      // Two failures the headline verdict cannot see: the messages still match,
+      // so the check says "primary", while the roles behind them are guesses or
+      // the same turn is being counted twice.
+      if (typeof h.roleRead === "number" && h.roleRead < h.messages) {
+        const n = document.createElement("p");
+        n.className = "consequence";
+        n.textContent = `${h.messages - h.roleRead} message(s) had no role marker where we look for one, ` +
+          "so their side of the conversation was guessed. The minimap, the outline and the " +
+          "export all read that guess.";
+        el.append(n);
+      }
+      if (h.nested) {
+        const n = document.createElement("p");
+        n.className = "consequence";
+        n.textContent = `${h.nested} matched element(s) sit inside another matched element — ` +
+          "this platform's turns are being counted more than once.";
+        el.append(n);
+      }
       if (h.composer === false) {
         const n = document.createElement("p");
         n.className = "consequence";

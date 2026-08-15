@@ -2616,6 +2616,42 @@ try {
     /matching this platform's own markup/.test(healthText), healthText.slice(0, 160));
   t("B15 health page never prints a conversation id",
     !/[a-f0-9]{8}-[a-f0-9]{4}/.test(healthText));
+
+  /* The first real report anyone ran came back "no answer (content script not
+     running — reload that tab)" — Chrome working as designed: it does not
+     inject into tabs that already existed when the extension was loaded. A
+     diagnostic whose answer is "go do something yourself" ends the
+     conversation, so the page offers to do it. Chrome will not let a test
+     reload an unpacked extension (runtime.reload never comes back under
+     automation), so the silence is staged at the channel instead — which is
+     all the page can see of it anyway. */
+  await healthPage.evaluate(() => {
+    window.__reloaded = [];
+    const realSend = chrome.tabs.sendMessage;
+    chrome.tabs.sendMessage = (id, msg, cb) => cb(undefined);   // every tab, silent
+    chrome.tabs.reload = async (id) => {
+      window.__reloaded.push(id);
+      chrome.tabs.sendMessage = realSend;                       // the reload "worked"
+    };
+  });
+  await healthPage.click("#run");
+  await healthPage.waitForSelector(".card.bad", { timeout: 10000 });
+  const orphan = await healthPage.evaluate(() => {
+    const c = document.querySelector(".card");
+    return { verdict: c.querySelector(".pill").textContent, says: c.textContent,
+             hasFix: !!c.querySelector("button.fix") };
+  });
+  t("B16 a silent tab is reported, not skipped", /no answer/.test(orphan.verdict), orphan.verdict);
+  t("B16 it explains what Chrome did", /injects into pages opened AFTER/.test(orphan.says));
+  t("B16 it offers the fix instead of describing it", orphan.hasFix);
+
+  await healthPage.click("button.fix");
+  await healthPage.waitForSelector(".card.good", { timeout: 20000 });
+  t("B16 one click turns 'no answer' into an answer",
+    /matching this platform/.test(await healthPage.textContent(".card .pill")));
+  t("B16 and it reloaded exactly the tab that was silent",
+    (await healthPage.evaluate(() => window.__reloaded.length)) === 1);
+
   await healthPage.close();
 
   // Asked through the EXTENSION page: page.evaluate runs in the synthetic
@@ -2636,11 +2672,40 @@ try {
     direct.selectors === "primary", direct.selectors);
   t("B15 the report finds the composer and the scroller",
     direct.composer === true && direct.scroller === true);
+  // The signal that "primary" cannot give you: a platform whose messages still
+  // match while their ROLES come from a guess. A live ChatGPT chat reported
+  // 188 user turns to 12 assistant ones with a clean green headline.
+  t("B15 the report says how many roles were READ rather than guessed",
+    direct.roleRead === direct.messages,
+    JSON.stringify({ read: direct.roleRead, of: direct.messages }));
+  t("B15 the report notices a turn counted twice", direct.nested === 0,
+    String(direct.nested));
   t("B15 the report carries no message text",
     !JSON.stringify(direct).includes("architectural"));
 
   // The point of the whole instrument: break what the platform is supposed to
   // ship, and it must say DEGRADED rather than keep reporting health.
+  // Roles moving out of reach is a SEPARATE failure from messages moving: the
+  // headline stays green because the message selector still matches, and only
+  // the role count betrays it. Strip the role attribute and require the report
+  // to admit the roles are now guesses.
+  await page.evaluate(() => {
+    for (const el of document.querySelectorAll("[data-lct-role]")) {
+      el.setAttribute("data-lct-role-moved", el.getAttribute("data-lct-role"));
+      el.removeAttribute("data-lct-role");
+    }
+  });
+  const guessed = await askHealth();
+  t("B15 roles moving out of reach is reported, not averaged away",
+    guessed.selectors === "primary" && guessed.roleRead === 0 && guessed.messages > 0,
+    JSON.stringify({ sel: guessed.selectors, read: guessed.roleRead, m: guessed.messages }));
+  await page.evaluate(() => {
+    for (const el of document.querySelectorAll("[data-lct-role-moved]")) {
+      el.setAttribute("data-lct-role", el.getAttribute("data-lct-role-moved"));
+      el.removeAttribute("data-lct-role-moved");
+    }
+  });
+
   // Rename the attribute the platform is supposed to ship, leaving the
   // elements exactly where they are — which is what a real redesign looks like
   // from our side. The fallback layer should still find the messages, and the

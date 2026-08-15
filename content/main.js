@@ -624,6 +624,35 @@
       try { roles[adapter.role(el) === "user" ? "user" : "assistant"]++; } catch { /* skip */ }
     }
 
+    /* A role split of 188 mine to 12 the model's is not a conversation — it is
+       a guess. The message selector can keep matching (so the check says
+       "primary") while the ROLE marker moves somewhere the resolver does not
+       look, and every turn quietly falls through to the heuristics. So count
+       how many roles were actually READ, and say so. */
+    let roleRead = null;
+    if (adapter.roleCanon) {
+      roleRead = 0;
+      for (const el of messages) {
+        try {
+          if (el.closest?.(adapter.roleCanon) || el.matches?.(adapter.roleCanon) ||
+              el.querySelector?.(adapter.roleCanon)) roleRead++;
+        } catch { /* a selector this browser dislikes counts as unread */ }
+      }
+    }
+
+    /* The other way a count goes wrong: an outer and an inner node both match,
+       so one turn is counted twice. Cheap to detect — a message that sits
+       inside another message. */
+    let nested = 0;
+    if (messages.length && messages.length < 4000) {
+      const set = new Set(messages);
+      for (const el of messages) {
+        for (let p = el.parentElement; p; p = p.parentElement) {
+          if (set.has(p)) { nested++; break; }
+        }
+      }
+    }
+
     // The engine's own marker class — counted from the DOM rather than from a
     // number we keep, so the report cannot agree with a stale counter.
     const sleeping = document.getElementsByClassName("lct-cv").length;
@@ -645,6 +674,10 @@
         : canonical === 0 ? "DEGRADED — running on a fallback layer"
         : `mixed (${canonical}/${messages.length} canonical)`,
       roles,
+      // null = this platform has no positive marker for both sides, so roles
+      // are inferred by design and a lopsided split means nothing.
+      roleRead,
+      nested,
       sleeping,
       // Each probe is guarded on its own: a report that dies because one lookup
       // threw is a report that tells you nothing about the other nine.

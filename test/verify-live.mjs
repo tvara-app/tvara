@@ -191,17 +191,26 @@ ${wanted.length} tab${wanted.length === 1 ? "" : "s"} open. Before pressing Ente
           ? "no conversation open in this tab"
           : "a conversation is open but NO messages were found" };
     }
-    const cls = /DEGRADED/.test(h.selectors) ? "bad" : /mixed/.test(h.selectors) ? "warn" : "good";
+    // A platform whose messages match but whose ROLES are guessed is not
+    // healthy, however green the headline looks.
+    const rolesGuessed = typeof h.roleRead === "number" && h.roleRead < h.messages;
+    const cls = /DEGRADED/.test(h.selectors) ? "bad"
+      : (/mixed/.test(h.selectors) || rolesGuessed || h.nested) ? "warn" : "good";
     const yn = (x) => x === null ? "n/a" : x === "threw" ? "the lookup failed" : x ? "yes" : "no";
     return {
       cls, title: h.adapter,
       verdict: cls === "good" ? "matching this platform's own markup"
-        : cls === "warn" ? `partly matching — ${h.selectors}`
-        : "running on a fallback layer — this platform has changed",
+        : cls === "bad" ? "running on a fallback layer — this platform has changed"
+        : rolesGuessed ? `roles guessed for ${h.messages - h.roleRead} of ${h.messages} messages`
+        : h.nested ? `${h.nested} turns counted twice`
+        : `partly matching — ${h.selectors}`,
       rows: [
         ["messages seen", String(h.messages)],
         ["matching the platform's own attributes", `${h.canonical} of ${h.messages}`],
         ["roles read", `${h.roles.user} yours · ${h.roles.assistant} the model's`],
+        ["roles taken from the page itself",
+          typeof h.roleRead === "number" ? `${h.roleRead} of ${h.messages}` : "inferred on this platform"],
+        ["counted twice", String(h.nested ?? 0)],
         ["asleep right now", String(h.sleeping)],
         ["prompt box found", yn(h.composer)],
         ["scroll container found", yn(h.scroller)],
