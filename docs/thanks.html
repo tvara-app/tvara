@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex" />
+<title>You're Pro — Long Chat Toolkit</title>
+<meta name="description" content="Activate your Long Chat Toolkit Pro licence." />
+<style>
+  :root {
+    --bg: #0e1117; --panel: #161b26; --text: #e8eaf0; --muted: #9aa3b5;
+    --accent: #7aa2ff; --ok: #4ec9a0; --line: rgba(255,255,255,0.08);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--bg); color: var(--text); font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 680px; margin: 0 auto; padding: 0 24px 72px; }
+  header { padding: 64px 0 32px; text-align: center; }
+  .tick { width: 56px; height: 56px; margin: 0 auto 18px; border-radius: 50%; background: rgba(78,201,160,.12); border: 1px solid rgba(78,201,160,.4); color: var(--ok); font-size: 28px; line-height: 54px; }
+  h1 { font-size: 32px; line-height: 1.2; }
+  .sub { color: var(--muted); margin-top: 10px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 24px; margin-top: 20px; }
+  h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-bottom: 14px; }
+  ol { margin: 0 0 0 20px; }
+  ol li { margin-bottom: 12px; color: var(--muted); }
+  ol li strong { color: var(--text); }
+  .keybox { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+  code#key { flex: 1 1 260px; padding: 12px 14px; border-radius: 10px; background: #0b0e14; border: 1px solid var(--line); color: var(--text); font: 14px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
+  button { padding: 12px 18px; border: 0; border-radius: 10px; background: var(--accent); color: #0b0e14; font: 700 14px/1 inherit; cursor: pointer; }
+  button.copied { background: var(--ok); }
+  .note { color: var(--muted); font-size: 14.5px; margin-top: 12px; }
+  .fine { color: var(--muted); font-size: 13.5px; }
+  a { color: var(--accent); }
+  footer { text-align: center; padding-top: 28px; color: var(--muted); font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="tick">✓</div>
+  <h1>Thank you — you're Pro.</h1>
+  <p class="sub">One paste and it's on, forever, on up to five devices.</p>
+</header>
+
+<!-- Shown only when the payment provider hands the key back in the redirect.
+     If it doesn't, the email is the delivery and this block stays hidden —
+     never a box that looks like it should contain something and doesn't. -->
+<section class="panel" id="key-panel" hidden>
+  <h2>Your licence key</h2>
+  <div class="keybox">
+    <code id="key"></code>
+    <button id="copy" type="button">Copy</button>
+  </div>
+  <p class="note">It's in your email too. Keep it — it's the only thing that proves the purchase, and reinstalling asks for it again.</p>
+</section>
+
+<section class="panel">
+  <h2>Switch it on</h2>
+  <ol>
+    <li><strong>Open the extension</strong> — click the Long Chat Toolkit icon in your browser toolbar. (Not there? Click the puzzle-piece icon and pin it.)</li>
+    <li><strong>Paste your key</strong> into the <em>Licence key</em> box near the bottom of the popup and press <strong>Activate</strong>.</li>
+    <li><strong>Reload your chat tabs.</strong> The badge reads <em>Pro</em>, and Total Recall, Context Bridge and every tool on Claude &amp; Gemini are unlocked.</li>
+  </ol>
+  <p class="note">Activation contacts the licence server once to register this device. It sends your key and a device label like “Chrome · macOS” — never a cookie, never any conversation text.</p>
+</section>
+
+<section class="panel">
+  <h2>If something isn't right</h2>
+  <p class="fine"><strong>No email yet?</strong> Give it two minutes, then check spam. Still nothing — mail me and I'll send it by hand.</p>
+  <p class="fine" style="margin-top:10px;"><strong>Key won't activate?</strong> Copy it again from the email (a trailing space is the usual culprit). If it still refuses, mail me the order id and I'll fix it, not troubleshoot at you.</p>
+  <p class="fine" style="margin-top:10px;"><strong>Out of devices?</strong> Release one from the popup's <em>Devices</em> list, or mail me from your purchase address and I'll clear every slot — no questions.</p>
+  <p class="fine" style="margin-top:10px;"><strong>Not what you hoped?</strong> Full refund within 14 days, no hoops. Just ask.</p>
+  <p class="note"><a href="mailto:tharuntejandhe@gmail.com?subject=Long%20Chat%20Toolkit%20Pro">tharuntejandhe@gmail.com</a> — a real person, usually same day.</p>
+</section>
+
+<footer>
+  <a href="./">Long Chat Toolkit</a> ·
+  <a href="./#devices">Devices</a> ·
+  <a href="./#refunds">Refunds</a> ·
+  <a href="./#privacy">Privacy</a>
+</footer>
+
+</div>
+
+<script>
+/* Payment providers can template the licence key into the redirect. Support
+   the usual spellings, show it if it is there, and stay quiet if it is not —
+   an empty "your key" box on the page you land on after paying is worse than
+   no box at all. */
+(function () {
+  var q = new URLSearchParams(location.search);
+  var key = q.get("key") || q.get("license_key") || q.get("licence_key") || "";
+  if (!key || key.length > 200 || /[<>"']/.test(key)) return;
+
+  var box = document.getElementById("key");
+  box.textContent = key;                      // textContent: never markup
+  document.getElementById("key-panel").hidden = false;
+
+  document.getElementById("copy").addEventListener("click", function () {
+    var btn = this;
+    var done = function () {
+      btn.textContent = "Copied";
+      btn.classList.add("copied");
+      setTimeout(function () { btn.textContent = "Copy"; btn.classList.remove("copied"); }, 1800);
+    };
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(key).then(done, function () {
+        // Selecting it is the fallback everyone already knows how to finish.
+        var r = document.createRange(); r.selectNodeContents(box);
+        var s = getSelection(); s.removeAllRanges(); s.addRange(r);
+        btn.textContent = "Press ⌘C";
+      });
+    } else {
+      var r = document.createRange(); r.selectNodeContents(box);
+      var s = getSelection(); s.removeAllRanges(); s.addRange(r);
+      btn.textContent = "Press ⌘C";
+    }
+  });
+})();
+</script>
+</body>
+</html>

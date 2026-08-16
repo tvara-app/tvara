@@ -69,6 +69,7 @@
       ],
       "js": [
         "lib/store.js",
+        "lib/product.js",
         "lib/quota.js",
         "content/adapters.js",
         "content/quota.js",

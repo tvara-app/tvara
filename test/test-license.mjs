@@ -313,20 +313,32 @@ reset(); setTok(mint());
 e = await E.evaluate({ key: KEY }, "99999999-8888-7777-6666-555555555555");
 t("E6 token bound to its device", e.entitled === false && e.reason === "device-mismatch");
 
-// E7. Expiry, and the offline grace window that must not become a loophole.
+// E7. Age. A purchase is withdrawn by an ANSWER, never by an outage — so a
+// token past its expiry keeps working and says it is overdue. Our issuer being
+// unreachable (an outage, a lapsed domain, a proxy, us shutting it down years
+// from now) must never quietly unsell a copy we already sold.
 reset(); setTok(mint({ exp: Date.now() - 3 * 864e5 }));
 e = await E.evaluate({ key: KEY }, DEVICE);
-const inGrace = e.entitled === true && e.stale === true;
-reset(); setTok(mint({ exp: Date.now() - 20 * 864e5 }));
+const shortOverdue = e.entitled === true && e.stale === true;
+reset(); setTok(mint({ exp: Date.now() - 400 * 864e5 }));  // over a year unreachable
 e = await E.evaluate({ key: KEY }, DEVICE);
-t("E7 expired token: 14d grace, then locked", inGrace && e.entitled === false && e.reason === "expired");
+t("E7 a year past expiry still works, and says it is overdue",
+  shortOverdue && e.entitled === true && e.stale === true && e.overdueDays > 365);
 
-// E8. Clock rollback must not revive an expired token.
+// E7b. What DOES end it: being told. An unknown or inactive licence clears the
+// token in refresh(), and no token is no entitlement.
+reset();
+e = await E.evaluate({ key: KEY }, DEVICE);
+t("E7b no token, no entitlement", e.entitled === false && e.reason === "no-token");
+
+// E8. Clock rollback still cannot un-stale a token: the high-water mark is what
+// the age is measured against, not whatever the machine currently claims.
 reset();
 store.set("lct-clock-hwm-v1", Date.now() + 40 * 864e5);   // we have seen "later"
 setTok(mint({ exp: Date.now() + 5 * 864e5 }));            // expires before that
 e = await E.evaluate({ key: KEY }, DEVICE);
-t("E8 clock rollback does not revive expiry", e.entitled === false && e.reason === "expired");
+t("E8 winding the clock back does not hide that it is overdue",
+  e.entitled === true && e.stale === true && e.clockRolledBack === true);
 
 // E9. A revoked record is dead even holding a perfect token.
 reset(); setTok(mint());

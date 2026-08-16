@@ -119,6 +119,49 @@ else if (/REPLACE_WITH/.test(checkoutHref[1])) {
     "one edit: replace the #checkout href in docs/index.html with your Dodo payment link");
 } else ok("pricing page carries a real checkout link", checkoutHref[1].slice(0, 52));
 
+/* ---------- 4b. one price, everywhere ---------- */
+
+// The extension renders its price from lib/product.js and the pricing page from
+// its own constant, because they deploy separately. Every other mention is
+// prose. A page quoting one number beside a checkout charging another is how a
+// launch turns into refunds, so nothing here is left to memory.
+const price = (product.match(/PRICE:\s*"([^"]+)"/) || [])[1];
+const priceNum = (product.match(/PRICE_NUM:\s*(\d+(?:\.\d+)?)/) || [])[1];
+if (!price) block("lib/product.js declares no PRICE");
+else {
+  const docsPrice = (docs.match(/var PRICE = "([^"]+)"/) || [])[1];
+  if (!docsPrice) block("docs/index.html declares no PRICE constant");
+  else if (docsPrice !== price) block(`the pricing page says ${docsPrice}, the extension says ${price}`);
+
+  if (priceNum && `$${priceNum}` !== price) {
+    block(`PRICE (${price}) and PRICE_NUM (${priceNum}) disagree in lib/product.js`);
+  }
+
+  // Prose can only be checked for CONTRADICTION: any dollar figure that is not
+  // the price, in a file that talks about buying, is a stale number.
+  const prose = [["README", readme], ["listing", listing],
+                 ["user guide", read("docs/USER-GUIDE.md")], ["pricing page", docs]];
+  const wrong = [];
+  for (const [name, text] of prose) {
+    for (const m of text.matchAll(/\$(\d+(?:\.\d{2})?)\b/g)) {
+      // Two figures here are not our price and never will be: "$0 data" is a
+      // privacy claim, and "$5" is the Chrome developer fee — money going out,
+      // not coming in.
+      if (m[0] === price || m[1] === "0" || m[1] === "5") continue;
+      wrong.push(`${name}: ${m[0]}`);
+    }
+  }
+  if (wrong.length) block(`a stale price is written in prose — ${[...new Set(wrong)].join(", ")}`);
+  else ok(`one price everywhere (${price})`);
+}
+
+// The page someone lands on after paying. Without it a buyer's last impression
+// is the payment provider's own receipt screen and no idea what to do next.
+if (!read("docs/thanks.html")) block("docs/thanks.html is missing — no post-purchase page");
+else if (!/Licence key|licence key/i.test(read("docs/thanks.html"))) {
+  block("the post-purchase page never mentions the licence key");
+} else ok("post-purchase page explains how to activate");
+
 /* ---------- 5. the licence chain ---------- */
 
 const keyDir = join(homedir(), ".lct-keys");

@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Long Chat Toolkit — Make long AI chats fast again</title>
-<meta name="description" content="Speed engine, minimap, in-chat search, timestamps and encrypted local backups for AI chats. Free speed engine; Pro $9 once." />
+<meta name="description" content="Speed engine, minimap, in-chat search, timestamps and encrypted local backups for AI chats. Free speed engine; one-time Pro licence." />
 <style>
   :root {
     --bg: #0e1117; --panel: #161b26; --text: #e8eaf0; --muted: #9aa3b5;
@@ -93,7 +93,7 @@
       </ul>
     </div>
     <div class="price hot">
-      <div class="amt">$9</div>
+      <div class="amt" data-price="{price}"></div>
       <div class="per">one-time purchase — no subscription, forever</div>
       <ul>
         <li>Everything in Free</li>
@@ -113,11 +113,17 @@
            Paste the Dodo payment link below, replacing the whole href. Until
            then the button honestly says the store is not open yet, which is
            better than a dead checkout.
+
+           AND in the Dodo dashboard, set the product's redirect/success URL to
+             https://tharuntejandhe.github.io/long-chat-toolkit/thanks.html
+           (append ?key={license_key} if Dodo will template it — the page shows
+           the key with a copy button when it arrives, and stays quiet when it
+           does not). Without that redirect a buyer's last screen is a payment
+           receipt with no idea what to do next.
            ══════════════════════════════════════════════════════════════════ -->
       <a class="cta buy-btn" id="checkout"
-         href="https://checkout.dodopayments.com/buy/REPLACE_WITH_PRODUCT_ID">
-        Get Pro — $9 once
-      </a>
+         href="https://checkout.dodopayments.com/buy/REPLACE_WITH_PRODUCT_ID"
+         data-price="Get Pro — {price} once"></a>
       <p class="buy-sub">Instant licence key by email. 5 devices. No subscription.</p>
     </div>
   </div>
@@ -176,6 +182,16 @@
 </div>
 
 <script>
+/* ── THE PRICE. One line, and preflight fails the build if lib/product.js
+      disagrees with it. Change both together, or change neither. ── */
+var PRICE = "$9";
+
+(function () {
+  for (var i = 0, els = document.querySelectorAll("[data-price]"); i < els.length; i++) {
+    els[i].textContent = els[i].getAttribute("data-price").replace(/\{price\}/g, PRICE);
+  }
+})();
+
 /* If the payment link above is still the placeholder, say so plainly rather
    than sending a willing buyer to a dead checkout. This is the failure mode
    worth designing for: the day the extension goes live is the day this page

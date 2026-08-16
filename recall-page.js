@@ -67,7 +67,7 @@
     if (trialSpent) {
       $("core-locked").querySelector(".locked-title").textContent = "Your trial has ended";
       $("core-locked").querySelector(".locked-copy").textContent =
-        "The archive kept building the whole time — nothing was lost. $9 once, from the extension popup, unlocks search again forever.";
+        `The archive kept building the whole time — nothing was lost. ${self.LCTProduct.PRICE} once, from the extension popup, unlocks search again forever.`;
     }
 
     paintPaidSections(verdict);
@@ -89,7 +89,8 @@
     if (!canRestore) setStatus("restore-status", LOCK_COPY, "");
     // Grace period: signed, valid, but overdue a renewal. Works, warns.
     if (verdict && verdict.stale) {
-      setStatus("backup-status", "Licence needs to check in — reconnect within 14 days to keep Pro.", "warn");
+      setStatus("backup-status",
+        "Licence hasn't been able to check in. Pro keeps working — it re-checks by itself when it can.", "warn");
     }
   }
 
@@ -99,6 +100,8 @@
     loadPlan();
     return true;
   }
+
+  self.LCTProduct.applyTo(document);
 
   $("trial-start").addEventListener("click", async () => {
     await send({ type: "trial-start" });

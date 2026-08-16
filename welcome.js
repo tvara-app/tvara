@@ -61,9 +61,9 @@
       copy.textContent = "Everything is unlocked on every platform. Nothing expires from your archive when the trial does — only the search over it.";
     } else if (state.spent) {
       btn.hidden = true;
-      copy.textContent = "Your trial has been used on this browser. The speed engine stays free forever; $9 once brings back Total Recall and Context Bridge.";
+      copy.textContent = `Your trial has been used on this browser. The speed engine stays free forever; ${P.PRICE} once brings back Total Recall and Context Bridge.`;
       const buy = $("buy-pro");
-      buy.textContent = "Get Pro — $9 once, forever";
+      buy.textContent = `Get Pro — ${P.PRICE} once, forever`;
       buy.classList.add("primary");
     }
   }
@@ -101,6 +101,7 @@
   open("privacy-link", P.PRIVACY);
   open("source-link", P.SOURCE);
 
+  P.applyTo(document);
   paintKeys();
   send({ type: "trial-state" }).then(paintTrial);
 })();

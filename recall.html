@@ -42,7 +42,7 @@
           <p class="locked-copy">Your archive is already being built locally — nothing is lost by deciding later. Seven days, one click, no signup.</p>
           <div class="locked-actions">
             <button id="trial-start" type="button">Start 7-day free trial</button>
-            <button id="buy-pro" class="locked-buy" type="button">or get Pro — $9 once, forever</button>
+            <button id="buy-pro" class="locked-buy" type="button" data-price="or get Pro — {price} once, forever"></button>
           </div>
         </div>
 
@@ -105,7 +105,7 @@
           <p class="dim">Each pass compares your signed-in history against what this browser already holds, then downloads only what is missing. Reloading the extension never repeats finished work.</p>
           <label class="auto-sync" for="auto-sync">
             <input type="checkbox" id="auto-sync" checked />
-            <span>Keep the archive current by itself — a check runs about every 6 hours, and shortly after the browser starts. Turn this off to check only when you press the button.</span>
+            <span>Keep the archive current by itself — a check runs about every 3 hours, and shortly after the browser starts. Turn this off to check only when you press the button.</span>
           </label>
           <p id="sync-summary" class="sync-summary" role="status" hidden></p>
           <div id="sync-rows"></div>

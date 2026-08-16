@@ -132,13 +132,13 @@
       <section class="pro-card" id="pro-upsell" hidden>
         <div class="pro-head">
           <span class="pro-title">Unlock everything</span>
-          <span class="price-pill">$9 · once, forever</span>
+          <span class="price-pill" data-price="{price} · once, forever"></span>
         </div>
         <p class="pro-note">Total Recall, Context Bridge and every tool on Claude &amp; Gemini. Offline licence, no account.</p>
         <button id="trial-start" hidden>Start 7-day free trial</button>
         <p id="trial-note" class="pro-note" hidden></p>
-        <button id="buy-pro" class="buy" type="button">Get Pro — $9 once, forever</button>
-        <p class="pro-note" id="buy-note">Already bought it? Paste your key.</p>
+        <button id="buy-pro" class="buy" type="button" data-price="Get Pro — {price} once, forever"></button>
+        <p class="pro-note" id="buy-note">Already bought it? Paste the key from your purchase email.</p>
         <div class="license-row">
           <input type="text" id="license-input" placeholder="Licence key" autocomplete="off" spellcheck="false" />
           <button id="license-activate">Activate</button>

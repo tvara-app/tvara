@@ -111,6 +111,30 @@ than at a checkout URL, so changing provider, product or price never needs a
 store review — and while the link is still the placeholder, the page says so
 instead of sending buyers to a dead checkout.
 
+## Selling it
+
+Four things, once. `node tools/preflight.mjs` fails until all of them are true,
+so this list is enforced rather than remembered.
+
+1. **Create the product** with the payment provider (merchant of record, so VAT
+   and invoices are theirs, not ours). One-time price, no subscription.
+2. **Point it home.** Paste the payment link into the `#checkout` href in
+   `docs/index.html`, and set the provider's success/redirect URL to
+   `…/thanks.html` — the page that tells a buyer what to do with the key they
+   just bought. Both are one line each.
+3. **Deploy the issuer:** `./server/deploy.sh <extension-id>`. A licence cannot
+   unlock anything until this exists, which is why preflight blocks on it.
+4. **The price lives in two constants** — `PRICE` in `lib/product.js` and
+   `PRICE` in `docs/index.html` — because the extension and the site deploy
+   separately. Everything else reads them. Preflight fails if they disagree or
+   if a stale figure survives in prose.
+
+A purchase is withdrawn by an **answer**, never by an outage: a licence the
+provider reports as unknown or inactive clears the token, but an issuer that
+cannot be reached — a lapsed domain, a proxy, us shutting the Worker down years
+from now — leaves Pro working and merely marked overdue. Nobody who paid once
+loses what they paid for because our server had a bad day.
+
 ## When a platform redesigns
 
 These sites change their markup without notice, and the adapters are built to

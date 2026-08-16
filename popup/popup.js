@@ -46,7 +46,7 @@
       startBtn.hidden = true;
       note.hidden = false;
       note.className = "pro-note";
-      note.textContent = "Trial ended. $9 once keeps everything forever.";
+      note.textContent = `Trial ended. ${self.LCTProduct.PRICE} once keeps everything forever.`;
     } else {
       startBtn.hidden = false;
       note.hidden = true;
@@ -1083,6 +1083,8 @@
       });
     }
   }
+
+  self.LCTProduct.applyTo(document);
 
   $("license-activate").addEventListener("click", activate);
   $("license-input").addEventListener("keydown", (e) => {

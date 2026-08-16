@@ -177,6 +177,25 @@ try {
     buyUrl === "https://tharuntejandhe.github.io/long-chat-toolkit/#buy", String(buyUrl));
   t("A1b every outward link comes from one place",
     await pop.evaluate(() => !!self.LCTProduct && Object.isFrozen(self.LCTProduct)));
+
+  /* The price used to be typed into seventeen files. Every surface now renders
+     the one constant, so changing it cannot leave a page quoting a number the
+     checkout does not charge — the mismatch that produces refunds. */
+  const priced = await pop.evaluate(() => {
+    const P = self.LCTProduct.PRICE;
+    const els = [...document.querySelectorAll("[data-price]")];
+    return {
+      price: P,
+      count: els.length,
+      allFilled: els.every((el) => el.textContent.includes(P) && !el.textContent.includes("{price}")),
+      // Nothing may hard-code a currency figure of its own.
+      strays: document.body.innerHTML.match(/\$\d+/g)?.filter((x) => x !== P) || []
+    };
+  });
+  t("A1b the popup renders the price from the one constant",
+    priced.count >= 2 && priced.allFilled, JSON.stringify(priced));
+  t("A1b no surface hard-codes a price of its own",
+    priced.strays.length === 0, JSON.stringify(priced.strays));
   // An unpacked build has no store page; a "Rate it" link to a 404 is worse
   // than none, so it stays hidden until the copy came from a store.
   t("A1b rate link hidden on a non-store install",

@@ -22,7 +22,8 @@
 
   // Pricing slice: the speed engine is FREE everywhere (our gift + reputation).
   // Tools (minimap, search, outline, timestamps, backup) are free on ChatGPT;
-  // Pro ($9 once) or the 7-day trial unlocks them on Claude & Gemini.
+  // Pro (one payment, see lib/product.js) or the 7-day trial unlocks them on
+  // Claude & Gemini.
   // Perplexity/DeepSeek/Grok support is experimental, so tools stay free there
   // until each is proven on the live site.
   const FREE_TOOL_PLATFORMS = new Set(["chatgpt", "perplexity", "deepseek", "grok", "synthetic"]);
@@ -248,7 +249,7 @@
       `${total - windowedCount} of them. Long Chat Toolkit keeps it fast.`;
     if (!toolsUnlocked() && !upsoldThisSession) {
       upsoldThisSession = true; // don't nag: one upsell line per session
-      msg += " Unlock minimap, search, timestamps & backup — $9 once, in the extension popup.";
+      msg += ` Unlock minimap, search, timestamps & backup — ${self.LCTProduct.PRICE} once, in the extension popup.`;
     }
     flashNote(msg);
   }
@@ -475,7 +476,7 @@
   }
 
   function showUpgradeNote() {
-    flashNote("Tools on this site are Pro — $9 once, forever. Open the extension popup to unlock.");
+    flashNote(`Tools on this site are Pro — ${self.LCTProduct.PRICE} once, forever. Open the extension popup to unlock.`);
   }
 
   let noteTimer = null;
