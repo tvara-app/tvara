@@ -17,7 +17,9 @@
     "test:accounts": "node test/test-accounts.mjs",
     "test:quota": "node test/test-quota.mjs",
     "verify:live": "node test/verify-live.mjs",
-    "verify:login": "node test/verify-live.mjs login"
+    "verify:login": "node test/verify-live.mjs login",
+    "attach": "node tools/attach.mjs",
+    "attach:watch": "node tools/attach.mjs --watch"
   },
   "devDependencies": {
     "playwright": "^1.50.0"

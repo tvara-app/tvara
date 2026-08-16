@@ -152,6 +152,28 @@ That is also how to check a live site after any change here — the test suite
 runs against mock providers and a synthetic page, so it can prove the logic and
 never the selectors.
 
+### Letting the checks run themselves
+
+```bash
+./tools/chrome-debug.sh   # once per session — a Chrome with a debugging port
+npm run attach            # read the health report out of the tabs you have open
+npm run attach:watch      # …and keep reading it every 30s while you work
+```
+
+`attach` talks to a Chrome you are already using instead of driving one of its
+own: same tabs, same logins, nothing to sign into twice. It asks the
+extension's service worker for the same report the popup's Health link shows,
+so checking a live site stops being a screenshot-and-paste round trip.
+
+The separate profile directory (`~/.lct-chrome`) is not a style choice —
+since Chrome 136 the debugging port is refused on the default profile on
+purpose, so that a web page cannot reach a browser holding your real logins.
+While that port is open, anything on the machine can drive that window; it is
+bound to localhost, it dies with the browser, and it should hold test accounts
+only.
+
+### Or a browser of its own
+
 To check every platform at once, in a browser that is nobody else's:
 
 ```bash
