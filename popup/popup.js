@@ -64,6 +64,22 @@
     }
   }
 
+  /* The warning is the point of the whole allowance feature — being told
+     BEFORE the wall, not after. It is a link rather than a fourth switch
+     because the popup has a fixed height and this row already earns its
+     space; the copy states the current setting, so one glance says which it
+     is and one click flips it. */
+  function paintWarnLink(s) {
+    const on = !s || s.quotaWarn !== false;
+    const link = $("quota-warn-link");
+    if (!link) return;
+    link.textContent = on ? "warn me at 20%" : "warnings off";
+    link.classList.toggle("off", !on);
+    link.title = on
+      ? "You'll get one notification per platform when it drops under 20%, and again under 10%. Click to turn off."
+      : "You will not be told before an allowance runs out. Click to turn warnings back on.";
+  }
+
   function paintToggles(s) {
     $("toggle-enabled").checked = !s || s.enabled !== false;
     $("toggle-minimap").checked = !s || s.minimap !== false;
@@ -72,6 +88,7 @@
     // Default on. It is the mechanism that makes the allowance panel truthful
     // rather than decorative, so the panel is meaningless with it off.
     $("toggle-quota").checked = !s || s.quota !== false;
+    paintWarnLink(s);
   }
 
   /* ---------- allowance dial ----------
@@ -333,10 +350,10 @@
     const legend = document.createElement("div");
     legend.className = "usage-legend";
 
-    const head = document.createElement("span");
-    head.className = "usage-legend-head";
-    head.textContent = "Allowance left";
-    legend.append(head);
+    /* No "ALLOWANCE LEFT" header any more. The verdict line above the dial
+       already names what this is and says the one thing worth knowing, and the
+       popup has a fixed height — a heading that repeats the sentence above it
+       costs a row the trial card needs. */
 
     for (const it of items) {
       const row = document.createElement("div");
@@ -398,9 +415,35 @@
    * @param {number} windowedTotal — speed-engine figure, unrelated to allowance
    * @param {Object} quota — the worker's quota-state reply
    */
+  /* ---------- the headline ----------
+     It used to read "0 messages asleep right now" whenever the popup was
+     opened anywhere but inside a huge conversation — which is most of the
+     time. Two thirds of what this panel showed at rest was a zero and a row of
+     100%s: a dashboard that says nothing is worse than no dashboard.
+
+     So the number falls back to the one that is true even when you are not in
+     a long chat: how much of your own history this browser is holding. */
+  function paintPulse(windowedTotal, archive) {
+    const num = $("stat-windowed");
+    const label = $("stat-label");
+    if (windowedTotal > 0) {
+      num.textContent = windowedTotal.toLocaleString();
+      label.textContent = "messages asleep right now";
+      return;
+    }
+    if (archive && archive.chats > 0) {
+      num.textContent = (archive.msgs || archive.chats).toLocaleString();
+      label.textContent = archive.msgs
+        ? `messages archived, across ${archive.chats.toLocaleString()} chats`
+        : "chats archived";
+      return;
+    }
+    num.textContent = "0";
+    label.textContent = "messages asleep — open a long chat to watch it work";
+  }
+
   let dialPainted = false;
   function paintUsage(windowedTotal, quota) {
-    $("stat-windowed").textContent = (windowedTotal || 0).toLocaleString();
 
     const records = (quota && Array.isArray(quota.records) ? quota.records : [])
       // The whitelist gate. A record for anything that is not one of the six
@@ -490,6 +533,34 @@
         out: b.pctLeft === 0
       }));
 
+    /* ---------- the verdict ----------
+       The panel used to be six rows of "100% left", which is the answer to a
+       question nobody asks. The question people actually have — the one the
+       whole category of usage trackers exists for — is "am I about to be cut
+       off mid-thought?" So the panel now answers it in a sentence, and the
+       rings become the detail behind the answer rather than the answer. */
+    const reported = items.filter((it) => it.pctLeft !== null);
+    const lowest = reported.length
+      ? reported.reduce((a, b) => (a.pctLeft <= b.pctLeft ? a : b))
+      : null;
+
+    const verdict = document.createElement("p");
+    verdict.className = "usage-verdict";
+    if (!reported.length) {
+      verdict.textContent = "No provider is reporting an allowance right now.";
+    } else if (lowest.pctLeft <= 0) {
+      verdict.className += " hot";
+      verdict.textContent = `${lowest.label} is out` +
+        (lowest.resetAt ? ` — back ${resetLabel(lowest.resetAt)}` : "");
+    } else if (lowest.pctLeft <= LOW_PCT) {
+      verdict.className += " hot";
+      verdict.textContent = `${lowest.label} is running low — ${lowest.pctLeft}% left` +
+        (lowest.resetAt ? `, resets ${resetLabel(lowest.resetAt)}` : "");
+    } else {
+      // Naming the lowest keeps this a reading rather than a reassurance.
+      verdict.textContent = `Nothing is running low — ${lowest.label} is the closest at ${lowest.pctLeft}%.`;
+    }
+
     const panel = document.createElement("div");
     panel.className = "usage-panel";
     // After the first paint the arcs are already in place — replaying the
@@ -498,7 +569,7 @@
     if (dialPainted) panel.classList.add("no-intro");
     dialPainted = true;
     panel.append(usageDialEl(items), usageLegendEl(items));
-    $("usage-bars").replaceChildren(panel);
+    $("usage-bars").replaceChildren(verdict, panel);
   }
 
   /* ---------- first-paint cache ----------
@@ -525,6 +596,8 @@
   // first open. The cached reading is repainted from the worker a frame later;
   // it is a percentage of a rolling window, so a stale one is shown with its
   // age in the row tooltip rather than presented as current.
+  paintPulse((cache && cache.stats && cache.stats.total) || 0,
+             (cache && cache.archive) || null);
   paintUsage(
     (cache && cache.stats && cache.stats.total) || 0,
     (cache && cache.quota) || null
@@ -556,6 +629,19 @@
        names at all. */
     const quota = await send({ type: "quota-state" });
     paintUsage(total, quota);
+
+    /* The headline needs something true to say when you are not sitting in a
+       long chat. The archive count is free (not a gated call), local, and the
+       one number that is real at rest. */
+    paintPulse(total, null);
+    if (total === 0) {
+      send({ type: "recall-stats" }).then((st) => {
+        if (!st || st.err) return;
+        const archive = { chats: st.chats || 0, msgs: st.msgs || 0 };
+        saveCache({ archive });
+        paintPulse(0, archive);
+      });
+    }
 
     /* Opening the popup is exactly when a stale percentage matters, so ask the
        provider for a fresh one — but only for platforms we already have a
@@ -622,13 +708,18 @@
 
   /* ---------- settings ---------- */
 
+  // Read back rather than tracked in a variable: the link is the display of
+  // this setting, so the display cannot drift from what gets saved.
+  const warnOn = () => !$("quota-warn-link").classList.contains("off");
+
   async function saveSettings() {
     const settings = {
       enabled: $("toggle-enabled").checked,
       minimap: $("toggle-minimap").checked,
       time: $("toggle-time").checked,
       history: $("toggle-history").checked,
-      quota: $("toggle-quota").checked
+      quota: $("toggle-quota").checked,
+      quotaWarn: warnOn()
     };
     saveCache({ settings });
     await chrome.storage.local.set({ settings });
@@ -642,6 +733,14 @@
      check is one click from the number itself. stopPropagation because the link
      sits inside the toggle's own <label> — without it, opening the page would
      also flip the switch. */
+  $("quota-warn-link").addEventListener("click", async (e) => {
+    e.preventDefault();
+    e.stopPropagation();     // the link lives inside the toggle's own <label>
+    const next = !warnOn();
+    paintWarnLink({ quotaWarn: next });
+    await saveSettings();
+  });
+
   $("quota-diag-link").addEventListener("click", (e) => {
     e.preventDefault();
     e.stopPropagation();

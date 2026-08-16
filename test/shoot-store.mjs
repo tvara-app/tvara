@@ -243,6 +243,16 @@ await caption(page, "Context Bridge: pull past answers from any AI into your pro
 await shoot(page, "8-bridge.png");
 await page.keyboard.press("Escape");
 
+/* ---------- shot 9: continue in a new chat ---------- */
+await page.locator("#lct-minimap").hover();
+await page.waitForSelector('#lct-export-bar button[data-act="carry"]', { state: "visible" });
+await page.click('#lct-export-bar button[data-act="carry"]');
+await page.waitForSelector("#lct-carry", { timeout: 8000 });
+await page.waitForTimeout(400);
+await caption(page, "Chat too long? Carry it into a fresh one, in one click.");
+await shoot(page, "9-continue.png");
+await page.evaluate(() => document.getElementById("lct-carry")?.remove());
+
 /* ---------- shot 6: popup in trial state, composited ---------- */
 await pop.evaluate(() => new Promise((res) =>
   chrome.storage.local.set({ trial: { startedAt: Date.now() } }, res)));

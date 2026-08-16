@@ -1231,8 +1231,11 @@ try {
     settings: { enabled: true, minimap: true, time: true, history: false }
   }));
 
-  t("B3 export bar with 3 SVG buttons (outline + md + json)",
-    (await page.locator("#lct-export-bar button svg").count()) === 3);
+  t("B3 export bar with 4 SVG buttons (outline + carry + md + json)",
+    (await page.locator("#lct-export-bar button svg").count()) === 4);
+  t("B3 every export-bar button says what it does",
+    await page.evaluate(() => [...document.querySelectorAll("#lct-export-bar button")]
+      .every((b) => (b.getAttribute("aria-label") || b.title || "").length > 4)));
 
   // B4 — in-chat search via the in-chat-search command
   await fireCmd("in-chat-search");
@@ -2533,6 +2536,172 @@ try {
   t("B12 fallback actually put the context on the clipboard",
     /Context from my earlier AI chats:/.test(clip) || /Couldn't insert/.test(toastTxt));
   await page.keyboard.press("Escape");
+
+  /* ---- B17. Continue in a new chat ----
+     The thing everyone already does by hand and badly: a chat gets long, slow,
+     or hits a limit, and they scroll up copying fragments into a fresh one.
+     What matters here is that the handover is VERBATIM (there is no summariser
+     and there must never appear to be), that the user sees exactly what will
+     travel, and that nothing is ever sent for them. */
+  await page.bringToFront();
+  await page.locator("#lct-minimap").hover();
+  await page.waitForSelector('#lct-export-bar button[data-act="carry"]', { state: "visible" });
+  await page.click('#lct-export-bar button[data-act="carry"]');
+  await page.waitForSelector("#lct-carry", { timeout: 5000 });
+  t("B17 the panel opens from the toolbar", await page.isVisible("#lct-carry"));
+
+  /* Everything below goes through the panel rather than the module: content
+     scripts live in an isolated world, so page.evaluate cannot see LCTCarry —
+     and the UI is the thing a user actually meets anyway. "Copy instead" is
+     the honest way to read what would travel. */
+  await page.click("#lct-carry .lct-c-ghost");
+  await page.waitForTimeout(400);
+  const carryText = await page.evaluate(() => navigator.clipboard.readText().catch(() => ""));
+
+  t("B17 the handover opens with what you originally asked",
+    /## What I originally asked/.test(carryText));
+  t("B17 it carries how the conversation ended",
+    /## How the conversation ended/.test(carryText));
+  t("B17 it says it is context, and asks the model to pick up from it",
+    /continuing an earlier conversation/i.test(carryText), carryText.slice(0, 70));
+  t("B17 it fits in a prompt box", carryText.length > 200 && carryText.length <= 6000,
+    String(carryText.length));
+
+  // Everything carried is quoted from the chat. There is no summariser here —
+  // no server, no API key — and inventing one would put words in the user's
+  // mouth. Every substantial line must be findable in the conversation itself.
+  t("B17 nothing is invented — every line traces to the conversation",
+    await page.evaluate((text) => {
+      const body = document.getElementById("chat").textContent;
+      return text.split("\n")
+        .filter((l) => l.length > 60 && !l.startsWith("#") && !/^I'm continuing/.test(l))
+        .map((l) => l.replace(/^\*\*(Me|You):\*\* /, "").replace(/^- /, "").split(" […]")[0])
+        .every((l) => body.includes(l.slice(0, 50)));
+    }, carryText), carryText.slice(0, 80));
+
+  // Reopen: the panel must show the size before anything happens, and
+  // unticking a section must actually shrink what travels.
+  await page.locator("#lct-minimap").hover();
+  await page.waitForSelector('#lct-export-bar button[data-act="carry"]', { state: "visible" });
+  await page.click('#lct-export-bar button[data-act="carry"]');
+  await page.waitForSelector("#lct-carry", { timeout: 5000 });
+  const sizeText = await page.textContent("#lct-carry .lct-c-size");
+  t("B17 the panel shows the size before anything happens",
+    /\d[\d,]* characters/.test(sizeText), sizeText);
+  const fullSize = Number(sizeText.replace(/[^\d]/g, ""));
+  await page.uncheck("#lct-c-recent");
+  await page.waitForTimeout(150);
+  const smaller = Number((await page.textContent("#lct-carry .lct-c-size")).replace(/[^\d]/g, ""));
+  t("B17 unticking a section removes it from the handover",
+    smaller > 0 && smaller < fullSize, `${smaller} < ${fullSize}`);
+  await page.evaluate(() => document.getElementById("lct-carry")?.remove());
+
+  /* Delivery. The staged handover must land in the prompt box of an EMPTY
+     conversation and nowhere else — dropping it into a chat already in
+     progress would be worse than not delivering it. */
+  await pop.evaluate((text) => chrome.storage.local.set({
+    "lct-carry-v1": { platform: "synthetic", text, at: Date.now() }
+  }), carryText);
+  await page.reload();
+  await page.waitForFunction(() => !!document.getElementById("lct-minimap"), null, { timeout: 8000 });
+  await page.waitForTimeout(800);
+  t("B17 a handover is NOT delivered into a conversation already in progress",
+    await page.evaluate(() => (document.getElementById("t-composer")?.value || "") === ""));
+  t("B17 …and it is left on the shelf, not thrown away",
+    await pop.evaluate(async () => !!(await chrome.storage.local.get("lct-carry-v1"))["lct-carry-v1"]));
+
+  // Now an empty one: same page with the transcript removed.
+  await page.evaluate(() => document.getElementById("chat").replaceChildren());
+  await page.evaluate(() => { document.getElementById("t-composer").value = ""; });
+  await page.reload();
+  await page.waitForTimeout(500);
+  await page.evaluate(() => document.getElementById("chat").replaceChildren());
+  await page.waitForFunction(() =>
+    (document.getElementById("t-composer")?.value || "").length > 100, null, { timeout: 12000 })
+    .catch(() => {});
+  const delivered = await page.evaluate(() => document.getElementById("t-composer")?.value || "");
+  t("B17 into an empty chat, the context lands in the prompt box",
+    /continuing an earlier conversation/i.test(delivered), delivered.slice(0, 60));
+  t("B17 nothing is sent — it waits in the box for the user",
+    await page.evaluate(() => document.querySelectorAll("[data-lct-message]").length === 0));
+  t("B17 a delivered handover is taken off the shelf",
+    await pop.evaluate(async () => !(await chrome.storage.local.get("lct-carry-v1"))["lct-carry-v1"]));
+  await page.reload();
+  await page.waitForFunction(() => !!document.getElementById("lct-minimap"), null, { timeout: 10000 });
+
+  /* ---- B18. Being told BEFORE the wall ----
+     The reason to read an allowance at all. Every account from people who live
+     with these limits says the same thing: no meter, no countdown, and the
+     first signal is "usage limit reached" — by which point the session is over
+     and the context they built is gone. A panel that says "100% left" answers
+     a question nobody asks; a notification at 20% is the product. */
+  /* The worker is stopped and restarted by Chrome whenever it goes idle, which
+     takes any stub with it. So the stub is re-armed immediately before every
+     step, and the reading is handed to the worker's own function rather than
+     posted as a message — nothing here should depend on a round trip that a
+     restart can land in the middle of. */
+  const armNotes = async () => {
+    const w = ctx.serviceWorkers()[0] || await ctx.waitForEvent("serviceworker", { timeout: 10000 });
+    await w.evaluate(() => {
+      self.__notes = [];
+      chrome.notifications.create = (id, opts) => { self.__notes.push({ id, opts }); return Promise.resolve(id); };
+    });
+    return w;
+  };
+
+  const setWarn = (on) => pop.evaluate((v) => chrome.storage.local.set({
+    settings: { enabled: true, minimap: true, time: true, history: false, quota: true, quotaWarn: v }
+  }), on);
+
+  /** Feed the worker a reading the way an observed response arrives. */
+  const observe = async (pct, opts = {}) => {
+    const w = await armNotes();
+    return w.evaluate(async ([p, withReset, fresh]) => {
+      if (fresh) await chrome.storage.local.remove(["quota:chatgpt|", "lct-quota-warned-v1"]);
+      else await chrome.storage.local.remove("quota:chatgpt|");   // same window, new reading
+      const json = { remaining: p, limit: 100 };
+      if (withReset) json.resets_at = new Date(Date.now() + 36e5).toISOString();
+      await quotaObserved("chatgpt.com", [{ kind: "body", at: Date.now(), json }], "");
+      await new Promise((r) => setTimeout(r, 250));
+      return self.__notes.map((n) => n.opts);
+    }, [pct, opts.reset !== false, !!opts.fresh]);
+  };
+
+  await setWarn(true);
+
+  const plenty = await observe(80, { fresh: true });
+  t("B18 a healthy allowance says nothing at all", plenty.length === 0, JSON.stringify(plenty));
+
+  const low = await observe(15);
+  t("B18 under 20% the user is told, before the wall",
+    low.length === 1 && /15%/.test(low[0].title) && /ChatGPT/.test(low[0].title),
+    JSON.stringify(low.map((n) => n.title)));
+  t("B18 the warning says when it comes back, not just that it is low",
+    low.length === 1 && /resets at \d/.test(low[0].message), JSON.stringify(low[0] && low[0].message));
+
+  // Same window, same level: re-reading a number is not news.
+  const again = await observe(14);
+  t("B18 it does not nag — one warning per level, per window",
+    again.length === 0, JSON.stringify(again.map((n) => n.title)));
+
+  // Falling to the next level IS news.
+  const worse = await observe(7);
+  t("B18 dropping to the next level warns again",
+    worse.length === 1 && /7%/.test(worse[0].title), JSON.stringify(worse.map((n) => n.title)));
+
+  // And the user can switch it off.
+  await setWarn(false);
+  const muted = await observe(9, { fresh: true });
+  t("B18 warnings off means silence", muted.length === 0, JSON.stringify(muted));
+  await setWarn(true);
+
+  // A reading with no reset cannot be told apart from the same reading twice,
+  // so it must stay quiet rather than fire on every re-read.
+  const noReset = await observe(5, { fresh: true, reset: false });
+  t("B18 a reading with no reset window stays quiet rather than repeating",
+    noReset.length === 0, JSON.stringify(noReset));
+
+  await pop.evaluate(() => chrome.storage.local.remove(["quota:chatgpt|", "lct-quota-warned-v1"]));
 
   /* ---- B14. First run ----
      The extension's whole value is three keystrokes and a background archive,

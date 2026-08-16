@@ -27,7 +27,7 @@
     <main>
       <section class="pulse" aria-label="Live statistics">
         <span class="pulse-num" id="stat-windowed">0</span>
-        <span class="pulse-label">messages asleep right now</span>
+        <span class="pulse-label" id="stat-label">messages asleep right now</span>
         <div id="usage-bars"></div>
       </section>
 
@@ -78,7 +78,11 @@
           </span>
           <span class="row-text">
             <span class="row-title">Allowance tracking</span>
-            <span class="row-sub">Reads how much of each plan's limit is left — <a href="#" id="quota-diag-link">check accuracy</a></span>
+            <!-- The row title already says what this is, and the verdict line
+                 above the dial says what it found. This line is for the two
+                 controls, which both have to FIT: with the description in
+                 front of them, "check accuracy" fell off the end of the row. -->
+            <span class="row-sub"><a href="#" id="quota-warn-link">warn me at 20%</a> · <a href="#" id="quota-diag-link">check accuracy</a></span>
           </span>
           <input type="checkbox" id="toggle-quota" checked />
         </label>

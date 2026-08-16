@@ -594,6 +594,54 @@
 #lct-bridge .lct-b-insert:hover { background: #ff86a6; }
 #lct-bridge .lct-b-insert:disabled { opacity: 0.45; cursor: default; }
 
+/* ---------- continue in a new chat ----------
+   Centred, because this is a decision rather than a notification: it is about
+   to open a tab and write into it, so it asks in the middle of the screen and
+   shows exactly what will travel. */
+#lct-carry {
+  position: fixed;
+  left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 2147483004;
+  width: min(460px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  padding: 18px 20px 16px;
+  border-radius: 16px;
+  background: var(--lct-surface-strong);
+  border: 1px solid var(--lct-line);
+  box-shadow: var(--lct-shadow);
+  color: var(--lct-ink);
+  font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+#lct-carry .lct-c-title { font-weight: 650; font-size: 15px; }
+#lct-carry .lct-c-sub { margin-top: 5px; color: var(--lct-muted); font-size: 12.5px; }
+#lct-carry .lct-c-opts { margin: 14px 0 4px; display: grid; gap: 2px; }
+#lct-carry .lct-c-opt {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 8px 9px; border-radius: 10px; cursor: pointer;
+}
+#lct-carry .lct-c-opt:hover { background: var(--lct-accent-soft); }
+#lct-carry .lct-c-opt.lct-c-off { opacity: .45; cursor: default; }
+#lct-carry .lct-c-opt.lct-c-off:hover { background: none; }
+#lct-carry .lct-c-opt input { margin-top: 2px; accent-color: var(--lct-accent); flex: none; }
+#lct-carry .lct-c-opt b { display: block; font-weight: 550; font-size: 12.5px; }
+#lct-carry .lct-c-opt i { display: block; margin-top: 1px; color: var(--lct-muted); font-style: normal; font-size: 11.5px; }
+#lct-carry .lct-c-foot {
+  display: flex; align-items: center; gap: 10px;
+  margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--lct-line);
+}
+#lct-carry .lct-c-size { flex: 1; color: var(--lct-muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+#lct-carry button {
+  flex: none; padding: 8px 15px; border-radius: 9px; cursor: pointer;
+  font: 600 12.5px/1 inherit; border: 1px solid var(--lct-line);
+  background: transparent; color: var(--lct-ink);
+}
+#lct-carry .lct-c-go { border-color: transparent; background: var(--lct-accent); color: #fff; }
+#lct-carry .lct-c-go:disabled { opacity: .45; cursor: default; }
+#lct-carry .lct-c-ghost { color: var(--lct-muted); }
+#lct-carry .lct-c-ghost:hover { color: var(--lct-ink); }
+
 /* ---------- first-run hint ----------
    Shown once, ever. Docked left of the minimap so it never lands on the resume
    chip or the note toast, both of which live in the bottom-centre lane. */

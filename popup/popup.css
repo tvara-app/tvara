@@ -177,7 +177,7 @@ main { padding: 0 var(--gutter); }
    The legend borrows the row stack's hairlines — it is the same list, smaller. */
 
 #usage-bars { flex-basis: 100%; }
-#usage-bars:not(:empty) { margin-top: 6px; margin-bottom: 2px; }
+#usage-bars:not(:empty) { margin-top: 4px; margin-bottom: 0; }
 
 .usage-panel { display: flex; align-items: center; gap: 15px; }
 
@@ -508,6 +508,21 @@ body.searching footer { display: none; }
 @keyframes orbit { to { transform: rotate(360deg); } }
 
 /* ---------- pro / state ---------- */
+
+/* The one line that answers "am I about to be cut off?" — the rings below are
+   the detail behind it, not the answer itself. */
+.usage-verdict {
+  /* Tight on purpose: the popup has a fixed surface and the free state — with
+     the trial card — is the tallest one. This line is worth a row; it is not
+     worth two. */
+  margin: 5px 0 0;
+  color: var(--ink-dim);
+  font-size: 10.5px;
+  line-height: 1.3;
+}
+.usage-verdict.hot { color: var(--ember); font-weight: 600; }
+/* The warning link states its own setting, so "off" has to look off. */
+#quota-warn-link.off { color: var(--ink-faint); text-decoration-style: dotted; }
 
 .pro-card, .state-card {
   margin-top: 5px;

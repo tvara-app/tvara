@@ -86,6 +86,7 @@
         "content/chatcard.js",
         "content/recall.js",
         "content/bridge.js",
+        "content/carry.js",
         "content/main.js"
       ],
       "css": [

@@ -257,5 +257,13 @@
     // content-script hotkey, so no OS/browser reserved-combo clashes
   }
 
-  self.LCTBridge = { init, open, close, get isOpen() { return isOpen; } };
+  /* Insertion is the Bridge's hard-won part — the setter dance for React
+     textareas, the execCommand path for contenteditable, and the clipboard
+     when a host gives us neither. "Continue in a new chat" needs exactly the
+     same thing, and a second copy of it would be a second thing to get wrong
+     the next time a host changes its editor. */
+  self.LCTBridge = {
+    init, open, close, get isOpen() { return isOpen; },
+    composer, injectInto, toClipboard
+  };
 })();

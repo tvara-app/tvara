@@ -382,5 +382,17 @@
     );
   }
 
-  self.LCTOutline = { init, update, toggle, open, close, setEnabled, get isOpen() { return isOpen; } };
+  /* The starred messages are the user's own judgement about what mattered in
+     this conversation — the single best thing to carry into a new one. */
+  function starred() {
+    return Object.values(stars)
+      .filter((v) => v && v.s)
+      .sort((a, b) => (a.t || 0) - (b.t || 0))
+      .map((v) => v.s);
+  }
+
+  self.LCTOutline = {
+    init, update, toggle, open, close, setEnabled, starred,
+    get isOpen() { return isOpen; }
+  };
 })();

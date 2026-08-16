@@ -142,5 +142,10 @@
     return { ok: true, count: messages.length };
   }
 
-  self.LCTExporter = { exportChat };
+  /* extract() and elementToText() are the only correct way to get readable
+     text out of these hosts — innerText on a clone loses every line break, and
+     a plain textContent welds paragraphs together. "Continue in a new chat"
+     needs the same reading, so it borrows this one rather than growing a
+     second, worse copy. */
+  self.LCTExporter = { exportChat, extract, elementToText };
 })();

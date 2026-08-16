@@ -430,6 +430,9 @@
       <button data-act="outline" title="Outline &amp; starred messages" aria-label="Outline and starred messages">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg>
       </button>
+      <button data-act="carry" title="Continue in a new chat — carry the goal, your starred messages and the last few turns into a fresh conversation" aria-label="Continue in a new chat">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h13"/><path d="m13 6 6 6-6 6"/><path d="M20 4v16" opacity=".45"/></svg>
+      </button>
       <button data-act="history" title="Mount every older message in the page itself — for the site's own Ctrl+F and a full backup. The map is already complete without this." aria-label="Mount every older message in the page">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V5"/><path d="m6 11 6-6 6 6"/><path d="M4 3h16"/></svg>
       </button>
@@ -456,6 +459,10 @@
       const act = e.target.closest("button[data-act]");
       if (act) {
         if (!toolsUnlocked()) return showUpgradeNote();
+        if (act.dataset.act === "carry") {
+          if (!lastMessages.length) return flashNote("Nothing to carry over yet — open a conversation first.");
+          return self.LCTCarry.open(lastMessages);
+        }
         if (act.dataset.act === "history") {
           const began = self.LCTHistoryLoader.start(adapter);
           flashNote(began
@@ -480,6 +487,9 @@
   }
 
   let noteTimer = null;
+  // Shared, so a module loaded before this one can still speak in the same
+  // voice instead of inventing a second toast.
+  self.LCTNote = (text) => flashNote(text);
   function flashNote(text) {
     let n = document.getElementById("lct-note");
     if (!n) {
@@ -875,5 +885,9 @@
     seedFromProvider();
     if (state.enabled) kickVisitSync();
     maybeHint();
+    // A handover staged by "Continue in a new chat" is waiting on the other
+    // side of window.open. Only ever into an empty conversation, and only for
+    // a few minutes — see carry.js.
+    if (state.enabled && toolsUnlocked()) self.LCTCarry.deliver();
   });
 })();

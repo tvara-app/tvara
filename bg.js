@@ -2846,6 +2846,89 @@ async function quotaAcctFor(adapter, ctx) {
 
 /** Merge a reading into the stored record. The single writer — see
  *  content/quota.js for why this is not done in the content script. */
+/* ---------- running out ----------
+   The whole reason to read an allowance at all. Every account of this feature
+   from the people who live with it says the same thing: there is no meter, no
+   countdown and no warning — the first signal is "usage limit reached", by
+   which point the session is over and the context you had built is gone.
+
+   A panel showing "100% left" answers a question nobody asks. Being told at
+   20% is the product. So this fires at most twice per window, per account, and
+   only downward:
+
+     · once under 20%, once under 10%
+     · keyed to the window's own reset time, so a rollover re-arms it and a
+       re-read of the same window does not fire twice
+     · never when allowance tracking is off, and never when the user has said
+       they do not want warnings
+
+   No notification is worth a wrong one, so a reading with no percentage or no
+   reset produces silence rather than a guess. */
+const QUOTA_WARN_KEY = "lct-quota-warned-v1";
+const QUOTA_WARN_STEPS = [20, 10];
+
+async function quotaMaybeWarn(platformId, acct, record) {
+  let settings = null;
+  try { settings = (await chrome.storage.local.get("settings")).settings; } catch { return; }
+  if (settings && settings.quota === false) return;
+  if (settings && settings.quotaWarn === false) return;
+
+  const win = self.LCTQuota.primary(record);
+  const pct = win && typeof win.pctLeft === "number" ? win.pctLeft : null;
+  if (pct === null) return;
+
+  /* The MOST SEVERE level crossed, not the first one listed. `find` returned 20
+     for a reading of 7% — so falling from 15% to 7% looked like the same level
+     already warned about, and the one warning that matters most never fired. */
+  const crossed = QUOTA_WARN_STEPS.filter((s) => pct <= s);
+  if (!crossed.length) return;
+  const step = Math.min(...crossed);
+
+  /* The window's own reset is the identity of "this window". Without one we
+     cannot tell a fresh drop from the same drop re-read, so we stay quiet.
+
+     Bucketed to five minutes rather than used to the millisecond: providers
+     re-state the same deadline with a little drift — a rolling "in 3600
+     seconds" resolves to a different absolute time on every read — and an
+     identity that moves is an identity that re-arms the warning every time
+     anyone looks. That is a notification every minute, which is how a useful
+     warning becomes one people turn off. */
+  const windowId = win.resetAt ? Math.round(win.resetAt / 3e5) : 0;
+  if (!windowId) return;
+
+  const id = `${platformId}|${acct || ""}`;
+  let seen = {};
+  try { seen = (await chrome.storage.local.get(QUOTA_WARN_KEY))[QUOTA_WARN_KEY] || {}; } catch { /* first time */ }
+  const already = seen[id];
+  // Same window, and we have already said something at this level or lower.
+  if (already && already.windowId === windowId && already.step <= step) return;
+
+  seen[id] = { windowId, step, at: Date.now() };
+  /* Prune by WHEN WE WARNED, not by the window id — the id is a five-minute
+     bucket, not a timestamp, and treating it as one made every record look
+     ancient the instant it was written. Which meant the ledger was always
+     empty, and every re-read of the same low number warned again. */
+  for (const [k, v] of Object.entries(seen)) {
+    if (!v || !v.at || v.at + 7 * 864e5 < Date.now()) delete seen[k];
+  }
+  try { await chrome.storage.local.set({ [QUOTA_WARN_KEY]: seen }); } catch { /* dead context */ }
+
+  const label = (BG_ADAPTERS.find((a) => a.id === platformId) || {}).label || platformId;
+  const when = win.resetAt ? new Date(win.resetAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";
+  try {
+    if (!chrome.notifications || !chrome.notifications.create) return;
+    await chrome.notifications.create(`lct-quota-${id}`, {
+      type: "basic",
+      iconUrl: chrome.runtime.getURL("icons/icon128.png"),
+      title: `${label}: ${Math.round(pct)}% of your allowance left`,
+      message: when
+        ? `Wrap up or switch models — it resets at ${when}.`
+        : "Wrap up or switch models before it runs out.",
+      priority: pct <= 10 ? 2 : 1
+    });
+  } catch { /* notifications unavailable — the popup still shows it */ }
+}
+
 async function quotaStore(platformId, acct, reading) {
   const key = quotaKey(platformId, acct);
   try {
@@ -2857,6 +2940,7 @@ async function quotaStore(platformId, acct, reading) {
     // three into a repaint loop. A re-read that says the same thing is not news.
     if (held[key] && JSON.stringify(held[key]) === JSON.stringify(merged)) return merged;
     await chrome.storage.local.set({ [key]: merged });
+    quotaMaybeWarn(platformId, acct, merged).catch(() => { /* never block a write */ });
     return merged;
   } catch {
     return null;
