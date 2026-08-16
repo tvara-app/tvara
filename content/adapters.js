@@ -573,8 +573,22 @@
      The media test is the reason this is not just a text check: a message whose
      whole content is an image or an audio clip has no text either, and dropping
      those would trade one wrong count for another. */
-  const MEDIA = "img,video,audio,canvas,picture,object,embed,iframe," +
-                '[data-testid*="attachment" i],[class*="attachment" i],[aria-label*="image" i]';
+  /* Media that is actually CARRYING something. The first version of this list
+     accepted a bare <img> or <iframe>, which is how 121 empty placeholders on a
+     live ChatGPT conversation walked straight through a filter written to catch
+     them: an element with no text and a sourceless child is not a message with
+     a picture in it, it is scaffolding.
+
+     Attribute presence only — no getBoundingClientRect, no getComputedStyle.
+     This runs inside messages(), which the engine calls on every tick; a layout
+     read per element per tick would cost more than the lag the engine removes. */
+  const MEDIA = [
+    "img[src]", "img[srcset]", "img[alt]:not([alt=''])",
+    "video[src]", "video source[src]", "audio[src]", "audio source[src]",
+    "canvas", "object[data]", "embed[src]", "iframe[src]",
+    'svg[role="img"]',
+    '[data-testid*="attachment" i]', '[class*="attachment" i]'
+  ].join(",");
 
   function substantive(el) {
     if (!el || !el.nodeType) return false;

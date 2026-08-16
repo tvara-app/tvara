@@ -693,8 +693,21 @@
       // The question the counts raised: are these nodes MESSAGES, or the empty
       // placeholders a virtualizing host leaves behind for turns it has not
       // mounted? An element with no text is not a message anyone can read.
-      if (!(el.textContent || "").trim()) s += "[empty]";
-      else if ((el.textContent || "").trim().length < 8) s += "[tiny]";
+      if (!(el.textContent || "").trim()) {
+        s += "[empty]";
+        /* An element with no text that is still being treated as a message got
+           there by matching the media test — a message whose whole content is
+           an image has no text either. Which media, and what is actually
+           inside these things, is the difference between a filter that works
+           and one that reports 121 placeholders as messages. Tag names only:
+           structure, never content. */
+        const kids = new Set();
+        for (const k of el.querySelectorAll("*")) {
+          kids.add(k.tagName.toLowerCase());
+          if (kids.size >= 4) break;
+        }
+        s += kids.size ? `[has:${[...kids].join(",")}]` : "[hollow]";
+      } else if ((el.textContent || "").trim().length < 8) s += "[tiny]";
       return s;
     };
     const shapes = {};
