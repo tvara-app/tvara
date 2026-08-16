@@ -206,6 +206,8 @@ ${wanted.length} tab${wanted.length === 1 ? "" : "s"} open. Before pressing Ente
         : `partly matching — ${h.selectors}`,
       rows: [
         ["messages seen", String(h.messages)],
+        ["the provider's own count for this chat",
+          typeof h.providerCount === "number" ? String(h.providerCount) : "no index on this platform"],
         ["elements matched before empty turns were dropped",
           h.matched === undefined ? "n/a" : `${h.matched}${h.dropped ? ` (${h.dropped} dropped)` : ""}`],
         ["matching the platform's own attributes", `${h.canonical} of ${h.messages}`],

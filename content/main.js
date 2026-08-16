@@ -195,11 +195,20 @@
      could not sit still. The provider hands the whole conversation over in one
      request the background already makes — so the map arrives complete and the
      viewport never moves. */
+  /* The provider's own count for the open conversation, kept for the health
+     check. It is the only GROUND TRUTH available about how many messages this
+     chat really has — everything else we report is a reading of a DOM that the
+     host is free to fill with whatever it likes. When the two disagree, the
+     DOM is the one that is wrong. */
+  let providerCount = null;
+
   function seedFromProvider() {
     if (!state.enabled || !state.minimap || !toolsUnlocked()) return;
     const route = routeId();
     self.LCTChatIndex.load(adapter, (entries) => {
-      if (routeId() === route) self.LCTMinimap.seed(entries, route);
+      if (routeId() !== route) return;
+      providerCount = Array.isArray(entries) ? entries.length : null;
+      self.LCTMinimap.seed(entries, route);
     });
   }
 
@@ -771,6 +780,9 @@
       platform: adapter.label,     // "ChatGPT", not a capitalised hostname
       inConversation: adapter.convPath ? adapter.convPath.test(location.pathname) : null,
       messages: messages.length,
+      // What the provider itself says this conversation contains. Null where a
+      // platform publishes no index (Gemini, Perplexity) — absent, not zero.
+      providerCount,
       matched,
       dropped: Math.max(0, matched - messages.length),
       canonical,

@@ -110,6 +110,10 @@
       const yn = (x) => x === null ? "n/a" : x === "threw" ? "the lookup failed" : x ? "yes" : "no";
       el.append(
         row("messages seen", String(h.messages)),
+        row("the provider's own count for this chat",
+          typeof h.providerCount === "number"
+            ? `${h.providerCount}${h.providerCount === h.messages ? " — agrees" : ` · we see ${h.messages}`}`
+            : "this platform publishes no index"),
         row("elements matched, before empty turns were dropped",
           h.matched === undefined ? "n/a"
             : h.dropped ? `${h.matched} — ${h.dropped} dropped as unmounted placeholders`
@@ -155,6 +159,21 @@
           "export all read that guess.";
         el.append(n);
       }
+      /* The disagreement that settles every argument about a count. The DOM is
+         whatever the host felt like rendering; the provider's index is what the
+         conversation actually contains. */
+      if (typeof h.providerCount === "number" && h.providerCount !== h.messages) {
+        const n = document.createElement("p");
+        n.className = "consequence";
+        const extra = h.messages - h.providerCount;
+        n.textContent = extra > 0
+          ? `We are showing ${extra} more message(s) than the provider says this chat has. ` +
+            "Those are the host's own empty blocks, and they should not be counted."
+          : `The provider lists ${-extra} message(s) this page has not mounted yet — ` +
+            "normal on a long chat that has only rendered its tail.";
+        el.append(n);
+      }
+
       // The shapes that were matched, in plain sight. When a count or a split
       // makes no sense, this is the line that says what the page is actually
       // made of — structural attributes only, no text and no ids.

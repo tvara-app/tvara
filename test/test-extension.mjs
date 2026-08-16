@@ -2868,6 +2868,12 @@ try {
     JSON.stringify({ read: direct.roleRead, of: direct.messages }));
   t("B15 the report notices a turn counted twice", direct.nested === 0,
     String(direct.nested));
+  // Ground truth. Every other number on the card is a reading of a DOM the
+  // host fills with whatever it likes; this is what the conversation actually
+  // contains, and when the two disagree the DOM is the one that is wrong.
+  t("B15 the report carries the provider's own count when there is one",
+    direct.providerCount === null || typeof direct.providerCount === "number",
+    JSON.stringify(direct.providerCount));
   // When a count or a split makes no sense, these are the lines that say what
   // the page is actually made of.
   t("B15 the report says WHERE each role was found",
