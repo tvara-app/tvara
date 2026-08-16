@@ -155,10 +155,24 @@ never the selectors.
 ### Letting the checks run themselves
 
 ```bash
-./tools/chrome-debug.sh   # once per session — a Chrome with a debugging port
-npm run attach            # read the health report out of the tabs you have open
-npm run attach:watch      # …and keep reading it every 30s while you work
+./tools/chrome-clone.sh --list        # your Chrome profiles, by name
+./tools/chrome-clone.sh "Profile 3"   # clone that one, open it with a debug port
+npm run attach                        # read the health report out of its tabs
 ```
+
+`chrome-clone` copies the profile you name — cookies, sessions, extensions —
+into `~/.lct-chrome` and launches THAT. So the browser under test is the one
+you actually use, already signed in, rather than a blank one you have to set up
+twice. The original is untouched; `rm -rf ~/.lct-chrome` forgets the copy.
+
+It has to be a copy: since Chrome 136 the debugging port is refused on your
+normal profile directory, on purpose, so that a page you visit cannot reach a
+browser holding all your logins. The clone carries the live sessions of
+whichever profile you pick, so pick the one you test with.
+
+Or `./tools/chrome-debug.sh` for the same thing with an empty profile, when
+you would rather sign in fresh than copy anything. `npm run attach:watch`
+re-reads every 30s while you work.
 
 `attach` talks to a Chrome you are already using instead of driving one of its
 own: same tabs, same logins, nothing to sign into twice. It asks the
