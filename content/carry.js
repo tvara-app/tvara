@@ -102,7 +102,9 @@
         .join("\n\n"));
     }
 
-    let text = out.join("\n");
+    // Sections already begin with their own break; joining with another gives
+    // five blank lines before every heading in a ProseMirror composer.
+    let text = out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
     if (text.length <= max) return text;
 
     /* Over budget. Drop from the MIDDLE of the recent turns rather than
@@ -117,9 +119,17 @@
     return text.length > max ? clip(text, max) : text;
   }
 
+  const IMAGE_ONLY = /^(\[image:[^\]]*\]|\[image\]|\s)+$/;
+
   function gather(messages) {
     const recs = collect(messages);
-    const firstUser = recs.find((r) => r.role === "user");
+    /* "What you originally asked" has to be a QUESTION. On a real chat the
+       first user turn was a pasted screenshot, so the handover opened with a
+       file name and told the next model nothing. Take the first user message
+       that actually says something, and fall back to the literal first only if
+       there is nothing else. */
+    const firstUser = recs.find((r) => r.role === "user" && !IMAGE_ONLY.test(r.text) && r.text.length > 12)
+      || recs.find((r) => r.role === "user");
     return {
       goal: firstUser ? firstUser.text : "",
       starred: (self.LCTOutline && self.LCTOutline.starred ? self.LCTOutline.starred() : []).slice(0, 8),

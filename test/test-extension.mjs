@@ -2602,6 +2602,15 @@ try {
     /continuing an earlier conversation/i.test(carryText), carryText.slice(0, 70));
   t("B17 it fits in a prompt box", carryText.length > 200 && carryText.length <= 6000,
     String(carryText.length));
+  // Five blank lines before every heading is what joining pre-broken sections
+  // gives you, and a composer renders every one of them.
+  t("B17 it is not padded with blank lines",
+    !/\n{3,}/.test(carryText), JSON.stringify(carryText.slice(0, 120)));
+  // The opening section has to be a question. On a live chat the first user
+  // turn was a screenshot, so it opened with a file name and said nothing.
+  t("B17 the opening section is something that was actually asked",
+    !/## What I originally asked\n\[image:[^\]]*\]\s*(\n#|$)/.test(carryText),
+    carryText.slice(0, 140));
 
   // Everything carried is quoted from the chat. There is no summariser here —
   // no server, no API key — and inventing one would put words in the user's
