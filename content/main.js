@@ -703,7 +703,7 @@
       // placeholders a virtualizing host leaves behind for turns it has not
       // mounted? An element with no text is not a message anyone can read.
       if (!(el.textContent || "").trim()) {
-        s += "[empty]";
+        s += el.querySelector("img[src],img[srcset],video,canvas") ? "[image-only]" : "[empty]";
         /* An element with no text that is still being treated as a message got
            there by matching the media test — a message whose whole content is
            an image has no text either. Which media, and what is actually
@@ -733,7 +733,12 @@
        a layout, so it is capped and only paid on demand — this whole report is
        something a person clicked a button to get. */
     const SAMPLE = 400;
-    const substance = { empty: 0, tiny: 0, real: 0, unrendered: 0,
+    /* "empty" was doing two jobs and getting one of them wrong. A message that
+       is a pasted screenshot with no caption has no TEXT, but it is not empty
+       and it is certainly not a placeholder — on a live 591-message chat, 122
+       of the user's turns were exactly that, and the report called every one of
+       them scaffolding. Media and nothing are different states now. */
+    const substance = { empty: 0, tiny: 0, real: 0, image: 0, unrendered: 0,
                         emptyUser: 0, emptyAssistant: 0,
                         // Both this and the shape list read the first SAMPLE
                         // elements. A capped number presented as a total is the
@@ -743,8 +748,12 @@
       try {
         const text = (el.textContent || "").trim();
         if (!text) {
-          substance.empty++;
-          adapter.role(el) === "user" ? substance.emptyUser++ : substance.emptyAssistant++;
+          const hasMedia = el.querySelector("img[src],img[srcset],video,canvas,[data-testid*='attachment' i]");
+          if (hasMedia) substance.image++;
+          else {
+            substance.empty++;
+            adapter.role(el) === "user" ? substance.emptyUser++ : substance.emptyAssistant++;
+          }
         } else if (text.length < 8) substance.tiny++;
         else substance.real++;
         // An asleep message keeps its frozen height, so zero here means the

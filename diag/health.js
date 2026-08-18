@@ -133,9 +133,10 @@
           h.distinctIds ? `${h.distinctIds.distinct} ids for ${h.distinctIds.of} elements`
                         : "this platform assigns no ids"),
         row("counted twice (a message inside a message)", String(h.nested ?? 0)),
-        row("elements with actual text in them",
+        row("what those elements contain",
           h.substance
-            ? `${h.substance.real} real · ${h.substance.tiny} near-empty · ${h.substance.empty} empty` +
+            ? `${h.substance.real} text · ${h.substance.image || 0} image-only · ` +
+              `${h.substance.tiny} near-empty · ${h.substance.empty} nothing at all` +
               (h.substance.sampled < h.messages ? ` (of the first ${h.substance.sampled})` : "")
             : "n/a"),
         row("elements the host is not rendering at all",
@@ -194,12 +195,21 @@
       // An element with no text is not a message anyone can read. If a host
       // leaves placeholders behind for turns it has not mounted, every count we
       // show — the minimap, "N asleep", the outline — is counting ghosts.
+      // Only genuine hollows are placeholders. An image-only turn is a message
+      // someone actually sent, and calling it scaffolding was the report being
+      // wrong about the user's own conversation.
       if (h.substance && h.substance.empty) {
         const n = document.createElement("p");
         n.className = "consequence";
-        n.textContent = `${h.substance.empty} matched element(s) contain no text at all ` +
-          `(${h.substance.emptyUser} filed as yours, ${h.substance.emptyAssistant} as the model's). ` +
-          "Those are placeholders, not messages — and every count on this card includes them.";
+        n.textContent = `${h.substance.empty} matched element(s) contain nothing at all — ` +
+          "no text and no image. Those are the host's own unmounted turns, and they are not counted as messages.";
+        el.append(n);
+      }
+      if (h.substance && h.substance.image) {
+        const n = document.createElement("p");
+        n.className = "consequence ok";
+        n.textContent = `${h.substance.image} message(s) are an image with no caption — a pasted ` +
+          "screenshot is still a message. They are counted, and the minimap and export name them by file.";
         el.append(n);
       }
       if (h.distinctIds && h.distinctIds.distinct < h.distinctIds.of) {

@@ -63,6 +63,19 @@
       out.push("\n");
       return;
     }
+    /* An image IS content. A message that is nothing but a screenshot came out
+       of here as an empty string — so it exported as a blank line, previewed as
+       nothing, and matched no search. On a live 591-message conversation, 122
+       of the user's turns were exactly that: a pasted screenshot with no
+       caption. The alt text these hosts write is the file name, which is the
+       most useful handle a person has on their own screenshots. */
+    if (tag === "img") {
+      const name = (node.getAttribute("alt") || "").trim() ||
+        (node.closest("[aria-label]")?.getAttribute("aria-label") || "")
+          .replace(/^Open image:\s*/i, "").trim();
+      out.push(name ? `[image: ${name}]` : "[image]");
+      return;
+    }
     const isBlock = BLOCK_RE.test(tag);
     if (isBlock) out.push("\n");
     if (tag === "li") out.push("- ");

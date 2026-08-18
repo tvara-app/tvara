@@ -986,6 +986,42 @@ try {
     const tip = document.getElementById("lct-mm-tooltip");
     return tip && tip.style.display === "block" ? tip.textContent : "";
   });
+  /* An image message previewed as nothing, exported as a blank line and matched
+     no search. These hosts write the file name into alt, which is the handle a
+     person actually has on their own screenshots — so the preview uses it.
+     Appended as a NEW message rather than by rewriting an old one: the minimap
+     caches a message's preview per element, which is correct in life and would
+     hide the change here. */
+  await page.evaluate(() => {
+    const div = document.createElement("div");
+    div.className = "msg user";
+    div.id = "lct-shot-msg";
+    div.setAttribute("data-lct-message", "");
+    div.setAttribute("data-lct-role", "user");
+    div.innerHTML = '<button aria-label="Open image: Screenshot 2026-04-07.png">' +
+      '<img alt="Screenshot 2026-04-07.png" src="data:image/gif;base64,R0lGODlhAQABAAAAACw="></button>';
+    document.getElementById("chat").appendChild(div);
+    window.scrollTo(0, document.body.scrollHeight);
+  });
+  await page.waitForTimeout(1600);
+  await page.hover("#lct-minimap");
+  await page.waitForTimeout(400);
+  const mmShot = await page.locator("#lct-mm-canvas").boundingBox();
+  let shotTip = "";
+  for (let i = 0; i < 10 && !/Screenshot/.test(shotTip); i++) {
+    await page.mouse.move(mmShot.x + 5, mmShot.y + mmShot.height - 1 - i);
+    await page.waitForTimeout(120);
+    shotTip = await page.evaluate(() => {
+      const t = document.getElementById("lct-mm-tooltip");
+      return t && t.style.display === "block" ? t.textContent : "";
+    });
+  }
+  t("B2h an image message previews by its file name, not as nothing",
+    /🖼/.test(shotTip) && /Screenshot 2026-04-07\.png/.test(shotTip), shotTip || "(no tooltip)");
+  await page.evaluate(() => document.getElementById("lct-shot-msg")?.remove());
+  await page.mouse.move(400, 400);
+  await page.waitForTimeout(500);
+
   t("B2f the hover preview keeps the gap between blocks",
     !!tipText && !/#\d+[A-Za-z]/.test(tipText) && !/[a-z][A-Z]/.test(tipText.replace(/ChatGPT|DeepSeek/g, "")),
     tipText);
@@ -2937,6 +2973,15 @@ try {
   t("B15 an image-only message is kept, not swept up with the placeholders",
     withImage.messages === before.messages - 4 && withImage.dropped === 4,
     JSON.stringify({ now: withImage.messages, dropped: withImage.dropped }));
+  /* A pasted screenshot with no caption is a message someone sent. On a live
+     591-message conversation 122 turns were exactly that, and the report filed
+     every one of them as a placeholder — which was the report being wrong about
+     the user's own chat, in the direction that reads as data loss. */
+  t("B15 an image-only message is reported as an image, not as nothing",
+    withImage.substance.image === 1 && withImage.substance.empty === 0,
+    JSON.stringify(withImage.substance));
+  t("B15 …and the shape list says image-only, not empty",
+    JSON.stringify(withImage.shapes).includes("[image-only]"), JSON.stringify(withImage.shapes));
 
   await page.evaluate(() => {
     for (const el of document.querySelectorAll("[data-lct-stash]")) {

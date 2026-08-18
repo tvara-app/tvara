@@ -302,6 +302,13 @@
       if (out.join("").length >= cap) return;
       if (child.nodeType === 3) {
         out.push(child.nodeValue);
+      } else if (child.nodeType === 1 && child.tagName === "IMG") {
+        // A pasted screenshot is the whole message often enough to deserve a
+        // name in the preview. These hosts put the file name in alt.
+        const name = (child.getAttribute("alt") || "").trim() ||
+          (child.closest("[aria-label]")?.getAttribute("aria-label") || "")
+            .replace(/^Open image:\s*/i, "").trim();
+        out.push(name ? `🖼 ${name}` : "🖼 image");
       } else if (child.nodeType === 1) {
         const block = BLOCK.test(child.tagName);
         if (block && out.length && !/\s$/.test(out[out.length - 1])) out.push(" ");
