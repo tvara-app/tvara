@@ -2760,6 +2760,44 @@ try {
 
   await pop.evaluate(() => chrome.storage.local.remove(["quota:chatgpt|", "lct-quota-warned-v1"]));
 
+  /* ---- B19b. Backing up a conversation the page only half holds ----
+     "Backed up the 197 loaded messages" on a 1,471-message thread is an honest
+     sentence about a backup that is 13% of the conversation — which is not what
+     anyone pressing a backup button believes they are getting. */
+  {
+    const deepE = await ctx.newPage();
+    trackErrors(deepE);
+    await deepE.goto("http://127.0.0.1:8917/test/virtual-history.html?index=1&total=1500&page=25");
+    await deepE.waitForSelector("#lct-minimap", { timeout: 20000 });
+    await pop.evaluate(async () => {
+      const msgs = Array.from({ length: 400 }, (_, i) => ({
+        i: "virtual-" + (i + 1), r: i % 2 ? "assistant" : "user", t: "archived body " + (i + 1)
+      }));
+      await new Promise((res) => chrome.runtime.sendMessage({
+        type: "recall-import",
+        chats: [{ id: "127.0.0.1/test/virtual-history.html", host: "127.0.0.1",
+          path: "/test/virtual-history.html", platform: "Test Page", title: "Virtual history",
+          n: msgs.length, updatedAt: Date.now(), msgs }]
+      }, res));
+    });
+    const mountedNow = await deepE.evaluate(() => document.querySelectorAll("[data-message-id]").length);
+    const dl = deepE.waitForEvent("download", { timeout: 15000 }).catch(() => null);
+    await deepE.hover("#lct-minimap");
+    await deepE.waitForSelector('#lct-export-bar button[data-fmt="md"]', { state: "visible" });
+    await deepE.click('#lct-export-bar button[data-fmt="md"]');
+    const file = await dl;
+    await deepE.waitForTimeout(1200);
+    const note = await deepE.evaluate(() => document.getElementById("lct-note")?.textContent || "");
+    t("B19b the backup is the whole conversation, not the loaded slice",
+      /whole conversation/.test(note) && /400/.test(note), note);
+    t("B19b …and it says how much the page had never loaded",
+      /had not loaded/.test(note), note);
+    t("B19b a file is actually produced", !!file, file ? file.suggestedFilename() : "none");
+    t("B19b the page was only holding a fraction of it",
+      mountedNow < 100, String(mountedNow));
+    await deepE.close();
+  }
+
   /* ---- B19. Searching the part of the conversation the page never loaded ----
      Measured on a live 1,471-message ChatGPT thread: "isaac" appeared in 217
      messages and the bar found 8, because the host had mounted 195. Every one

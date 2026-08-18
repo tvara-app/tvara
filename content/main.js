@@ -484,10 +484,16 @@
       const btn = e.target.closest("button[data-fmt]");
       if (!btn) return;
       if (!toolsUnlocked()) return showUpgradeNote();
-      const res = self.LCTExporter.exportChat(adapter, btn.dataset.fmt, timeFn());
-      if (res.ok) {
-        flashNote(`Backed up the ${res.count} loaded messages`);
-      }
+      /* Say which backup they got. "the 197 loaded messages" was honest and
+         quietly disappointing on a 1,471-message conversation; when the archive
+         completes it, the sentence should say so. */
+      self.LCTExporter.exportChat(adapter, btn.dataset.fmt, timeFn()).then((res) => {
+        if (!res || !res.ok) return;
+        flashNote(res.whole
+          ? `Backed up the whole conversation — ${res.count.toLocaleString()} messages, ` +
+            `including ${(res.count - res.loaded).toLocaleString()} this page had not loaded`
+          : `Backed up the ${res.count.toLocaleString()} loaded messages`);
+      }).catch(() => { /* the download either happened or it did not */ });
     });
   }
 

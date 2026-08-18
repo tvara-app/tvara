@@ -1065,7 +1065,28 @@
     const borrow = want > asIs;
     document.body.classList.toggle("searching", borrow);
     const room = borrow ? POPUP_CEILING - POPUP_GUARD - document.body.getBoundingClientRect().height : asIs;
-    box.style.setProperty("--recall-room", `${Math.max(RECALL_MIN_ROOM, Math.floor(room))}px`);
+    let px = Math.max(RECALL_MIN_ROOM, Math.floor(room));
+    box.style.setProperty("--recall-room", `${px}px`);
+
+    /* Then CHECK, rather than trust the arithmetic. Predicting this height is a
+       feedback loop — sizing the list changes the body it was measured against
+       — and every fudge factor added to the prediction was another number that
+       happened to work on one machine. Two correction passes settle it on any
+       of them: measure the overflow that actually happened and give back
+       exactly that many pixels. */
+    const settle = () => {
+      for (let pass = 0; pass < 2; pass++) {
+        const over = document.body.scrollHeight - document.body.clientHeight;
+        if (over <= 0 || px <= RECALL_MIN_ROOM) break;
+        px = Math.max(RECALL_MIN_ROOM, px - over - 1);
+        box.style.setProperty("--recall-room", `${px}px`);
+      }
+    };
+    settle();
+    /* Again after a frame. The rows are still being laid out when the first
+       pass runs, so the overflow it measures can be zero and then grow — which
+       is exactly how a correction loop convinces itself it has converged. */
+    requestAnimationFrame(settle);
     markRecallEdges();
   }
 

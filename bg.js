@@ -2206,6 +2206,32 @@ async function chatSearch(host, path, query) {
   };
 }
 
+/**
+ * One conversation, whole, for the export button.
+ *
+ * Exporting reads the page, and the page holds what the host mounted — 197 of
+ * 1,471 messages on a live thread. "Backed up the 197 loaded messages" is an
+ * honest sentence about a backup that is 13% of the conversation, which is not
+ * what anyone pressing a backup button believes they are getting.
+ *
+ * The archive on this machine has the rest. Same conversation, same machine,
+ * no network: this hands it back so the file on disk is the whole thing.
+ */
+async function chatArchive(host, path) {
+  const id = (String(host || "") + String(path || "")).slice(0, 600);
+  try {
+    const d = await db();
+    const rec = await reqP(tx(d, "readonly").get(id));
+    if (!rec || !Array.isArray(rec.msgs) || !rec.msgs.length) return { status: "missing" };
+    return {
+      status: "ok",
+      title: rec.title || "",
+      n: rec.n || rec.msgs.length,
+      msgs: rec.msgs.map((m) => ({ i: m.i || "", r: m.r, t: m.t || "", ts: m.ts || 0 }))
+    };
+  } catch { return { status: "unavailable" }; }
+}
+
 /** Forget a conversation. The only path that removes archived text. */
 async function dropChat(id) {
   try {
@@ -4520,6 +4546,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case "chat-index":         return chatIndex(msg.host, msg.path, { force: msg.force });
       case "chat-message":       return chatMessage(msg.host, msg.path, msg.id);
       case "chat-search":        return chatSearch(msg.host, msg.path, msg.q);
+      case "chat-archive":       return chatArchive(msg.host, msg.path);
       // "the page found this chat gone", not "delete this". Nothing outside
       // resolveDeletions() gets to remove archived text on request.
       case "chat-drop":          return noteVanished(msg.id, {}, "opened");

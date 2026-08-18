@@ -143,8 +143,52 @@
     return (document.title || "chat").toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 60);
   }
 
-  function exportChat(adapter, format, timeFn) {
-    const messages = extract(adapter, timeFn);
+  /**
+   * The archived copy of THIS conversation, when it has more of it than the
+   * page does. A host that mounts its recent tail hands the exporter 197 of
+   * 1,471 messages, and a backup that is 13% of a conversation is not a backup.
+   */
+  function archived(timeoutMs) {
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (v) => { if (!done) { done = true; resolve(v); } };
+      setTimeout(() => finish(null), timeoutMs || 2500);
+      try {
+        chrome.runtime.sendMessage({
+          type: "chat-archive", host: location.hostname, path: location.pathname
+        }, (res) => {
+          void chrome.runtime.lastError;
+          finish(res && res.status === "ok" ? res : null);
+        });
+      } catch { finish(null); }
+    });
+  }
+
+  async function exportChat(adapter, format, timeFn) {
+    const live = extract(adapter, timeFn);
+    let messages = live;
+    let whole = false;
+
+    const arch = await archived();
+    if (arch && arch.msgs.length > live.length) {
+      /* The archive is the spine because it is the complete one. Where a
+         message is also on screen the page's text wins: it is the fresher of
+         the two, and the one the reader can actually see. */
+      const byText = new Map();
+      for (const m of live) byText.set((m.text || "").slice(0, 120), m);
+      messages = arch.msgs.map((m) => {
+        const hit = byText.get((m.t || "").slice(0, 120));
+        if (hit) return hit;
+        const rec = { role: m.r === "user" ? "user" : "assistant", text: m.t || "" };
+        if (m.ts) {
+          rec.time = new Date(m.ts * (m.ts > 1e12 ? 1 : 1000)).toISOString();
+          rec.timeSource = "platform";
+        }
+        return rec;
+      });
+      whole = true;
+    }
+
     if (!messages.length) return { ok: false, reason: "no-messages" };
     const stamp = new Date().toISOString().slice(0, 10);
     if (format === "json") {
@@ -152,7 +196,7 @@
     } else {
       download(toMarkdown(messages), `${slugTitle()}-${stamp}.md`, "text/markdown");
     }
-    return { ok: true, count: messages.length };
+    return { ok: true, count: messages.length, whole, loaded: live.length };
   }
 
   /* extract() and elementToText() are the only correct way to get readable
