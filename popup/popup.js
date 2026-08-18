@@ -196,6 +196,14 @@
     const sameDay = at.getFullYear() === now.getFullYear()
       && at.getMonth() === now.getMonth() && at.getDate() === now.getDate();
     if (sameDay) return time;
+    /* A weekday alone only means something inside the coming week. ChatGPT's
+       deep-research window resets on 17 September and this printed "Thu 5:29
+       PM" — the correct weekday, a month early, and read by anyone as the day
+       after tomorrow. Past six days, name the date. */
+    const days = (at - now) / 864e5;
+    if (days > 6 || days < -1) {
+      return at.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    }
     const day = at.toLocaleDateString(undefined, { weekday: "short" });
     return `${day} ${time}`;
   }
@@ -390,6 +398,18 @@
         cap.className = "usage-cap";
         cap.textContent = it.resetAt ? ` left · ${resetLabel(it.resetAt)}` : " left";
         val.append(num, cap);
+      } else if (it.remaining !== null && it.remaining !== undefined) {
+        /* A count with no ceiling. ChatGPT meters several features this way —
+           "deep_research: 25 remaining" — and there is no honest percentage to
+           make of it without inventing the denominator. The count IS the
+           figure, so it is shown as one, with what it is counting. */
+        const num = document.createElement("b");
+        num.textContent = it.remaining.toLocaleString();
+        const cap = document.createElement("span");
+        cap.className = "usage-cap";
+        const what = (it.meter || "").replace(/[_-]+/g, " ").trim();
+        cap.textContent = ` left${what ? " · " + what : ""}${it.resetAt ? " · " + resetLabel(it.resetAt) : ""}`;
+        val.append(num, cap);
       } else if (it.resetAt) {
         /* A reset with no figure behind it. Printing the clock alone reads as
            "we are tracking this" — the row looked identical to a measured one
@@ -477,8 +497,12 @@
         reported: !!win,
         pctLeft: win && win.pctLeft !== null && win.pctLeft !== undefined ? win.pctLeft : null,
         resetAt: (win && win.resetAt) || 0,
-        remaining: win && win.remaining !== undefined ? win.remaining : null,
+        remaining: win && win.remaining !== undefined && win.remaining !== null ? win.remaining : null,
         limit: win && win.limit !== undefined ? win.limit : null,
+        // The window's own name ("deep_research"). NOT `label` — that is the
+        // platform name this row is printed under, and overwriting it renamed
+        // every row after its meter.
+        meter: (win && win.label) || "",
         unit: (win && win.unit) || "",
         basis: (win && win.basis) || "",
         source: (win && win.source) || rec.source || "",
@@ -496,7 +520,7 @@
       rowMap.set(p.id + "|", {
         id: p.id, acct: "", label: p.label, plan: "", account: "", ordinal: 0,
         reported: false, pctLeft: null, resetAt: 0, remaining: null, limit: null,
-        unit: "", basis: "", source: "", observedAt: 0,
+        meter: "", unit: "", basis: "", source: "", observedAt: 0,
         checked: !!checked[p.id]
       });
     }
@@ -544,14 +568,25 @@
        whole category of usage trackers exists for — is "am I about to be cut
        off mid-thought?" So the panel now answers it in a sentence, and the
        rings become the detail behind the answer rather than the answer. */
+    // A count is a reading too — "25 deep research left" is as much an answer
+    // as "62%", and a panel that ignored it would say "nothing reported" while
+    // showing a number.
     const reported = items.filter((it) => it.pctLeft !== null);
+    const counted = items.filter((it) => it.pctLeft === null && it.remaining !== null);
     const lowest = reported.length
       ? reported.reduce((a, b) => (a.pctLeft <= b.pctLeft ? a : b))
       : null;
 
     const verdict = document.createElement("p");
     verdict.className = "usage-verdict";
-    if (!reported.length) {
+    if (!reported.length && counted.length) {
+      // Counts are answers too. "25 deep research left" is as much a reading as
+      // "62%", and a panel that only understood percentages called it nothing.
+      const c = counted[0];
+      const what = (c.meter || "").replace(/[_-]+/g, " ").trim() || "uses";
+      verdict.textContent = `${c.label}: ${c.remaining.toLocaleString()} ${what} left` +
+        (c.resetAt ? `, resets ${resetLabel(c.resetAt)}` : "");
+    } else if (!reported.length) {
       verdict.textContent = "No provider is reporting an allowance right now.";
     } else if (lowest.pctLeft <= 0) {
       verdict.className += " hot";
@@ -1042,7 +1077,7 @@
      old height. Landing within a pixel of the ceiling therefore sometimes lands
      a pixel over it, which is a scrollbar the whole design exists to avoid.
      Two pixels of slack costs nothing anyone can see. */
-  const POPUP_GUARD = 2;
+  const POPUP_GUARD = 6;
   const RECALL_MIN_ROOM = 126;   // three rows — under that the list is a peephole
 
   function sizeRecallResults(live) {

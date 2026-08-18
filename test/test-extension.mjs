@@ -164,6 +164,51 @@ try {
   /* A row that has a reset time but no figure used to print only the clock,
      which reads as a measurement. Live, ChatGPT showed "resets Sat 9:46 PM"
      next to five rows that were showing percentages. */
+  /* ChatGPT meters several features as counts with no ceiling —
+     "deep_research: 25 remaining". There is no honest percentage to make of
+     that without inventing the denominator, and the panel used to have nowhere
+     to put it, so the row said "not reported" while the provider had told us a
+     real number. */
+  await pop.evaluate(() => new Promise((r) => chrome.runtime.sendMessage({
+    type: "quota-observed", host: "chatgpt.com",
+    observations: [{ kind: "body", at: Date.now(), json: {
+      limits_progress: [{ feature_name: "deep_research", remaining: 25,
+        reset_after: new Date(Date.now() + 36e5).toISOString() }] } }]
+  }, r)));
+  await pop.reload();
+  await pop.waitForSelector(".usage-row", { timeout: 8000 });
+  await pop.waitForTimeout(2500);
+  const counted = await pop.evaluate(() => {
+    const row = [...document.querySelectorAll(".usage-row")]
+      .find((r) => /ChatGPT/.test(r.textContent));
+    return { row: row ? row.textContent.replace(/\s+/g, " ").trim() : "(none)",
+             verdict: document.querySelector(".usage-verdict")?.textContent || "" };
+  });
+  /* A weekday alone only means something inside the coming week. ChatGPT's
+     deep-research window resets on 17 September and the row read "Thu 5:29 PM"
+     — the right weekday, a month early, and read by anyone as this week. */
+  await pop.evaluate(() => new Promise((r) => chrome.runtime.sendMessage({
+    type: "quota-observed", host: "chatgpt.com",
+    observations: [{ kind: "body", at: Date.now(), json: {
+      limits_progress: [{ feature_name: "deep_research", remaining: 25,
+        reset_after: new Date(Date.now() + 30 * 864e5).toISOString() }] } }]
+  }, r)));
+  await pop.reload();
+  await pop.waitForSelector(".usage-row", { timeout: 8000 });
+  await pop.waitForTimeout(2500);
+  const farRow = await pop.evaluate(() => {
+    const row = [...document.querySelectorAll(".usage-row")].find((r) => /ChatGPT/.test(r.textContent));
+    return row ? row.textContent.replace(/\s+/g, " ").trim() : "";
+  });
+  t("A1d a reset a month away is dated, not given a weekday",
+    !/\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\b/.test(farRow) && /\d/.test(farRow), farRow);
+
+  t("A1d a count with no ceiling is shown as the count it is",
+    /25/.test(counted.row) && /left/.test(counted.row), counted.row);
+  t("A1d …and says what is being counted",
+    /deep research/i.test(counted.row), counted.row);
+  await pop.evaluate(() => chrome.storage.local.remove("quota:chatgpt|"));
+
   t("A1c a reset with no figure behind it says so",
     await pop.evaluate(() => {
       const rows = [...document.querySelectorAll(".usage-row")];

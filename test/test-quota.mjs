@@ -331,6 +331,33 @@ t("a platform we have not characterised is not silenced",
     return (Q.primary(record, { now: NOW }) || {}).pctLeft === 70;
   })());
 
+t("a figure outranks a deadline",
+  (() => {
+    /* Live, ChatGPT's own response carried both: a blocked feature with a reset
+       and no number, and "deep_research: 25 remaining". The row showed the
+       deadline and called the count nothing. */
+    const wins = Q.fromJson({
+      blocked_features: [{ name: "reason", resets_after: new Date(NOW + 4 * 864e5).toISOString(), limit: 15 }],
+      limits_progress: [{ feature_name: "deep_research", remaining: 25,
+        reset_after: new Date(NOW + 36e5).toISOString() }]
+    }, { now: NOW });
+    const p = Q.primary({ id: "chatgpt", windows: wins, observedAt: NOW }, { now: NOW });
+    return p && p.remaining === 25 && p.label === "deep_research";
+  })());
+
+t("the best window wins whatever order it arrived in",
+  (() => {
+    // Windows accumulate from several endpoints and merging appends, so the
+    // array order is "who answered first", not "what matters".
+    const record = { id: "chatgpt", observedAt: NOW, windows: [
+      { key: "entitlement", pctLeft: null, remaining: null, resetAt: NOW + 4 * 864e5, observedAt: NOW },
+      { key: "deep-research", label: "deep_research", pctLeft: null, remaining: 25,
+        resetAt: NOW + 36e5, observedAt: NOW }
+    ] };
+    const p = Q.primary(record, { now: NOW });
+    return p && p.remaining === 25;
+  })());
+
 t("an empty record displays nothing",
   Q.primary({ id: "gemini", windows: [] }, { now: NOW }) === null
     && Q.primary(null, { now: NOW }) === null);

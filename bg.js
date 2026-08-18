@@ -2739,6 +2739,15 @@ const quotaInflight = new Map();   // id -> Promise
  */
 const QUOTA_ENDPOINTS = {
   chatgpt: [
+    /* The one that actually answers in 2026. conversation_limit is a 404 now,
+       and this is where the app itself reads its limits — found by watching
+       what chatgpt.com fetches rather than by guessing at endpoint names.
+       It returns named counters ("deep_research: 25 left") rather than a
+       percentage, which is why lib/quota.js had to learn to carry a count with
+       no ceiling: a remaining with no limit is still a true and useful figure,
+       and inventing a denominator for it would be the exact dishonesty this
+       panel exists to avoid. */
+    { path: "/backend-api/conversation/init", method: "POST", body: {}, auth: "bearer" },
     { path: "/backend-api/conversation_limit", auth: "bearer" },
     { path: "/backend-api/models?history_and_training_disabled=false", auth: "bearer" },
     { path: "/backend-api/subscriptions", auth: "bearer" },
@@ -2837,8 +2846,10 @@ async function quotaProbe(platformId, opts = {}) {
   const adapter = quotaAdapter(platformId);
   const candidates = QUOTA_ENDPOINTS[platformId] || [];
   const at = Date.now();
+  // What this report is an answer ABOUT — see quotaLearned().
+  const sig = candidates.map((e) => e.path).join("|");
   if (!adapter || !candidates.length) {
-    return { id: platformId, at, endpoints: [], working: [],
+    return { id: platformId, at, sig, endpoints: [], working: [],
       note: adapter ? "no candidate endpoints — observation only" : "unknown platform" };
   }
 
@@ -2846,7 +2857,7 @@ async function quotaProbe(platformId, opts = {}) {
   try {
     ctx = await quotaPrepare(adapter);
   } catch (error) {
-    return { id: platformId, at, endpoints: [], working: [],
+    return { id: platformId, at, sig, endpoints: [], working: [],
       note: "not signed in or provider unreachable",
       error: String((error && error.message) || error) };
   }
@@ -2865,7 +2876,7 @@ async function quotaProbe(platformId, opts = {}) {
       needsOrg: !!e.needsOrg, auth: e.auth || "cookie" }));
 
   const report = {
-    id: platformId, at, plan: (ctx && ctx.plan) || "", endpoints, working,
+    id: platformId, at, sig, plan: (ctx && ctx.plan) || "", endpoints, working,
     note: working.length ? "" : "provider published no allowance for this account"
   };
 
@@ -2888,7 +2899,14 @@ async function quotaLearned(platformId) {
     report = held && held[platformId] ? held[platformId] : null;
   } catch { /* fall through to a fresh probe */ }
 
-  const fresh = report && Date.now() - (report.at || 0) < QUOTA_PROBE_TTL;
+  /* The learned list is also invalid when WE change the candidates. These
+     endpoints move — ChatGPT's conversation_limit is a 404 now and the figures
+     moved to conversation/init — so shipping a new candidate must take effect
+     on the next poll, not a day later when the cache happens to expire. The
+     signature is the candidate list itself; if it differs from what was learned
+     against, what was learned is about a different question. */
+  const sig = (QUOTA_ENDPOINTS[platformId] || []).map((e) => e.path).join("|");
+  const fresh = report && report.sig === sig && Date.now() - (report.at || 0) < QUOTA_PROBE_TTL;
   if (fresh) return report.working || [];
 
   // Either we have never looked, or what we learned is a day old and these
