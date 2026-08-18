@@ -467,6 +467,9 @@
     label.textContent = "messages asleep — open a long chat to watch it work";
   }
 
+  // Keys that name the response's shape rather than what is being metered.
+  const GENERIC_METER = /^(window|default|general|primary|main|overall|entitlement|-)?$/;
+
   let dialPainted = false;
   function paintUsage(windowedTotal, quota) {
 
@@ -499,10 +502,13 @@
         resetAt: (win && win.resetAt) || 0,
         remaining: win && win.remaining !== undefined && win.remaining !== null ? win.remaining : null,
         limit: win && win.limit !== undefined ? win.limit : null,
-        // The window's own name ("deep_research"). NOT `label` — that is the
-        // platform name this row is printed under, and overwriting it renamed
-        // every row after its meter.
-        meter: (win && win.label) || "",
+        /* The window's own name ("deep_research"). NOT `label` — that is the
+           platform name this row is printed under.
+           Falls back to the key, which is derived from where the figure sat in
+           the response ("pro-search"): Perplexity names none of its meters, so
+           without this the row read "3 left" and never said 3 of what. A
+           generic key names nothing, so it stays quiet instead. */
+        meter: (win && (win.label || (GENERIC_METER.test(win.key || "") ? "" : win.key))) || "",
         unit: (win && win.unit) || "",
         basis: (win && win.basis) || "",
         source: (win && win.source) || rec.source || "",
@@ -572,7 +578,11 @@
     // as "62%", and a panel that ignored it would say "nothing reported" while
     // showing a number.
     const reported = items.filter((it) => it.pctLeft !== null);
-    const counted = items.filter((it) => it.pctLeft === null && it.remaining !== null);
+    // Ordered by what is closest to running out: with two counts in hand, "3
+    // pro searches left" is the sentence worth writing, not "25 deep research".
+    const counted = items
+      .filter((it) => it.pctLeft === null && it.remaining !== null)
+      .sort((a, b) => a.remaining - b.remaining);
     const lowest = reported.length
       ? reported.reduce((a, b) => (a.pctLeft <= b.pctLeft ? a : b))
       : null;
@@ -596,6 +606,14 @@
       verdict.className += " hot";
       verdict.textContent = `${lowest.label} is running low — ${lowest.pctLeft}% left` +
         (lowest.resetAt ? `, resets ${resetLabel(lowest.resetAt)}` : "");
+    } else if (counted.length) {
+      /* Percentages are all healthy, and a count is the more useful sentence:
+         "3 pro searches left" is something to act on, "Claude is the closest at
+         100%" is not. */
+      const c = counted[0];
+      const what = (c.meter || "").replace(/[_-]+/g, " ").trim();
+      verdict.textContent = `Nothing is running low. ${c.label}: ${c.remaining.toLocaleString()}` +
+        `${what ? " " + what : ""} left.`;
     } else {
       // Naming the lowest keeps this a reading rather than a reassurance.
       verdict.textContent = `Nothing is running low — ${lowest.label} is the closest at ${lowest.pctLeft}%.`;

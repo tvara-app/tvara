@@ -358,6 +358,38 @@ t("the best window wins whatever order it arrived in",
     return p && p.remaining === 25;
   })());
 
+t("the counter closest to running out leads, and a bare zero does not",
+  (() => {
+    /* Perplexity states four at once. "pro_search: 3 left" is the one that
+       matters; "research: 0" with no ceiling cannot be told apart from a
+       feature the plan never included. */
+    const wins = Q.fromJson({
+      free_queries: { remaining_detail: { remaining: 10 } },
+      modes: {
+        pro_search: { remaining_detail: { remaining: 3 } },
+        research: { remaining_detail: { remaining: 0 } }
+      }
+    }, { now: NOW });
+    const p = Q.primary({ id: "perplexity", windows: wins, observedAt: NOW }, { now: NOW });
+    return p && p.key === "pro-search" && p.remaining === 3;
+  })());
+
+t("a partner's quota is still rejected from the same response",
+  (() => {
+    const wins = Q.fromJson({ sources: { bmj: { remaining_detail: { remaining: 3 } } } }, { now: NOW });
+    return Q.primary({ id: "perplexity", windows: wins, observedAt: NOW }, { now: NOW }) === null;
+  })());
+
+t("a description of the measurement is not the name of the meter",
+  (() => {
+    /* Perplexity states {kind: "exact", remaining: 3}. Taking "exact" as the
+       name produced four windows all called "exact", and a row that read
+       "3 left · exact". */
+    const w = Q.fromJson({ modes: { pro_search: { remaining_detail: { kind: "exact", remaining: 3 } } } },
+      { now: NOW })[0];
+    return w && w.key === "pro-search" && w.remaining === 3;
+  })());
+
 t("an empty record displays nothing",
   Q.primary({ id: "gemini", windows: [] }, { now: NOW }) === null
     && Q.primary(null, { now: NOW }) === null);

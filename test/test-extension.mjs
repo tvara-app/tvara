@@ -207,6 +207,8 @@ try {
     /25/.test(counted.row) && /left/.test(counted.row), counted.row);
   t("A1d …and says what is being counted",
     /deep research/i.test(counted.row), counted.row);
+  t("A1d the verdict names the count, not a healthy percentage",
+    /25/.test(counted.verdict) && /deep research/i.test(counted.verdict), counted.verdict);
   await pop.evaluate(() => chrome.storage.local.remove("quota:chatgpt|"));
 
   t("A1c a reset with no figure behind it says so",

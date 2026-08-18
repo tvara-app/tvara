@@ -2772,6 +2772,11 @@ const QUOTA_ENDPOINTS = {
     { path: "/rest/app-chat/rate-limits", method: "POST", body: { requestKind: "DEFAULT" } }
   ],
   perplexity: [
+    /* Where its own app reads them. user/settings carries a quota per
+       commercial data partner and no user allowance at all — which is how the
+       panel came to report "100% left" from ahrefs, then apollo, then bmj. */
+    { path: "/rest/rate-limit/status?version=2.18&source=default" },
+    { path: "/rest/rate-limit/status" },
     { path: "/rest/user/settings" },
     { path: "/api/auth/session" },
     { path: "/rest/user/limits" }
