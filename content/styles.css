@@ -594,6 +594,11 @@
 #lct-bridge .lct-b-insert:hover { background: #ff86a6; }
 #lct-bridge .lct-b-insert:disabled { opacity: 0.45; cursor: default; }
 
+/* The count is doing more work when part of the answer is beyond the page:
+   it earns the accent so the reader looks at it, and its tooltip says how the
+   hits are split between what is loaded and what is not. */
+#lct-search .lct-s-count.lct-s-deep { color: var(--lct-accent); cursor: help; }
+
 /* ---------- continue in a new chat ----------
    Centred, because this is a decision rather than a notification: it is about
    to open a tab and write into it, so it asks in the middle of the screen and

@@ -19,6 +19,75 @@
   let lastHit = null;
   const textCache = new WeakMap(); // el -> lowercased text
 
+  /* ---------- the rest of the conversation ----------
+     Measured on a live 1,471-message ChatGPT thread: "isaac" appears in 217
+     messages and this bar found 8, because the host had mounted 195 of them.
+     Everything about that is technically correct and it is still a search that
+     does not work — nobody asks a 1,400-message chat a question and accepts
+     eight answers.
+
+     The archive on this machine has every word of it, so the bar asks there
+     too, and the minimap's existing seek walks the reader to a hit the page has
+     never rendered. Where there is no archived copy the bar behaves exactly as
+     it did: what is loaded, honestly counted. */
+  let remote = { q: "", hits: [], total: 0, ready: false };
+  let remoteToken = 0;
+
+  /* Ask only when the page is holding LESS than the conversation. The minimap's
+     catalog is the conversation (seeded from the provider's own index); items
+     is what the host has mounted. When those agree there is nothing further
+     back to find, and the bar should not go looking. */
+  const canAskArchive = () =>
+    !!(self.LCTMinimap && self.LCTMinimap.count > items.length);
+
+  function askArchive(q) {
+    const token = ++remoteToken;
+    remote = { q, hits: [], total: 0, ready: false };
+    try {
+      chrome.runtime.sendMessage({
+        type: "chat-search", host: location.hostname, path: location.pathname, q
+      }, (res) => {
+        void chrome.runtime.lastError;
+        if (token !== remoteToken) return;            // a newer query won
+        if (!res || res.status !== "ok") { remote.ready = true; return updateCounter(); }
+        remote = { q, hits: res.hits || [], total: res.total || 0, ready: true };
+        // Re-merge WITHOUT moving the reader: they are already reading a hit.
+        mergeRemote();
+        updateCounter();
+      });
+    } catch { remote.ready = true; }
+  }
+
+  /**
+   * Fold the archive's answer into the hit list, using the provider's own
+   * message ids so a message that is both mounted and archived is one hit.
+   * Archive order is conversation order, which is the order a reader expects;
+   * anything mounted that the archive has never seen is newer than the last
+   * sync, so it belongs at the end.
+   */
+  function mergeRemote() {
+    if (!remote.ready || !remote.hits.length) return;
+    const byId = new Map();
+    for (const idx of hits) {
+      const el = items[idx] && items[idx].el;
+      const key = el && self.LCTAdapters.stableKey ? self.LCTAdapters.stableKey(el) : "";
+      if (key) byId.set(key, idx);
+    }
+    const merged = [];
+    const used = new Set();
+    for (const h of remote.hits) {
+      const idx = byId.get(h.i);
+      if (idx !== undefined) { merged.push({ dom: idx }); used.add(idx); }
+      else merged.push({ id: h.i, snippet: h.s, role: h.r });
+    }
+    for (const idx of hits) if (!used.has(idx)) merged.push({ dom: idx });
+    ordered = merged;
+  }
+
+  // When the archive has answered, `ordered` is the list the reader steps
+  // through; until then it mirrors the mounted hits.
+  let ordered = [];
+
   function init(a) { adapter = a; }
 
   function buildCache(msgs) {
@@ -97,29 +166,51 @@
       for (let i = 0; i < items.length; i++) {
         if (items[i].text.includes(q)) hits.push(i);
       }
+      if (canAskArchive() && remote.q !== q) askArchive(q);
+    } else {
+      remoteToken++;                       // cancel any answer still in flight
+      remote = { q: "", hits: [], total: 0, ready: false };
     }
+    ordered = hits.map((i) => ({ dom: i }));
+    if (remote.ready && remote.q === q) mergeRemote();
     if (keep) {
       // The kept hit can have been unmounted out from under us — fall to the
       // first match rather than to "0 of 5", but still never scroll.
-      const at = hits.findIndex((i) => items[i].el === keep);
-      cur = at >= 0 ? at : hits.length ? 0 : -1;
+      const at = ordered.findIndex((o) => o.dom !== undefined && items[o.dom].el === keep);
+      cur = at >= 0 ? at : ordered.length ? 0 : -1;
       return updateCounter();
     }
-    if (hits.length) step(1);
+    if (ordered.length) step(1);
     else updateCounter();
   }
 
   function step(dir) {
-    if (!hits.length) return updateCounter();
-    cur = (cur + dir + hits.length) % hits.length;
+    if (!ordered.length) return updateCounter();
+    cur = (cur + dir + ordered.length) % ordered.length;
     updateCounter();
-    jumpTo(items[hits[cur]].el);
+    const at = ordered[cur];
+    if (at.dom !== undefined) return jumpTo(items[at.dom].el);
+    /* A hit the page has never rendered. The minimap already knows how to walk
+       to one of those — it shows the message immediately from the index and
+       lets the host catch up behind the preview. */
+    const went = self.LCTMinimap.jumpToKey("id:" + at.id);
+    if (!went && self.LCTNote) {
+      self.LCTNote("That message is further back than this page has loaded.");
+    }
   }
 
   function updateCounter() {
     const active = longEnough(input.value.trim());
-    counter.textContent = hits.length ? `${cur + 1}/${hits.length}` : (active ? "0/0" : "");
-    counter.classList.toggle("lct-s-none", !hits.length && active);
+    const n = ordered.length;
+    counter.textContent = n ? `${cur + 1}/${n}` : (active ? "0/0" : "");
+    // Say where the answer came from, because "8" and "217" are different
+    // answers to the same question and the reader deserves to know which.
+    const beyond = ordered.filter((o) => o.dom === undefined).length;
+    counter.title = beyond
+      ? `${n - beyond} on this page, ${beyond} further back in this conversation`
+      : "";
+    counter.classList.toggle("lct-s-deep", beyond > 0);
+    counter.classList.toggle("lct-s-none", !n && active);
   }
 
   // Delegated to nav.js. The copy that lived here never woke the target, so it

@@ -2748,6 +2748,142 @@ try {
 
   await pop.evaluate(() => chrome.storage.local.remove(["quota:chatgpt|", "lct-quota-warned-v1"]));
 
+  /* ---- B19. Searching the part of the conversation the page never loaded ----
+     Measured on a live 1,471-message ChatGPT thread: "isaac" appeared in 217
+     messages and the bar found 8, because the host had mounted 195. Every one
+     of those numbers was correct and the search was still useless — nobody
+     asks a 1,400-message chat a question and accepts eight answers. The
+     archive on the machine has the whole thing, so the bar asks there too. */
+  const deep = await ctx.newPage();
+  trackErrors(deep);
+  await deep.goto("http://127.0.0.1:8917/test/virtual-history.html?index=1&total=1500&page=25");
+  await deep.waitForSelector("#lct-minimap", { timeout: 20000 });
+  await deep.waitForFunction(() =>
+    document.getElementById("lct-mm-canvas")?.getAttribute("aria-valuemax") === "1500",
+    null, { timeout: 8000 });
+
+  // An archived copy of the same conversation, with the word placed in
+  // messages the page has never mounted.
+  await pop.evaluate(async () => {
+    const msgs = [];
+    for (let i = 1; i <= 1500; i++) {
+      msgs.push({
+        i: "virtual-" + i,
+        r: i % 2 ? "user" : "assistant",
+        t: i % 100 === 0 ? `the codeword porcupine appears here, message ${i}`
+                         : `Virtual history message ${i}`
+      });
+    }
+    await new Promise((res) => chrome.runtime.sendMessage({
+      type: "recall-import",
+      chats: [{
+        id: "127.0.0.1/test/virtual-history.html",
+        host: "127.0.0.1", path: "/test/virtual-history.html",
+        platform: "Test Page", title: "Virtual history",
+        n: msgs.length, createdAt: Date.now(), updatedAt: Date.now(), msgs
+      }]
+    }, res));
+  });
+
+  const mounted = await deep.evaluate(() => document.querySelectorAll("[data-message-id]").length);
+  await deep.bringToFront();
+  await pop.evaluate(() => chrome.storage.local.set({ "lct-cmd": { name: "in-chat-search", at: Date.now() } }));
+  await deep.waitForSelector("#lct-search.lct-s-open", { timeout: 8000 });
+  await deep.fill("#lct-search input", "porcupine");
+  await deep.waitForFunction(() => {
+    const c = document.querySelector("#lct-search .lct-s-count");
+    return c && /\/(1[0-9]|[2-9][0-9])/.test(c.textContent);   // more than 9 hits
+  }, null, { timeout: 8000 }).catch(() => {});
+
+  const found = await deep.evaluate(() => ({
+    count: document.querySelector("#lct-search .lct-s-count")?.textContent,
+    title: document.querySelector("#lct-search .lct-s-count")?.title,
+    deepClass: document.querySelector("#lct-search .lct-s-count")?.classList.contains("lct-s-deep"),
+    mounted: document.querySelectorAll("[data-message-id]").length
+  }));
+  const total = Number((found.count || "0/0").split("/")[1]);
+  t("B19 search reaches past what the page has mounted",
+    total === 15, JSON.stringify(found));
+  t("B19 …which is more than the page could ever have shown",
+    total > found.mounted / 10, JSON.stringify({ total, mounted: found.mounted }));
+  t("B19 the count says where the answers are",
+    found.deepClass && /further back in this conversation/.test(found.title || ""),
+    JSON.stringify(found.title));
+
+  // Stepping onto a hit the host has never rendered must still take you there —
+  // the minimap already knows how to walk to one, behind a preview.
+  await deep.evaluate(() => document.querySelector("#lct-search .lct-s-next")?.click());
+  await deep.waitForTimeout(2500);
+  t("B19 stepping onto an unloaded hit starts the walk to it",
+    await deep.evaluate(() =>
+      !!document.getElementById("lct-preview") ||
+      !!document.querySelector(".lct-hit") ||
+      document.querySelectorAll("[data-message-id]").length > 25),
+    "seek began");
+
+  // And where there is no archived copy, nothing changes: what is loaded,
+  // honestly counted.
+  await deep.evaluate(() => document.querySelector("#lct-search .lct-s-close")?.click());
+  await deep.close();
+
+  /* ---- B20. An archive that can never be repaired ----
+     Found on a real archive: a 1,471-message conversation frozen at the 203
+     messages an old build had captured, none carrying ids. Every later sync was
+     refused as "older" — because the stored record's timestamp was the LOCAL
+     WRITE TIME, and the candidate's was the provider's own revision of a
+     conversation last touched weeks earlier. A write from today will always
+     beat a revision from last month, so that record could never be completed,
+     never seed the map, and never be fully searched. Forever. */
+  const arch = async (msg) => pop.evaluate((m) => new Promise((r) => chrome.runtime.sendMessage(m, r)), msg);
+  const readRec = (id) => pop.evaluate(async (rid) => {
+    const d = await new Promise((res) => { const q = indexedDB.open("lct-recall"); q.onsuccess = () => res(q.result); });
+    return new Promise((res) => {
+      const r = d.transaction("chats", "readonly").objectStore("chats").get(rid);
+      r.onsuccess = () => res(r.result ? { n: r.result.n, mv: r.result.mv,
+        withId: (r.result.msgs || []).filter((m) => m.i).length } : null);
+    });
+  }, id);
+
+  const stale = "chatgpt.com/c/b20-frozen";
+  const idless = (n) => Array.from({ length: n }, (_, i) => ({ r: i % 2 ? "assistant" : "user", t: "old capture " + i }));
+  const withIds = (n) => Array.from({ length: n }, (_, i) => ({ i: "m" + i, r: i % 2 ? "assistant" : "user", t: "full copy " + i }));
+
+  // what an old build left behind: no ids, and a wall-clock stamp
+  await arch({ type: "recall-import", chats: [{
+    id: stale, host: "chatgpt.com", path: "/c/b20-frozen", platform: "ChatGPT",
+    title: "Frozen", updatedAt: Date.now(), msgs: idless(203) }] });
+  const before20 = await readRec(stale);
+  t("B20 an old capture stores without ids", before20 && before20.n === 203 && before20.withId === 0,
+    JSON.stringify(before20));
+
+  // the provider now offers the whole thing, revised weeks ago
+  await arch({ type: "recall-import", chats: [{
+    id: stale, host: "chatgpt.com", path: "/c/b20-frozen", platform: "ChatGPT",
+    title: "Frozen", sourceUpdatedAt: Date.now() - 40 * 864e5,
+    updatedAt: Date.now() - 40 * 864e5, msgs: withIds(1471) }] });
+  const after20 = await readRec(stale);
+  t("B20 a fuller copy is accepted even though its revision is older",
+    after20 && after20.n === 1471 && after20.withId === 1471,
+    JSON.stringify(after20));
+  t("B20 …and the record can seed the map for the first time",
+    after20 && after20.mv === 1, JSON.stringify(after20 && after20.mv));
+
+  // The rule it must not break: a genuinely older restore may not clobber a
+  // newer conversation. Both sides carry a provider revision here.
+  await arch({ type: "recall-import", chats: [{
+    id: stale, host: "chatgpt.com", path: "/c/b20-frozen", platform: "ChatGPT",
+    title: "Frozen", sourceUpdatedAt: Date.now() - 200 * 864e5,
+    updatedAt: Date.now() - 200 * 864e5, msgs: withIds(90) }] });
+  const after20b = await readRec(stale);
+  t("B20 an older, smaller restore still cannot overwrite it",
+    after20b && after20b.n === 1471, JSON.stringify(after20b));
+
+  // And the whole point of repairing it: it is searchable now.
+  const deepHit = await arch({ type: "chat-search", host: "chatgpt.com", path: "/c/b20-frozen", q: "full copy 900" });
+  t("B20 the repaired conversation can be searched end to end",
+    deepHit && deepHit.status === "ok" && deepHit.total === 1,
+    JSON.stringify({ status: deepHit && deepHit.status, total: deepHit && deepHit.total }));
+
   /* ---- B14. First run ----
      The extension's whole value is three keystrokes and a background archive,
      and both are invisible until someone is told. These assert the telling

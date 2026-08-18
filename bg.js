@@ -192,10 +192,29 @@ async function importBatch(chats) {
       }
       const previous = existing.get(id);
       const candidateSource = Number(chat.sourceUpdatedAt || chat.updatedAt || 0);
-      const previousSource = Number(previous && (previous.sourceUpdatedAt || previous.updatedAt) || 0);
+      /* PROVIDER time only, on both sides.
+         This used to fall back to the stored record's `updatedAt`, which
+         clampChat sets to the LOCAL WRITE TIME. So a record written today
+         out-ranked the provider's own revision of a conversation last touched a
+         month ago — and every future sync of that chat was refused as "older",
+         permanently.
+         Found on a live archive: a 1,471-message conversation frozen at the 203
+         messages captured by an old build, none of them carrying ids, so it
+         could never complete, never seed the map, and never be searched. The
+         record was written 519 hours ago; the conversation's real revision was
+         1,032 hours old. It would have stayed that way forever. */
+      const previousSource = Number(previous && previous.sourceUpdatedAt || 0);
+      const candidateCount = Math.min(chat.msgs.length, MAX_MSGS);
+      // A write that brings MORE of the conversation is never a loss, whatever
+      // the clocks say — and one that brings ids where there were none makes a
+      // record usable as an index for the first time.
+      const richer = !previous || candidateCount > previous.n;
+      const fixesIds = !!previous && previous.mv !== 1 &&
+        chat.msgs.length > 0 && chat.msgs.every((m) => m && m.i);
       // Restores and retries are merge operations: a stale snapshot must not
       // overwrite a newer local conversation that arrived in the meantime.
-      if (previous && previous.n > 0 && candidateSource > 0 && previousSource > candidateSource) {
+      if (previous && previous.n > 0 && candidateSource > 0 &&
+          previousSource > candidateSource && !richer && !fixesIds) {
         ok++;
         stored.push(id);
         continue;
@@ -2123,6 +2142,68 @@ async function chatMessage(host, path, messageId) {
     if (!m) return { status: "missing" };
     return { status: "ok", role: m.r, text: m.t, ts: m.ts || 0 };
   } catch { return { status: "missing" }; }
+}
+
+/**
+ * Search ONE conversation, in the archive rather than in the page.
+ *
+ * Measured on a live 1,471-message ChatGPT thread: the word "isaac" appears in
+ * 217 messages, and in-chat search found 8 of them. Not a bug in the search —
+ * it reads what the page has mounted, and the host had mounted 195 of 1,471.
+ * From the reader's side that is a search that does not work, and no amount of
+ * "it only searches the loaded conversation" in a tooltip fixes the feeling of
+ * asking a 1,400-message chat a question and being told there are eight
+ * answers.
+ *
+ * The archive already holds every word of that conversation on this machine.
+ * So it answers here, with the provider's own message ids, and the minimap's
+ * existing seek walks the reader to a hit the page has never rendered.
+ *
+ * Returns ids and short excerpts only — never the whole conversation back into
+ * a page.
+ */
+const CHAT_SEARCH_MAX = 300;
+const CHAT_SEARCH_PAD = 70;      // characters of context on each side of a hit
+
+async function chatSearch(host, path, query) {
+  const q = String(query || "").trim().toLowerCase();
+  if (q.length < 2) return { status: "short" };
+  const id = (String(host || "") + String(path || "")).slice(0, 600);
+  let rec = null;
+  try {
+    const d = await db();
+    rec = await reqP(tx(d, "readonly").get(id));
+  } catch { return { status: "unavailable" }; }
+  if (!rec || !Array.isArray(rec.msgs)) return { status: "missing" };
+
+  const hits = [];
+  let scanned = 0;
+  for (const m of rec.msgs) {
+    if (!m || !m.i || !m.t) continue;
+    scanned++;
+    const text = String(m.t);
+    const at = text.toLowerCase().indexOf(q);
+    if (at < 0) continue;
+    if (hits.length < CHAT_SEARCH_MAX) {
+      const from = Math.max(0, at - CHAT_SEARCH_PAD);
+      hits.push({
+        i: m.i,
+        r: m.r === "user" ? "user" : "assistant",
+        // The excerpt is what the reader recognises the hit by; the ellipses
+        // are honest about it being an excerpt.
+        s: (from ? "…" : "") + text.slice(from, at + q.length + CHAT_SEARCH_PAD).trim() +
+           (at + q.length + CHAT_SEARCH_PAD < text.length ? "…" : ""),
+        at
+      });
+    } else hits.push(null);        // counted, not carried
+  }
+  return {
+    status: "ok",
+    total: hits.length,
+    scanned,
+    truncated: hits.length > CHAT_SEARCH_MAX,
+    hits: hits.filter(Boolean)
+  };
 }
 
 /** Forget a conversation. The only path that removes archived text. */
@@ -4438,6 +4519,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case "recall-visit-sync":  return visitSync(msg.platform);
       case "chat-index":         return chatIndex(msg.host, msg.path, { force: msg.force });
       case "chat-message":       return chatMessage(msg.host, msg.path, msg.id);
+      case "chat-search":        return chatSearch(msg.host, msg.path, msg.q);
       // "the page found this chat gone", not "delete this". Nothing outside
       // resolveDeletions() gets to remove archived text on request.
       case "chat-drop":          return noteVanished(msg.id, {}, "opened");

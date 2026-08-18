@@ -1032,6 +1032,12 @@
      hand because the pane comes off a fractional layout and rounding either way
      must not tip it over the cap. */
   const POPUP_CEILING = 596;
+  /* Layout is fractional and this measurement feeds back into the thing being
+     measured — size the list, the body grows, the room was computed against the
+     old height. Landing within a pixel of the ceiling therefore sometimes lands
+     a pixel over it, which is a scrollbar the whole design exists to avoid.
+     Two pixels of slack costs nothing anyone can see. */
+  const POPUP_GUARD = 2;
   const RECALL_MIN_ROOM = 126;   // three rows — under that the list is a peephole
 
   function sizeRecallResults(live) {
@@ -1047,13 +1053,13 @@
     box.style.setProperty("--recall-room", "0px");
     document.body.classList.remove("searching");
     const want = box.scrollHeight;
-    const asIs = POPUP_CEILING - document.body.getBoundingClientRect().height;
+    const asIs = POPUP_CEILING - POPUP_GUARD - document.body.getBoundingClientRect().height;
     // The rows below only give up their room when the list actually needs it. A
     // single hit asking the whole panel to clear out would shrink the popup for
     // nothing, so a list that already fits is simply left where it is.
     const borrow = want > asIs;
     document.body.classList.toggle("searching", borrow);
-    const room = borrow ? POPUP_CEILING - document.body.getBoundingClientRect().height : asIs;
+    const room = borrow ? POPUP_CEILING - POPUP_GUARD - document.body.getBoundingClientRect().height : asIs;
     box.style.setProperty("--recall-room", `${Math.max(RECALL_MIN_ROOM, Math.floor(room))}px`);
     markRecallEdges();
   }
