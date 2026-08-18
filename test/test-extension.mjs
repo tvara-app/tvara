@@ -2699,10 +2699,18 @@ try {
 
   // Reopen: the panel must show the size before anything happens, and
   // unticking a section must actually shrink what travels.
+  /* Reopened IMMEDIATELY after "copy instead" — which is what someone does
+     when they meant to open a new chat after all. The copy schedules a close
+     900ms out, and that timer used to close whatever panel existed when it
+     fired, so the button appeared to do nothing. */
+  await page.mouse.move(400, 400);
   await page.locator("#lct-minimap").hover();
   await page.waitForSelector('#lct-export-bar button[data-act="carry"]', { state: "visible" });
   await page.click('#lct-export-bar button[data-act="carry"]');
   await page.waitForSelector("#lct-carry", { timeout: 5000 });
+  await page.waitForTimeout(1400);        // outlive the previous panel's timer
+  t("B17 reopening it right after a copy does not close itself",
+    await page.evaluate(() => !!document.getElementById("lct-carry")));
   const sizeText = await page.textContent("#lct-carry .lct-c-size");
   t("B17 the panel shows the size before anything happens",
     /\d[\d,]* characters/.test(sizeText), sizeText);
@@ -2995,6 +3003,70 @@ try {
     deepHit && deepHit.status === "ok" && deepHit.total === 1,
     JSON.stringify({ status: deepHit && deepHit.status, total: deepHit && deepHit.total }));
 
+  /* ---- B21. The archive that was all titles and no words ----
+     A listing gives every conversation's title in one call; the text costs one
+     call each. The pass wrote the titles and then decided the chats were
+     archived — because a stub carries the provider's revision, and the sync
+     compares revisions. On a real archive that left 2,303 conversations holding
+     15,760 messages between them: seven each, for chats that run to hundreds.
+     Total Recall is the paid feature, and it could only match titles. */
+  {
+    const ask = (m) => pop.evaluate((mm) => new Promise((r) => chrome.runtime.sendMessage(mm, r)), m);
+    await ask({ type: "recall-import", chats: [
+      // what a listing leaves behind: a title, a revision, no words
+      { id: "chatgpt.com/c/stub-a", host: "chatgpt.com", path: "/c/stub-a", platform: "ChatGPT",
+        title: "Only a title", meta: true, n: 40, updatedAt: Date.now(), msgs: [] },
+      { id: "chatgpt.com/c/stub-b", host: "chatgpt.com", path: "/c/stub-b", platform: "ChatGPT",
+        title: "Also only a title", meta: true, n: 12, updatedAt: Date.now(), msgs: [] }
+    ] });
+    const before = await ask({ type: "archive-fill-state" });
+    t("B21 an archive knows how much of itself is missing",
+      before && before.total >= 2, JSON.stringify(before && before.remaining));
+
+    // and a chat that arrives WITH its text is not queued
+    await ask({ type: "recall-import", chats: [
+      { id: "chatgpt.com/c/full-a", host: "chatgpt.com", path: "/c/full-a", platform: "ChatGPT",
+        title: "Has words", updatedAt: Date.now(), msgs: [
+          { i: "m1", r: "user", t: "a real question" },
+          { i: "m2", r: "assistant", t: "a real answer" }] }
+    ] });
+    const after = await ask({ type: "archive-fill-state" });
+    t("B21 a chat that arrives with its text is not queued",
+      after.total === before.total, JSON.stringify({ before: before.total, after: after.total }));
+
+    // filling a stub takes it off the queue — proven by importing its body the
+    // way the backfill does
+    await ask({ type: "recall-import", chats: [
+      { id: "chatgpt.com/c/stub-a", host: "chatgpt.com", path: "/c/stub-a", platform: "ChatGPT",
+        title: "Only a title", updatedAt: Date.now(), msgs: [
+          { i: "s1", r: "user", t: "the words that were missing" },
+          { i: "s2", r: "assistant", t: "and the reply that went with them" }] }
+    ] });
+    const filled = await ask({ type: "archive-fill-state" });
+    t("B21 filling a chat removes it from the queue",
+      filled.total === after.total - 1, JSON.stringify({ after: after.total, filled: filled.total }));
+
+    // …and it is searchable, which is the entire point
+    const hit = await ask({ type: "recall-search", q: "words that were missing" });
+    t("B21 …and the words are searchable, which is the point",
+      hit && Array.isArray(hit.results) && hit.results.some((r) => r.id === "chatgpt.com/c/stub-a"),
+      JSON.stringify(hit && hit.results && hit.results.length));
+
+    // the popup offers it, and says how much is missing
+    await pop.reload();
+    await pop.waitForTimeout(2500);
+    const row = await pop.evaluate(() => {
+      const el = document.getElementById("fill-archive");
+      return { hidden: el.hidden, title: document.getElementById("fill-title").textContent,
+               sub: document.getElementById("fill-sub").textContent };
+    });
+    t("B21 the popup offers to fetch what is missing", !row.hidden, JSON.stringify(row));
+    t("B21 …and says how many, and roughly how long",
+      /\d/.test(row.title) && /min/.test(row.sub), JSON.stringify(row));
+    t("B21 …and says why it matters",
+      /Recall can only search what is here/.test(row.sub), row.sub);
+  }
+
   /* ---- B14. First run ----
      The extension's whole value is three keystrokes and a background archive,
      and both are invisible until someone is told. These assert the telling
@@ -3038,6 +3110,20 @@ try {
     welTrial.active
       ? (await wel.evaluate(() => document.getElementById("trial-start").disabled))
       : true);
+  /* A new install has an archive of nothing, so the paid feature finds nothing
+     and the user concludes it does not work. The first useful thing this page
+     can offer is fetching their own history. */
+  t("B14 the welcome page offers to fetch their history",
+    await wel.isVisible("#fetch-history"));
+  t("B14 …and an import path for people who have an export file",
+    await wel.isVisible("#import-export"));
+  t("B14 …and says why it matters before asking",
+    /searches conversations this browser holds a copy of/i.test(
+      await wel.textContent("#start-copy")));
+  t("B14 the fetch button says how much there is to fetch",
+    /Fetch/i.test(await wel.textContent("#fetch-history")),
+    await wel.textContent("#fetch-history"));
+
   t("B14 welcome page offers a way to buy",
     (await wel.isVisible("#buy-pro")) &&
     (await wel.evaluate(() => self.LCTProduct.BUY.endsWith("#buy"))));
@@ -3056,11 +3142,19 @@ try {
   await page.waitForTimeout(600);
   const hint = await page.evaluate(() => {
     const el = document.getElementById("lct-hint");
-    return el ? { rows: el.querySelectorAll(".lct-hint-row").length, text: el.textContent } : null;
+    // The pointer row is not a key row — count what the hint TEACHES.
+    return el ? { rows: el.querySelectorAll(".lct-hint-row:not(.lct-hint-where)").length,
+                  text: el.textContent } : null;
   });
   t("B14 first visit gets the hint, with only the keys that exist",
     expectedRows ? (hint && hint.rows === expectedRows) : hint === null,
     JSON.stringify(hint));
+  t("B14 the hint points at the strip, not only at the keyboard",
+    !expectedRows || /hover the strip/.test(hint.text), JSON.stringify(hint && hint.text));
+  t("B14 …and the strip shows itself while it is being pointed at",
+    !expectedRows || await page.evaluate(() =>
+      !document.getElementById("lct-minimap")?.classList.contains("lct-mm-rest")),
+    "navigator open");
   t("B14 the hint says what the tool is",
     !expectedRows || /Long Chat Toolkit is on/.test(hint.text));
   t("B14 the hint can be dismissed",

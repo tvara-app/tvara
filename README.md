@@ -113,6 +113,22 @@ than at a checkout URL, so changing provider, product or price never needs a
 store review — and while the link is still the placeholder, the page says so
 instead of sending buyers to a dead checkout.
 
+## Filling the archive
+
+A listing hands over every conversation's title in one request; the text costs
+one request each. So the pass writes the titles first — and used to decide, on
+the next run, that those chats were already archived, because a title-only
+record carries the provider's own revision and the sync compares revisions.
+Measured on a real archive: **2,303 chats holding 15,765 messages**, seven each,
+for conversations that run to hundreds. Total Recall is the paid feature, and it
+could only match titles for 61% of them.
+
+Emptiness is now tracked as records are written, reconciled once against an
+existing archive (one 25MB scan, 187ms), and the popup offers the work as
+something a person can start and watch: *"Download the text of 1,415 chats —
+about 35 min"*, with progress, a stop, and resumption from wherever the archive
+actually is rather than from a cursor it had to remember.
+
 ## Selling it
 
 Four things, once. `node tools/preflight.mjs` fails until all of them are true,

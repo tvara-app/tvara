@@ -787,6 +787,58 @@
     $(id).addEventListener("change", saveSettings);
   }
 
+  /* ---------- filling in the archive ----------
+     The listing gives every chat's title in one call; the text costs one call
+     each. So a fresh archive is thousands of titles and almost no words, and
+     Total Recall — the thing being paid for — can only match titles. This row
+     is the honest version of that: it says how much is missing, fetches it
+     while you watch, and stops when you say. */
+  let fillTimer = null;
+
+  function paintFill(state) {
+    const row = $("fill-archive");
+    const title = $("fill-title");
+    const sub = $("fill-sub");
+    if (!row) return;
+    const left = (state && state.total) || 0;
+    const running = !!(state && state.running);
+
+    if (!left && !running) { row.hidden = true; return; }
+    row.hidden = false;
+
+    if (running) {
+      const done = (state && state.done) || 0;
+      title.textContent = "Downloading your chats' text…";
+      sub.textContent = `${done.toLocaleString()} done · ${left.toLocaleString()} to go · tap to stop`;
+      row.classList.add("busy");
+      return;
+    }
+    row.classList.remove("busy");
+    title.textContent = `Download the text of ${left.toLocaleString()} chat${left === 1 ? "" : "s"}`;
+    /* Measured, not guessed: 30 chats took 45 seconds against a real account,
+       so about a second and a half each once the request itself is counted and
+       not just the pause between them. Stated as "about", because the number
+       that decides it is the provider's latency and that is not ours. */
+    const mins = Math.max(1, Math.round((left * 1.5) / 60));
+    sub.textContent = `Recall can only search what is here — about ${mins} min`;
+  }
+
+  async function refreshFill() {
+    const state = await send({ type: "archive-fill-state" });
+    paintFill(state);
+    clearTimeout(fillTimer);
+    // Poll only while it is working; a settled archive costs nothing.
+    if (state && state.running) fillTimer = setTimeout(refreshFill, 1200);
+  }
+
+  $("fill-archive").addEventListener("click", async () => {
+    const state = await send({ type: "archive-fill-state" });
+    await send({ type: state && state.running ? "archive-fill-stop" : "archive-fill-start" });
+    setTimeout(refreshFill, 400);
+  });
+
+  refreshFill();
+
   /* The allowance figures are only worth trusting if they can be checked, so the
      check is one click from the number itself. stopPropagation because the link
      sits inside the toggle's own <label> — without it, opening the page would

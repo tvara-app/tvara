@@ -901,6 +901,22 @@
       card.appendChild(row);
     }
 
+    /* Point at the strip, not just at the keyboard. Everything this extension
+       can do on the page lives in a navigator that only appears on hover — so a
+       hint that lists three keystrokes and never mentions it leaves search, the
+       outline, Context Bridge and the carry-over undiscovered. And a shortcut
+       can be missing entirely: Chrome drops one another extension already
+       holds, which is exactly what happened to search on the machine this was
+       written on. */
+    const where = document.createElement("div");
+    where.className = "lct-hint-row lct-hint-where";
+    const arrow = document.createElement("kbd");
+    arrow.textContent = "→";
+    const wtext = document.createElement("span");
+    wtext.textContent = "hover the strip on the right for search, outline and more";
+    where.append(arrow, wtext);
+    card.appendChild(where);
+
     const close = document.createElement("button");
     close.className = "lct-hint-ok";
     close.type = "button";
@@ -911,6 +927,18 @@
 
     document.documentElement.appendChild(card);
     requestAnimationFrame(() => card.classList.add("lct-hint-show"));
+
+    /* Show the navigator its full width for a moment while the hint is up.
+       "Hover the strip on the right" means nothing if the strip is a 13px
+       hairline the reader has not noticed yet. It returns to rest on its own,
+       and a hover in the meantime just keeps it open. */
+    const map = document.getElementById("lct-minimap");
+    if (map) {
+      map.classList.remove("lct-mm-rest");
+      setTimeout(() => {
+        if (!map.matches(":hover")) map.classList.add("lct-mm-rest");
+      }, 4000);
+    }
     const timer = setTimeout(dismiss, 14000);
   }
 

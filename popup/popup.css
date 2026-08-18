@@ -521,6 +521,11 @@ body.searching footer { display: none; }
   line-height: 1.3;
 }
 .usage-verdict.hot { color: var(--ember); font-weight: 600; }
+/* The row is doing something; the icon says so without a spinner competing
+   with the panel's own quiet. */
+#fill-archive.busy .row-icon { color: var(--ember); animation: fill-pulse 1.6s ease-in-out infinite; }
+@keyframes fill-pulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { #fill-archive.busy .row-icon { animation: none; opacity: 1; } }
 /* The warning link states its own setting, so "off" has to look off. */
 #quota-warn-link.off { color: var(--ink-faint); text-decoration-style: dotted; }
 

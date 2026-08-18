@@ -674,6 +674,8 @@
   background: var(--lct-accent-soft); color: var(--lct-ink);
   font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
+#lct-hint .lct-hint-where { color: var(--lct-accent); }
+#lct-hint .lct-hint-where kbd { min-width: 52px; }
 #lct-hint .lct-hint-ok {
   margin-top: 11px; width: 100%; padding: 6px 0;
   border: 1px solid var(--lct-line); border-radius: 8px;

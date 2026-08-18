@@ -102,6 +102,55 @@
   open("source-link", P.SOURCE);
 
   P.applyTo(document);
+  /* ---------- the first useful thing ----------
+     A new install has an archive of nothing, so the feature people pay for
+     finds nothing, and they conclude it does not work. Fetching their own
+     history is the one action worth putting on this page — and it is honest
+     about being a download over their own account, with a count and a stop. */
+  let fetchPoll = null;
+
+  function paintFetch(state) {
+    const btn = $("fetch-history");
+    const status = $("fetch-status");
+    const total = (state && state.total) || 0;
+    const running = !!(state && state.running);
+    if (running) {
+      btn.disabled = true;
+      btn.textContent = "Fetching…";
+      status.hidden = false;
+      status.textContent = `${((state && state.done) || 0).toLocaleString()} done · ` +
+        `${total.toLocaleString()} to go. You can close this page; it keeps going.`;
+      return;
+    }
+    btn.disabled = false;
+    if (!total) {
+      btn.textContent = "Fetch my history";
+      status.hidden = false;
+      status.textContent = state && state.done
+        ? "Done — every chat this browser knows about has its text."
+        : "Nothing waiting. Open a chat site once and it will find your conversations.";
+      return;
+    }
+    btn.textContent = `Fetch ${total.toLocaleString()} chats`;
+    status.hidden = true;
+  }
+
+  async function refreshFetch() {
+    const state = await send({ type: "archive-fill-state" });
+    paintFetch(state);
+    clearTimeout(fetchPoll);
+    if (state && state.running) fetchPoll = setTimeout(refreshFetch, 1500);
+  }
+
+  $("fetch-history").addEventListener("click", async () => {
+    await send({ type: "archive-fill-start" });
+    setTimeout(refreshFetch, 500);
+  });
+  $("import-export").addEventListener("click", () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL("recall.html#import") });
+  });
+  refreshFetch();
+
   paintKeys();
   send({ type: "trial-state" }).then(paintTrial);
 })();

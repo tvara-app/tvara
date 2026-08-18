@@ -112,6 +112,69 @@ function clampChat(chat) {
   };
 }
 
+/* ---------- which chats are still just a title ----------
+   A listing gives every conversation's title in one call; the text costs one
+   call each, so the pass writes the titles first and fills the bodies after.
+   The trouble was that a title-only record carries the provider's revision, and
+   the sync decides what to fetch by comparing revisions — so a stub looked
+   exactly like a finished chat and its text was never fetched. On a real
+   archive that left 2,303 conversations and 15,760 messages: about seven each,
+   for chats that run to hundreds.
+
+   The archive's IndexedDB index is on revision, not on emptiness, and querying
+   by value without an index means reading every record — 25MB of message text
+   to answer "which of these are empty". So emptiness is tracked as it happens,
+   in one small list, written by the two functions that write records. It is
+   both the fix and the work queue the backfill runs from. */
+const BG_STUBS = "lct-stub-chats-v1";
+
+async function readStubs() {
+  try {
+    const got = await chrome.storage.local.get(BG_STUBS);
+    const v = got && got[BG_STUBS];
+    return v && typeof v === "object" ? v : {};
+  } catch { return {}; }
+}
+
+/**
+ * Record whether archived chats are still text-less. Batched, and never called
+ * from inside an IndexedDB transaction.
+ *
+ * The first version awaited chrome.storage between the puts of a batch import,
+ * which is how you lose data without an error: an IndexedDB transaction commits
+ * itself as soon as the microtask queue drains with nothing pending, so the
+ * await ended the transaction and every put after the first one threw into a
+ * per-item catch. Eleven of twelve chats vanished silently. The tests caught it
+ * in the same minute; a user would have found it as a gap in their archive.
+ */
+async function noteStubs(updates) {
+  const list = (updates || []).filter((u) => u && u.id && u.host);
+  if (!list.length) return;
+  try {
+    const all = await readStubs();
+    let touched = false;
+    for (const u of list) {
+      const platform = PAGE_PLATFORMS[u.host] || "";
+      if (!platform) continue;
+      const ids = Array.isArray(all[platform]) ? all[platform] : [];
+      const at = ids.indexOf(u.id);
+      if (u.hasBody) {
+        if (at < 0) continue;
+        ids.splice(at, 1);
+      } else {
+        if (at >= 0) continue;
+        if (ids.length >= 20000) continue;      // a ceiling, not a policy
+        ids.push(u.id);
+      }
+      all[platform] = ids;
+      touched = true;
+    }
+    if (touched) await chrome.storage.local.set({ [BG_STUBS]: all });
+  } catch { /* the next write records it instead */ }
+}
+
+const noteStub = (id, host, hasBody) => noteStubs([{ id, host, hasBody }]);
+
 async function upsert(chat) {
   if (!chat || !chat.id || !Array.isArray(chat.msgs)) return { ok: false };
   const isMeta = chat.meta === true && chat.msgs.length === 0;
@@ -147,6 +210,7 @@ async function upsert(chat) {
   // imports/sync carry the chat's real last-activity time — keep it
   if ((chat.keepTimes || isMeta) && chat.updatedAt) clamped.updatedAt = chat.updatedAt;
   await reqP(tx(d, "readwrite").put(clamped));
+  await noteStub(clamped.id, clamped.host, clamped.n >= 2);
   return { ok: true };
 }
 
@@ -170,7 +234,9 @@ async function importBatch(chats) {
     } catch { /* skip */ }
   }
 
-  // Phase 2: write all upserts in a single readwrite transaction
+  // Phase 2: write all upserts in a single readwrite transaction. Nothing in
+  // this loop may await anything but IndexedDB — see noteStubs().
+  const stubUpdates = [];
   const wStore = d.transaction("chats", "readwrite").objectStore("chats");
   for (const c of arr) {
     const cid = String((c && c.id) || "").slice(0, 600);
@@ -224,10 +290,12 @@ async function importBatch(chats) {
       const clamped = clampChat(chat.acct ? chat : { ...chat, acct: previous && previous.acct });
       if ((chat.keepTimes || isMeta) && chat.updatedAt) clamped.updatedAt = chat.updatedAt;
       await reqP(wStore.put(clamped));
+      stubUpdates.push({ id: clamped.id, host: clamped.host, hasBody: clamped.n >= 2 });
       ok++;
       stored.push(id);
     } catch { skipped++; failed.push(cid); }
   }
+  await noteStubs(stubUpdates);
   return { ok, skipped, stored, failed };
 }
 
@@ -3616,9 +3684,16 @@ async function bgSyncAccount(adapter, run, opts, ctx, tabs, seat = { seat: 0, se
     const byId = new Map();
     for (const p of carried) byId.set(p.id, { id: p.id, rev: p.rev, title: p.title, createdAt: p.createdAt, attempts: p.attempts || 0 });
     for (const m of metas) byId.set(m.id, { id: m.id, rev: m.updatedAt, title: m.title, createdAt: m.createdAt, attempts: 0 });
+    /* A stub is NOT an archived chat. Comparing revisions alone treated a
+       title-only record as finished — same revision as the real conversation,
+       because that is where the title came from — so its text was never
+       fetched and never would be. */
+    const stubIds = new Set((await readStubs())[adapter.id] || []);
     const work = Array.from(byId.values()).filter((w) => {
-      const archivedRevision = index.get(adapter.host + adapter.prefix + w.id);
-      return archivedRevision === undefined || archivedRevision < w.rev;
+      const recordId = adapter.host + adapter.prefix + w.id;
+      const archivedRevision = index.get(recordId);
+      if (archivedRevision === undefined || archivedRevision < w.rev) return true;
+      return stubIds.has(recordId);
     });
 
     if (!work.length) {
@@ -3849,6 +3924,169 @@ async function bgSyncAll(opts = {}) {
   } finally {
     clearInterval(pulse);
     bgSyncRunning = false;
+  }
+}
+
+/* ---------- filling in the text ----------
+   The background pass now knows a stub is unfinished, so it will fill them in
+   over time. That is not the same as a person being able to ASK for it and
+   watch it happen — and "search every conversation you have ever had" is the
+   paid promise, so the moment it is bought is the moment it has to be true.
+
+   Resumable by construction: the queue is the stub list, and every chat that
+   lands removes itself from it. Stop it, close the browser, come back a week
+   later — it carries on from where the archive actually is, not from a cursor
+   it had to remember. */
+const BG_FILL = "lct-fill-v1";
+let fillCancel = false;
+let fillRunning = false;
+
+const FILL_PAUSE_MS = 350;          // between chats; the provider is not ours to hammer
+const FILL_REPORT_EVERY = 3;
+
+/* ---------- and the ones that were already there ----------
+   Tracking emptiness as it happens fixes every record written from now on and
+   nothing that came before — which on a real archive was 1,415 of 2,303 chats,
+   i.e. the entire problem. So the list is reconciled against the archive once,
+   the only time it is worth reading 25MB of message text to answer "which of
+   these are empty".
+
+   Once, and remembered: the flag carries the archive's size, so a scan is
+   redone if the archive changed out from under it (a restore, an import) and
+   skipped every other time. */
+const BG_STUB_SCAN = "lct-stub-scan-v1";
+
+async function ensureStubIndex() {
+  let flag = null;
+  try {
+    const got = await chrome.storage.local.get(BG_STUB_SCAN);
+    flag = got && got[BG_STUB_SCAN];
+  } catch { /* scan */ }
+
+  if (flag && flag.done) return;
+  let count = 0;
+
+  const map = {};
+  try {
+    const d = await db();
+    await new Promise((resolve, reject) => {
+      const cur = tx(d, "readonly").openCursor();
+      cur.onerror = () => reject(cur.error);
+      cur.onsuccess = () => {
+        const c = cur.result;
+        if (!c) return resolve();
+        const v = c.value;
+        const platform = PAGE_PLATFORMS[v.host] || "";
+        // A record with fewer than two messages is a title and a promise.
+        if (platform && !(Array.isArray(v.msgs) && v.msgs.length >= 2)) {
+          (map[platform] = map[platform] || []).push(v.id);
+        }
+        count++;
+        c.continue();
+      };
+    });
+  } catch { return; }
+
+  try {
+    const all = await readStubs();
+    // Union, not replace: anything noted since the scan started still counts.
+    for (const [platform, ids] of Object.entries(map)) {
+      const held = new Set(Array.isArray(all[platform]) ? all[platform] : []);
+      for (const id of ids) held.add(id);
+      all[platform] = [...held].slice(0, 20000);
+    }
+    await chrome.storage.local.set({ [BG_STUBS]: all, [BG_STUB_SCAN]: { done: true, at: Date.now(), count } });
+  } catch { /* next call scans again */ }
+}
+
+async function fillState() {
+  await ensureStubIndex();
+  try {
+    const got = await chrome.storage.local.get(BG_FILL);
+    const st = got && got[BG_FILL];
+    const stubs = await readStubs();
+    const remaining = {};
+    let total = 0;
+    for (const [platform, list] of Object.entries(stubs)) {
+      const n = Array.isArray(list) ? list.length : 0;
+      if (n) { remaining[platform] = n; total += n; }
+    }
+    return { running: fillRunning, remaining, total, ...(st && typeof st === "object" ? st : {}) };
+  } catch { return { running: fillRunning, remaining: {}, total: 0 }; }
+}
+
+async function writeFill(patch) {
+  try {
+    const got = await chrome.storage.local.get(BG_FILL);
+    const prev = (got && got[BG_FILL]) || {};
+    await chrome.storage.local.set({ [BG_FILL]: { ...prev, ...patch, at: Date.now() } });
+  } catch { /* the UI falls back to the queue length */ }
+}
+
+async function fillStop() {
+  fillCancel = true;
+  await writeFill({ state: "stopped" });
+  return { ok: true };
+}
+
+async function fillStart() {
+  if (fillRunning) return { status: "already-running" };
+  await ensureStubIndex();
+  fillRunning = true;
+  fillCancel = false;
+  const started = Date.now();
+  let done = 0, failed = 0;
+  const stubs = await readStubs();
+  const planned = Object.values(stubs).reduce((n, l) => n + (Array.isArray(l) ? l.length : 0), 0);
+  await writeFill({ state: "running", startedAt: started, done: 0, failed: 0, planned });
+
+  try {
+    for (const adapter of BG_ADAPTERS) {
+      if (fillCancel) break;
+      const ids = ((await readStubs())[adapter.id] || []).slice();
+      if (!ids.length) continue;
+      // A chat's text can only be fetched by the account that owns it; a
+      // signed-out platform is skipped rather than failed.
+      let ctx;
+      try { ctx = await idxPrepare(adapter); }
+      catch { await writeFill({ state: "running", note: `${adapter.label}: not signed in` }); continue; }
+
+      for (const recordId of ids) {
+        if (fillCancel) break;
+        const convId = recordId.startsWith(adapter.host + adapter.prefix)
+          ? recordId.slice((adapter.host + adapter.prefix).length) : "";
+        if (!convId) { await noteStub(recordId, adapter.host, true); continue; }
+        try {
+          const msgs = await adapter.detail(ctx, convId);
+          if (Array.isArray(msgs) && msgs.length >= 2) {
+            await importBatch([{
+              id: recordId, host: adapter.host, path: adapter.prefix + convId,
+              platform: adapter.label, msgs, updatedAt: Date.now(), keepTimes: false
+            }]);
+            done++;
+          } else {
+            // Nothing to fetch: an empty conversation is finished, not pending.
+            await noteStub(recordId, adapter.host, true);
+          }
+        } catch (error) {
+          failed++;
+          const kind = (error && error.kind) || "net";
+          if (kind === "auth") { await writeFill({ note: `${adapter.label}: signed out` }); break; }
+          if (kind === "gone") await noteStub(recordId, adapter.host, true);
+          if (kind === "rate") await sleep(5000);
+        }
+        if ((done + failed) % FILL_REPORT_EVERY === 0) {
+          await writeFill({ state: "running", done, failed, platform: adapter.label });
+        }
+        await sleep(FILL_PAUSE_MS);
+      }
+    }
+    const left = (await fillState()).total;
+    await writeFill({ state: fillCancel ? "stopped" : (left ? "partial" : "done"),
+      done, failed, finishedAt: Date.now() });
+    return { status: "ok", done, failed, left };
+  } finally {
+    fillRunning = false;
   }
 }
 
@@ -4564,6 +4802,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case "recall-snapshot":    return { chats: await archiveSnapshot(), durable: await backupState() };
       case "recall-wipe":        return wipeRecall();
       case "recall-bg-sync":     return bgSyncAll({ reason: "manual" });
+      case "archive-fill-state": return fillState();
+      case "archive-fill-start": { fillStart(); return { started: true }; }
+      case "archive-fill-stop":  return fillStop();
       case "recall-auto-tick":   return autoSyncTick();
       case "recall-visit-sync":  return visitSync(msg.platform);
       case "chat-index":         return chatIndex(msg.host, msg.path, { force: msg.force });

@@ -237,7 +237,12 @@
     preview.addEventListener("click", async () => {
       const ok = await self.LCTBridge.toClipboard(compose(chosen()));
       preview.textContent = ok ? "Copied" : "Couldn't copy";
-      setTimeout(close, 900);
+      /* Close THIS panel, not whatever panel exists in 900ms. Reopening inside
+         that window — which is exactly what someone does when they meant to
+         open a new chat after all — had the old timer close the new panel, so
+         the button appeared to do nothing. */
+      const mine = panel;
+      setTimeout(() => { if (panel === mine) close(); }, 900);
     });
 
     go.addEventListener("click", async () => {
