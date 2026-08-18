@@ -22,6 +22,21 @@
 # profile, they come too — that is the honest cost of "use it the way I do",
 # and the fix is to pick a different profile, not to pretend otherwise.
 #
+# macOS ONLY, AND IT WILL LOOK LIKE A DISASTER IF NOBODY WARNS YOU
+# Chrome does not keep cookie encryption keys in the profile on macOS — they
+# live in your login Keychain, under "Chrome Safe Storage". A Chrome running
+# from a different --user-data-dir has to ask for that key, and if the prompt
+# is dismissed (or never seen, because it opened behind the window) the cookies
+# copy across fine and then decrypt to nothing. Every site in the clone shows
+# you signed OUT.
+#
+# Your real profile is untouched when that happens. It is never opened by this
+# script, never written to, and quitting the clone and starting Chrome normally
+# puts everything back exactly as it was.
+#
+# To keep the logins in the clone: answer "Always Allow" when macOS asks
+# whether Chrome may use "Chrome Safe Storage". It asks once.
+#
 # To undo all of it:  rm -rf ~/.lct-chrome
 set -euo pipefail
 
@@ -122,14 +137,21 @@ for _ in $(seq 1 40); do
   if curl -s -m 1 "http://127.0.0.1:${PORT}/json/version" >/dev/null 2>&1; then
     cat <<EOF
 
-  ✓ ready — that window is your profile, with your logins.
+  ✓ ready — that window is a copy of your profile.
 
-    1. chrome://extensions → check Long Chat Toolkit is on
+    1. macOS may ask whether Chrome can use "Chrome Safe Storage".
+       Say ALWAYS ALLOW. That prompt is the cookie key: without it the copied
+       cookies cannot be decrypted and every site will look signed out.
+       (Signed out anyway? Quit this window, run it again, and watch for the
+       prompt — it sometimes opens behind the browser.)
+    2. chrome://extensions → check Long Chat Toolkit is on
        (Developer mode → Load unpacked → ~/long-chat-toolkit if it is not)
-    2. open a long chat
-    3. say "ready" — the checks can run from here without you clicking anything
+    3. open a long chat
+    4. say "ready" — the checks can run from here without you clicking anything
 
-  Closing that Chrome window ends the access. rm -rf ~/.lct-chrome forgets it.
+  YOUR REAL PROFILE IS NOT AFFECTED BY ANY OF THIS. It was copied, not moved,
+  and never opened. Quit this window and start Chrome normally to get your
+  usual browser back exactly as it was. rm -rf ~/.lct-chrome forgets the copy.
 
 EOF
     exit 0
