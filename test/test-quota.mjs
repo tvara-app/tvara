@@ -276,6 +276,61 @@ t("a window with no reset time is still displayable",
     return p && p.pctLeft === 60;
   })());
 
+t("a figure about something else is not presented as your allowance",
+  (() => {
+    /* Live on a real account, the panel read "Perplexity 100% left" from a
+       field called ahrefs-premium-data, 3 of 3. Correctly parsed, and nothing
+       to do with the user's chat allowance. */
+    const record = { id: "perplexity", windows: [
+      { key: "ahrefs-premium-data", pctLeft: 100, resetAt: 0, label: "", unit: "",
+        basis: "remaining/limit", path: "$.limits.ahrefs_premium_data", observedAt: NOW }
+    ] };
+    return Q.primary(record, { now: NOW }) === null;
+  })());
+
+t("a reading with no reset goes stale instead of living forever",
+  (() => {
+    /* Live, the panel showed "Grok 100% left" from a reading five days old,
+       drawn exactly like the one taken a minute ago. A window that states no
+       reset cannot expire on its own, so it expires on age. */
+    const fresh = { id: "grok", windows: [{ ...win("query", 100, 0), observedAt: NOW - 5 * 60e3 }] };
+    const old = { id: "grok", windows: [{ ...win("query", 100, 0), observedAt: NOW - 5 * 864e5 }] };
+    const p = Q.primary(fresh, { now: NOW });
+    return p && p.pctLeft === 100 && Q.primary(old, { now: NOW }) === null;
+  })());
+
+t("a partner's quota is not the user's allowance, whichever partner it is",
+  (() => {
+    // Perplexity's settings response carries one of these per partner, so the
+    // panel read ahrefs one minute and apollo the next. Both real, neither ours.
+    const one = { id: "perplexity", windows: [
+      { key: "apollo-premium-data", pctLeft: 100, resetAt: 0, path: "$.limits.apollo_premium_data", observedAt: NOW }] };
+    const two = { id: "perplexity", windows: [
+      { key: "ahrefs-premium-data", pctLeft: 100, resetAt: 0, path: "$.limits.ahrefs_premium_data", observedAt: NOW }] };
+    // …while a real one still comes through.
+    const real = { id: "perplexity", windows: [
+      { key: "gpt4-limit", pctLeft: 40, resetAt: 0, path: "$.gpt4_limit", observedAt: NOW }] };
+    return Q.primary(one, { now: NOW }) === null && Q.primary(two, { now: NOW }) === null
+      && (Q.primary(real, { now: NOW }) || {}).pctLeft === 40;
+  })());
+
+t("a partner cannot borrow its parent's name",
+  (() => {
+    /* Every quota in that response lives under `rate_limits`, so matching the
+       PATH let an impostor inherit the word "limit" from its container. */
+    const impostor = { id: "perplexity", windows: [
+      { key: "bmj", pctLeft: 100, resetAt: 0, path: "$.rate_limits.bmj", observedAt: NOW }] };
+    return Q.primary(impostor, { now: NOW }) === null;
+  })());
+
+t("a platform we have not characterised is not silenced",
+  (() => {
+    // The fallback is where every platform started: show it unless it is
+    // obviously something else.
+    const record = { id: "newcomer", windows: [{ ...win("whatever", 70, 0), observedAt: NOW }] };
+    return (Q.primary(record, { now: NOW }) || {}).pctLeft === 70;
+  })());
+
 t("an empty record displays nothing",
   Q.primary({ id: "gemini", windows: [] }, { now: NOW }) === null
     && Q.primary(null, { now: NOW }) === null);
