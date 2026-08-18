@@ -391,9 +391,14 @@
         cap.textContent = it.resetAt ? ` left · ${resetLabel(it.resetAt)}` : " left";
         val.append(num, cap);
       } else if (it.resetAt) {
+        /* A reset with no figure behind it. Printing the clock alone reads as
+           "we are tracking this" — the row looked identical to a measured one
+           and said nothing. What is true is that the provider told us WHEN the
+           window turns over and not how much of it is left, so the row says
+           that, in that order. */
         const cap = document.createElement("span");
-        cap.className = "usage-cap";
-        cap.textContent = `resets ${resetLabel(it.resetAt)}`;
+        cap.className = "usage-cap muted";
+        cap.textContent = `not reported · resets ${resetLabel(it.resetAt)}`;
         val.append(cap);
       } else {
         const cap = document.createElement("span");

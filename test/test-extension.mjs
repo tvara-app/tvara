@@ -161,6 +161,18 @@ try {
      key but could not tell anyone where to get one. chrome.tabs.create is
      stubbed rather than fired: the assertion is about WHICH url we send people
      to, and a test suite has no business opening the live pricing page. */
+  /* A row that has a reset time but no figure used to print only the clock,
+     which reads as a measurement. Live, ChatGPT showed "resets Sat 9:46 PM"
+     next to five rows that were showing percentages. */
+  t("A1c a reset with no figure behind it says so",
+    await pop.evaluate(() => {
+      const rows = [...document.querySelectorAll(".usage-row")];
+      return rows.every((r) => {
+        const v = r.querySelector(".usage-val")?.textContent || "";
+        return !/^resets /.test(v.trim());
+      });
+    }));
+
   t("A1b buy button visible in free state", await pop.isVisible("#buy-pro"));
   const buyUrl = await pop.evaluate(async () => {
     let sent = null;
