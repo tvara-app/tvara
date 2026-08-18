@@ -439,6 +439,12 @@
       <button data-act="outline" title="Outline &amp; starred messages" aria-label="Outline and starred messages">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg>
       </button>
+      <button data-act="search" title="Search this conversation" aria-label="Search this conversation">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20.5 20.5-4-4"/></svg>
+      </button>
+      <button data-act="bridge" title="Context Bridge — pull a past answer from any AI into this prompt" aria-label="Context Bridge">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17V9a3 3 0 0 1 3-3h10"/><path d="m14 3 3 3-3 3"/><path d="M20 7v8a3 3 0 0 1-3 3H7"/><path d="m10 21-3-3 3-3"/></svg>
+      </button>
       <button data-act="carry" title="Continue in a new chat — carry the goal, your starred messages and the last few turns into a fresh conversation" aria-label="Continue in a new chat">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h13"/><path d="m13 6 6 6-6 6"/><path d="M20 4v16" opacity=".45"/></svg>
       </button>
@@ -468,6 +474,15 @@
       const act = e.target.closest("button[data-act]");
       if (act) {
         if (!toolsUnlocked()) return showUpgradeNote();
+        /* Every feature needs a path that is not a keystroke. Chrome drops a
+           suggested shortcut whenever another extension already holds it — on
+           the machine this was written on, ⌘⇧F was taken and in-chat search
+           had no way in at all. A toolbar button cannot be taken by anyone. */
+        if (act.dataset.act === "search") return self.LCTSearch.toggle();
+        if (act.dataset.act === "bridge") {
+          if (!recallUnlocked()) { flashNote("Context Bridge is a Pro feature — " + TRIAL_NUDGE); return; }
+          return self.LCTBridge.isOpen ? self.LCTBridge.close() : self.LCTBridge.open();
+        }
         if (act.dataset.act === "carry") {
           if (!lastMessages.length) return flashNote("Nothing to carry over yet — open a conversation first.");
           return self.LCTCarry.open(lastMessages);

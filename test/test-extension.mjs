@@ -150,7 +150,7 @@ try {
 
   // A1 — free state renders correctly
   t("A1 badge shows Free", (await pop.textContent("#plan-badge")).trim() === "Free");
-  t("A1 version shown", (await pop.textContent("#version")).trim() === "v0.7.0");
+  t("A1 version shown", (await pop.textContent("#version")).trim() === "v0.8.0");
   t("A1 upsell visible / active card hidden",
     (await pop.isVisible("#pro-upsell")) && !(await pop.isVisible("#pro-active")));
   t("A1 speed/minimap/time toggles on by default",
@@ -1279,8 +1279,22 @@ try {
     settings: { enabled: true, minimap: true, time: true, history: false }
   }));
 
-  t("B3 export bar with 4 SVG buttons (outline + carry + md + json)",
-    (await page.locator("#lct-export-bar button svg").count()) === 4);
+  t("B3 export bar with 6 SVG buttons (search + bridge + outline + carry + md + json)",
+    (await page.locator("#lct-export-bar button svg").count()) === 6);
+  /* Chrome drops a suggested shortcut when another extension already holds it.
+     On the machine this was written on, ⌘⇧F was taken and in-chat search had
+     no way in at all — no button, no menu, nothing. Every feature needs a path
+     that is not a keystroke. */
+  for (const act of ["search", "bridge", "carry", "outline"]) {
+    t(`B3 ${act} is reachable without a keyboard shortcut`,
+      (await page.locator(`#lct-export-bar button[data-act="${act}"]`).count()) === 1);
+  }
+  await page.locator("#lct-minimap").hover();
+  await page.waitForSelector('#lct-export-bar button[data-act="search"]', { state: "visible" });
+  await page.click('#lct-export-bar button[data-act="search"]');
+  await page.waitForSelector("#lct-search.lct-s-open", { timeout: 5000 });
+  t("B3 the search button opens search", true);
+  await page.evaluate(() => document.querySelector("#lct-search .lct-s-close")?.click());
   t("B3 every export-bar button says what it does",
     await page.evaluate(() => [...document.querySelectorAll("#lct-export-bar button")]
       .every((b) => (b.getAttribute("aria-label") || b.title || "").length > 4)));
