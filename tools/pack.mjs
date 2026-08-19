@@ -166,6 +166,21 @@ if (withFirefox) {
         scripts: ["lib/quota.js", "lib/license.js", "lib/dodo.js", "lib/entitlement.js", "bg.js"],
         type: "module"
       };
+      /* Required for new Firefox extensions (addons-linter:
+         MISSING_DATA_COLLECTION_PERMISSIONS). "none" is the literal truth here:
+         there is no server to send anything to. */
+      mf.browser_specific_settings = mf.browser_specific_settings || {};
+      mf.browser_specific_settings.gecko = mf.browser_specific_settings.gecko || {};
+      mf.browser_specific_settings.gecko.data_collection_permissions = { required: ["none"] };
+      /* The data-collection key does not exist before Firefox 140, and declaring
+         it against an older strict_min_version is itself a lint warning. 128 was
+         the floor for MV3; 140 is the floor for saying, in the manifest, that we
+         collect nothing. */
+      mf.browser_specific_settings.gecko.strict_min_version = "140.0";
+      // Firefox for Android reads its own floor, and inherits nothing.
+      /* Android got the data-collection key later than desktop, at 142, so the
+         two floors are genuinely different numbers rather than a copy of one. */
+      mf.browser_specific_settings.gecko_android = { strict_min_version: "142.0" };
       delete mf.minimum_chrome_version;
     }
   });

@@ -53,30 +53,48 @@ if (!browser) {
 const ctx = browser.contexts()[0];
 
 async function worker() {
-  /* BY NAME, not "the first extension worker": a real profile has a dozen
-     extensions, and evaluating inside someone else's worker means
-     chrome.tabs.sendMessage reaches THEIR content scripts, which answer
-     nothing, so every platform reports "no answer".
-     But the name probe itself has to be time-boxed and URL-filtered first.
-     Asking every extension worker for its manifest hung indefinitely: at least
-     one of them never answers an evaluate, and that one blocked the whole run
-     before any platform was checked. */
+  /* ONE install, named explicitly when there is more than one.
+     Matching "the first extension worker" was wrong (a real profile has a dozen
+     extensions and it reached a stranger's content scripts). Matching "the
+     first TVARA worker" is also wrong: this clone had TWO copies of Tvara
+     installed, each with its own IndexedDB, so consecutive runs read different
+     archives and the second looked like catastrophic data loss — 2,306 chats
+     down to 460 — when nothing had been lost at all.
+     The name probe is URL-filtered and time-boxed because at least one other
+     extension's worker never answers an evaluate and hung the whole run. */
   const named = async (w) => {
-    if (!/^chrome-extension:\/\//.test(w.url())) return false;
-    const probe = w.evaluate(() => chrome.runtime.getManifest().name).catch(() => null);
-    const name = await Promise.race([probe, new Promise((r) => setTimeout(() => r(null), 2500))]);
-    return name === "Tvara";
+    if (!/^chrome-extension:\/\//.test(w.url())) return null;
+    const probe = w.evaluate(() => ({ n: chrome.runtime.getManifest().name, id: chrome.runtime.id }))
+      .catch(() => null);
+    const info = await Promise.race([probe, new Promise((r) => setTimeout(() => r(null), 2500))]);
+    return info && info.n === "Tvara" ? info.id : null;
   };
-  const candidates = ctx.serviceWorkers();
-  // Ours is bg.js; try those first so a stranger's worker is never even asked.
-  for (const w of candidates.filter((w) => /\/bg\.js(\?|$)/.test(w.url()))) {
-    if (await named(w)) return w;
+  const all = ctx.serviceWorkers();
+  const ordered = all.filter((w) => /\/bg\.js(\?|$)/.test(w.url()))
+    .concat(all.filter((w) => !/\/bg\.js(\?|$)/.test(w.url())));
+  const found = [];
+  for (const w of ordered) { const id = await named(w); if (id) found.push({ w, id }); }
+  if (!found.length) {
+    const w = await ctx.waitForEvent("serviceworker", { timeout: 10000 }).catch(() => null);
+    const id = w && await named(w);
+    if (id) found.push({ w, id });
   }
-  for (const w of candidates.filter((w) => !/\/bg\.js(\?|$)/.test(w.url()))) {
-    if (await named(w)) return w;
+  if (!found.length) return null;
+  const want = (() => { const i = process.argv.indexOf("--ext"); return i < 0 ? null : process.argv[i + 1]; })();
+  if (want) {
+    const hit = found.find((f) => f.id === want);
+    if (!hit) { console.error(`✋ No Tvara install with id ${want}. Present: ${found.map((f) => f.id).join(", ")}`); process.exit(1); }
+    return hit.w;
   }
-  const w = await ctx.waitForEvent("serviceworker", { timeout: 10000 }).catch(() => null);
-  return w && (await named(w)) ? w : null;
+  if (found.length > 1) {
+    console.error("✋ More than one copy of Tvara is installed in this browser:");
+    for (const f of found) console.error(`     ${f.id}`);
+    console.error("   They keep SEPARATE archives, so a reading from one says nothing about");
+    console.error("   the other. Disable the duplicate at chrome://extensions, or pass");
+    console.error("   --ext <id> to pick one deliberately.");
+    process.exit(1);
+  }
+  return found[0].w;
 }
 
 /** Ask ONE tab for its health report, through the worker (content scripts live

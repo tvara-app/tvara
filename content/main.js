@@ -866,7 +866,15 @@
   const HINT_KEY = "lct-hint-v1";
 
   function hintKeys(commands) {
-    const mac = navigator.platform.toLowerCase().includes("mac");
+    const mac = (() => {
+      /* navigator.platform is deprecated and userAgentData is not on every
+         browser this runs in, so both are asked, in that order, and the answer
+         is only ever used to choose a symbol. */
+      const d = (typeof navigator !== "undefined" && navigator.userAgentData) || null;
+      if (d && typeof d.platform === "string") return /mac/i.test(d.platform);
+      const ua = (typeof navigator !== "undefined" && navigator.userAgent) || "";
+      return /Mac|iPhone|iPad/i.test(ua);
+    })();
     const pretty = (s) => !s ? null : s
       .replace(/Command/g, "⌘")
       .replace(/Shift/g, mac ? "⇧" : "Shift")

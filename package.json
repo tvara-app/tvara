@@ -4,7 +4,7 @@
   "description": "Make long AI chats fast again.",
   "type": "module",
   "scripts": {
-    "test": "node test/test-license.mjs && node test/test-parsers.mjs && node test/test-quota.mjs && node test/test-worker.mjs && node test/test-extension.mjs",
+    "test": "node test/test-license.mjs && node test/test-parsers.mjs && node test/test-quota.mjs && node test/test-worker.mjs && node test/test-accounts.mjs && node test/test-extension.mjs",
     "test:worker": "node test/test-worker.mjs",
     "test:parsers": "node test/test-parsers.mjs",
     "test:license": "node test/test-license.mjs",

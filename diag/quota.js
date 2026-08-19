@@ -211,7 +211,7 @@
     const btn = $("run");
     btn.disabled = true;
     $("status").textContent = "Asking each provider…";
-    $("out").innerHTML = "";
+    $("out").replaceChildren();
 
     const report = await send({ type: "quota-diagnose" });
     btn.disabled = false;

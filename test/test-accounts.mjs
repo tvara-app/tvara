@@ -548,13 +548,34 @@ try {
     gemini.ordinal >= 1 && gemini2.ordinal === gemini.ordinal + 1,
     `${gemini.ordinal} / ${gemini2.ordinal}`);
 
-  // The popup draws one ring per account, so seed two tallies on one host.
+  /* The popup draws one ring per account, so seed two READINGS on one host.
+     NOTE the `quota:` prefix. The fixture used to write `usage:` keys, which
+     quotaState() does not read at all (QUOTA_PREFIX is "quota:"), so these
+     records were invisible to the panel and the assertions below could never
+     have described anything real.
+     This block used to seed `sent: [timestamps]` and assert legend text like
+     "2 sent" and "79/80 left" — a panel that no longer exists. The current one
+     reads `windows` through LCTQuota.primary and has three honest states: a
+     reported share, a bare count with no ceiling, and nothing reported. The
+     fixture now produces the first two, which is what the rings are for. */
   const now = Date.now();
   await page.evaluate(([now, a, b]) => chrome.storage.local.set({
-    ["usage:chatgpt.com|" + a]: { sent: [now - 1000, now - 2000], platform: "ChatGPT", id: "chatgpt",
-      acct: a, label: "a••e@example.com", ordinal: 1, plan: "Free", updatedAt: now },
-    ["usage:chatgpt.com|" + b]: { sent: [now - 3000], platform: "ChatGPT", id: "chatgpt",
-      acct: b, label: "b••b@example.com", ordinal: 2, plan: "Plus", updatedAt: now }
+    // Free: a count with no published ceiling. No percentage may be invented.
+    ["quota:chatgpt.com|" + a]: {
+      platform: "ChatGPT", id: "chatgpt", acct: a, label: "a••e@example.com",
+      ordinal: 1, plan: "Free", updatedAt: now, observedAt: now,
+      windows: [{ key: "deep_research", label: "deep research", pctLeft: null,
+                  remaining: 25, limit: null, used: null, resetAt: now + 36e5,
+                  observedAt: now, basis: "", unit: "", path: "x" }]
+    },
+    // Paid: a published ceiling, so a share is a real figure.
+    ["quota:chatgpt.com|" + b]: {
+      platform: "ChatGPT", id: "chatgpt", acct: b, label: "b••b@example.com",
+      ordinal: 2, plan: "Plus", updatedAt: now, observedAt: now,
+      windows: [{ key: "messages", label: "messages", pctLeft: 62,
+                  remaining: 50, limit: 80, used: 30, resetAt: now + 72e5,
+                  observedAt: now, basis: "provider-percentage", unit: "", path: "y" }]
+    }
   }), [now, aliceTag, bobTag]);
   await page.reload();
   await page.waitForSelector(".usage-row");
@@ -563,16 +584,30 @@ try {
   const ringCount = await page.evaluate(() => document.querySelectorAll(".usage-arc").length);
   t("F3 two accounts on one platform draw two rings",
     legend.filter((l) => l.startsWith("ChatGPT")).length === 2, JSON.stringify(legend));
-  t("F3 the legend names the accounts, not the plan",
-    legend.some((l) => l.includes("a••e@example.com")) && legend.some((l) => l.includes("b••b@example.com")),
-    JSON.stringify(legend));
-  // No published ceiling means no remainder to report, so the free account
-  // counts what it sent; the paid one counts down what it has left.
+  /* Two accounts on one platform are told apart by plan and ordinal, not by
+     email: popup.js says so where it builds the note ("the plan is the more
+     useful subtitle"), and an email in a panel people screenshot is a poor
+     default. The old assertion here expected the address. */
+  t("F3 the two accounts are told apart from each other",
+    (() => {
+      const rows = legend.filter((l) => l.startsWith("ChatGPT"));
+      return rows.length === 2 && rows[0] !== rows[1] &&
+             rows.some((l) => /Plus/.test(l)) && rows.some((l) => /Free/.test(l));
+    })(), JSON.stringify(legend));
+  // A count with no ceiling is shown as the count, and never as a percentage.
+  /* Matched on the meter name, not on the bare number: the row's textContent
+     runs the ordinal into the value ("Free · 1" + "25 left" reads as
+     "125 left") because they are separate columns in the DOM. */
   t("F4 the free account draws no invented ceiling",
-    legend.some((l) => /a••e@example\.com\s*2 sent$/.test(l)), JSON.stringify(legend));
+    legend.some((l) => /Free/.test(l) && /left · deep research/.test(l) && !/%/.test(l)),
+    JSON.stringify(legend));
   t("F4 the paid account counts down against its published one",
-    legend.some((l) => /b••b@example\.com\s*79\/80 left$/.test(l)), JSON.stringify(legend));
-  t("F5 both rings actually render an arc", ringCount >= 2, String(ringCount));
+    legend.some((l) => /Plus/.test(l) && /62%/.test(l)), JSON.stringify(legend));
+  /* ONE arc, not two. The paid row has a share to draw; the free row is a bare
+     count, and drawing an arc for it would mean inventing the denominator this
+     panel refuses to invent — it gets the dotted "unknown share" track instead. */
+  t("F5 the reported share draws an arc, the bare count does not",
+    ringCount === 1, String(ringCount));
 
   /* ================= G. edges ================= */
 

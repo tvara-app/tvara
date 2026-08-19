@@ -21,13 +21,28 @@
   // ⌘⇧K reads as one key to a Mac user; Ctrl+Shift+K is what Windows expects.
   // Chrome hands us the platform's own spelling, so only the separators need
   // tidying.
+  const IS_MAC = (() => {
+      /* navigator.platform is deprecated and userAgentData is not on every
+         browser this runs in, so both are asked, in that order, and the answer
+         is only ever used to choose a symbol. */
+      const d = (typeof navigator !== "undefined" && navigator.userAgentData) || null;
+      if (d && typeof d.platform === "string") return /mac/i.test(d.platform);
+      const ua = (typeof navigator !== "undefined" && navigator.userAgent) || "";
+      return /Mac|iPhone|iPad/i.test(ua);
+    })();
+
   function pretty(shortcut) {
     if (!shortcut) return null;
+    /* Chrome already hands back the platform's own spelling, so this only
+       tidies separators. MacCtrl is Chrome's name for the real Control key on
+       macOS and used to survive verbatim into the middle of "MacCtrl⇧K". */
     return shortcut
-      .replace(/Command/g, "⌘").replace(/Ctrl/g, "Ctrl")
-      .replace(/Shift/g, navigator.userAgent.includes("Mac") ? "⇧" : "Shift")
-      .replace(/Alt/g, navigator.userAgent.includes("Mac") ? "⌥" : "Alt")
-      .replace(/\+/g, navigator.userAgent.includes("Mac") ? "" : "+");
+      .replace(/MacCtrl/g, IS_MAC ? "⌃" : "Ctrl")
+      .replace(/Command/g, "⌘")
+      .replace(/Ctrl/g, IS_MAC ? "⌃" : "Ctrl")
+      .replace(/Shift/g, IS_MAC ? "⇧" : "Shift")
+      .replace(/Alt/g, IS_MAC ? "⌥" : "Alt")
+      .replace(/\+/g, IS_MAC ? "" : "+");
   }
 
   async function paintKeys() {
@@ -54,7 +69,7 @@
        a common case — turns a small fixable thing into a wall of red. */
     const hint = $("keys-hint");
     if (hint) {
-      hint.innerHTML = "";
+      hint.replaceChildren();
       if (unassigned) {
         hint.append(unassigned === 1
           ? "One of these is taken by another extension. "
