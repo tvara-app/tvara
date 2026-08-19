@@ -235,7 +235,7 @@
     if (!pill) {
       pill = document.createElement("div");
       pill.id = "lct-mm-count";
-      pill.title = "Messages the speed engine has put to sleep — they wake instantly when you scroll to them.";
+      pill.title = "Messages the speed engine has put to sleep. They wake instantly when you scroll to them.";
       mm.insertBefore(pill, mm.querySelector("#lct-mm-stage") || mm.querySelector("#lct-mm-canvas"));
     }
     if (windowedCount > 0) {
@@ -254,11 +254,11 @@
     if (windowedCount < 50 || ahaShown.has(location.pathname)) return;
     ahaShown.add(location.pathname);
     let msg =
-      `This chat has ${total} messages — your browser is now rendering only ` +
+      `This chat has ${total} messages, and your browser is now rendering only ` +
       `${total - windowedCount} of them. Tvara keeps it fast.`;
     if (!toolsUnlocked() && !upsoldThisSession) {
       upsoldThisSession = true; // don't nag: one upsell line per session
-      msg += ` Unlock minimap, search, timestamps & backup — ${self.LCTProduct.PRICE} once, in the extension popup.`;
+      msg += ` Unlock minimap, search, timestamps & backup for ${self.LCTProduct.PRICE} once, in the extension popup.`;
     }
     flashNote(msg);
   }
@@ -442,13 +442,13 @@
       <button data-act="search" title="Search this conversation" aria-label="Search this conversation">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20.5 20.5-4-4"/></svg>
       </button>
-      <button data-act="bridge" title="Context Bridge — pull a past answer from any AI into this prompt" aria-label="Context Bridge">
+      <button data-act="bridge" title="Context Bridge: pull a past answer from any AI into this prompt" aria-label="Context Bridge">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17V9a3 3 0 0 1 3-3h10"/><path d="m14 3 3 3-3 3"/><path d="M20 7v8a3 3 0 0 1-3 3H7"/><path d="m10 21-3-3 3-3"/></svg>
       </button>
-      <button data-act="carry" title="Continue in a new chat — carry the goal, your starred messages and the last few turns into a fresh conversation" aria-label="Continue in a new chat">
+      <button data-act="carry" title="Continue in a new chat: carry the goal, your starred messages and the last few turns into a fresh conversation" aria-label="Continue in a new chat">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h13"/><path d="m13 6 6 6-6 6"/><path d="M20 4v16" opacity=".45"/></svg>
       </button>
-      <button data-act="history" title="Mount every older message in the page itself — for the site's own Ctrl+F and a full backup. The map is already complete without this." aria-label="Mount every older message in the page">
+      <button data-act="history" title="Mount every older message in the page itself, for the site's own Ctrl+F and a full backup. The map is already complete without this." aria-label="Mount every older message in the page">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V5"/><path d="m6 11 6-6 6 6"/><path d="M4 3h16"/></svg>
       </button>
       <button data-fmt="md" title="Backup chat as Markdown" aria-label="Backup chat as Markdown">
@@ -480,17 +480,17 @@
            had no way in at all. A toolbar button cannot be taken by anyone. */
         if (act.dataset.act === "search") return self.LCTSearch.toggle();
         if (act.dataset.act === "bridge") {
-          if (!recallUnlocked()) { flashNote("Context Bridge is a Pro feature — " + TRIAL_NUDGE); return; }
+          if (!recallUnlocked()) { flashNote("Context Bridge is a Pro feature. " + TRIAL_NUDGE); return; }
           return self.LCTBridge.isOpen ? self.LCTBridge.close() : self.LCTBridge.open();
         }
         if (act.dataset.act === "carry") {
-          if (!lastMessages.length) return flashNote("Nothing to carry over yet — open a conversation first.");
+          if (!lastMessages.length) return flashNote("Nothing to carry over yet. Open a conversation first.");
           return self.LCTCarry.open(lastMessages);
         }
         if (act.dataset.act === "history") {
           const began = self.LCTHistoryLoader.start(adapter);
           flashNote(began
-            ? "Mounting every older message — the page scrolls while it runs. Scroll or press a key to stop."
+            ? "Mounting every older message. The page scrolls while it runs. Scroll or press a key to stop."
             : "Already mounting older messages.");
           return;
         }
@@ -505,7 +505,7 @@
       self.LCTExporter.exportChat(adapter, btn.dataset.fmt, timeFn()).then((res) => {
         if (!res || !res.ok) return;
         flashNote(res.whole
-          ? `Backed up the whole conversation — ${res.count.toLocaleString()} messages, ` +
+          ? `Backed up the whole conversation: ${res.count.toLocaleString()} messages, ` +
             `including ${(res.count - res.loaded).toLocaleString()} this page had not loaded`
           : `Backed up the ${res.count.toLocaleString()} loaded messages`);
       }).catch(() => { /* the download either happened or it did not */ });
@@ -513,7 +513,7 @@
   }
 
   function showUpgradeNote() {
-    flashNote(`Tools on this site are Pro — ${self.LCTProduct.PRICE} once, forever. Open the extension popup to unlock.`);
+    flashNote(`Tools on this site are Pro: ${self.LCTProduct.PRICE} once, forever. Open the extension popup to unlock.`);
   }
 
   let noteTimer = null;
@@ -602,13 +602,13 @@
   function dispatchCommand(name) {
     if (!state.enabled) return;
     if (name === "in-chat-search") {
-      if (!toolsUnlocked()) { flashNote("In-chat search is Pro here — " + TRIAL_NUDGE); return; }
+      if (!toolsUnlocked()) { flashNote("In-chat search is Pro here. " + TRIAL_NUDGE); return; }
       self.LCTSearch.toggle();
     } else if (name === "open-recall") {
-      if (!recallUnlocked()) { flashNote("Total Recall is a Pro feature — " + TRIAL_NUDGE); return; }
+      if (!recallUnlocked()) { flashNote("Total Recall is a Pro feature. " + TRIAL_NUDGE); return; }
       self.LCTRecall.isOpen ? self.LCTRecall.close() : self.LCTRecall.open();
     } else if (name === "open-bridge") {
-      if (!recallUnlocked()) { flashNote("Context Bridge is a Pro feature — " + TRIAL_NUDGE); return; }
+      if (!recallUnlocked()) { flashNote("Context Bridge is a Pro feature. " + TRIAL_NUDGE); return; }
       self.LCTBridge.isOpen ? self.LCTBridge.close() : self.LCTBridge.open();
     }
   }
@@ -821,7 +821,7 @@
       selectors: !messages.length ? "no messages found"
         : !adapter.canon ? "unknown"
         : canonical === messages.length ? "primary"
-        : canonical === 0 ? "DEGRADED — running on a fallback layer"
+        : canonical === 0 ? "DEGRADED · running on a fallback layer"
         : `mixed (${canonical}/${messages.length} canonical)`,
       roles,
       // null = this platform has no positive marker for both sides, so roles

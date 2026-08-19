@@ -34,6 +34,7 @@
     let commands = [];
     try { commands = await chrome.commands.getAll(); } catch { /* not available */ }
     const byName = new Map(commands.map((c) => [c.name, c.shortcut]));
+    let unassigned = 0;
     for (const li of document.querySelectorAll("#key-list li")) {
       const kbd = li.querySelector(".k");
       const key = pretty(byName.get(li.dataset.cmd));
@@ -41,10 +42,31 @@
         kbd.textContent = key;
         kbd.classList.remove("unset");
       } else {
-        // Honest, and it points at the fix rather than pretending.
         kbd.textContent = "not assigned";
         kbd.classList.add("unset");
+        unassigned++;
       }
+    }
+    /* Said ONCE, about the card. Chrome drops a suggested shortcut silently
+       when another extension already holds the combination, and a bare grey
+       "not assigned" reads as "this feature has no shortcut". Repeating the
+       explanation on every row — which is what happens when all three collide,
+       a common case — turns a small fixable thing into a wall of red. */
+    const hint = $("keys-hint");
+    if (hint) {
+      hint.innerHTML = "";
+      if (unassigned) {
+        hint.append(unassigned === 1
+          ? "One of these is taken by another extension. "
+          : `${unassigned} of these are taken by other extensions. `);
+      } else {
+        hint.append("Your browser owns these. ");
+      }
+      const a = document.createElement("a");
+      a.href = "#"; a.id = "shortcuts-link";
+      a.textContent = unassigned ? "Pick your own" : "change any of them";
+      a.addEventListener("click", openShortcuts);
+      hint.append(a, unassigned ? ". The features work from the popup either way." : ".");
     }
   }
 
@@ -57,13 +79,13 @@
     if (state.active) {
       const days = Math.max(1, Math.ceil((state.until - Date.now()) / 864e5));
       btn.disabled = true;
-      btn.textContent = `Trial running — ${days} day${days === 1 ? "" : "s"} left`;
-      copy.textContent = "Everything is unlocked on every platform. Nothing expires from your archive when the trial does — only the search over it.";
+      btn.textContent = `Trial running · ${days} day${days === 1 ? "" : "s"} left`;
+      copy.textContent = "Everything is unlocked on every platform. When the trial ends your archive stays; only the search over it stops.";
     } else if (state.spent) {
       btn.hidden = true;
       copy.textContent = `Your trial has been used on this browser. The speed engine stays free forever; ${P.PRICE} once brings back Total Recall and Context Bridge.`;
       const buy = $("buy-pro");
-      buy.textContent = `Get Pro — ${P.PRICE} once, forever`;
+      buy.textContent = `Get Pro · ${P.PRICE} once, forever`;
       buy.classList.add("primary");
     }
   }
@@ -83,7 +105,7 @@
     if (state) paintTrial(state);
     else {
       btn.disabled = false;
-      btn.textContent = "Couldn't start — try again";
+      btn.textContent = "Couldn't start. Try again";
     }
   });
 
@@ -95,14 +117,19 @@
     });
   }
 
-  $("shortcuts-link").addEventListener("click", (e) => {
-    e.preventDefault();
+  /* Named, because paintKeys() rebuilds this line — and with it the link —
+     whenever the shortcut state changes, so a listener bound once at load
+     would be attached to an element no longer on the page. */
+  function openShortcuts(e) {
+    if (e) e.preventDefault();
     chrome.tabs.create({
       url: navigator.userAgent.includes("Edg/")
         ? "edge://extensions/shortcuts"
         : "chrome://extensions/shortcuts"
     });
-  });
+  }
+  const shortcutsLink = $("shortcuts-link");
+  if (shortcutsLink) shortcutsLink.addEventListener("click", openShortcuts);
 
   const open = (id, url) => $(id).addEventListener("click", (e) => {
     e.preventDefault();
@@ -138,14 +165,17 @@
       btn.textContent = "Fetch my history";
       status.hidden = false;
       status.textContent = state && state.done
-        ? "Done — every chat this browser knows about has its text."
-        : "Nothing waiting. Open a chat site once and it will find your conversations.";
+        ? "Done. Every chat this browser knows about has its text."
+        /* On a fresh install this is the true state, and the old line read as
+           an instruction with no object: there is nothing to fetch until a
+           chat site has been opened once, which is the card ABOVE this one. */
+        : "Nothing waiting yet. Open a chat site once (the buttons above) and your conversations show up here.";
       return;
     }
     btn.textContent = `Fetch ${total.toLocaleString()} chats`;
     if (state && state.note) {
       status.hidden = false;
-      status.textContent = `${state.note} — sign in on that site, then try again.`;
+      status.textContent = `${state.note}. Sign in on that site, then try again.`;
       return;
     }
     status.hidden = true;

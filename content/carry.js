@@ -87,7 +87,7 @@
   function compose(parts, opts) {
     const max = (opts && opts.max) || MAX_CHARS;
     const out = [];
-    out.push("I'm continuing an earlier conversation. Here is the context — " +
+    out.push("I'm continuing an earlier conversation. Here is the context. " +
              "please pick up from it, and ask if something is missing.");
 
     if (parts.goal) out.push(`\n## What I originally asked\n${clip(parts.goal, GOAL_CHARS)}`);
@@ -221,7 +221,7 @@
     title.textContent = "Continue in a new chat";
     const sub = document.createElement("div");
     sub.className = "lct-c-sub";
-    sub.textContent = `Carry the context forward from these ${data.total.toLocaleString()} messages. Nothing is sent — it lands in the prompt box for you to read first.`;
+    sub.textContent = `Carry the context forward from these ${data.total.toLocaleString()} messages. Nothing is sent; it lands in the prompt box for you to read first.`;
     head.append(title, sub);
 
     const opts = document.createElement("div");
@@ -331,8 +331,8 @@
     const ok = self.LCTBridge.injectInto(box, rec.text);
     if (self.LCTNote) {
       self.LCTNote(ok
-        ? "Context carried over — read it, then send when you're ready."
-        : "Couldn't reach the prompt box — the context is on your clipboard, just paste it.");
+        ? "Context carried over. Read it, then send when you're ready."
+        : "Couldn't reach the prompt box. The context is on your clipboard, just paste it.");
     }
   }
 

@@ -155,7 +155,7 @@
         card.appendChild(line(rec.ti || "Synced chat", "lct-cc-title"));
         if (rec.e) card.appendChild(line("Created " + fmt(rec.e * 1000)));
         card.appendChild(line("Last active " + fmt(rec.o), "lct-cc-dim"));
-        card.appendChild(line("Synced from your history — open once for message counts.", "lct-cc-dim"));
+        card.appendChild(line("Synced from your history. Open once for message counts.", "lct-cc-dim"));
       } else {
       card.appendChild(line(
         `${rec.c.toLocaleString()} messages · ${rec.u.toLocaleString()} questions asked`,

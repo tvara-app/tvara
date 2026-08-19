@@ -382,7 +382,7 @@ function snippetFor(chat, words, long) {
     }
   }
   if (!chat.msgs.length) {
-    return { text: "Synced from your history — open once (or run full sync) to archive the text.", msgIndex: 0, role: "user" };
+    return { text: "Synced from your history. Open once (or run full sync) to archive the text.", msgIndex: 0, role: "user" };
   }
   return { text: chat.msgs[0].t.slice(0, 160), msgIndex: 0, role: "user" };
 }
@@ -1187,7 +1187,7 @@ async function normalizeRun() {
     const current = prog[BG_SYNC_PROG(id)];
     if (current && current.state !== "syncing") continue;
     update[BG_SYNC_PROG(id)] = { state: "interrupted", phase: "interrupted", done: 0, total: 0,
-      msg: "Paused. Resumes from the last checkpoint — nothing is re-downloaded.", at: Date.now() };
+      msg: "Paused. Resumes from the last checkpoint; nothing is re-downloaded.", at: Date.now() };
   }
   await chrome.storage.local.set(update);
   return interrupted;
@@ -3002,7 +3002,7 @@ async function quotaProbe(platformId, opts = {}) {
   const sig = quotaSig(candidates);
   if (!adapter || !candidates.length) {
     return { id: platformId, at, sig, endpoints: [], working: [],
-      note: adapter ? "no candidate endpoints — observation only" : "unknown platform" };
+      note: adapter ? "no candidate endpoints, observation only" : "unknown platform" };
   }
 
   let ctx = null;
@@ -3225,7 +3225,7 @@ async function quotaMaybeWarnNow(platformId, acct, record) {
       iconUrl: chrome.runtime.getURL("icons/icon128.png"),
       title: `${label}: ${Math.round(pct)}% of your allowance left`,
       message: when
-        ? `Wrap up or switch models — it resets at ${when}.`
+        ? `Wrap up or switch models. It resets at ${when}.`
         : "Wrap up or switch models before it runs out.",
       priority: pct <= 10 ? 2 : 1
     });
@@ -3575,7 +3575,7 @@ async function bgSyncPlatform(adapter, run, opts = {}) {
       [BG_SYNC_PROG(adapter.id)]: {
         state: "paused", phase: "paused", runId: run.id, platform: adapter.id,
         done: 0, total: 0, cooldownUntil,
-        msg: `${adapter.label} is rate-limiting — resumes automatically`, at: Date.now()
+        msg: `${adapter.label} is rate-limiting, resumes automatically`, at: Date.now()
       }
     });
     return { ok: true, result: "cooling-down" };
@@ -3946,7 +3946,7 @@ async function bgSyncAccount(adapter, run, opts, ctx, tabs, seat = { seat: 0, se
           runId: run.id, platform: adapter.id, done: attempted, attempted, total, succeeded, failed,
           msg: circuitOpen
             ? `${archived} saved · ${adapter.label} is rate-limiting, ${opts.canResume === false ? "check again shortly" : "resumes automatically"}`
-            : `${archived} saved · ${left} left${opts.canResume === false ? " — check again to continue" : ", resumes automatically"}`,
+            : `${archived} saved · ${left} left${opts.canResume === false ? ", check again to continue" : ", resumes automatically"}`,
           at: Date.now()
         }
       });
@@ -3986,9 +3986,9 @@ async function reportPlatformError(adapter, run, error, fields) {
     : /unexpected token\s*['"]?<?|valid json|json\.parse|unexpected provider response|invalid provider response/i.test(reason)
       ? `Needs an active session`
       : rateLimited
-        ? `${adapter.label} is rate-limiting — resumes automatically`
+        ? `${adapter.label} is rate-limiting, resumes automatically`
         : shapeChanged
-          ? `${adapter.label} changed its API — this needs a toolkit update`
+          ? `${adapter.label} changed its API. This needs a Tvara update`
           : `Couldn't reach ${adapter.label}`;
   progressPending = null;
   await chrome.storage.local.set({
@@ -4354,7 +4354,7 @@ function summarize(platforms, running, recovery, runId) {
   // A rate limit is not user-actionable and must not paint the error state.
   const cooling = entries.filter((p) => p.progress && p.progress.state === "paused");
   if (cooling.length) {
-    return { state: "paused", message: cooling[0].progress.msg || "Paused — resumes automatically",
+    return { state: "paused", message: cooling[0].progress.msg || "Paused · resumes automatically",
       checkedAt: 0, connected: entries.filter((p) => !(p.progress && p.progress.signedOut)).length };
   }
 
@@ -4379,7 +4379,7 @@ function summarize(platforms, running, recovery, runId) {
   }
   const paused = connected.filter((p) => p.progress && p.progress.state === "interrupted");
   if (paused.length) {
-    return { state: "pending", message: "Paused — pick up where it stopped", checkedAt: 0, connected: connected.length };
+    return { state: "pending", message: "Paused · pick up where it stopped", checkedAt: 0, connected: connected.length };
   }
 
   const current = connected.filter((p) => p.phase === "up-to-date" && p.checkpoint);
@@ -4555,7 +4555,7 @@ async function runAutoBackup(reason) {
     }, { keyring: config.keyring });
 
     if (sealed.json.length > BG_AUTOBACKUP_MAX_BYTES) {
-      await note({ lastError: "This archive is too large for automatic backup — export it from the Recall page.", lastCheckedAt: Date.now() });
+      await note({ lastError: "This archive is too large for automatic backup. Export it from the Recall page.", lastCheckedAt: Date.now() });
       return { status: "too-large" };
     }
     // MV3 service workers have no URL.createObjectURL, so the envelope travels

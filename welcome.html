@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Tvara — you're set up</title>
+  <title>Tvara · you're set up</title>
   <link rel="icon" href="icons/icon48.png" />
   <link rel="stylesheet" href="welcome.css" />
 </head>
@@ -13,62 +13,16 @@
       <img src="icons/icon128.png" alt="" width="52" height="52" />
       <div>
         <h1>You're set up.</h1>
-        <p class="sub">Open any long chat on ChatGPT, Claude, Gemini, DeepSeek, Grok or Perplexity. It starts working the moment the page loads — nothing to configure.</p>
+        <p class="sub">Nothing to configure. Open a long chat and it's already working.</p>
       </div>
     </header>
 
-    <section class="card keys">
-      <h2>Three shortcuts worth knowing</h2>
-      <p class="hint">These are your browser's own shortcuts — remap any of them from <a href="#" id="shortcuts-link">the shortcuts page</a>.</p>
-      <ul id="key-list">
-        <li data-cmd="in-chat-search">
-          <kbd class="k">…</kbd>
-          <span class="kt"><b>Search this conversation</b>Every message, including the ones the site has unloaded.</span>
-        </li>
-        <li data-cmd="open-recall">
-          <kbd class="k">…</kbd>
-          <span class="kt"><b>Total Recall</b>One search box for every chat you've had, on every platform.</span>
-        </li>
-        <li data-cmd="open-bridge">
-          <kbd class="k">…</kbd>
-          <span class="kt"><b>Context Bridge</b>Pull a past answer from any AI straight into the prompt you're writing.</span>
-        </li>
-      </ul>
-    </section>
-
-    <section class="card">
-      <h2>What happens on its own</h2>
-      <ul class="plain">
-        <li><b>Long chats stop lagging.</b> Messages you can't see are put to sleep and wake instantly when you scroll back. Nothing is deleted, ever. Free on every platform, forever.</li>
-        <li><b>Your chats get archived, locally.</b> The archive builds itself in the background so Total Recall has something to search. It lives in this browser and has nowhere else to go — there is no Tvara server.</li>
-        <li><b>A minimap, an outline, timestamps and stars</b> appear on the chats themselves. Hover the right edge — the same strip holds <b>Continue in a new chat</b>, which carries this conversation's context into a fresh one when it gets long or slow.</li>
-        <li><b>You get told before you hit a limit.</b> At 20% of your allowance, and again at 10%, on whichever AI is running down — instead of finding out when it cuts you off.</li>
-      </ul>
-    </section>
-
-    <section class="card" id="start-card">
-      <h2>Start with what you've already said</h2>
-      <p class="hint" id="start-copy">Total Recall searches conversations this browser holds a copy of. Right now that is none of them — so the first useful thing is to fetch them.</p>
-      <div class="cta-actions" style="margin-top:14px;">
-        <button id="fetch-history" type="button">Fetch my history</button>
-        <button id="import-export" class="ghost" type="button">or import an export file</button>
-      </div>
-      <p class="hint" id="fetch-status" hidden></p>
-    </section>
-
-    <section class="card cta-card">
-      <div class="cta-copy">
-        <h2>Everything unlocked for 7 days</h2>
-        <p class="hint" id="trial-copy">One click. No signup, no card, no account — the trial is a date in this browser's own storage.</p>
-      </div>
-      <div class="cta-actions">
-        <button id="trial-start" type="button">Start free trial</button>
-        <button id="buy-pro" class="ghost" type="button" data-price="or {price} once, forever"></button>
-      </div>
-    </section>
-
-    <section class="card open-row">
-      <h2>Try it on a real chat</h2>
+    <!-- The one thing this page is for. A person who sees a 1,500-message chat
+         scroll like a short one needs no further explanation, so that moment
+         comes first and everything else waits its turn below. -->
+    <section class="card hero-card">
+      <h2>Open a chat and watch</h2>
+      <p class="lede">Pick where you already talk. The longer the conversation, the more obvious the difference.</p>
       <div class="chips">
         <button class="chip" data-url="https://chatgpt.com/">ChatGPT</button>
         <button class="chip" data-url="https://claude.ai/">Claude</button>
@@ -77,6 +31,60 @@
         <button class="chip" data-url="https://grok.com/">Grok</button>
         <button class="chip" data-url="https://www.perplexity.ai/">Perplexity</button>
       </div>
+    </section>
+
+    <section class="card" id="start-card">
+      <h2>Bring your old chats in</h2>
+      <p class="lede" id="start-copy">Search only reaches chats this browser has a copy of.</p>
+      <div class="cta-actions">
+        <button id="fetch-history" type="button">Fetch my history</button>
+        <button id="import-export" class="ghost" type="button">Import an export file</button>
+      </div>
+      <p class="hint" id="fetch-status" hidden></p>
+    </section>
+
+    <section class="card cta-card">
+      <div class="cta-copy">
+        <h2>Everything unlocked for 7 days</h2>
+        <p class="lede" id="trial-copy">One click. No signup, no card, no account. The trial is just a date in this browser.</p>
+      </div>
+      <div class="cta-actions">
+        <button id="trial-start" type="button">Start free trial</button>
+        <button id="buy-pro" class="ghost" type="button" data-price="or {price} once, forever"></button>
+      </div>
+    </section>
+
+    <!-- Reference, not onboarding. Nobody reads a feature list before they have
+         seen the thing work, so it sits under the actions rather than above
+         them, and every line is one line. -->
+    <section class="card">
+      <h2>What it does on its own</h2>
+      <ul class="plain">
+        <li><b>Long chats stop lagging.</b> Messages you can't see sleep, and wake the moment you scroll back. Nothing is ever deleted.</li>
+        <li><b>Your chats archive themselves, locally.</b> Never leaves this browser. There is no Tvara server.</li>
+        <li><b>A minimap, outline, timestamps and stars</b> appear on the chat itself. Hover the right edge.</li>
+        <li><b>Continue in a new chat.</b> When one gets long or slow, carry its context into a fresh one.</li>
+        <li><b>A warning before you run out.</b> At 20% of your allowance, then 10%, instead of when it cuts you off.</li>
+      </ul>
+    </section>
+
+    <section class="card keys">
+      <h2>Three shortcuts</h2>
+      <ul id="key-list">
+        <li data-cmd="in-chat-search">
+          <kbd class="k">…</kbd>
+          <span class="kt"><b>Search this conversation</b>Every message, including ones the site unloaded.</span>
+        </li>
+        <li data-cmd="open-recall">
+          <kbd class="k">…</kbd>
+          <span class="kt"><b>Total Recall</b>One search box for every chat, on every platform.</span>
+        </li>
+        <li data-cmd="open-bridge">
+          <kbd class="k">…</kbd>
+          <span class="kt"><b>Context Bridge</b>Pull a past answer straight into the prompt you're writing.</span>
+        </li>
+      </ul>
+      <p class="hint" id="keys-hint">Your browser owns these. Change any of them on <a href="#" id="shortcuts-link">the shortcuts page</a>.</p>
     </section>
 
     <footer class="foot">

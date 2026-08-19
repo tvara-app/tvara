@@ -317,7 +317,7 @@
           }
         }));
       }
-      noteEl.textContent = rows.length ? "" : "Star any message — hover it, or use the ☆ on an outline row";
+      noteEl.textContent = rows.length ? "" : "Star any message: hover it, or use the ☆ on an outline row";
     }
     const at = listEl.scrollTop;   // starring must not throw away your place
     listEl.replaceChildren(...rows);

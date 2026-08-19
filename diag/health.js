@@ -44,11 +44,11 @@
     }
     if (!h.messages) {
       return h.inConversation === false
-        ? { cls: "idle", text: "no conversation open in this tab — open a chat and re-run" }
+        ? { cls: "idle", text: "no conversation open in this tab, open a chat and re-run" }
         : { cls: "bad", text: "a conversation is open but no messages were found" };
     }
-    if (/DEGRADED/.test(h.selectors)) return { cls: "bad", text: "running on a fallback layer — this platform has changed" };
-    if (/mixed/.test(h.selectors)) return { cls: "warn", text: "partly matching — worth a look" };
+    if (/DEGRADED/.test(h.selectors)) return { cls: "bad", text: "running on a fallback layer, this platform has changed" };
+    if (/mixed/.test(h.selectors)) return { cls: "warn", text: "partly matching, worth a look" };
     return { cls: "good", text: "matching this platform's own markup" };
   }
 
@@ -85,7 +85,7 @@
       why.className = "consequence";
       why.textContent =
         "Chrome only injects into pages opened AFTER the extension was loaded. " +
-        "A tab that predates the last reload has none of the toolkit in it — " +
+        "A tab that predates the last reload has none of Tvara in it. " +
         "including the part that answers this page.";
       const fix = document.createElement("button");
       fix.className = "ghost fix";
@@ -112,17 +112,17 @@
         row("messages seen", String(h.messages)),
         row("the provider's own count for this chat",
           typeof h.providerCount === "number"
-            ? `${h.providerCount}${h.providerCount === h.messages ? " — agrees" : ` · we see ${h.messages}`}`
+            ? `${h.providerCount}${h.providerCount === h.messages ? " · agrees" : ` · we see ${h.messages}`}`
             : "this platform publishes no index"),
         row("elements matched, before empty turns were dropped",
           h.matched === undefined ? "n/a"
-            : h.dropped ? `${h.matched} — ${h.dropped} dropped as unmounted placeholders`
+            : h.dropped ? `${h.matched} · ${h.dropped} dropped as unmounted placeholders`
             : String(h.matched)),
         row("matching the platform's own attributes", `${h.canonical} of ${h.messages}`),
         row("roles read", `${h.roles.user} yours · ${h.roles.assistant} the model's`),
         row("roles taken from the page itself",
           h.roleRead === null || h.roleRead === undefined
-            ? "not available on this platform — inferred"
+            ? "not available on this platform, inferred"
             : `${h.roleRead} of ${h.messages}`),
         row("where that role was found",
           h.roleFrom
@@ -170,7 +170,7 @@
         n.textContent = extra > 0
           ? `We are showing ${extra} more message(s) than the provider says this chat has. ` +
             "Those are the host's own empty blocks, and they should not be counted."
-          : `The provider lists ${-extra} message(s) this page has not mounted yet — ` +
+          : `The provider lists ${-extra} message(s) this page has not mounted yet. ` +
             "normal on a long chat that has only rendered its tail.";
         el.append(n);
       }
@@ -201,14 +201,14 @@
       if (h.substance && h.substance.empty) {
         const n = document.createElement("p");
         n.className = "consequence";
-        n.textContent = `${h.substance.empty} matched element(s) contain nothing at all — ` +
+        n.textContent = `${h.substance.empty} matched element(s) contain nothing at all. ` +
           "no text and no image. Those are the host's own unmounted turns, and they are not counted as messages.";
         el.append(n);
       }
       if (h.substance && h.substance.image) {
         const n = document.createElement("p");
         n.className = "consequence ok";
-        n.textContent = `${h.substance.image} message(s) are an image with no caption — a pasted ` +
+        n.textContent = `${h.substance.image} message(s) are an image with no caption. A pasted ` +
           "screenshot is still a message. They are counted, and the minimap and export name them by file.";
         el.append(n);
       }
@@ -216,14 +216,14 @@
         const n = document.createElement("p");
         n.className = "consequence";
         n.textContent = `${h.distinctIds.of - h.distinctIds.distinct} element(s) repeat a message id another ` +
-          "element already claimed — the same turn is being counted more than once, as siblings rather " +
+          "element already claimed. The same turn is being counted more than once, as siblings rather " +
           "than as one inside the other.";
         el.append(n);
       }
       if (h.nested) {
         const n = document.createElement("p");
         n.className = "consequence";
-        n.textContent = `${h.nested} matched element(s) sit inside another matched element — ` +
+        n.textContent = `${h.nested} matched element(s) sit inside another matched element. ` +
           "this platform's turns are being counted more than once.";
         el.append(n);
       }
@@ -279,10 +279,10 @@
           `engine ${h.engine ? "on" : "off"}, path ${h.path}`
         : `${new URL(tab.url || "https://?").hostname}: ${h && h.error
             ? "the adapter threw: " + h.error
-            : "no answer (content script not running — reload that tab)"}`);
+            : "no answer (content script not running, reload that tab)"}`);
     }
 
-    lastReport = `Tvara health — v${(chrome.runtime.getManifest().version)}\n` +
+    lastReport = `Tvara health · v${(chrome.runtime.getManifest().version)}\n` +
       new Date().toISOString() + "\n" + lines.map((l) => "- " + l).join("\n");
     $("status").textContent = `${tabs.length} tab${tabs.length === 1 ? "" : "s"} checked.`;
     $("copy").hidden = false;
@@ -296,7 +296,7 @@
       $("copy").textContent = "Copied";
       setTimeout(() => ($("copy").textContent = "Copy report"), 1600);
     } catch {
-      $("status").textContent = "Could not reach the clipboard — select the cards and copy by hand.";
+      $("status").textContent = "Could not reach the clipboard. Select the cards and copy by hand.";
     }
   });
 

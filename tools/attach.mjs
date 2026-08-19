@@ -69,12 +69,30 @@ const ctx = browser.contexts()[0];
 /* The extension's own service worker is the shortest path to the content
    scripts: one hop instead of a page that Chrome may refuse to navigate to. */
 async function worker() {
-  let sw = ctx.serviceWorkers().find((w) => /^chrome-extension:\/\//.test(w.url()));
-  if (sw) return sw;
-  // A worker that has gone idle is not listed until something wakes it. Opening
-  // any of our own pages does that; so does a chat tab loading.
-  sw = await ctx.waitForEvent("serviceworker", { timeout: 8000 }).catch(() => null);
-  return sw && /^chrome-extension:\/\//.test(sw.url()) ? sw : null;
+  /* BY NAME, not "the first extension worker": a real profile has a dozen
+     extensions, and evaluating inside someone else's worker means
+     chrome.tabs.sendMessage reaches THEIR content scripts, which answer
+     nothing, so every platform reports "no answer".
+     But the name probe itself has to be time-boxed and URL-filtered first.
+     Asking every extension worker for its manifest hung indefinitely: at least
+     one of them never answers an evaluate, and that one blocked the whole run
+     before any platform was checked. */
+  const named = async (w) => {
+    if (!/^chrome-extension:\/\//.test(w.url())) return false;
+    const probe = w.evaluate(() => chrome.runtime.getManifest().name).catch(() => null);
+    const name = await Promise.race([probe, new Promise((r) => setTimeout(() => r(null), 2500))]);
+    return name === "Tvara";
+  };
+  const candidates = ctx.serviceWorkers();
+  // Ours is bg.js; try those first so a stranger's worker is never even asked.
+  for (const w of candidates.filter((w) => /\/bg\.js(\?|$)/.test(w.url()))) {
+    if (await named(w)) return w;
+  }
+  for (const w of candidates.filter((w) => !/\/bg\.js(\?|$)/.test(w.url()))) {
+    if (await named(w)) return w;
+  }
+  const w = await ctx.waitForEvent("serviceworker", { timeout: 10000 }).catch(() => null);
+  return w && (await named(w)) ? w : null;
 }
 
 async function report() {

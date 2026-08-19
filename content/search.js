@@ -219,7 +219,7 @@
       ? `${n - beyond} on this page, ${beyond} further back in this conversation`
       : (remoteBlind && active
         ? `${n} on this page. The rest of this conversation is backed up but not ` +
-          `searchable yet — this platform's history does not carry message ids.`
+          `searchable yet: this platform's history does not carry message ids.`
         : "");
     counter.classList.toggle("lct-s-deep", beyond > 0);
     counter.classList.toggle("lct-s-none", !n && active);

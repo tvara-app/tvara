@@ -145,20 +145,20 @@
       }
       if (ours === null) {
         delta.textContent = `We show nothing for ${LABELS[id] || id}, and the site says ${theirs}%. `
-          + "That means the provider does publish it somewhere we are not reading — worth reporting.";
+          + "That means the provider does publish it somewhere we are not reading, which is worth reporting.";
         delta.className = "delta off";
         return;
       }
       const gap = Math.abs(ours - theirs);
       if (gap <= MATCH_PP) {
-        delta.textContent = `Match — we show ${ours}%, the site says ${theirs}%.`;
+        delta.textContent = `Match: we show ${ours}%, the site says ${theirs}%.`;
         delta.className = "delta match";
       } else if (gap <= NEAR_PP) {
-        delta.textContent = `Close — ${gap}pp apart (${ours}% vs ${theirs}%). `
+        delta.textContent = `Close: ${gap}pp apart (${ours}% vs ${theirs}%). `
           + "Within rounding if the site rounds coarsely, but worth a second look.";
         delta.className = "delta near";
       } else {
-        delta.textContent = `Disagreement — ${gap}pp apart (we show ${ours}%, the site says ${theirs}%). `
+        delta.textContent = `Disagreement: ${gap}pp apart (we show ${ours}%, the site says ${theirs}%). `
           + "We are reading the wrong field. Copy the report and the endpoint list below.";
         delta.className = "delta off";
       }
@@ -174,7 +174,7 @@
     const endpoints = probe.endpoints || [];
     root.querySelector(".ep-count").textContent = endpoints.length
       ? `${endpoints.length} endpoint${endpoints.length === 1 ? "" : "s"} checked · ${hits} carrying an allowance`
-      : "no candidate endpoints for this provider — observation only";
+      : "no candidate endpoints for this provider, observation only";
 
     for (const ep of endpoints) {
       const box = document.createElement("div");
@@ -242,7 +242,7 @@
       $("status").textContent = "Run a check first.";
       return;
     }
-    const lines = ["Tvara — allowance accuracy report",
+    const lines = ["Tvara · allowance accuracy report",
       "generated " + new Date().toLocaleString(), ""];
     for (const p of lastReport.raw.platforms) {
       const shown = p.shown;

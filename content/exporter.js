@@ -94,7 +94,7 @@
     const lines = [
       `# ${title}`,
       ``,
-      `> Exported by Tvara — ${new Date().toISOString()} — ${location.href}`,
+      `> Exported by Tvara · ${new Date().toISOString()} · ${location.href}`,
       `> Contains ${messages.length} messages — ${whole
         ? "the conversation as this extension has archived it, including messages the page had not loaded"
         : "the messages loaded in the page at export time"}.`,
@@ -105,8 +105,8 @@
       if (m.time) {
         head +=
           m.timeSource === "platform"
-            ? ` — ${fmtLocal(m.time)}`
-            : ` — first seen ${fmtLocal(m.time)}`;
+            ? ` · ${fmtLocal(m.time)}`
+            : ` · first seen ${fmtLocal(m.time)}`;
       }
       lines.push(head, "", m.text, "");
     }
@@ -190,7 +190,7 @@
            original conversation for the rest. */
         const rec = {
           role: m.r === "user" ? "user" : "assistant",
-          text: (m.t || "") + (m.c ? "\n\n[… truncated — this message was stored for search and " +
+          text: (m.t || "") + (m.c ? "\n\n[… truncated. This message was stored for search and " +
                                      "exceeds the archive's per-message limit. Open the original " +
                                      "conversation for the full text.]" : "")
         };

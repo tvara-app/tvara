@@ -81,6 +81,25 @@
    */
   const SHORTLIST = 8;
 
+  /**
+   * The last-resort structural layer, but ONLY where a conversation can exist.
+   *
+   * Found live on chatgpt.com/: with no conversation open, layers 1 to 4
+   * correctly matched nothing, so this ran on the landing page and returned 39
+   * ordinary <p> elements as "messages" — roles guessed 36 user to 3 assistant
+   * from prose that was neither. Every adapter already declares the path shape
+   * a conversation lives at; the precise layers above are safe anywhere, and
+   * this one is not, so this one is the only one that has to ask.
+   *
+   * Called with `this`, which is always the adapter: every call site in the
+   * codebase is `<adapter>.messages()`.
+   */
+  function heuristicInConversation(adapter, scope, minKids) {
+    const p = adapter && adapter.convPath;
+    if (p && !p.test(location.pathname)) return [];
+    return heuristicMessages(scope, minKids);
+  }
+
   function heuristicMessages(scope, minKids) {
     const root = scope || document.querySelector("main") || document.body;
     const floor = minKids || 6;
@@ -235,7 +254,7 @@
         // copy that lived here serialized every div's children to rank them,
         // which on a redesign would have run over the whole document four
         // times a second. 4 children, not 6 — ChatGPT's threshold.
-        return heuristicMessages(null, 4);
+        return heuristicInConversation(this, null, 4);
       },
       role(el) {
         // Self, then ANCESTORS, then descendants. The middle step was missing:
@@ -267,19 +286,43 @@
       // The layer-1 selector, quoted for the health check: matched messages that
       // do NOT satisfy it mean this platform has drifted and we are running on
       // a fallback layer — working, but on borrowed time.
-      canon: "[data-test-render-count], [data-testid=user-message], .font-claude-message",
+      canon: '[data-test-render-count], [data-testid="transcript-row"], [data-testid="user-message"], .font-claude-message, .font-claude-response',
+      roleCanon: '[data-testid="user-message"], .font-user-message, .font-claude-message, .font-claude-response',
       hostRe: /(^|\.)claude\.ai$/,
+      /* Found on the live site, 2026-08: Claude rebuilt the transcript. The turn
+         wrapper is no longer [data-test-render-count] but a row inside a
+         transcript list, and the assistant body class was renamed from
+         .font-claude-message to .font-claude-response. Both old selectors
+         matched nothing, and with no heuristic layer beneath them this adapter
+         returned zero messages on a real conversation: no minimap, no search,
+         no archive, on the platform Pro is sold for.
+         The old selectors are kept above the new ones rather than replaced,
+         because an older Claude build is still a Claude build. */
       messages() {
+        // Layer 1: the historical turn wrapper.
         let els = Array.from(document.querySelectorAll("[data-test-render-count]"));
-        if (!els.length) {
-          els = Array.from(
-            document.querySelectorAll('[data-testid="user-message"], .font-claude-message, .font-user-message')
-          ).map((el) => el.closest("[data-test-render-count]") || el.parentElement || el);
-        }
-        return dedupe(els);
+        if (els.length) return dedupe(els);
+
+        // Layer 2: the current transcript row.
+        els = Array.from(document.querySelectorAll('[data-testid="transcript-row"]'));
+        if (els.length) return dedupe(els);
+
+        // Layer 3: the message bodies, lifted to whichever wrapper exists.
+        els = Array.from(document.querySelectorAll(
+          '[data-testid="user-message"], .font-user-message, .font-claude-message, .font-claude-response'
+        )).map((el) =>
+          el.closest('[data-test-render-count], [data-testid="transcript-row"]') ||
+          el.parentElement || el);
+        if (els.length) return dedupe(els);
+
+        // Layer 4: structural, and only inside a conversation.
+        return heuristicInConversation(this);
       },
       role(el) {
-        return el.querySelector('[data-testid="user-message"], .font-user-message') ? "user" : "assistant";
+        // A positive marker on either side, checked on the element and below it.
+        if (el.matches && el.matches('[data-testid="user-message"], .font-user-message')) return "user";
+        if (el.querySelector('[data-testid="user-message"], .font-user-message')) return "user";
+        return "assistant";
       },
       composer() { return pickComposer(['div.ProseMirror[contenteditable="true"]', '[contenteditable="true"][role="textbox"]']); }
     },
@@ -322,7 +365,7 @@
         if (els.length) return els;
 
         // Layer 5: shared heuristic (last resort)
-        return heuristicMessages();
+        return heuristicInConversation(this);
       },
       role(el) {
         const tag = el.tagName.toLowerCase();
@@ -369,11 +412,25 @@
         )));
         if (els.length) return els;
 
-        // Layer 3: prose/markdown container pattern
-        els = dedupe(Array.from(document.querySelectorAll(
-          '[class*="prose"], [class*="markdown"]'
-        )).map(el => el.closest('[class*="Block"]') || el.parentElement || el));
-        if (els.length >= 2) return els;
+        /* Layer 3: the turn row, found by walking up from real answer content.
+           Perplexity ships pure Tailwind utility classes and no semantic hook
+           for a turn, so there is nothing to select — but the SHAPE is stable:
+           one container whose direct children are the turns, alternating a
+           short question with a long answer. Verified live: 15 children, the
+           ones holding a `prose` block being the answers.
+           Mapping each prose block to its parent (the old layer) returned 22
+           answer bodies and no questions at all, which is why every message on
+           this platform was reported as the assistant's. */
+        const anchor = document.querySelector('[class*="prose"], [class*="markdown"]');
+        let node = anchor;
+        for (let depth = 0; node && node.parentElement && depth < 10; depth++) {
+          const sibs = Array.from(node.parentElement.children)
+            .filter((c) => (c.textContent || "").trim().length > 25);
+          if (sibs.length >= 4 && !node.parentElement.closest("nav, aside, header, footer")) {
+            return dedupe(sibs);
+          }
+          node = node.parentElement;
+        }
 
         // Layer 4: structural — thread area's direct children with substantial content
         const thread = document.querySelector('[class*="thread"], [class*="Thread"], main > div > div');
@@ -385,7 +442,7 @@
         }
 
         // Layer 5: shared heuristic (last resort)
-        return heuristicMessages();
+        return heuristicInConversation(this);
       },
       role(el) {
         if (el.hasAttribute("data-lct-message")) return el.getAttribute("data-lct-role") || "assistant";
@@ -417,19 +474,45 @@
       // The layer-1 selector, quoted for the health check: matched messages that
       // do NOT satisfy it mean this platform has drifted and we are running on
       // a fallback layer — working, but on borrowed time.
-      canon: "[class*=chat-message], [class*=message-item], .ds-markdown",
+      canon: ".ds-message, [class*=chat-message], [class*=message-item]",
+      roleCanon: ".ds-assistant-message-main-content",
+      virtualizes: true,   // ds-virtual-list mounts only the visible turns
       hostRe: /(^|\.)chat\.deepseek\.com$/,
-      // Experimental: DeepSeek hashes its class names per deploy. Semantic
-      // hooks first, shared heuristic second, nothing third.
+      /* Found on the live site, 2026-08. `.ds-markdown` is the assistant's BODY,
+         not a turn: on a real 6-turn conversation it matched 3 answer bodies,
+         `closest()` found no turn wrapper, and the parentElement fallback landed
+         on <p>/<ol>/<ul> — so the health report read 9 "messages", every one of
+         them assistant, and the user's turns were never matched at all.
+         The turn container is `.ds-message`. Its hashed sibling class changes
+         per deploy and is deliberately not used. */
       messages() {
-        let els = Array.from(
-          document.querySelectorAll('[class*="chat-message"], [class*="message-item"], .ds-markdown')
-        ).map((el) => el.closest('[class*="chat-message"], [class*="message-item"]') || el.parentElement || el);
-        els = dedupe(els);
-        return els.length >= 10 ? els : heuristicMessages();
+        // Layer 1: the turn container.
+        let els = dedupe(Array.from(document.querySelectorAll(".ds-message")));
+        if (els.length) return els;
+
+        // Layer 2: older class partials.
+        els = dedupe(Array.from(document.querySelectorAll(
+          '[class*="chat-message"], [class*="message-item"]'
+        )));
+        if (els.length) return els;
+
+        // Layer 3: message bodies, lifted to whatever turn wrapper exists.
+        els = dedupe(Array.from(document.querySelectorAll(".ds-markdown"))
+          .map((el) => el.closest('.ds-message, [class*="chat-message"], [class*="message-item"]') || el));
+        if (els.length) return els;
+
+        // Layer 4: structural, and only inside a conversation.
+        return heuristicInConversation(this);
       },
       role(el) {
-        return /user|human/i.test(String(el.className)) ? "user" : "assistant";
+        /* The assistant's body carries a marker; the user's turn carries none,
+           so "no assistant marker" IS the user signal here. Defaulting to
+           assistant (the old behaviour) reported a conversation as 0 user
+           messages, which is not a conversation. */
+        if (el.querySelector && el.querySelector(
+          '.ds-assistant-message-main-content, [class*="assistant"], .ds-markdown')) return "assistant";
+        if (/assistant|bot|model/i.test(String(el.className))) return "assistant";
+        return "user";
       }
     },
     {
@@ -466,7 +549,7 @@
         if (els.length >= 2) return els;
 
         // Layer 4: shared heuristic (last resort)
-        return heuristicMessages();
+        return heuristicInConversation(this);
       },
       role(el) {
         // Check for data attributes first

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="color-scheme" content="dark" />
-  <title>Total Recall — Tvara</title>
+  <title>Total Recall · Tvara</title>
   <link rel="icon" type="image/png" href="icons/icon32.png" />
   <link rel="stylesheet" href="recall.css" />
 </head>
@@ -39,10 +39,10 @@
 
         <div id="core-locked" class="core-locked" hidden>
           <p class="locked-title">Search is unlocked with the free trial</p>
-          <p class="locked-copy">Your archive is already being built locally — nothing is lost by deciding later. Seven days, one click, no signup.</p>
+          <p class="locked-copy">Your archive is already being built locally, so nothing is lost by deciding later. Seven days, one click, no signup.</p>
           <div class="locked-actions">
             <button id="trial-start" type="button">Start 7-day free trial</button>
-            <button id="buy-pro" class="locked-buy" type="button" data-price="or get Pro — {price} once, forever"></button>
+            <button id="buy-pro" class="locked-buy" type="button" data-price="or get Pro · {price} once, forever"></button>
           </div>
         </div>
 
@@ -105,11 +105,11 @@
           <p class="dim">Each pass compares your signed-in history against what this browser already holds, then downloads only what is missing. Reloading the extension never repeats finished work.</p>
           <label class="auto-sync" for="auto-sync">
             <input type="checkbox" id="auto-sync" checked />
-            <span>Keep the archive current by itself — a check runs about every 3 hours, and shortly after the browser starts. Turn this off to check only when you press the button.</span>
+            <span>Keep the archive current by itself. A check runs about every 3 hours, and shortly after the browser starts. Turn this off to check only when you press the button.</span>
           </label>
           <p id="sync-summary" class="sync-summary" role="status" hidden></p>
           <div id="sync-rows"></div>
-          <label class="file-control wide" for="import-file">Import an export file — ChatGPT, Claude or Gemini Takeout (.zip / .json)</label>
+          <label class="file-control wide" for="import-file">Import an export file: ChatGPT, Claude or Gemini Takeout (.zip / .json)</label>
           <input id="import-file" type="file" accept=".zip,.json" hidden />
           <p id="import-status" class="status-copy" role="status"></p>
         </section>
@@ -117,7 +117,7 @@
         <section class="panel" id="backup-panel" aria-labelledby="backup-title">
           <div class="kicker">Reinstall backup</div>
           <h2 id="backup-title">Carry this archive to a new install</h2>
-          <p class="dim">An encrypted snapshot you can restore into any browser. AES-256-GCM under a key stretched from your passphrase — which is never stored, never synced, and not recoverable. Lose it and the file is unreadable, by us or anyone.</p>
+          <p class="dim">An encrypted snapshot you can restore into any browser. AES-256-GCM under a key stretched from your passphrase, which is never stored, never synced, and not recoverable. Lose it and the file is unreadable, by us or anyone.</p>
           <div class="form-grid">
             <label class="field-label" for="backup-passphrase">New backup passphrase</label>
             <input id="backup-passphrase" class="secure-input" type="password" autocomplete="new-password" spellcheck="false" />

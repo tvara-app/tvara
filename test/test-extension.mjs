@@ -362,12 +362,17 @@ try {
   // Scrolling has to reach the twelfth match, not stall partway. The scroll
   // event that repaints the edges is asynchronous, so read the classes after it
   // has landed rather than in the same block that moved the list.
-  await pop.evaluate(() => {
+  /* Re-asserted until it holds, rather than set once and measured. The list's
+     scrollHeight grows a few pixels after the first scroll (the fade edges lay
+     out), so a single `scrollTop = scrollHeight` landed 4px short of the end
+     about one run in three and failed a test that was measuring a moving
+     target, not a regression. */
+  await pop.waitForFunction(() => {
     const box = document.getElementById("recall-results");
     box.scrollTop = box.scrollHeight;
+    return box.scrollTop === box.scrollHeight - box.clientHeight &&
+           box.classList.contains("more-above");
   });
-  await pop.waitForFunction(() =>
-    document.getElementById("recall-results").classList.contains("more-above"));
   const popupScrolled = await pop.evaluate(() => {
     const box = document.getElementById("recall-results");
     const last = box.lastElementChild.getBoundingClientRect();
@@ -3132,9 +3137,12 @@ try {
     await wel.isVisible("#fetch-history"));
   t("B14 …and an import path for people who have an export file",
     await wel.isVisible("#import-export"));
+  /* The load-bearing idea, not the sentence that carried it: search reaches
+     only what this browser has a copy of. Pinning the exact wording made a
+     copy edit look like a regression. */
   t("B14 …and says why it matters before asking",
-    /searches conversations this browser holds a copy of/i.test(
-      await wel.textContent("#start-copy")));
+    /this browser has a copy of/i.test(await wel.textContent("#start-copy")),
+    await wel.textContent("#start-copy"));
   t("B14 the fetch button says how much there is to fetch",
     /Fetch/i.test(await wel.textContent("#fetch-history")),
     await wel.textContent("#fetch-history"));

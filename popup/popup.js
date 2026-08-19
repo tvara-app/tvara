@@ -28,7 +28,7 @@
        hint that anything was pending. It still works, and it still says so:
        this is a nudge, not a threat. */
     badge.title = pro && overdueDays > 0
-      ? `Pro — last checked in ${overdueDays} day${overdueDays === 1 ? "" : "s"} ago. ` +
+      ? `Pro. Last checked in ${overdueDays} day${overdueDays === 1 ? "" : "s"} ago. ` +
         `Connect once and it refreshes itself.`
       : "";
     badge.classList.toggle("overdue", !!(pro && overdueDays > 0));
@@ -237,7 +237,7 @@
     if (!item.reported) {
       return item.checked
         ? "This provider published no allowance figure for your account."
-        : "Not checked yet — open the site, or run Check now in the diagnostics panel.";
+        : "Not checked yet. Open the site, or run Check now in the diagnostics panel.";
     }
     const bits = [];
     bits.push(item.pctLeft === null
@@ -477,6 +477,7 @@
   function paintPulse(windowedTotal, archive) {
     const num = $("stat-windowed");
     const label = $("stat-label");
+    num.hidden = false;
     if (windowedTotal > 0) {
       num.textContent = windowedTotal.toLocaleString();
       label.textContent = "messages asleep right now";
@@ -489,8 +490,12 @@
         : "chats archived";
       return;
     }
-    num.textContent = "0";
-    label.textContent = "messages asleep — open a long chat to watch it work";
+    /* A giant "0" is the first thing in the panel on a fresh install, and zero
+       of something is not a statistic. Drop the number and let the sentence
+       carry the line: it is the only thing here with anything to say. */
+    num.textContent = "";
+    num.hidden = true;
+    label.textContent = "Open a long chat and watch it work.";
   }
 
   // Keys that name the response's shape rather than what is being metered.
@@ -628,14 +633,20 @@
       verdict.textContent = `${c.label}: ${c.remaining.toLocaleString()} ${what} left` +
         (c.resetAt ? `, resets ${resetLabel(c.resetAt)}` : "");
     } else if (!reported.length) {
-      verdict.textContent = "No provider is reporting an allowance right now.";
+      /* Nothing to draw. Six rings with no arcs and six legend rows reading
+         "not reported" is a panel full of the word "no", and it is the first
+         thing in the popup: it looks like the feature is broken when in fact
+         nobody has opened a chat site yet. One line, and the space back. */
+      verdict.textContent = "No allowance readings yet. Open a chat site and they appear here.";
+      $("usage-bars").replaceChildren(verdict);
+      return;
     } else if (lowest.pctLeft <= 0) {
       verdict.className += " hot";
       verdict.textContent = `${lowest.label} is out` +
-        (lowest.resetAt ? ` — back ${resetLabel(lowest.resetAt)}` : "");
+        (lowest.resetAt ? `, back ${resetLabel(lowest.resetAt)}` : "");
     } else if (lowest.pctLeft <= LOW_PCT) {
       verdict.className += " hot";
-      verdict.textContent = `${lowest.label} is running low — ${lowest.pctLeft}% left` +
+      verdict.textContent = `${lowest.label} is running low: ${lowest.pctLeft}% left` +
         (lowest.resetAt ? `, resets ${resetLabel(lowest.resetAt)}` : "");
     } else if (counted.length) {
       /* Percentages are all healthy, and a count is the more useful sentence:
@@ -647,7 +658,7 @@
         `${what ? " " + what : ""} left.`;
     } else {
       // Naming the lowest keeps this a reading rather than a reassurance.
-      verdict.textContent = `Nothing is running low — ${lowest.label} is the closest at ${lowest.pctLeft}%.`;
+      verdict.textContent = `Nothing is running low. ${lowest.label} is closest, at ${lowest.pctLeft}%.`;
     }
 
     const panel = document.createElement("div");
@@ -778,12 +789,12 @@
         },
         "device-mismatch": {
           text: "This licence is registered to another device.",
-          note: "Re-activate here from the popup — you have 5 device slots."
+          note: "Re-activate here from the popup. You have 5 device slots."
         },
         "key-mismatch": { text: "This licence was deactivated on your account." },
         "no-token": {
           text: "Activation didn't finish.",
-          note: "Paste your key again — the seat is already yours, nothing was lost."
+          note: "Paste your key again. The seat is already yours, nothing was lost."
         }
       };
       const dead = !pro && verdict && DEAD[verdict.reason];
@@ -858,14 +869,14 @@
        return to "Download the text of 2,300 chats", so the user clicked again
        and watched the same nothing happen. Say what it said. */
     if (state && state.note) {
-      sub.textContent = `${state.note} — sign in, then tap to continue`;
+      sub.textContent = `${state.note}. Sign in, then tap to continue`;
       row.classList.add("stalled");
       return;
     }
     row.classList.remove("stalled");
     if (state && state.failed) {
       const mins0 = Math.max(1, Math.round((left * 1.5) / 60));
-      sub.textContent = `${state.failed.toLocaleString()} couldn't be fetched — tap to retry · about ${mins0} min`;
+      sub.textContent = `${state.failed.toLocaleString()} couldn't be fetched. Tap to retry · about ${mins0} min`;
       return;
     }
     /* Measured, not guessed: 30 chats took 45 seconds against a real account,
@@ -873,7 +884,7 @@
        not just the pause between them. Stated as "about", because the number
        that decides it is the provider's latency and that is not ours. */
     const mins = Math.max(1, Math.round((left * 1.5) / 60));
-    sub.textContent = `Recall can only search what is here — about ${mins} min`;
+    sub.textContent = `Recall can only search what is here · about ${mins} min`;
   }
 
   /* Set when we have asked the worker to start and have not yet seen it say so.
@@ -980,15 +991,15 @@
     },
     service: {
       text: "The licence server is having trouble right now.", cls: "warn",
-      note: "Your key is fine — try again in a minute."
+      note: "Your key is fine. Try again in a minute."
     },
     badrequest: {
       text: "The licence server refused that request.", cls: "warn",
-      note: "Your key is fine — try again, and contact support if it persists."
+      note: "Your key is fine. Try again, and contact support if it persists."
     },
     network: {
       text: "Couldn't reach the licence server.", cls: "warn",
-      note: "Nothing is wrong with your key — try again when you're back online."
+      note: "Nothing is wrong with your key. Try again when you're back online."
     }
   };
 
@@ -1035,7 +1046,7 @@
     if (!self.LCTDodo.looksLikeKey(key)) {
       paintLicenseState({
         text: "That doesn't look like a licence key.", cls: "err",
-        note: "Copy it again from your purchase email — nothing was sent anywhere."
+        note: "Copy it again from your purchase email. Nothing was sent anywhere."
       });
       return;
     }
@@ -1079,7 +1090,7 @@
           ? { text: "That licence is not active.", cls: "err",
               note: "The payment provider does not recognise it. Contact support with your order id." }
           : { text: "Activated, but the entitlement server didn't answer.", cls: "warn",
-              note: "Pro unlocks by itself once you're back online — nothing to redo." });
+              note: "Pro unlocks by itself once you're back online. Nothing to redo." });
       }
 
       pendingKey = null;
@@ -1143,7 +1154,7 @@
       ? (unknownDevices || !ids.length
         ? `All ${self.LCTDodo.SEAT_LIMIT} slots are held by devices this browser doesn't know about. Release one from that device, or contact support.`
         : "Free a slot to finish activating here.")
-      : `This licence works on ${self.LCTDodo.SEAT_LIMIT} devices. Release one any time — you can always activate it again.`;
+      : `This licence works on ${self.LCTDodo.SEAT_LIMIT} devices. Release one any time; you can always activate it again.`;
     $("license-retry-activate").hidden = mode !== "limit";
   }
 
@@ -1171,7 +1182,7 @@
       btn.disabled = false;
       btn.textContent = targetId === selfId ? "Release" : "Terminate";
       $("device-manager-note").textContent =
-        "Couldn't reach the licence server. Nothing changed — try again when you're back online.";
+        "Couldn't reach the licence server. Nothing changed, so try again when you're back online.";
       return;
     }
     // Releasing the device you are standing on gives up Pro here.

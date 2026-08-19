@@ -368,6 +368,16 @@ main { padding: 0 var(--gutter); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The allowance row carries two controls in its subtitle, and nothing had ever
+   styled an anchor inside a row: they rendered in the browser's default link
+   blue, underlined, the one unpainted thing in the whole panel. */
+.row-sub a {
+  color: var(--ink-dim);
+  text-decoration: none;
+  border-bottom: 1px solid rgb(255 255 255 / .18);
+  padding-bottom: 1px;
+}
+.row-sub a:hover { color: var(--ink); border-bottom-color: rgb(255 255 255 / .38); }
 .sync-status-ok { color: var(--ok) !important; }
 .sync-status-err { color: var(--danger) !important; }
 

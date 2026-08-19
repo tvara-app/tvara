@@ -67,14 +67,14 @@
     if (trialSpent) {
       $("core-locked").querySelector(".locked-title").textContent = "Your trial has ended";
       $("core-locked").querySelector(".locked-copy").textContent =
-        `The archive kept building the whole time — nothing was lost. ${self.LCTProduct.PRICE} once, from the extension popup, unlocks search again forever.`;
+        `The archive kept building the whole time, so nothing was lost. ${self.LCTProduct.PRICE} once, from the extension popup, unlocks search again forever.`;
     }
 
     paintPaidSections(verdict);
     paintArchiveState();
   }
 
-  const LOCK_COPY = "Pro feature. Your archive keeps building either way — unlock from the extension popup to get it back out.";
+  const LOCK_COPY = "Pro feature. Your archive keeps building either way. Unlock from the extension popup to get it back out.";
 
   /** Disable rather than hide: a vanished backup button reads as data loss. */
   function paintPaidSections(verdict) {
@@ -90,7 +90,7 @@
     // Grace period: signed, valid, but overdue a renewal. Works, warns.
     if (verdict && verdict.stale) {
       setStatus("backup-status",
-        "Licence hasn't been able to check in. Pro keeps working — it re-checks by itself when it can.", "warn");
+        "Licence hasn't been able to check in. Pro keeps working, and it re-checks by itself when it can.", "warn");
     }
   }
 
@@ -199,7 +199,7 @@
     if (archivedChats === null || archivedChats > 0 || hasResults) { note.hidden = true; return; }
     note.hidden = false;
     note.textContent = unlocked
-      ? "Your archive is empty. Run a check below to pull your signed-in history, or import an export file — either way it stays on this device."
+      ? "Your archive is empty. Run a check below to pull your signed-in history, or import an export file. Either way it stays on this device."
       : "Your archive is empty. Run a check below to start building it; search unlocks with the trial.";
   }
 
@@ -406,7 +406,7 @@
     if (arr[0] && (arr[0].titleUrl || arr[0].header) && arr.some(e => (e.titleUrl || "").includes("gemini"))) {
       return parseGeminiTakeout(arr);
     }
-    throw new Error("unrecognized export format — expected ChatGPT, Claude, or Gemini Takeout");
+    throw new Error("unrecognized export format: expected ChatGPT, Claude, or Gemini Takeout");
   }
 
   $("import-file").addEventListener("change", async (e) => {
@@ -434,7 +434,7 @@
       loadStats();
     } catch (err) {
       setStatus("import-status", "Import failed: " + err.message +
-        " — expected a ChatGPT, Claude, or Gemini Takeout export (.zip or .json).", "err");
+        ": expected a ChatGPT, Claude, or Gemini Takeout export (.zip or .json).", "err");
     }
     e.target.value = "";
   });
@@ -532,7 +532,7 @@
     if (!state || state.err) return;
     $("autobackup-actions").hidden = !state.enabled;
     if (!state.enabled) {
-      setStatus("autobackup-status", "Automatic backup is off — the archive only leaves this browser when you press the button.", "");
+      setStatus("autobackup-status", "Automatic backup is off. The archive only leaves this browser when you press the button.", "");
       return;
     }
     const where = `${state.folder}/${state.filename} in your downloads folder`;
@@ -540,9 +540,9 @@
       setStatus("autobackup-status", `Automatic backup is on, but the last attempt failed: ${state.lastError}`, "err");
     } else if (state.lastAt) {
       setStatus("autobackup-status",
-        `Automatic backup is on — ${state.lastChats.toLocaleString()} chats written ${timeAgo(state.lastAt)} to ${where}. Same passphrase, same encryption.`, "ok");
+        `Automatic backup is on. ${state.lastChats.toLocaleString()} chats written ${timeAgo(state.lastAt)} to ${where}. Same passphrase, same encryption.`, "ok");
     } else {
-      setStatus("autobackup-status", `Automatic backup is on — the first file will be written to ${where}.`, "");
+      setStatus("autobackup-status", `Automatic backup is on. The first file will be written to ${where}.`, "");
     }
   }
 
@@ -840,7 +840,7 @@
     $("recovery-title").textContent = offered ? "Bring your previous archive back" : "Restore an existing archive";
     $("recovery-skip").hidden = !offered;
     if (offered && recovery.backup) {
-      $("recovery-copy").textContent = `This looks like a fresh install, and a ${Number(recovery.backup.chats || 0).toLocaleString()}-chat encrypted backup was made before it. Archiving has already restarted on its own and is adding only what is missing — restore the file to bring back everything older than your providers still list.`;
+      $("recovery-copy").textContent = `This looks like a fresh install, and a ${Number(recovery.backup.chats || 0).toLocaleString()}-chat encrypted backup was made before it. Archiving has already restarted on its own and is adding only what is missing. Restore the file to bring back everything older than your providers still list.`;
     } else {
       $("recovery-copy").textContent = "Choose an encrypted Tvara backup to merge it into this browser. Chats already archived here are left alone; only what is missing is added.";
     }

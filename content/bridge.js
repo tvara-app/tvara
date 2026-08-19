@@ -128,7 +128,7 @@
     insertBtn.addEventListener("click", doInsert);
     note = document.createElement("span");
     note.className = "lct-b-note";
-    note.textContent = "Pick passages — they're added to your prompt, answered by the model you're already using.";
+    note.textContent = "Pick passages. They're added to your prompt, answered by the model you're already using.";
     foot.append(note, insertBtn);
     panel.append(head, list, foot);
     document.documentElement.appendChild(panel);
@@ -208,8 +208,8 @@
     } else {
       const copied = await toClipboard(block);
       flash(copied
-        ? "Couldn't reach the prompt box — context copied, just paste it."
-        : "Couldn't insert — open your prompt box and try again.");
+        ? "Couldn't reach the prompt box. Context copied, just paste it."
+        : "Couldn't insert. Open your prompt box and try again.");
     }
   }
 

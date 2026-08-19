@@ -44,7 +44,10 @@ h1 { font-size: 27px; font-weight: 700; letter-spacing: -.02em; }
   border-radius: 16px;
 }
 h2 { font-size: 13px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-faint); }
-.hint { margin-top: 6px; color: var(--ink-faint); font-size: 12.5px; }
+.hint { margin-top: 10px; color: var(--ink-faint); font-size: 12.5px; }
+/* One readable line under a heading. `.hint` is for asides; this is the
+   sentence the reader is actually meant to read, so it gets real contrast. */
+.lede { margin-top: 7px; color: var(--ink-dim); font-size: 13.5px; max-width: 60ch; }
 .hint a, .foot a { color: var(--ink-dim); text-underline-offset: 3px; }
 .hint a:hover, .foot a:hover { color: var(--ink); }
 
@@ -63,7 +66,11 @@ h2 { font-size: 13px; font-weight: 600; letter-spacing: .04em; text-transform: u
   text-align: center;
   white-space: nowrap;
 }
-.k.unset { color: var(--ink-faint); font-weight: 400; }
+/* Chrome silently drops a suggested shortcut when another extension already
+   holds the combination. A grey "not assigned" chip read as "this feature has
+   no shortcut"; it is a thing the reader can fix in two clicks, and it says so
+   on the row instead. */
+.k.unset { color: var(--ink-faint); font-weight: 400; border-style: dashed; }
 .kt { font-size: 13.5px; color: var(--ink-dim); }
 .kt b { display: block; color: var(--ink); font-weight: 600; font-size: 14px; }
 
@@ -75,12 +82,22 @@ ul.plain b { color: var(--ink); font-weight: 600; }
 /* trial */
 .cta-card { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; border-color: rgb(255 93 138 / .28); }
 .cta-copy { flex: 1 1 300px; }
-.cta-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.cta-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 14px; }
+.cta-card .cta-actions { margin-top: 0; }
 button {
   font: 600 13px/1 var(--sans);
   border-radius: 10px;
   cursor: pointer;
 }
+#fetch-history {
+  padding: 11px 18px;
+  border: 1px solid rgb(255 255 255 / .18);
+  background: rgb(255 255 255 / .07);
+  color: var(--ink);
+}
+#fetch-history:hover { border-color: rgb(255 255 255 / .3); background: rgb(255 255 255 / .1); }
+#fetch-history:disabled { opacity: .55; cursor: default; }
+
 #trial-start {
   padding: 11px 18px;
   border: 0;
@@ -107,17 +124,29 @@ button {
 }
 .ghost.primary:hover { filter: brightness(1.06); }
 
+/* The one card that is an instruction rather than information. It is lit from
+   the same warmth as the trial card, a shade quieter, so the page reads as two
+   things worth doing and three things worth knowing. */
+.hero-card {
+  border-color: rgb(255 138 107 / .26);
+  background:
+    linear-gradient(180deg, rgb(255 138 107 / .07), transparent 70%),
+    var(--glass);
+}
+.hero-card h2 { color: var(--signal-warm); }
+
 /* platform chips */
-.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 13px; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 15px; }
 .chip {
-  padding: 8px 14px;
+  padding: 10px 16px;
   border: 1px solid var(--line);
   background: rgb(255 255 255 / .04);
   color: var(--ink-dim);
-  font-weight: 500;
-  font-size: 12.5px;
+  font-weight: 600;
+  font-size: 13px;
+  transition: transform .12s ease, border-color .12s ease, color .12s ease;
 }
-.chip:hover { color: var(--ink); border-color: rgb(255 255 255 / .2); }
+.chip:hover { color: var(--ink); border-color: rgb(255 138 107 / .45); transform: translateY(-1px); }
 
 .foot { margin-top: 6px; color: var(--ink-faint); font-size: 12.5px; text-align: center; }
 .foot .dot { margin: 0 7px; opacity: .5; }
