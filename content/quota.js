@@ -1,5 +1,5 @@
 /**
- * Long Chat Toolkit — quota bridge (isolated world).
+ * Tvara — quota bridge (isolated world).
  *
  * Receives the numbers content/inject/quota-probe.js reads out of the host
  * app's own responses and hands them to the worker, which owns the store.

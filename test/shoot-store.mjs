@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* Long Chat Toolkit — store screenshot generator.
+/* Tvara — store screenshot generator.
    Captures the 6 listing shots (1280×800, captions baked in) from the REAL
    extension running on test/demo.html. Output: test/.work/store/            */
 import { createHash } from "node:crypto";
@@ -9,7 +9,12 @@ import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { chromium } from "playwright";
 
-const EXT = join(homedir(), "long-chat-toolkit");
+const EXT = join(homedir(), "tvara");
+/* The price comes from lib/product.js, the one place it is defined. Typed in
+   here instead, the pricing screenshot quietly kept advertising the old figure
+   after the price changed — a store listing charging something else. */
+const PRICE = (readFileSync(join(EXT, "lib", "product.js"), "utf8")
+  .match(/PRICE:\s*"([^"]+)"/) || [])[1] || "$0";
 const WORK = join(EXT, "test", ".work");
 const PROFILE = join(WORK, "shoot-profile");
 const OUT = join(WORK, "store");
@@ -62,7 +67,7 @@ async function caption(page, text) {
     document.getElementById("lct-note")?.remove(); // no mid-fade toast in shots
     const b = document.createElement("div");
     b.id = "lct-shoot-banner";
-    b.innerHTML = `<span class="lb">⚡ Long Chat Toolkit</span><span class="lc">${t}</span><span class="lr"></span>`;
+    b.innerHTML = `<span class="lb">⚡ Tvara</span><span class="lc">${t}</span><span class="lr"></span>`;
     Object.assign(b.style, {
       position: "fixed", left: 0, right: 0, bottom: 0, height: "76px", zIndex: 2147483647,
       display: "flex", alignItems: "center", padding: "0 28px",
@@ -274,8 +279,8 @@ await comp.setContent(`<!DOCTYPE html><html><body style="margin:0;width:1280px;h
   <div style="position:fixed;left:0;right:0;bottom:0;height:76px;display:flex;align-items:center;
               padding:0 28px;background:#0b0c10;border-top:2px solid #7aa2ff;color:#fff;
               font-weight:600;font-size:24px">
-    <span style="font-size:14px;font-weight:700;color:#7aa2ff;flex:1 0 0">⚡ Long Chat Toolkit</span>
-    <span style="flex:0 1 auto;text-align:center">7-day free trial. $9 once. Local archive, no telemetry.</span>
+    <span style="font-size:14px;font-weight:700;color:#7aa2ff;flex:1 0 0">⚡ Tvara</span>
+    <span style="flex:0 1 auto;text-align:center">7-day free trial. ${PRICE} once. Local archive, no telemetry.</span>
     <span style="flex:1 0 0"></span>
   </div></body></html>`);
 await comp.waitForTimeout(400);

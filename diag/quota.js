@@ -1,5 +1,5 @@
 /**
- * Long Chat Toolkit — allowance accuracy page.
+ * Tvara — allowance accuracy page.
  *
  * The instrument that makes the popup's percentages falsifiable. It runs a live
  * probe of every provider, shows the figure we would draw, names the field and
@@ -242,7 +242,7 @@
       $("status").textContent = "Run a check first.";
       return;
     }
-    const lines = ["Long Chat Toolkit — allowance accuracy report",
+    const lines = ["Tvara — allowance accuracy report",
       "generated " + new Date().toLocaleString(), ""];
     for (const p of lastReport.raw.platforms) {
       const shown = p.shown;

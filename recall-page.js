@@ -493,7 +493,7 @@
     const payload = await collectSnapshot();
     const sealed = await crypt.seal(payload, { passphrase });
     const stamp = new Date().toISOString().slice(0, 10);
-    const filename = `long-chat-toolkit-${stamp}.lctbackup`;
+    const filename = `tvara-${stamp}.lctbackup`;
     download(new Blob([sealed.json], { type: "application/octet-stream" }), filename);
     await send({ type: "recall-backup-mark", meta: { chats: payload.chats.length, filename } });
 
@@ -842,7 +842,7 @@
     if (offered && recovery.backup) {
       $("recovery-copy").textContent = `This looks like a fresh install, and a ${Number(recovery.backup.chats || 0).toLocaleString()}-chat encrypted backup was made before it. Archiving has already restarted on its own and is adding only what is missing — restore the file to bring back everything older than your providers still list.`;
     } else {
-      $("recovery-copy").textContent = "Choose an encrypted Long Chat Toolkit backup to merge it into this browser. Chats already archived here are left alone; only what is missing is added.";
+      $("recovery-copy").textContent = "Choose an encrypted Tvara backup to merge it into this browser. Chats already archived here are left alone; only what is missing is added.";
     }
     $("sync-rows").replaceChildren();
     for (const app of APPS) paintRow(app, status.platforms && status.platforms[app.id]);

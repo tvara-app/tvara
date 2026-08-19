@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import vm from "node:vm";
 
-const ROOT = join(homedir(), "long-chat-toolkit");
+const ROOT = join(homedir(), "tvara");
 
 /* Signatures are tested against a throwaway keypair minted here, never the
    shipped one. The production public key is pinned in lib/license.js and its
@@ -82,11 +82,18 @@ r = await verify("LCT9." + good.split(".").slice(1).join("."));
 t("wrong prefix rejected (format)", r.valid === false && r.reason === "format");
 
 // 6. Garbage inputs never throw
-for (const junk of ["", null, undefined, "hello", "LCT1.a.b", "LCT1..", "LCT1.%%%.%%%", 42]) {
+const JUNK = ["", null, undefined, "hello", "LCT1.a.b", "LCT1..", "LCT1.%%%.%%%", 42];
+let junkRejected = 0;
+for (const junk of JUNK) {
   r = await verify(junk);
   if (r.valid !== false) { t(`garbage "${String(junk)}" rejected`, false); }
+  else junkRejected++;
 }
-t("all garbage inputs rejected without throwing", true);
+/* Counted, not asserted `true`. The loop above only calls t() on FAILURE, so
+   this line used to print PASS identically whether JUNK held eight inputs, one,
+   or none at all — a green tick for a test that had stopped running. */
+t(`all ${JUNK.length} garbage inputs rejected without throwing`,
+  JUNK.length === 8 && junkRejected === JUNK.length, `${junkRejected}/${JUNK.length}`);
 
 // 7. Whitespace-padded valid key still accepted (users paste with spaces)
 r = await verify("  " + good + "  ");

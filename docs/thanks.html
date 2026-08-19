@@ -4,8 +4,10 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="robots" content="noindex" />
-<title>You're Pro — Long Chat Toolkit</title>
-<meta name="description" content="Activate your Long Chat Toolkit Pro licence." />
+<!-- The licence key can arrive in the query string; never let it leave in a Referer. -->
+<meta name="referrer" content="no-referrer" />
+<title>You're Pro — Tvara</title>
+<meta name="description" content="Activate your Tvara Pro licence." />
 <style>
   :root {
     --bg: #0e1117; --panel: #161b26; --text: #e8eaf0; --muted: #9aa3b5;
@@ -57,7 +59,7 @@
 <section class="panel">
   <h2>Switch it on</h2>
   <ol>
-    <li><strong>Open the extension</strong> — click the Long Chat Toolkit icon in your browser toolbar. (Not there? Click the puzzle-piece icon and pin it.)</li>
+    <li><strong>Open the extension</strong> — click the Tvara icon in your browser toolbar. (Not there? Click the puzzle-piece icon and pin it.)</li>
     <li><strong>Paste your key</strong> into the <em>Licence key</em> box near the bottom of the popup and press <strong>Activate</strong>.</li>
     <li><strong>Reload your chat tabs.</strong> The badge reads <em>Pro</em>, and Total Recall, Context Bridge and every tool on Claude &amp; Gemini are unlocked.</li>
   </ol>
@@ -74,7 +76,7 @@
 </section>
 
 <footer>
-  <a href="./">Long Chat Toolkit</a> ·
+  <a href="./">Tvara</a> ·
   <a href="./#devices">Devices</a> ·
   <a href="./#refunds">Refunds</a> ·
   <a href="./#privacy">Privacy</a>
@@ -91,6 +93,13 @@
   var q = new URLSearchParams(location.search);
   var key = q.get("key") || q.get("license_key") || q.get("licence_key") || "";
   if (!key || key.length > 200 || /[<>"']/.test(key)) return;
+
+  /* Take it out of the address bar the moment we have it. The key is the only
+     credential there is and it is bearer-equivalent for every device seat, so
+     it must not survive in browser history, in profile sync, or in the URL a
+     user copies to a friend to show them the page. The page still works: the
+     value is already in `key`. */
+  try { history.replaceState({}, "", location.pathname); } catch (e) { /* file:// */ }
 
   var box = document.getElementById("key");
   box.textContent = key;                      // textContent: never markup

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Long Chat Toolkit — license key issuer (runs on YOUR machine only).
+ * Tvara — license key issuer (runs on YOUR machine only).
  *
  *   node tools/genkey.mjs init            # one-time: create keypair, patch lib/license.js
  *   node tools/genkey.mjs issue a@b.com   # issue a Pro key for a customer

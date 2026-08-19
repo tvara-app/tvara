@@ -1,5 +1,5 @@
 /**
- * Long Chat Toolkit — platform adapters.
+ * Tvara — platform adapters.
  * Each adapter knows how to find message elements on one AI chat platform.
  * Defensive by design: multiple selector candidates, graceful null returns.
  * If nothing matches, the toolkit does NOTHING (never break the host page).

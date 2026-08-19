@@ -1,5 +1,5 @@
 /**
- * Long Chat Toolkit — health check page.
+ * Tvara — health check page.
  *
  * Asks every open chat tab for a self-description and renders the answers.
  * Deliberately does not need the "tabs" permission: chrome.tabs.query returns
@@ -267,15 +267,22 @@
     for (const tab of tabs) {
       const h = await ask(tab.id);
       $("out").append(card(tab, h));
-      lines.push(h
+      /* `h.roles` is absent whenever the content script replied `{error}` —
+         which is precisely what a redesigned host produces, and precisely when
+         this page is the one thing the user needs. verdict() has guarded that
+         shape since it was written; this line did not, and threw, leaving Run
+         disabled and Copy hidden on the report that mattered. */
+      lines.push(h && h.roles
         ? `${h.adapter}: ${h.selectors}; ${h.messages} messages (${h.canonical} canonical), ` +
           `roles ${h.roles.user}/${h.roles.assistant}, asleep ${h.sleeping}, ` +
           `composer ${h.composer ? "y" : "n"}, scroller ${h.scroller ? "y" : "n"}, ` +
           `engine ${h.engine ? "on" : "off"}, path ${h.path}`
-        : `${new URL(tab.url || "https://?").hostname}: no answer (content script not running — reload that tab)`);
+        : `${new URL(tab.url || "https://?").hostname}: ${h && h.error
+            ? "the adapter threw: " + h.error
+            : "no answer (content script not running — reload that tab)"}`);
     }
 
-    lastReport = `Long Chat Toolkit health — v${(chrome.runtime.getManifest().version)}\n` +
+    lastReport = `Tvara health — v${(chrome.runtime.getManifest().version)}\n` +
       new Date().toISOString() + "\n" + lines.map((l) => "- " + l).join("\n");
     $("status").textContent = `${tabs.length} tab${tabs.length === 1 ? "" : "s"} checked.`;
     $("copy").hidden = false;

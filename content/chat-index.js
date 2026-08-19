@@ -1,5 +1,5 @@
 /**
- * Long Chat Toolkit — provider conversation index.
+ * Tvara — provider conversation index.
  *
  * The host mounts only the recent tail, so the map used to be assembled by
  * walking its scroller to the top: minutes of the page yanking itself around

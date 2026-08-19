@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* Long Chat Toolkit — full browser test suite.
+/* Tvara — full browser test suite.
    Loads the real unpacked extension into Chromium, tests the popup UI state
    machine, license activation (incl. "key must never appear in the DOM"),
    storage persistence, and the speed engine on the 1,500-message torture page. */
@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { chromium } from "playwright";
 
-const SRC = join(homedir(), "long-chat-toolkit");
+const SRC = join(homedir(), "tvara");
 // Work dirs live under the OS temp dir — never committed (test/.gitignore).
 const SCRATCH = join(SRC, "test", ".work");
 const PROFILE = join(SCRATCH, "chrome-profile");
@@ -233,7 +233,7 @@ try {
     return sent;
   });
   t("A1b buy button opens our own pricing page (no hard-coded checkout)",
-    buyUrl === "https://tharuntejandhe.github.io/long-chat-toolkit/#buy", String(buyUrl));
+    buyUrl === "https://tharuntejandhe.github.io/tvara/#buy", String(buyUrl));
   t("A1b every outward link comes from one place",
     await pop.evaluate(() => !!self.LCTProduct && Object.isFrozen(self.LCTProduct)));
 
@@ -2368,7 +2368,7 @@ try {
   t("B11 setting it up writes the first encrypted file immediately",
     auto.enabled.first && auto.enabled.first.status === "ok", JSON.stringify(auto.enabled.first));
   t("B11 the scheduled backup is filed under its own folder",
-    auto.state.folder === "Long Chat Toolkit" && auto.state.filename === "long-chat-toolkit-auto.lctbackup",
+    auto.state.folder === "Tvara" && auto.state.filename === "tvara-auto.lctbackup",
     JSON.stringify(auto.state));
   t("B11 the passphrase itself is never stored", auto.keptPassphrase === false);
   t("B11 backup key material never roams to storage.sync", auto.roamed === null || auto.roamed === undefined);
@@ -3034,14 +3034,29 @@ try {
     t("B21 a chat that arrives with its text is not queued",
       after.total === before.total, JSON.stringify({ before: before.total, after: after.total }));
 
-    // filling a stub takes it off the queue — proven by importing its body the
-    // way the backfill does
-    await ask({ type: "recall-import", chats: [
-      { id: "chatgpt.com/c/stub-a", host: "chatgpt.com", path: "/c/stub-a", platform: "ChatGPT",
-        title: "Only a title", updatedAt: Date.now(), msgs: [
-          { i: "s1", r: "user", t: "the words that were missing" },
-          { i: "s2", r: "assistant", t: "and the reply that went with them" }] }
-    ] });
+    /* Filling a stub takes it off the queue — proven by importing its body
+       EXACTLY the way the backfill does. This fixture used to pass a `title`,
+       which fillStart never sends; because `put` replaces the whole record,
+       that one extra field hid a defect that wiped the title of every chat the
+       backfill repaired — and the stub's title is the only thing it had. Send
+       what bg.js:4082 sends, and nothing else. */
+    const fillPayload = {
+      id: "chatgpt.com/c/stub-a", host: "chatgpt.com", path: "/c/stub-a",
+      platform: "ChatGPT", updatedAt: Date.now(), keepTimes: false,
+      msgs: [
+        { i: "s1", r: "user", t: "the words that were missing" },
+        { i: "s2", r: "assistant", t: "and the reply that went with them" }]
+    };
+    t("B21 the fixture sends what the backfill sends, and no more",
+      !("title" in fillPayload) && !("createdAt" in fillPayload) && !("sourceUpdatedAt" in fillPayload),
+      JSON.stringify(Object.keys(fillPayload)));
+    await ask({ type: "recall-import", chats: [fillPayload] });
+
+    // the body arrives; the title it already had must still be there
+    const kept = await ask({ type: "chat-archive", host: "chatgpt.com", path: "/c/stub-a" });
+    t("B21 …and the backfill keeps the title it was repairing",
+      kept && kept.status === "ok" && kept.title === "Only a title",
+      JSON.stringify(kept && { status: kept.status, title: kept.title, n: kept.n }));
     const filled = await ask({ type: "archive-fill-state" });
     t("B21 filling a chat removes it from the queue",
       filled.total === after.total - 1, JSON.stringify({ after: after.total, filled: filled.total }));
@@ -3156,7 +3171,7 @@ try {
       !document.getElementById("lct-minimap")?.classList.contains("lct-mm-rest")),
     "navigator open");
   t("B14 the hint says what the tool is",
-    !expectedRows || /Long Chat Toolkit is on/.test(hint.text));
+    !expectedRows || /Tvara is on/.test(hint.text));
   t("B14 the hint can be dismissed",
     !expectedRows || await page.evaluate(() => {
       document.querySelector("#lct-hint .lct-hint-ok").click();

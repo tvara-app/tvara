@@ -2,8 +2,8 @@
 /**
  * Build store-ready zips.
  *
- *   node tools/pack.mjs            → dist/long-chat-toolkit-vX.Y.Z.zip          (Chrome/Edge)
- *   node tools/pack.mjs --firefox  → …and dist/long-chat-toolkit-vX.Y.Z-firefox.zip
+ *   node tools/pack.mjs            → dist/tvara-vX.Y.Z.zip          (Chrome/Edge)
+ *   node tools/pack.mjs --firefox  → …and dist/tvara-vX.Y.Z-firefox.zip
  *
  * Copies only shippable files, strips the localhost dev matches, and then
  * REFUSES to produce a zip that references a file it does not contain.
@@ -143,10 +143,10 @@ const version = JSON.parse(readFileSync(join(root, "manifest.json"), "utf8")).ve
 rmSync(dist, { recursive: true, force: true });
 mkdirSync(dist, { recursive: true });
 
-console.log(`\nLong Chat Toolkit v${version}\n`);
+console.log(`\nTvara v${version}\n`);
 
 build({
-  name: `long-chat-toolkit-v${version}.zip`,
+  name: `tvara-v${version}.zip`,
   label: "chrome/edge",
   // Firefox metadata has no business in a Chrome upload — it claims support we
   // have not verified, in a file reviewers read.
@@ -155,7 +155,7 @@ build({
 
 if (withFirefox) {
   build({
-    name: `long-chat-toolkit-v${version}-firefox.zip`,
+    name: `tvara-v${version}-firefox.zip`,
     label: "firefox (UNVERIFIED)",
     tweak: (mf) => {
       // Firefox has no MV3 background service worker. It runs the same file as

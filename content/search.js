@@ -1,5 +1,5 @@
 /**
- * Long Chat Toolkit — in-chat search.
+ * Tvara — in-chat search.
  * Cmd/Ctrl+Shift+F: instant full-text search across EVERY message in the
  * conversation — including messages the speed engine has put to sleep
  * (we search cached text, not the rendered page, so a 2,000-message chat
@@ -49,7 +49,12 @@
       }, (res) => {
         void chrome.runtime.lastError;
         if (token !== remoteToken) return;            // a newer query won
+        /* "no-index" is not "no matches": the archive holds this conversation
+           but its messages carry no provider ids, so the deep search could not
+           run. The count that follows is the page's, and says so. */
+        remoteBlind = !!(res && res.status === "no-index");
         if (!res || res.status !== "ok") { remote.ready = true; return updateCounter(); }
+        remoteBlind = false;
         remote = { q, hits: res.hits || [], total: res.total || 0, ready: true };
         // Re-merge WITHOUT moving the reader: they are already reading a hit.
         mergeRemote();
@@ -176,7 +181,9 @@
     if (keep) {
       // The kept hit can have been unmounted out from under us — fall to the
       // first match rather than to "0 of 5", but still never scroll.
-      const at = ordered.findIndex((o) => o.dom !== undefined && items[o.dom].el === keep);
+      const at = keep && keep.keyId
+        ? ordered.findIndex((o) => o.id === keep.keyId)
+        : ordered.findIndex((o) => o.dom !== undefined && items[o.dom].el === keep);
       cur = at >= 0 ? at : ordered.length ? 0 : -1;
       return updateCounter();
     }
@@ -199,6 +206,8 @@
     }
   }
 
+  let remoteBlind = false;
+
   function updateCounter() {
     const active = longEnough(input.value.trim());
     const n = ordered.length;
@@ -208,7 +217,10 @@
     const beyond = ordered.filter((o) => o.dom === undefined).length;
     counter.title = beyond
       ? `${n - beyond} on this page, ${beyond} further back in this conversation`
-      : "";
+      : (remoteBlind && active
+        ? `${n} on this page. The rest of this conversation is backed up but not ` +
+          `searchable yet — this platform's history does not carry message ids.`
+        : "");
     counter.classList.toggle("lct-s-deep", beyond > 0);
     counter.classList.toggle("lct-s-none", !n && active);
   }
@@ -262,7 +274,15 @@
     const sig = msgs.length + ":" + (last ? (last.textContent || "").length : 0);
     if (sig === cacheSig) return;
     cacheSig = sig;
-    const at = cur >= 0 && hits[cur] !== undefined ? items[hits[cur]].el : null;
+    /* `cur` indexes `ordered`, not `hits` — once the archive has answered they
+       are different lists and `ordered` is much the longer of the two. Reading
+       hits[cur] therefore resolved to an unrelated message, or to nothing at
+       all, and runQuery(null) fell through to step(1): the reader was yanked
+       back to the first hit several times a second while a reply streamed.
+       A hit the page has never mounted has no element, so it is kept by id. */
+    const held = cur >= 0 ? ordered[cur] : null;
+    const at = !held ? null
+      : (held.dom !== undefined ? items[held.dom].el : { keyId: held.id });
     buildCache(msgs);
     runQuery(at);
   }

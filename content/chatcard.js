@@ -1,5 +1,5 @@
 /**
- * Long Chat Toolkit — Chat Card.
+ * Tvara — Chat Card.
  * Hover a conversation link in the site's sidebar → a small card shows what
  * we KNOW about that chat: message count, questions asked, stars, when it was
  * created (real time on ChatGPT via the app's own state) or first seen here,
@@ -148,7 +148,7 @@
 
     if (!rec) {
       card.appendChild(line("Not tracked yet", "lct-cc-title"));
-      card.appendChild(line("Open this chat once and Long Chat Toolkit will remember its size and dates.", "lct-cc-dim"));
+      card.appendChild(line("Open this chat once and Tvara will remember its size and dates.", "lct-cc-dim"));
     } else {
       if (rec.c == null) {
         // synced meta record: real dates from the platform, size not yet known

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* Long Chat Toolkit — provider parser suite.
+/* Tvara — provider parser suite.
  *
  * The sync adapters live in a service worker, so the browser suites can only
  * reach their parsing through a whole authenticated pass. That is the wrong

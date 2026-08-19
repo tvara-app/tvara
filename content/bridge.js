@@ -1,5 +1,5 @@
 /**
- * Long Chat Toolkit — Context Bridge (Pro).
+ * Tvara — Context Bridge (Pro).
  *
  * The memory layer for all your AI tools. While composing a prompt in ANY
  * app, press ⌘⇧U / Ctrl+Shift+U: Recall searches your entire cross-platform

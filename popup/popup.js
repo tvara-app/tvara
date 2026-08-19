@@ -1,4 +1,4 @@
-/* Long Chat Toolkit — popup logic. Reads/writes chrome.storage; content scripts react live.
+/* Tvara — popup logic. Reads/writes chrome.storage; content scripts react live.
    Security note: the license key is NEVER rendered back into the DOM after
    activation — a screenshot or screen-share must not leak a paid key. */
 (() => {
@@ -17,11 +17,21 @@
 
   /* ---------- paint helpers (pure: data in, DOM out) ---------- */
 
-  function paintPlan(pro, maskedEmail, trialUntil) {
+  function paintPlan(pro, maskedEmail, trialUntil, overdueDays) {
     const badge = $("plan-badge");
     const trialActive = !pro && trialUntil > Date.now();
     badge.textContent = pro ? "Pro" : trialActive ? "Trial" : "Free";
     badge.className = "badge " + (pro ? "pro" : trialActive ? "trial" : "free");
+    /* evaluate() has computed `stale` and `overdueDays` since it was written,
+       with a comment saying the UI shows it — and nothing read either field.
+       A licence 200 days past its check-in showed a plain "Pro" badge and no
+       hint that anything was pending. It still works, and it still says so:
+       this is a nudge, not a threat. */
+    badge.title = pro && overdueDays > 0
+      ? `Pro — last checked in ${overdueDays} day${overdueDays === 1 ? "" : "s"} ago. ` +
+        `Connect once and it refreshes itself.`
+      : "";
+    badge.classList.toggle("overdue", !!(pro && overdueDays > 0));
     $("pro-upsell").hidden = pro || trialActive;
     $("pro-active").hidden = !pro;
     $("trial-active").hidden = !trialActive;
@@ -277,7 +287,14 @@
 
       const track = svgEl("circle", {
         cx: c, cy: c, r: r.toFixed(2),
-        class: "usage-track" + (it.reported ? "" : " open") + (it.out ? " spent" : "")
+        /* `reported` is not the same question as "is there a share to draw".
+           A count-only window (25 remaining, no limit) reports a real figure
+           but no proportion, and drawing it as a solid track with no lit arc
+           made it pixel-identical to an exhausted allowance — while the legend
+           beside it said "25 left". The dotted track is the honest shape for
+           "a real reading, of an unknown share". */
+        class: "usage-track" + (it.reported && it.pctLeft !== null ? "" : " open") +
+               (it.out ? " spent" : "")
       });
       // Out of allowance: the channel is left dim — it is empty, and that is
       // the point — and only its colour changes.
@@ -338,9 +355,18 @@
       num.className = "usage-core-num";
       const cap = document.createElement("span");
       cap.className = "usage-core-cap";
+      // A count with no limit is not a percentage, but it is not "no data"
+      // either — it is the figure the reader was given, and the dial saying
+      // "no data" while the row beside it says "25 left" is the panel
+      // contradicting itself about one reading.
+      const counted = items.filter((it) => it.pctLeft === null && it.remaining !== null);
       if (reporting.length) {
         const low = reporting.reduce((m, it) => Math.min(m, it.pctLeft), 100);
         num.textContent = low + "%";
+        cap.textContent = "left";
+      } else if (counted.length) {
+        const low = counted.reduce((m, it) => Math.min(m, it.remaining), Infinity);
+        num.textContent = String(low);
         cap.textContent = "left";
       } else {
         num.textContent = "—";
@@ -552,14 +578,13 @@
        with nothing reported sort last — they are context, not news. Beyond
        MAX_RINGS the dial stops being readable, so the quietest drop off rather
        than shaving every ring thinner. */
-    const items = [...rowMap.values()]
+    const ranked = [...rowMap.values()]
       .sort((a, b) => {
         if (a.reported !== b.reported) return a.reported ? -1 : 1;
         const ap = a.pctLeft === null ? 101 : a.pctLeft;
         const bp = b.pctLeft === null ? 101 : b.pctLeft;
         return ap - bp || a.label.localeCompare(b.label);
       })
-      .slice(0, MAX_RINGS)
       .map((b) => ({
         ...b,
         ...arcOf(b.pctLeft),
@@ -567,6 +592,12 @@
         hot: b.pctLeft !== null && b.pctLeft <= LOW_PCT && b.pctLeft > 0,
         out: b.pctLeft === 0
       }));
+    /* The dial has room for MAX_RINGS; the verdict has room for the truth.
+       Slicing before the verdict was computed meant a count-only row — which
+       sorts last among the reported ones — could be pushed off the dial by six
+       percentage rows and take its sentence with it, so a real reading vanished
+       from the panel because the drawing was full. */
+    const items = ranked.slice(0, MAX_RINGS);
 
     /* ---------- the verdict ----------
        The panel used to be six rows of "100% left", which is the answer to a
@@ -577,10 +608,10 @@
     // A count is a reading too — "25 deep research left" is as much an answer
     // as "62%", and a panel that ignored it would say "nothing reported" while
     // showing a number.
-    const reported = items.filter((it) => it.pctLeft !== null);
+    const reported = ranked.filter((it) => it.pctLeft !== null);
     // Ordered by what is closest to running out: with two counts in hand, "3
     // pro searches left" is the sentence worth writing, not "25 deep research".
-    const counted = items
+    const counted = ranked
       .filter((it) => it.pctLeft === null && it.remaining !== null)
       .sort((a, b) => a.remaining - b.remaining);
     const lowest = reported.length
@@ -648,7 +679,8 @@
   // Synchronous restore — runs during parse, i.e. before the first paint.
   $("version").textContent = "v" + chrome.runtime.getManifest().version;
   paintToggles(cache && cache.settings);
-  paintPlan(!!(cache && cache.pro), cache && cache.masked, (cache && cache.trialUntil) || 0);
+  paintPlan(!!(cache && cache.pro), cache && cache.masked, (cache && cache.trialUntil) || 0,
+    (cache && cache.overdueDays) || 0);
   // Always paint the dial — the placeholder rows inside paintUsage cover every
   // supported platform even without data, so the rings are never absent on
   // first open. The cached reading is repainted from the worker a frame later;
@@ -691,7 +723,13 @@
     /* The headline needs something true to say when you are not sitting in a
        long chat. The archive count is free (not a gated call), local, and the
        one number that is real at rest. */
-    paintPulse(total, null);
+    /* Keep the cached archive figure. This used to repaint with `null`, which
+       dropped the headline to "0 messages asleep" before the async recall-stats
+       call put it back — a visible 12,000 → 0 → 12,000 flicker on every open,
+       and if that call failed the zero simply stayed. It is also not the free
+       call the old comment claimed: stats() cursors every record and sums every
+       message length, on most opens. */
+    paintPulse(total, (cache && cache.archive) || null);
     if (total === 0) {
       send({ type: "recall-stats" }).then((st) => {
         if (!st || st.err) return;
@@ -759,8 +797,8 @@
     $("license-devices").hidden = !(pro && licenseKind === "dodo");
     const seatCount = licenseKind === "dodo"
       ? Object.keys((await self.LCTDodo.readSeats()).seats).length : 0;
-    paintPlan(pro, masked, trialUntil);
-    saveCache({ pro, masked, trialUntil, licenseKind, seatCount, settings: settings || null,
+    paintPlan(pro, masked, trialUntil, (verdict && verdict.overdueDays) || 0);
+    saveCache({ pro, masked, trialUntil, overdueDays: (verdict && verdict.overdueDays) || 0, licenseKind, seatCount, settings: settings || null,
       stats: { total, rows }, quota: quota || null });
   }
 
@@ -815,6 +853,21 @@
     }
     row.classList.remove("busy");
     title.textContent = `Download the text of ${left.toLocaleString()} chat${left === 1 ? "" : "s"}`;
+    /* The worker already worked out why it stopped — "ChatGPT: signed out",
+       "Perplexity: not signed in" — and this row used to throw it away and
+       return to "Download the text of 2,300 chats", so the user clicked again
+       and watched the same nothing happen. Say what it said. */
+    if (state && state.note) {
+      sub.textContent = `${state.note} — sign in, then tap to continue`;
+      row.classList.add("stalled");
+      return;
+    }
+    row.classList.remove("stalled");
+    if (state && state.failed) {
+      const mins0 = Math.max(1, Math.round((left * 1.5) / 60));
+      sub.textContent = `${state.failed.toLocaleString()} couldn't be fetched — tap to retry · about ${mins0} min`;
+      return;
+    }
     /* Measured, not guessed: 30 chats took 45 seconds against a real account,
        so about a second and a half each once the request itself is counted and
        not just the pause between them. Stated as "about", because the number
@@ -823,17 +876,44 @@
     sub.textContent = `Recall can only search what is here — about ${mins} min`;
   }
 
+  /* Set when we have asked the worker to start and have not yet seen it say so.
+     ensureStubIndex() can walk a 25MB archive before `running` flips, and the
+     single probe at +400ms landed inside that window: the chain never armed and
+     the row read "Download the text of 2,300 chats" for the life of the popup
+     while the download was in fact running. */
+  let fillExpected = 0;
+
   async function refreshFill() {
     const state = await send({ type: "archive-fill-state" });
     paintFill(state);
     clearTimeout(fillTimer);
-    // Poll only while it is working; a settled archive costs nothing.
-    if (state && state.running) fillTimer = setTimeout(refreshFill, 1200);
+    const waitingToStart = fillExpected && Date.now() < fillExpected;
+    if (state && state.running) fillExpected = 0;
+    // Poll only while it is working, or while we are waiting for it to admit it.
+    if ((state && state.running) || waitingToStart) fillTimer = setTimeout(refreshFill, 1200);
   }
 
+  /* The row is not a button element, so nothing disabled it: two clicks 150ms
+     apart both asked the worker what it was doing, both were told "not
+     running", and both asked it to start — or the second overtook the first and
+     silently STOPPED the download the user had just asked for. The decision is
+     made once, and the row ignores clicks until it has landed. */
+  let fillBusy = false;
+
   $("fill-archive").addEventListener("click", async () => {
-    const state = await send({ type: "archive-fill-state" });
-    await send({ type: state && state.running ? "archive-fill-stop" : "archive-fill-start" });
+    if (fillBusy) return;
+    fillBusy = true;
+    $("fill-archive").classList.add("pending");
+    try {
+      const state = await send({ type: "archive-fill-state" });
+      const stopping = !!(state && state.running);
+      await send({ type: stopping ? "archive-fill-stop" : "archive-fill-start" });
+      // Give the worker a window to admit it started before we stop polling.
+      fillExpected = stopping ? 0 : Date.now() + 30000;
+    } finally {
+      fillBusy = false;
+      $("fill-archive").classList.remove("pending");
+    }
     setTimeout(refreshFill, 400);
   });
 

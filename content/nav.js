@@ -1,5 +1,5 @@
 /**
- * Long Chat Toolkit — one reliable "go to this message".
+ * Tvara — one reliable "go to this message".
  *
  * Every jump crosses windowed regions whose heights are estimates until they
  * wake, so a naive scroll lands short and the page keeps shifting underneath.

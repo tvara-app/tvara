@@ -1,5 +1,5 @@
 /**
- * Long Chat Toolkit — ChatGPT exact-times reader (runs in the page's MAIN
+ * Tvara — ChatGPT exact-times reader (runs in the page's MAIN
  * JS world; everything else in this extension runs isolated).
  *
  * ChatGPT keeps each message's real create_time in React internal props but

@@ -1,5 +1,5 @@
 /**
- * Long Chat Toolkit — Continue in a new chat.
+ * Tvara — Continue in a new chat.
  *
  * The thing everyone does by hand, badly. A conversation gets long: it slows
  * down, or it runs into the model's context, or you hit your allowance and the
@@ -34,6 +34,9 @@
   const CODE_CHARS = 1200;
 
   let panel = null;
+  // Opening now waits on the archive, so a second click — or an Escape — while
+  // that answer is in flight must not be overtaken by the first one's panel.
+  let openToken = 0;
 
   /* ---------- what a fresh chat looks like on each host ---------- */
 
@@ -121,27 +124,57 @@
 
   const IMAGE_ONLY = /^(\[image:[^\]]*\]|\[image\]|\s)+$/;
 
-  function gather(messages) {
+  /* The page holds what the host mounted — on the 1,471-message thread this
+     feature was built for, that is the last ~197 turns. "What I originally
+     asked" taken from those is a mid-project follow-up handed to the next
+     model as the opening question, and the panel offers to carry forward "197
+     messages" for a conversation with 1,471. The archive knows better, and the
+     exporter already asks it the same way. */
+  function archived(timeoutMs) {
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (v) => { if (!done) { done = true; resolve(v); } };
+      setTimeout(() => finish(null), timeoutMs || 2500);
+      try {
+        chrome.runtime.sendMessage({
+          type: "chat-archive", host: location.hostname, path: location.pathname
+        }, (res) => {
+          void chrome.runtime.lastError;
+          finish(res && res.status === "ok" ? res : null);
+        });
+      } catch { finish(null); }
+    });
+  }
+
+  function gather(messages, arch) {
     const recs = collect(messages);
+    /* Only the opening goal and the message count come from the archive. The
+       recent turns and the last code block must stay live: they are the newest
+       part of the conversation and the part a background sync has not seen. */
+    const deep = arch && Array.isArray(arch.msgs) && arch.msgs.length > recs.length
+      ? arch.msgs.map((m) => ({ role: m.r === "user" ? "user" : "assistant", text: String(m.t || "") }))
+      : null;
     /* "What you originally asked" has to be a QUESTION. On a real chat the
        first user turn was a pasted screenshot, so the handover opened with a
        file name and told the next model nothing. Take the first user message
        that actually says something, and fall back to the literal first only if
        there is nothing else. */
-    const firstUser = recs.find((r) => r.role === "user" && !IMAGE_ONLY.test(r.text) && r.text.length > 12)
-      || recs.find((r) => r.role === "user");
+    const from = deep || recs;
+    const firstUser = from.find((r) => r.role === "user" && !IMAGE_ONLY.test(r.text) && r.text.length > 12)
+      || from.find((r) => r.role === "user");
     return {
       goal: firstUser ? firstUser.text : "",
       starred: (self.LCTOutline && self.LCTOutline.starred ? self.LCTOutline.starred() : []).slice(0, 8),
       recent: recs.slice(-RECENT_TURNS),
       code: lastCodeBlock(messages),
-      total: recs.length
+      total: (deep || recs).length
     };
   }
 
   /* ---------- the panel ---------- */
 
   function close() {
+    openToken++;
     if (panel) { panel.remove(); panel = null; }
     document.removeEventListener("keydown", onKey, true);
   }
@@ -168,9 +201,12 @@
     return wrap;
   }
 
-  function open(messages) {
+  async function open(messages) {
     close();
-    const data = gather(messages || []);
+    const mine = openToken;
+    const arch = await archived();
+    if (mine !== openToken) return;
+    const data = gather(messages || [], arch);
     if (!data.total) return;
 
     panel = document.createElement("div");

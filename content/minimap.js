@@ -1,5 +1,5 @@
 /**
- * Long Chat Toolkit — conversation minimap.
+ * Tvara — conversation minimap.
  * A compact conversation navigator: one bar per message
  * (accent = you, muted = AI, marker = contains code). Click or use the
  * keyboard to jump. The map stays intentionally quiet so it reads as a tool,

@@ -3,7 +3,9 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Long Chat Toolkit — Make long AI chats fast again</title>
+<!-- The licence key can arrive in the query string; never let it leave in a Referer. -->
+<meta name="referrer" content="no-referrer" />
+<title>Tvara — Make long AI chats fast again</title>
 <meta name="description" content="Speed engine, minimap, in-chat search, timestamps and encrypted local backups for AI chats. Free speed engine; one-time Pro licence." />
 <style>
   :root {
@@ -55,12 +57,12 @@
 <header>
   <div class="logo">⚡</div>
   <h1>Make long AI chats fast again</h1>
-  <p class="sub">Long Chat Toolkit is a browser extension that keeps huge ChatGPT, Claude &amp; Gemini conversations fast — and adds the navigation those apps forgot: minimap, in-chat search, message timestamps, resume &amp; one-click backup.</p>
+  <p class="sub">Tvara is a browser extension that keeps huge ChatGPT, Claude &amp; Gemini conversations fast — and adds the navigation those apps forgot: minimap, in-chat search, message timestamps, resume &amp; one-click backup.</p>
   <div>
-    <a class="cta" href="https://github.com/Tharuntejandhe/long-chat-toolkit">View source on GitHub</a>
+    <a class="cta" href="https://github.com/Tharuntejandhe/tvara">View source on GitHub</a>
     <a class="cta alt" href="mailto:tharuntejandhe@gmail.com">Contact</a>
   </div>
-  <div class="badge">🔒 Local archive · no telemetry or Long Chat Toolkit server</div>
+  <div class="badge">🔒 Local archive · no telemetry or Tvara server</div>
   <nav>
     <a href="#features">Features</a> · <a href="#pricing">Pricing</a> · <a href="#privacy">Privacy</a> · <a href="#terms">Terms</a> · <a href="#refunds">Refunds</a>
   </nav>
@@ -117,7 +119,7 @@
            better than a dead checkout.
 
            AND in the Dodo dashboard, set the product's redirect/success URL to
-             https://tharuntejandhe.github.io/long-chat-toolkit/thanks.html
+             https://tharuntejandhe.github.io/tvara/thanks.html
            (append ?key={license_key} if Dodo will template it — the page shows
            the key with a copy button when it arrives, and stays quiet when it
            does not). Without that redirect a buyer's last screen is a payment
@@ -148,14 +150,14 @@
 <section id="privacy" class="legal">
   <h2>Privacy Policy</h2>
   <p><em>Effective: July 2026</em></p>
-  <p>Long Chat Toolkit is built so that trust is verifiable, not promised:</p>
+  <p>Tvara is built so that trust is verifiable, not promised:</p>
   <ul>
-    <li><strong>The extension collects no data.</strong> Your conversations, settings, reading positions, local timestamp records and license key are stored in your browser's local extension storage. An explicit Total Recall history check contacts only the supported AI provider endpoints listed in the manifest; there is no Long Chat Toolkit server, analytics endpoint or chat-data upload.</li>
+    <li><strong>The extension collects no data.</strong> Your conversations, settings, reading positions, local timestamp records and license key are stored in your browser's local extension storage. An explicit Total Recall history check contacts only the supported AI provider endpoints listed in the manifest; there is no Tvara server, analytics endpoint or chat-data upload.</li>
     <li><strong>No accounts, no analytics, no tracking</strong> — in the extension and on this website. This site is a static page with no cookies and no third-party scripts.</li>
     <li><strong>On ChatGPT only</strong>, a small read-only script runs in the page to read each message's timestamp from the app's own state. It makes no network requests and changes nothing on the page. All processing is local.</li>
     <li><strong>Purchases</strong> are handled by our payment provider (merchant of record). We receive your email address solely to issue your license key. We do not receive or store your card details.</li>
     <li><strong>Licence activation is the one request that isn't to an AI site.</strong> Activating Pro sends your licence key and a coarse device label to the payment provider's licence server so it can enforce the 5-device limit; a licensed copy re-checks there at most once a month. That is the entire payload — no cookies, no conversation text, no identifiers beyond a random per-profile ID we generate. The free tier never contacts it, and the extension requests no additional host permission to do it.</li>
-    <li>The extension's full source code is public at <a href="https://github.com/Tharuntejandhe/long-chat-toolkit">GitHub</a> — you can audit every line.</li>
+    <li>The extension's full source code is public at <a href="https://github.com/Tharuntejandhe/tvara">GitHub</a> — you can audit every line.</li>
   </ul>
   <p>Questions: <a href="mailto:tharuntejandhe@gmail.com">tharuntejandhe@gmail.com</a></p>
 </section>
@@ -164,7 +166,7 @@
   <h2>Terms of Service</h2>
   <p><em>Effective: July 2026</em></p>
   <ul>
-    <li>Long Chat Toolkit is a browser extension that improves performance and navigation of third-party AI chat websites. It is an independent product, not affiliated with or endorsed by OpenAI, Anthropic, Google or Perplexity.</li>
+    <li>Tvara is a browser extension that improves performance and navigation of third-party AI chat websites. It is an independent product, not affiliated with or endorsed by OpenAI, Anthropic, Google or Perplexity.</li>
     <li>The Free tier may be used without payment. A Pro license is a one-time purchase that unlocks Pro features on supported platforms for personal use on your devices, with no recurring fees.</li>
     <li>Your license key is for you; please don't redistribute it. We may revoke keys that are publicly shared.</li>
     <li>The software is provided "as is", without warranty of any kind (see the MIT license in the source repository). Third-party sites change frequently; features degrade gracefully but may temporarily break until we ship a fix.</li>
@@ -178,7 +180,7 @@
 </section>
 
 <footer>
-  ⚡ Long Chat Toolkit · <a href="https://github.com/Tharuntejandhe/long-chat-toolkit">Open source (MIT)</a> · <a href="mailto:tharuntejandhe@gmail.com">tharuntejandhe@gmail.com</a>
+  ⚡ Tvara · <a href="https://github.com/Tharuntejandhe/tvara">Open source (MIT)</a> · <a href="mailto:tharuntejandhe@gmail.com">tharuntejandhe@gmail.com</a>
 </footer>
 
 </div>
@@ -186,7 +188,7 @@
 <script>
 /* ── THE PRICE. One line, and preflight fails the build if lib/product.js
       disagrees with it. Change both together, or change neither. ── */
-var PRICE = "$9";
+var PRICE = "$3";
 
 (function () {
   for (var i = 0, els = document.querySelectorAll("[data-price]"); i < els.length; i++) {

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Long Chat Toolkit — live-site verification.
+ * Tvara — live-site verification.
  *
  *   node test/verify-live.mjs login          # once: sign in to your test accounts
  *   node test/verify-live.mjs                # every time after: check the real sites
@@ -32,7 +32,7 @@ import { createInterface } from "node:readline/promises";
 import { spawn } from "node:child_process";
 import { chromium } from "playwright";
 
-const EXT = join(homedir(), "long-chat-toolkit");
+const EXT = join(homedir(), "tvara");
 const HOME = join(homedir(), ".lct-verify");
 const PROFILE = join(HOME, "profile");
 const OUT = join(EXT, "test", ".work", "live");
@@ -75,7 +75,7 @@ if (SELF_TEST) {
   await new Promise((r) => setTimeout(r, 800));
 }
 
-console.log(`\nLong Chat Toolkit — live check`);
+console.log(`\nTvara — live check`);
 console.log(`profile: ${PROFILE}${existsSync(join(PROFILE, "Default")) ? "" : "  (new)"}\n`);
 
 const ctx = await chromium.launchPersistentContext(PROFILE, {
@@ -254,11 +254,17 @@ ${wanted.length} tab${wanted.length === 1 ? "" : "s"} open. Before pressing Ente
 
   const broken = cards.filter((c) => c.cls === "bad");
   const shaky = cards.filter((c) => c.cls === "warn");
-  console.log(broken.length
-    ? `  ✗ ${broken.length} platform(s) have drifted — ${broken.map((c) => c.title).join(", ")}`
-    : shaky.length
-      ? `  ! ${shaky.length} platform(s) partly matching — worth a look`
-      : `  ✓ every platform checked still matches its own markup`);
+  /* "Nothing was checked" is not "everything passed". With no chat tabs open —
+     or nobody signed in — `cards` is empty, so `broken` is empty, and this used
+     to print the green verdict and exit 0. This is the drift check for
+     content/adapters.js: a meaningless green here is worse than a red one. */
+  console.log(!cards.length
+    ? `  ✗ nothing was checked — no chat tabs answered, so this run proves nothing`
+    : broken.length
+      ? `  ✗ ${broken.length} platform(s) have drifted — ${broken.map((c) => c.title).join(", ")}`
+      : shaky.length
+        ? `  ! ${shaky.length} platform(s) partly matching — worth a look`
+        : `  ✓ every platform checked still matches its own markup`);
 
   const md = `# Live check — ${new Date().toISOString()}\n\n` +
     cards.map((c) => `## ${c.title} — ${c.verdict}\n\n` +
@@ -268,7 +274,7 @@ ${wanted.length} tab${wanted.length === 1 ? "" : "s"} open. Before pressing Ente
   console.log(`\n  report: ${join(OUT, "report.md")}`);
   console.log(`  paste that file into the chat — it holds no message text.\n`);
 
-  process.exitCode = broken.length ? 1 : 0;
+  process.exitCode = (broken.length || !cards.length) ? 1 : 0;
 } finally {
   await ctx.close().catch(() => {});
   if (server) server.kill();

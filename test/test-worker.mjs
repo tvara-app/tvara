@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Long Chat Toolkit — entitlement Worker tests.
+ * Tvara — entitlement Worker tests.
  *
  * This is the file that decides who has paid, and it was the one file in the
  * project with no tests at all: it runs on someone else's machine, so a bug in
@@ -198,6 +198,18 @@ t("degrade: KV down still serves a paying customer",
   (await post(live(), { e: env({ RL: kv({ broken: true }) }) })).status === 200);
 t("degrade: no KV binding at all still serves",
   (await post(live(), { e: env({ RL: undefined }) })).status === 200);
+
+/* A worker deployed without its secret must not sign anything. /licenses/validate
+   is the same public endpoint the client can reach, so without the key the
+   worker used to issue perfectly valid 90-day tokens carrying no customer —
+   `email` empty everywhere downstream, and no way to tell a paying customer
+   from anyone who guessed a key format. */
+{
+  const calls = stubDodo([{ status: 200, body: { valid: true } }]);
+  const res = await post(live(), { e: env({ DODO_API_KEY: undefined }) });
+  t("misconfigured: no DODO_API_KEY mints no token", res.status !== 200, String(res.status));
+  t("misconfigured: …and never reaches Dodo without it", calls.length === 0, String(calls.length));
+}
 
 /* ---------- rate limit ---------- */
 

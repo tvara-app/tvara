@@ -4,18 +4,23 @@
 #
 #   ./tools/chrome-debug.sh
 #
-# It uses its own profile directory (~/.lct-chrome), which is required: since
-# Chrome 136 the debugging port is refused on the default profile on purpose,
-# so that a web page cannot reach a browser holding your real logins. The side
-# effect is the right one — this window only ever holds what you sign into for
-# testing.
+# It uses its own profile directory (~/.lct-chrome-test), which is required:
+# since Chrome 136 the debugging port is refused on the default profile on
+# purpose, so that a web page cannot reach a browser holding your real logins.
+#
+# THIS DIRECTORY IS NOT THE CLONE. tools/chrome-clone.sh copies a real profile
+# — real cookies, real sessions — into ~/.lct-chrome. Both scripts used to open
+# the SAME directory while this one promised "only what you sign into for
+# testing", so once you had cloned even once, this line was false and running
+# it re-exposed every live login on the debugging port. They are separate
+# directories now, and this one really does start empty.
 #
 # First run: chrome://extensions → Developer mode → Load unpacked →
-# ~/long-chat-toolkit, then sign in to your test accounts. It remembers both.
+# ~/tvara, then sign in to your test accounts. It remembers both.
 set -euo pipefail
 
 PORT="${LCT_CDP_PORT:-9222}"
-DIR="$HOME/.lct-chrome"
+DIR="$HOME/.lct-chrome-test"      # NOT ~/.lct-chrome — see the note above
 CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 [[ -x "$CHROME" ]] || CHROME="/Applications/Chromium.app/Contents/MacOS/Chromium"
 [[ -x "$CHROME" ]] || { echo "✋ Chrome not found in /Applications."; exit 1; }

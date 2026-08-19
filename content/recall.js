@@ -1,5 +1,5 @@
 /**
- * Long Chat Toolkit — Total Recall (content side).
+ * Tvara — Total Recall (content side).
  *
  * 1) INDEXER: mirrors the current conversation's text to the extension's
  *    local archive (background IndexedDB) — throttled, hash-guarded, always on

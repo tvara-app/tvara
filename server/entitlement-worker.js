@@ -1,5 +1,5 @@
 /**
- * Long Chat Toolkit — entitlement issuer (Cloudflare Worker).
+ * Tvara — entitlement issuer (Cloudflare Worker).
  *
  * The one place a client cannot patch. Holds two secrets:
  *   DODO_API_KEY  — server-side licence validation
@@ -85,10 +85,27 @@ const json = (body, status, origin) =>
 /* ---------- rate limit ---------- */
 
 /** Per-key window counter. Degrades open if KV is unavailable. */
+/* HONEST LIMITS OF THIS COUNTER.
+   KV `get` is edge-cached and `put` is eventually consistent, so a burst can
+   all read the same value: RL_MAX is a brake, not a bound. It also used to key
+   on the licence key alone — which the caller supplies — so a script sending a
+   fresh random key per request was never counted at all, while each request
+   still cost one upstream Dodo call. The IP bucket below is what actually
+   bounds an attacker; the key bucket bounds a leaked key being shared.
+   For a hard bound, put Cloudflare's Rate Limiting binding on CF-Connecting-IP
+   in front of this worker — that is enforced at the edge, not in KV. */
+const RL_IP_MAX = 60;          // per IP per window, across all keys
+
 async function rateLimited(env, keyFp, ip) {
   if (!env.RL) return false;
-  const bucket = `rl:${keyFp}:${Math.floor(Date.now() / (RL_WINDOW_S * 1000))}`;
+  const slot = Math.floor(Date.now() / (RL_WINDOW_S * 1000));
+  const bucket = `rl:${keyFp}:${slot}`;
+  const ipBucket = `rlip:${await sha256Hex(ip || "unknown", 16)}:${slot}`;
   try {
+    const ipSeen = Number(await env.RL.get(ipBucket)) || 0;
+    if (ipSeen >= RL_IP_MAX) return true;
+    await env.RL.put(ipBucket, String(ipSeen + 1), { expirationTtl: RL_WINDOW_S * 2 });
+
     const seen = Number(await env.RL.get(bucket)) || 0;
     if (seen >= RL_MAX) return true;
     await env.RL.put(bucket, String(seen + 1), { expirationTtl: RL_WINDOW_S * 2 });
@@ -106,6 +123,13 @@ async function rateLimited(env, keyFp, ip) {
  * never touches. The secret key adds the customer record on top.
  */
 async function dodoValidate(env, licenseKey, instanceId) {
+  /* Without the secret, /licenses/validate still answers — it is the same
+     public endpoint the client can reach — so the worker went on issuing
+     signed 90-day tokens with no customer record behind them and `email` empty
+     everywhere downstream. A deployment missing its key is a misconfigured
+     deployment, and it should say so rather than quietly sign things. */
+  if (!env.DODO_API_KEY) return { branch: "service" };
+
   const base = env.DODO_MODE === "test"
     ? "https://test.dodopayments.com" : "https://live.dodopayments.com";
   const body = { license_key: licenseKey };

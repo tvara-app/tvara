@@ -1,5 +1,5 @@
 /**
- * Long Chat Toolkit — speed engine (v2).
+ * Tvara — speed engine (v2).
  *
  * Strategy: CSS `content-visibility` windowing with a viewport safety zone.
  *

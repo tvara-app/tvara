@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Long Chat Toolkit — deploy the entitlement issuer, in one command.
+# Tvara — deploy the entitlement issuer, in one command.
 #
 #   ./server/deploy.sh <chrome-extension-id> [--test]
 #
@@ -93,10 +93,28 @@ done
 
 # ---------- 4. deploy ----------
 echo "→ deploying…"
-wrangler deploy
+# The URL comes out of THIS deploy, not out of `deployments list` — which
+# prints version and author metadata and no URL at all, so the grep below it
+# always failed and the hardcoded fallback was the normal path. That meant the
+# smoke test could pass against a worker this script had not deployed.
+DEPLOY_OUT="$(wrangler deploy 2>&1 | tee /dev/stderr)"
+URL="$(printf '%s' "$DEPLOY_OUT" | grep -oE 'https://[a-z0-9.-]+workers\.dev' | head -1 || true)"
 
-URL="$(wrangler deployments list 2>/dev/null | grep -oE 'https://[a-z0-9.-]+workers\.dev' | head -1 || true)"
-[[ -z "$URL" ]] && URL="https://entitlement.long-chat-toolkit.workers.dev"
+# And it must be the host the extension actually asks. A worker deployed under
+# a different name is a worker nobody will ever reach.
+EXPECTED="$(grep -oE 'https://[a-z0-9.-]+workers\.dev' ../lib/entitlement.js 2>/dev/null | head -1 || true)"
+[[ -z "$EXPECTED" ]] && EXPECTED="$(grep -oE 'https://[a-z0-9.-]+workers\.dev' "$(dirname "$0")/../lib/entitlement.js" 2>/dev/null | head -1 || true)"
+if [[ -z "$URL" ]]; then
+  echo "✋ could not read the deployed URL out of wrangler's output."
+  echo "   Not falling back to a guess — a smoke test against the wrong host proves nothing."
+  exit 1
+fi
+if [[ -n "$EXPECTED" && "$URL" != "$EXPECTED" ]]; then
+  echo "✋ deployed to ${URL}"
+  echo "   but lib/entitlement.js asks ${EXPECTED}"
+  echo "   Change one of them; a purchase cannot unlock Pro while they disagree."
+  exit 1
+fi
 
 # ---------- 5. prove it ----------
 # Three calls, each isolating one link in the chain. A junk licence key SHOULD
@@ -107,7 +125,7 @@ echo "→ smoke test against ${URL}"
 code() {
   curl -s -o /dev/null -w '%{http_code}' -X POST "${URL}/entitlement" \
     -H "Content-Type: application/json" -H "Origin: $1" \
-    -d "{\"license_key\":\"SMOKE-TEST-KEY\",\"device\":\"$(printf 'a%.0s' {1..32})\",\"ts\":$(date +%s000)}" \
+    -d "{\"license_key\":\"SMOKE-${RANDOM}${RANDOM}\",\"device\":\"$(printf 'a%.0s' {1..32})\",\"ts\":$(date +%s000)}" \
     --max-time 20 || echo 000
 }
 OURS="$(code "$ORIGIN")"
@@ -123,6 +141,7 @@ case "$OURS" in
   403) echo "   ✗ our own origin was REFUSED — the id above is not the one the worker trusts"; FAILED=1;;
   503) echo "   ✗ Dodo did not answer — check DODO_API_KEY and DODO_MODE"; FAILED=1;;
   000) echo "   ✗ nothing answered at ${URL} — the deploy did not take"; FAILED=1;;
+  429) echo "   ✗ rate-limited (429) — this run proves nothing; wait and retry"; FAILED=1;;
   *)   echo "   ? unexpected ${OURS} — inspect with: wrangler tail"; FAILED=1;;
 esac
 [[ "$STRANGER" == "403" ]] \

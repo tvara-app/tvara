@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* Long Chat Toolkit — provider allowance parser suite.
+/* Tvara — provider allowance parser suite.
  *
  * These parsers decide what percentage the popup draws for somebody's plan, and
  * their failure mode is the dangerous kind: not a crash, but a plausible wrong

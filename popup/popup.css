@@ -1,4 +1,4 @@
-/* Long Chat Toolkit — popup.
+/* Tvara — popup.
    Sized to fit a Chrome popup whole (no scrollbar): one warm gradient field,
    one grain plate, one column of icons, and type doing the rest.
    Motion is ambient only — the plate breathes and the panel arrives. Nothing
@@ -526,6 +526,13 @@ body.searching footer { display: none; }
 #fill-archive.busy .row-icon { color: var(--ember); animation: fill-pulse 1.6s ease-in-out infinite; }
 @keyframes fill-pulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { #fill-archive.busy .row-icon { animation: none; opacity: 1; } }
+/* Stopped for a reason the worker named — signed out, usually. The row says so
+   instead of returning to "Download the text of 2,300 chats" as if nothing
+   happened. */
+#fill-archive.stalled .row-icon { color: var(--danger); animation: none; }
+/* Between the click and the worker answering. Nothing else may be clicked
+   through it, so it should not look clickable either. */
+#fill-archive.pending { opacity: .6; pointer-events: none; }
 /* The warning link states its own setting, so "off" has to look off. */
 #quota-warn-link.off { color: var(--ink-faint); text-decoration-style: dotted; }
 
@@ -698,3 +705,8 @@ button:disabled { cursor: default; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition-duration: 1ms !important; }
 }
+
+/* A Pro licence that has not checked in for a while. Still Pro — the dot is a
+   reminder, not a warning, and the tooltip says how long. */
+.badge.overdue::after { content: ""; display: inline-block; width: 5px; height: 5px;
+  margin-left: 5px; border-radius: 50%; background: var(--ember); vertical-align: middle; }

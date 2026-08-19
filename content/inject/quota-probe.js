@@ -1,5 +1,5 @@
 /**
- * Long Chat Toolkit — provider quota observer (runs in the page's MAIN JS
+ * Tvara — provider quota observer (runs in the page's MAIN JS
  * world; everything else in this extension except fiber-times.js runs isolated).
  *
  * WHAT THIS IS FOR. Every one of these apps renders its own "you have X left,

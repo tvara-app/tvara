@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Long Chat Toolkit",
+  "name": "Tvara",
   "version": "0.8.0",
   "description": "Fix slow, laggy AI chats. Speed engine, minimap, search & backup for ChatGPT, Claude, Gemini, DeepSeek, Grok. 100% local, $0 data.",
   "permissions": [
@@ -31,7 +31,7 @@
   "minimum_chrome_version": "111",
   "browser_specific_settings": {
     "gecko": {
-      "id": "long-chat-toolkit@tharuntejandhe.github.io",
+      "id": "tvara@tharuntejandhe.github.io",
       "strict_min_version": "128.0"
     }
   },
@@ -52,7 +52,7 @@
       "128": "icons/icon128.png"
     },
     "default_popup": "popup/popup.html",
-    "default_title": "Long Chat Toolkit"
+    "default_title": "Tvara"
   },
   "content_scripts": [
     {

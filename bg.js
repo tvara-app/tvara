@@ -1,5 +1,5 @@
 /**
- * Long Chat Toolkit — background service worker: the Total Recall database.
+ * Tvara — background service worker: the Total Recall database.
  *
  * One IndexedDB (extension origin) holds a local archive of every AI chat the
  * user has opened, across ALL platforms. Content scripts (isolated per site)
@@ -79,6 +79,11 @@ function clampChat(chat) {
     i: String(m.i || "").slice(0, 80),
     r: m.r === "user" ? "user" : "assistant",
     t: String(m.t || "").slice(0, MAX_MSG_CHARS),
+    // Remember that this one lost its tail. MAX_MSG_CHARS is a bound chosen for
+    // the search index, not for export, and a long answer written to a .md file
+    // cut mid-sentence with nothing to say so is the kind of quiet loss this
+    // project exists to not commit. Export reads this flag and says so.
+    ...(String(m.t || "").length > MAX_MSG_CHARS ? { c: 1 } : {}),
     ts: typeof m.ts === "number" ? m.ts : 0
   }));
   const acct = String(chat.acct || "").slice(0, 32);
@@ -147,9 +152,23 @@ async function readStubs() {
  * per-item catch. Eleven of twelve chats vanished silently. The tests caught it
  * in the same minute; a user would have found it as a gap in their archive.
  */
+/* Serialized, like every other ledger in this file (ledgerWrite:694,
+   accountsWrite:889). This is a read-modify-write over chrome.storage, and the
+   fill loop and a sync flush can both be inside it at once — nothing guards
+   bgSyncRunning against fillRunning. Unchained, the fill removed a chat and
+   wrote the map, a flush that had read the map first wrote its own copy back,
+   and the chat returned to the queue to be fetched again forever. */
+let stubWrite = Promise.resolve();
+
 async function noteStubs(updates) {
   const list = (updates || []).filter((u) => u && u.id && u.host);
   if (!list.length) return;
+  const work = () => noteStubsNow(list);
+  stubWrite = stubWrite.then(work, work);
+  return stubWrite;
+}
+
+async function noteStubsNow(list) {
   try {
     const all = await readStubs();
     let touched = false;
@@ -285,9 +304,35 @@ async function importBatch(chats) {
         stored.push(id);
         continue;
       }
-      // Same rule as upsert(): a restore carries no account, and must not strip
-      // one that a sync already established.
-      const clamped = clampChat(chat.acct ? chat : { ...chat, acct: previous && previous.acct });
+      /* A write that brings LESS of the conversation has to prove it is newer.
+         The clock test above can only fire when BOTH sides carry a provider
+         revision, and `previousSource` is 0 for every record that predates the
+         field, every record written by upsert(), and everything restored from
+         such a backup — so those records had no guard at all. `fixesIds` is
+         not an exemption either: ids make a record indexable, they do not make
+         it complete, and a 30-message page-tail carrying ids must never replace
+         1,471 archived messages that lack them. */
+      const loses = !!previous && previous.n > 0 && candidateCount < previous.n;
+      if (loses && !(candidateSource > 0 && previousSource > 0 && candidateSource > previousSource)) {
+        ok++;
+        stored.push(id);
+        continue;
+      }
+      /* Carry forward what this write does not carry. `put` replaces the whole
+         record, so a caller that fetches only the body — which is exactly what
+         the backfill does — silently erased the title it was repairing, and
+         stamped the local clock as the provider revision because importBatch
+         forces keepTimes here. Neither is something the caller learned; both
+         belong to the record already. */
+      const merged = {
+        ...chat,
+        acct: chat.acct || (previous && previous.acct),
+        title: chat.title || (previous && previous.title) || "",
+        sourceUpdatedAt: Number(chat.sourceUpdatedAt || 0) > 0
+          ? chat.sourceUpdatedAt
+          : (previous && previous.sourceUpdatedAt) || 0
+      };
+      const clamped = clampChat(merged);
       if ((chat.keepTimes || isMeta) && chat.updatedAt) clamped.updatedAt = chat.updatedAt;
       await reqP(wStore.put(clamped));
       stubUpdates.push({ id: clamped.id, host: clamped.host, hasBody: clamped.n >= 2 });
@@ -2184,6 +2229,13 @@ function indexFromMsgs(msgs) {
   return out;
 }
 
+/** Drop a cached context so the next prepare() really talks to the provider.
+ *  A bearer token can expire inside IDX_CTX_TTL, and the only way to tell that
+ *  from a signed-out user is to go and ask again. */
+function idxForget(adapter) {
+  idxCtx.delete(adapter.host);
+}
+
 async function idxPrepare(adapter) {
   const hit = idxCtx.get(adapter.host);
   if (hit && Date.now() - hit.at < IDX_CTX_TTL) return hit.ctx;
@@ -2244,6 +2296,16 @@ async function chatSearch(host, path, query) {
   } catch { return { status: "unavailable" }; }
   if (!rec || !Array.isArray(rec.msgs)) return { status: "missing" };
 
+  /* Every hit is returned as a provider message id, because that id is what
+     the minimap seeks on — so a record whose messages carry no ids cannot be
+     answered from here at all. Only the ChatGPT adapter emits `i`; Claude,
+     DeepSeek, Grok, Gemini and Perplexity push {r,t,ts}. Reporting "ok" with
+     zero hits for those told the reader the archive held no matches, when what
+     actually happened is that the deep search never ran. That is the one thing
+     this project must not do, so it is a distinct status the page can see. */
+  const searchable = rec.msgs.filter((m) => m && m.i && m.t).length;
+  if (!searchable) return { status: "no-index", total: 0, scanned: 0, hits: [] };
+
   const hits = [];
   let scanned = 0;
   for (const m of rec.msgs) {
@@ -2295,7 +2357,11 @@ async function chatArchive(host, path) {
       status: "ok",
       title: rec.title || "",
       n: rec.n || rec.msgs.length,
-      msgs: rec.msgs.map((m) => ({ i: m.i || "", r: m.r, t: m.t || "", ts: m.ts || 0 }))
+      msgs: rec.msgs.map((m) => ({
+        i: m.i || "", r: m.r, t: m.t || "", ts: m.ts || 0,
+        // Records written before the flag existed are recognised by length.
+        ...(m.c || (m.t || "").length >= MAX_MSG_CHARS ? { c: 1 } : {})
+      }))
     };
   } catch { return { status: "unavailable" }; }
 }
@@ -2908,6 +2974,19 @@ async function quotaTry(adapter, ctx, endpoint) {
   }
 }
 
+/* The signature says "are these the same candidates I learned against". Hashing
+   only `path` missed every other way a candidate can change — method, body,
+   auth, needsOrg — and Grok already ships two candidates on the identical path
+   /rest/rate-limits differing only by body.modelName. Change that body to a new
+   model and the stored `working` entry would keep being served for the whole
+   24h QUOTA_PROBE_TTL, POSTing the old model, which is exactly the staleness
+   the signature exists to prevent. */
+function quotaSig(list) {
+  return (list || []).map((e) => JSON.stringify([
+    e.path, e.method || "", e.body || null, e.auth || "", !!e.needsOrg
+  ])).join("|");
+}
+
 /**
  * Discover which candidates work for this account, and remember.
  *
@@ -2920,7 +2999,7 @@ async function quotaProbe(platformId, opts = {}) {
   const candidates = QUOTA_ENDPOINTS[platformId] || [];
   const at = Date.now();
   // What this report is an answer ABOUT — see quotaLearned().
-  const sig = candidates.map((e) => e.path).join("|");
+  const sig = quotaSig(candidates);
   if (!adapter || !candidates.length) {
     return { id: platformId, at, sig, endpoints: [], working: [],
       note: adapter ? "no candidate endpoints — observation only" : "unknown platform" };
@@ -2978,7 +3057,7 @@ async function quotaLearned(platformId) {
      on the next poll, not a day later when the cache happens to expire. The
      signature is the candidate list itself; if it differs from what was learned
      against, what was learned is about a different question. */
-  const sig = (QUOTA_ENDPOINTS[platformId] || []).map((e) => e.path).join("|");
+  const sig = quotaSig(QUOTA_ENDPOINTS[platformId] || []);
   const fresh = report && report.sig === sig && Date.now() - (report.at || 0) < QUOTA_PROBE_TTL;
   if (fresh) return report.working || [];
 
@@ -3065,7 +3144,17 @@ async function quotaAcctFor(adapter, ctx) {
 const QUOTA_WARN_KEY = "lct-quota-warned-v1";
 const QUOTA_WARN_STEPS = [20, 10];
 
+let quotaWarnWrite = Promise.resolve();
+
 async function quotaMaybeWarn(platformId, acct, record) {
+  const work = () => quotaMaybeWarnNow(platformId, acct, record);
+  quotaWarnWrite = quotaWarnWrite.then(work, work);
+  return quotaWarnWrite;
+}
+
+// Read-modify-write over one storage key: two platforms polling at once lost
+// one another's ledger entry and both warned again on the next read.
+async function quotaMaybeWarnNow(platformId, acct, record) {
   let settings = null;
   try { settings = (await chrome.storage.local.get("settings")).settings; } catch { return; }
   if (settings && settings.quota === false) return;
@@ -3100,6 +3189,22 @@ async function quotaMaybeWarn(platformId, acct, record) {
   const already = seen[id];
   // Same window, and we have already said something at this level or lower.
   if (already && already.windowId === windowId && already.step <= step) return;
+
+  /* A different window winning primary() is not a new thing to say. primary()
+     ranks by informativeness and then by the LOWEST pctLeft, and merge() pools
+     windows from several endpoints — so on Perplexity the winner flips between
+     meters with different reset times, each flip minting a new windowId and
+     another notification, three of them inside a minute. The same happens
+     across the acct tag: quotaObserved stores under "" before the handshake
+     completes while quotaPoll stores under the real account, so one person got
+     two ledger entries and two notifications for one allowance.
+     Both are answered by the same rule: having just said something about this
+     platform at this level or lower, say nothing more for a while. */
+  const QUIET_MS = 30 * 60 * 1000;
+  const spokeRecently = Object.entries(seen).some(([k, v]) =>
+    v && v.at && k.split("|")[0] === platformId &&
+    v.at + QUIET_MS > Date.now() && v.step <= step);
+  if (spokeRecently) return;
 
   seen[id] = { windowId, step, at: Date.now() };
   /* Prune by WHEN WE WARNED, not by the window id — the id is a five-minute
@@ -3777,7 +3882,15 @@ async function bgSyncAccount(adapter, run, opts, ctx, tabs, seat = { seat: 0, se
             // without knowing who it belongs to.
             acct, msgs
           };
-          if (msgs.length < 2) { record.msgs = []; record.meta = true; }
+          if (msgs.length < 2) {
+            record.msgs = []; record.meta = true;
+            /* Finished, not pending. importBatch records hasBody=false for a
+               meta write, so without this the id stays in the stub list and
+               every pass for the life of the install re-fetches a conversation
+               that will never have a body — and "everything is already backed
+               up" is unreachable. fillStart:4089 already gets this right. */
+            await noteStub(record.id, adapter.host, true);
+          }
           importQueue.push(record);
           if (importQueue.length >= BG_SYNC_BATCH) await flushQueue();
         } catch (error) {
@@ -3938,6 +4051,7 @@ async function bgSyncAll(opts = {}) {
    later — it carries on from where the archive actually is, not from a cursor
    it had to remember. */
 const BG_FILL = "lct-fill-v1";
+const BG_FILL_ALARM = "lct-fill-resume";
 let fillCancel = false;
 let fillRunning = false;
 
@@ -3963,8 +4077,19 @@ async function ensureStubIndex() {
     flag = got && got[BG_STUB_SCAN];
   } catch { /* scan */ }
 
-  if (flag && flag.done) return;
+  /* The flag was always meant to carry the archive's size so a restore or an
+     import forces a rescan — the comment above said so, the code only stored
+     the number and never read it. A restore that brings back thousands of
+     title-only chats left this returning early with an empty backfill queue,
+     which is the exact "61% of the archive is titles" failure the scan exists
+     to fix. Counting records is one IDB count(), not a read of the text. */
   let count = 0;
+  let live = -1;
+  try {
+    const d0 = await db();
+    live = await reqP(tx(d0, "readonly").count());
+  } catch { /* unreadable: fall through and scan */ }
+  if (flag && flag.done && live >= 0 && Number(flag.count) === live) return;
 
   const map = {};
   try {
@@ -4025,17 +4150,25 @@ async function writeFill(patch) {
 
 async function fillStop() {
   fillCancel = true;
+  // Stop means stop: without this the resume alarm restarts the run a minute
+  // after the user asked it not to.
+  try { await chrome.alarms.clear(BG_FILL_ALARM); } catch { /* no alarms */ }
   await writeFill({ state: "stopped" });
   return { ok: true };
 }
 
 async function fillStart() {
+  /* Claimed BEFORE the first await. ensureStubIndex() can walk a 25MB archive,
+     and two clicks inside that window both saw fillRunning false and both
+     started a loop over the same stub list — double-fetching every chat at
+     twice the rate the provider is owed. */
   if (fillRunning) return { status: "already-running" };
-  await ensureStubIndex();
   fillRunning = true;
   fillCancel = false;
+  await ensureStubIndex();
   const started = Date.now();
   let done = 0, failed = 0;
+  let budgetHit = false;
   const stubs = await readStubs();
   const planned = Object.values(stubs).reduce((n, l) => n + (Array.isArray(l) ? l.length : 0), 0);
   await writeFill({ state: "running", startedAt: started, done: 0, failed: 0, planned });
@@ -4047,12 +4180,28 @@ async function fillStart() {
       if (!ids.length) continue;
       // A chat's text can only be fetched by the account that owns it; a
       // signed-out platform is skipped rather than failed.
-      let ctx;
-      try { ctx = await idxPrepare(adapter); }
+      try { await idxPrepare(adapter); }
       catch { await writeFill({ state: "running", note: `${adapter.label}: not signed in` }); continue; }
 
       for (const recordId of ids) {
         if (fillCancel) break;
+        /* MV3 workers get reclaimed. A full queue is about an hour of work and
+           nothing re-entered this function, so a reclaim ended the run silently
+           after welcome.js had told the user "you can close this page; it keeps
+           going". The pass now stops on the same budget the sync engine uses
+           and books itself back in; the stub list IS the resume point, so
+           picking up is just running again. */
+        if (Date.now() - started > BG_PASS_BUDGET_MS) { budgetHit = true; break; }
+        /* Re-asked every chat, not once per platform. idxPrepare() caches for
+           IDX_CTX_TTL (5 minutes) and returns the cached value inside it, so
+           this costs nothing — but a full queue is 2,303 chats at ~1.5s, about
+           an hour, and the ChatGPT ctx is a bearer token from /api/auth/session.
+           Held once for the whole run it went stale partway, every detail()
+           threw auth, and the run stopped around 480 with "signed out" written
+           to a user who was signed in the whole time. */
+        let ctx;
+        try { ctx = await idxPrepare(adapter); }
+        catch { await writeFill({ state: "running", note: `${adapter.label}: signed out` }); break; }
         const convId = recordId.startsWith(adapter.host + adapter.prefix)
           ? recordId.slice((adapter.host + adapter.prefix).length) : "";
         if (!convId) { await noteStub(recordId, adapter.host, true); continue; }
@@ -4071,7 +4220,17 @@ async function fillStart() {
         } catch (error) {
           failed++;
           const kind = (error && error.kind) || "net";
-          if (kind === "auth") { await writeFill({ note: `${adapter.label}: signed out` }); break; }
+          if (kind === "auth") {
+            /* Believe it only on the second try. A token that expired mid-run
+               is indistinguishable here from a user who signed out, and the
+               first is far commoner on a run this long. Drop the cached ctx,
+               prepare a fresh one, and stop only if that fails too. */
+            let recovered = false;
+            try { idxForget(adapter); await idxPrepare(adapter); recovered = true; } catch { /* really gone */ }
+            if (recovered) { failed--; continue; }
+            await writeFill({ note: `${adapter.label}: signed out` });
+            break;
+          }
           if (kind === "gone") await noteStub(recordId, adapter.host, true);
           if (kind === "rate") await sleep(5000);
         }
@@ -4080,6 +4239,12 @@ async function fillStart() {
         }
         await sleep(FILL_PAUSE_MS);
       }
+    }
+    if (budgetHit && !fillCancel) {
+      await writeFill({ state: "running", done, failed, note: "" });
+      try { await chrome.alarms.create(BG_FILL_ALARM, { delayInMinutes: 1 }); }
+      catch { /* no alarms: the popup button still restarts it */ }
+      return { status: "paused", done, failed, left: (await fillState()).total };
     }
     const left = (await fillState()).total;
     await writeFill({ state: fillCancel ? "stopped" : (left ? "partial" : "done"),
@@ -4280,7 +4445,7 @@ const BG_AUTOBACKUP_MAX_HOURS = 24 * 30;
 // base64 inflates by a third and the whole envelope is held in memory as a data
 // URL; past this the worker would be gambling with an OOM every night.
 const BG_AUTOBACKUP_MAX_BYTES = 96 * 1024 * 1024;
-const BG_AUTOBACKUP_FOLDER = "Long Chat Toolkit";
+const BG_AUTOBACKUP_FOLDER = "Tvara";
 
 async function readAutoBackup() {
   try {
@@ -4292,7 +4457,7 @@ async function readAutoBackup() {
       keyring: raw.keyring,
       everyHours: Math.min(BG_AUTOBACKUP_MAX_HOURS, Math.max(BG_AUTOBACKUP_MIN_HOURS,
         Math.floor(Number(raw.everyHours) || 24))),
-      filename: String(raw.filename || "long-chat-toolkit-auto.lctbackup").slice(0, 120)
+      filename: String(raw.filename || "tvara-auto.lctbackup").slice(0, 120)
     };
   } catch { return null; }
 }
@@ -4329,7 +4494,7 @@ async function autoBackupConfigure(config) {
     Math.floor(Number(config.everyHours) || 24)));
   await chrome.storage.local.set({
     [BG_AUTOBACKUP]: { version: 1, enabled: true, keyring: config.keyring, everyHours,
-      filename: "long-chat-toolkit-auto.lctbackup", setUpAt: Date.now() }
+      filename: "tvara-auto.lctbackup", setUpAt: Date.now() }
   });
   await chrome.storage.local.set({ [BG_AUTOBACKUP_STATE]: { lastAt: 0, lastChats: 0, lastError: "" } });
   await ensureAutoBackupAlarm(true);
@@ -4568,7 +4733,8 @@ async function autoSyncTick() {
 try {
   chrome.alarms.onAlarm.addListener((alarm) => {
     if (!alarm) return;
-    if (alarm.name === BG_AUTO_ALARM || alarm.name === BG_RESUME_ALARM) autoSyncTick();
+    if (alarm.name === BG_FILL_ALARM) { if (!fillRunning) fillStart(); }
+    else if (alarm.name === BG_AUTO_ALARM || alarm.name === BG_RESUME_ALARM) autoSyncTick();
     else if (alarm.name === BG_AUTOBACKUP_ALARM) maybeAutoBackup("alarm");
   });
   const wake = () => {
@@ -4635,6 +4801,15 @@ const PAID = Object.freeze({
   "recall-autobackup-disable": "archive.backup",
   "recall-autobackup-run": "archive.backup",
   "recall-snapshot": "archive.backup",
+  /* The same archive, reached from the page instead of the Recall tab. Export
+     merges `chat-archive` in as its spine and in-chat search calls `chat-search`
+     to reach messages the page never mounted — both are the sync-built archive,
+     which is the paid part. Without these two lines the gate three lines above
+     is only a gate on the door, not on the wall. Free users keep everything the
+     page itself holds: export falls back to the mounted DOM and search to the
+     mounted messages. Delete these two lines to give the archive away. */
+  "chat-archive": "archive.backup",
+  "chat-search": "archive.search",
   "recall-restore-ledger": "archive.restore",
   "recall-restore-guard": "archive.restore",
   "recall-restore-guard-fail": "archive.restore",

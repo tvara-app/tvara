@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Long Chat Toolkit — attach to a Chrome you are already using.
+ * Tvara — attach to a Chrome you are already using.
  *
  *   node tools/attach.mjs            # health check across your open chat tabs
  *   node tools/attach.mjs --watch    # …and keep checking every 30s
@@ -16,13 +16,18 @@
  *
  *   /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome \\
  *     --remote-debugging-port=9222 \\
- *     --user-data-dir="$HOME/.lct-chrome"
+ *     --user-data-dir="$HOME/.lct-chrome-test"
  *
  * The --user-data-dir is not optional. Since Chrome 136 the debugging port is
  * refused on the DEFAULT profile directory, deliberately, so that a random page
  * cannot talk to a browser holding your real logins. A dedicated directory is
- * the supported way — and it means this profile holds only what you sign into
- * for testing, which is the right blast radius anyway.
+ * the supported way.
+ *
+ * Whether that directory is a small blast radius depends on which one you
+ * point it at. ~/.lct-chrome-test (what tools/chrome-debug.sh opens) holds only
+ * what you sign into there. ~/.lct-chrome is the CLONE made by
+ * tools/chrome-clone.sh and carries every live session it copied — attaching to
+ * that one puts your real accounts on the port.
  *
  * WHAT THIS CAN DO WHILE IT IS CONNECTED: everything a person at that keyboard
  * could. The port is bound to localhost, nothing outside the machine can reach
@@ -50,10 +55,10 @@ Quit Chrome, then start it like this:
 
   /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome \\
     --remote-debugging-port=${PORT} \\
-    --user-data-dir="$HOME/.lct-chrome"
+    --user-data-dir="$HOME/.lct-chrome-test"
 
 Load the extension in that window (chrome://extensions → Developer mode →
-Load unpacked → ~/long-chat-toolkit), sign in to your test accounts, open a
+Load unpacked → ~/tvara), sign in to your test accounts, open a
 long chat, and run this again.
 `);
   process.exit(1);
@@ -76,7 +81,7 @@ async function report() {
   const sw = await worker();
   if (!sw) {
     console.error("✋ Connected, but the extension's service worker is not running in this Chrome.");
-    console.error("   Load ~/long-chat-toolkit at chrome://extensions, then open a chat tab.");
+    console.error("   Load ~/tvara at chrome://extensions, then open a chat tab.");
     return null;
   }
 

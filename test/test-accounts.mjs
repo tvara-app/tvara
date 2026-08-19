@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* Long Chat Toolkit — multi-account browser suite.
+/* Tvara — multi-account browser suite.
  *
  * People keep several accounts on the same provider precisely because one free
  * tier runs out, so "two ChatGPTs in one browser" is the ordinary case. This

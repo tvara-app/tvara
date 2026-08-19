@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Long Chat Toolkit — launch readiness check.
+ * Tvara — launch readiness check.
  *
  *   node tools/preflight.mjs [--offline]
  *
@@ -35,7 +35,7 @@ const docs = read("docs/index.html");
 
 const zips = existsSync(join(root, "dist"))
   ? readdirSync(join(root, "dist")).filter((f) => f.endsWith(".zip")) : [];
-const shipZip = `long-chat-toolkit-v${mf.version}.zip`;
+const shipZip = `tvara-v${mf.version}.zip`;
 if (!zips.length) block("no zip built", "node tools/pack.mjs");
 else if (!zips.includes(shipZip)) block(`dist/ holds ${zips.join(", ")}, but the manifest says v${mf.version}`, "node tools/pack.mjs");
 else {
@@ -52,13 +52,21 @@ else {
   const age = (Date.now() - statSync(join(root, "dist", shipZip)).mtimeMs) / 36e5;
   ok(`zip matches manifest (v${mf.version})`, `built ${age < 1 ? "just now" : age.toFixed(0) + "h ago"}`);
   // Older than the newest source file = a zip that predates a change.
-  const newest = ["bg.js", "manifest.json", "content", "popup", "lib"]
-    .flatMap((p) => {
-      const full = join(root, p);
-      return statSync(full).isDirectory()
-        ? readdirSync(full).map((f) => statSync(join(full, f)).mtimeMs)
-        : [statSync(full).mtimeMs];
-    }).reduce((a, b) => Math.max(a, b), 0);
+  /* Everything pack.mjs ships, walked to the leaves. This used to watch five
+     entries and stat only a directory's immediate children, so editing
+     recall-page.js (40KB, shipped) or content/inject/quota-probe.js (a
+     subdirectory, whose mtime does not move when a file inside it changes)
+     left this printing "zip matches manifest" over a zip that predated the fix. */
+  const WATCH = ["bg.js", "manifest.json", "content", "popup", "lib", "icons",
+                 "diag", "recall.html", "recall.css", "recall-page.js",
+                 "welcome.html", "welcome.css", "welcome.js"];
+  const newestOf = (full) => {
+    let st;
+    try { st = statSync(full); } catch { return 0; }
+    if (!st.isDirectory()) return st.mtimeMs;
+    return readdirSync(full).reduce((a, f) => Math.max(a, newestOf(join(full, f))), st.mtimeMs);
+  };
+  const newest = WATCH.reduce((a, p) => Math.max(a, newestOf(join(root, p))), 0);
   if (newest > statSync(join(root, "dist", shipZip)).mtimeMs) {
     block("the zip is older than the source it was built from", "node tools/pack.mjs");
   }
@@ -66,8 +74,17 @@ else {
 
 /* ---------- 2. the listing tells the truth ---------- */
 
-const declared = [...(mf.permissions || []), ...(mf.host_permissions?.length ? [] : [])];
-const unjustified = declared.filter((p) => !new RegExp(`\`${p}\``).test(listing));
+/* Host permissions are the most common store rejection and the review form asks
+   for each one individually, so they are checked exactly like API permissions —
+   by the hostname a listing would actually name, not the raw match pattern.
+   localhost/127.0.0.1 are dev-only and stripped by pack.mjs, so they are not
+   part of what ships and are not required to appear here. */
+const DEV_HOSTS = /^https?:\/\/(localhost|127\.0\.0\.1)\b/;
+const shippedHosts = (mf.host_permissions || [])
+  .filter((h) => !DEV_HOSTS.test(h))
+  .map((h) => h.replace(/^\*?:?\/*/, "").replace(/^https?:\/\//, "").replace(/\/.*$/, ""));
+const declared = [...(mf.permissions || []), ...shippedHosts];
+const unjustified = declared.filter((p) => !new RegExp(`\`${p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\``).test(listing));
 if (!listing) block("store/listing.md missing");
 else {
   if (unjustified.length) {
@@ -198,7 +215,13 @@ else {
     const res = await fetch(issuer + "/entitlement", {
       method: "POST",
       headers: { "Content-Type": "application/json", Origin: "chrome-extension://" + "a".repeat(32) },
-      body: JSON.stringify({ license_key: "PREFLIGHT", device: "a".repeat(32), ts: Date.now() }),
+      /* A fresh key per run. A constant one put every preflight into a single
+         20/hour bucket, so the sixth run of an afternoon got 429 and the check
+         quietly stopped meaning anything. */
+      body: JSON.stringify({
+        license_key: "PREFLIGHT-" + Math.random().toString(36).slice(2, 10).toUpperCase(),
+        device: "a".repeat(32), ts: Date.now()
+      }),
       signal: AbortSignal.timeout(12000)
     });
     code = res.status;
@@ -210,7 +233,16 @@ else {
     ok("issuer is live and refusing unknown origins", `${issuer} → 403`);
   } else if (code === 404) {
     warn("issuer is live but accepted a stranger's origin", "set ALLOWED_ORIGINS to the published extension id");
-  } else ok(`issuer answered ${code}`, issuer);
+  } else if (code === 429) {
+    warn("issuer answered 429 — rate-limited, so the origin check never ran",
+      "wait, or rerun: a green tick here would mean nothing");
+  } else {
+    /* Anything other than 403 means the origin check did not happen. A worker
+       with a broken SIGNING_KEY or a missing KV binding 500s on every request,
+       and "✓ issuer answered 500" used to exit 0 and green-light the ship. */
+    block(`issuer answered ${code}, not 403 — the origin check never ran`,
+      `${issuer} · a healthy issuer refuses an unknown extension origin with 403`);
+  }
 }
 
 /* ---------- 7. store assets ---------- */
@@ -241,7 +273,7 @@ const icon = { ok: "✓", warn: "!", block: "✗" };
 const blocks = rows.filter((r) => r.level === "block");
 const warns = rows.filter((r) => r.level === "warn");
 
-console.log(`\nLong Chat Toolkit v${mf.version} — launch readiness\n`);
+console.log(`\nTvara v${mf.version} — launch readiness\n`);
 for (const r of rows) {
   console.log(`  ${icon[r.level]} ${r.what}${r.detail ? `\n      ${r.detail}` : ""}`);
 }

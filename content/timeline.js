@@ -1,5 +1,5 @@
 /**
- * Long Chat Toolkit — message timeline (the time feature).
+ * Tvara — message timeline (the time feature).
  *
  * No AI chat platform renders message times in its DOM, so we source them
  * two honest ways and always label which one you're seeing:

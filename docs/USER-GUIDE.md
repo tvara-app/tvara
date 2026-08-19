@@ -1,8 +1,8 @@
-# Long Chat Toolkit — Complete User Guide
+# Tvara — Complete User Guide
 
 **Version 0.6.0 · Chrome / Edge (Manifest V3)**
 
-Long Chat Toolkit fixes the thing every heavy AI user hits eventually: after a
+Tvara fixes the thing every heavy AI user hits eventually: after a
 few hundred messages, ChatGPT, Claude and the rest grind to a halt — typing
 lags, scrolling stutters, the fan spins up. This extension makes a
 2,000-message chat feel like a 20-message chat, and then gives you the
@@ -12,7 +12,7 @@ contents, starred messages, timestamps, one-click backup — and Total Recall, o
 Your archive, search index and backups stay **on your device**. When you ask
 Total Recall to check history, the background worker makes authenticated
 requests only to the AI providers listed in the extension's host permissions.
-There is no Long Chat Toolkit server, analytics pipeline or chat-data upload.
+There is no Tvara server, analytics pipeline or chat-data upload.
 
 ---
 
@@ -23,7 +23,7 @@ forever. The browser pays layout/paint cost for all of it on every keystroke
 and every scroll — that's why long chats feel broken.
 
 Other "speed up ChatGPT" extensions fix this by **deleting or truncating** old
-messages — your history is gone until you reload. Long Chat Toolkit uses a
+messages — your history is gone until you reload. Tvara uses a
 different mechanism: messages outside your view are **put to sleep** (native
 CSS `content-visibility` windowing) and **wake instantly** when you scroll
 back to them. Nothing is ever removed, hidden or mutated. Scrollback, Ctrl+F…
@@ -76,7 +76,7 @@ Ctrl+Shift+U**. Recall searches your entire cross-platform archive, shows the
 most relevant passages, you tick the ones you want, and it inserts them into
 your prompt — so the model you're already using answers *with* your
 accumulated knowledge from every other tool.
-**How it stays private and free:** it doesn't call a Long Chat Toolkit API,
+**How it stays private and free:** it doesn't call a Tvara API,
 use a key, or run a local model — it simply feeds the context to the model
 you're already signed into and paying for.
 **Fail-safe:** you always pick before anything is inserted (no surprise
@@ -129,7 +129,7 @@ envelope fails to open rather than opening weaker. Your passphrase is never
 stored, never synced, and cannot be recovered — by us or by anyone.
 
 Leave **Also keep writing this backup automatically** ticked and the worker
-keeps a current copy in `Downloads/Long Chat Toolkit/` by itself. This is the
+keeps a current copy in `Downloads/Tvara/` by itself. This is the
 part that matters: the manual button only ever helped people who remembered to
 press it before uninstalling.
 
@@ -312,7 +312,7 @@ your own scripts).
   click. Every tool unlocks on every platform, including Claude and Gemini.
   The popup counts down the days; when it ends, free platforms stay free and
   the speed engine stays on everywhere.
-- **Pro — $9, once, forever:** no subscription, no account. Buying gets you a
+- **Pro — $3, once, forever:** no subscription, no account. Buying gets you a
   license key by email, tied to that address.
 - **Activating:** popup → paste the key → **Activate**. The extension asks the
   payment provider's licence server to register this device, then stores the
@@ -340,7 +340,7 @@ your own scripts).
 
 ## 7. Privacy — provable, not promised
 
-- **No Long Chat Toolkit server or telemetry.** The manifest grants scoped host
+- **No Tvara server or telemetry.** The manifest grants scoped host
   access only to supported AI providers so an explicit history check can read
   your own account. It does not grant a generic upload destination, and the
   extension contains no analytics or remote-code path.
@@ -414,7 +414,7 @@ when you jump.
 
 **Does the trial reset if I reinstall?**
 Trial state lives in local extension storage. We keep it honest but simple —
-it's a convenience, not a fortress. The product costs $9 once; if you find
+it's a convenience, not a fortress. The product costs $3 once; if you find
 yourself gaming the trial twice, it's probably worth the coffee money.
 
 **Something glitched on a site update.**
@@ -443,6 +443,6 @@ popup → *Keyboard shortcuts* (or visit `chrome://extensions/shortcuts`).
 
 ---
 
-*Long Chat Toolkit is an independent open-source project. It is not
+*Tvara is an independent open-source project. It is not
 affiliated with OpenAI, Anthropic, Google, Perplexity, DeepSeek or xAI.
 Product names belong to their owners.*

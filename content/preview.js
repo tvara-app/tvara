@@ -1,5 +1,5 @@
 /**
- * Long Chat Toolkit — message preview.
+ * Tvara — message preview.
  *
  * Clicking a message the host has not rendered used to mean waiting while the
  * site paged its way back to it, watching the page move and hoping it landed.

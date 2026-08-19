@@ -1,5 +1,5 @@
 /**
- * Long Chat Toolkit — one-click backup/export.
+ * Tvara — one-click backup/export.
  * Extracts the conversation to Markdown or JSON and downloads it locally.
  * Honest contract: exports every message element currently loaded in the
  * page — platforms that virtualize very long chats (ChatGPT) unload old
@@ -89,13 +89,15 @@
     return d.toLocaleString(undefined, opts);
   }
 
-  function toMarkdown(messages) {
+  function toMarkdown(messages, whole) {
     const title = document.title || "AI Conversation";
     const lines = [
       `# ${title}`,
       ``,
-      `> Exported by Long Chat Toolkit — ${new Date().toISOString()} — ${location.href}`,
-      `> Contains the ${messages.length} messages loaded in the page at export time.`,
+      `> Exported by Tvara — ${new Date().toISOString()} — ${location.href}`,
+      `> Contains ${messages.length} messages — ${whole
+        ? "the conversation as this extension has archived it, including messages the page had not loaded"
+        : "the messages loaded in the page at export time"}.`,
       ``
     ];
     for (const m of messages) {
@@ -111,15 +113,17 @@
     return lines.join("\n");
   }
 
-  function toJSON(messages) {
+  function toJSON(messages, whole) {
     return JSON.stringify(
       {
-        exportedBy: "Long Chat Toolkit",
+        exportedBy: "Tvara",
         exportedAt: new Date().toISOString(),
         url: location.href,
         title: document.title,
         messageCount: messages.length,
-        note: "Contains the messages loaded in the page at export time.",
+        note: whole
+          ? "Contains the conversation as this extension has archived it, including messages the page had not loaded. Messages marked `truncated` exceeded the archive's per-message limit."
+          : "Contains the messages loaded in the page at export time.",
         messages
       },
       null,
@@ -179,22 +183,42 @@
       messages = arch.msgs.map((m) => {
         const hit = byText.get((m.t || "").slice(0, 120));
         if (hit) return hit;
-        const rec = { role: m.r === "user" ? "user" : "assistant", text: m.t || "" };
+        /* The archive clamps message text to bound disk for the search index.
+           A message that hit that bound is written here WITH a marker: a file
+           that silently ends a nine-thousand-character answer at four thousand
+           is worse than one that admits it, and the reader can still open the
+           original conversation for the rest. */
+        const rec = {
+          role: m.r === "user" ? "user" : "assistant",
+          text: (m.t || "") + (m.c ? "\n\n[… truncated — this message was stored for search and " +
+                                     "exceeds the archive's per-message limit. Open the original " +
+                                     "conversation for the full text.]" : "")
+        };
+        if (m.c) rec.truncated = true;
         if (m.ts) {
           rec.time = new Date(m.ts * (m.ts > 1e12 ? 1 : 1000)).toISOString();
           rec.timeSource = "platform";
         }
         return rec;
       });
+      /* The archive is the spine, not the whole skeleton. Background sync runs
+         every few hours, so any turn newer than the last sync exists ONLY in
+         the page — including the reply the user is reading right now. Mapping
+         over `arch.msgs` alone produced exactly `arch.msgs.length` records and
+         dropped those, while the toast claimed the whole conversation. They are
+         appended in page order, after the archived spine they follow. */
+      const seen = new Set(arch.msgs.map((m) => (m.t || "").slice(0, 120)));
+      const tail = live.filter((m) => !seen.has((m.text || "").slice(0, 120)));
+      if (tail.length) messages = messages.concat(tail);
       whole = true;
     }
 
     if (!messages.length) return { ok: false, reason: "no-messages" };
     const stamp = new Date().toISOString().slice(0, 10);
     if (format === "json") {
-      download(toJSON(messages), `${slugTitle()}-${stamp}.json`, "application/json");
+      download(toJSON(messages, whole), `${slugTitle()}-${stamp}.json`, "application/json");
     } else {
-      download(toMarkdown(messages), `${slugTitle()}-${stamp}.md`, "text/markdown");
+      download(toMarkdown(messages, whole), `${slugTitle()}-${stamp}.md`, "text/markdown");
     }
     return { ok: true, count: messages.length, whole, loaded: live.length };
   }

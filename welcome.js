@@ -1,5 +1,5 @@
 /**
- * Long Chat Toolkit — first-run page.
+ * Tvara — first-run page.
  *
  * Shows the shortcuts the BROWSER actually bound, not the ones the manifest
  * asked for: Chrome silently drops a suggested key that another extension
@@ -71,9 +71,20 @@
   /* ---------- wiring ---------- */
 
   $("trial-start").addEventListener("click", async () => {
-    $("trial-start").disabled = true;
+    /* send() resolves null on any failure and paintTrial() returns early on a
+       null state, so a worker that was still starting up — likely, since this
+       tab is opened by the worker's own install handler — left the button
+       disabled and unlabelled for the life of the page. Re-enable unless the
+       trial actually started. */
+    const btn = $("trial-start");
+    btn.disabled = true;
     await send({ type: "trial-start" });
-    paintTrial(await send({ type: "trial-state" }));
+    const state = await send({ type: "trial-state" });
+    if (state) paintTrial(state);
+    else {
+      btn.disabled = false;
+      btn.textContent = "Couldn't start — try again";
+    }
   });
 
   $("buy-pro").addEventListener("click", () => { location.href = P.BUY; });
@@ -132,18 +143,35 @@
       return;
     }
     btn.textContent = `Fetch ${total.toLocaleString()} chats`;
+    if (state && state.note) {
+      status.hidden = false;
+      status.textContent = `${state.note} — sign in on that site, then try again.`;
+      return;
+    }
     status.hidden = true;
   }
+
+  /* The worker can spend a long time in ensureStubIndex() before it reports
+     `running`, and a single probe at +500ms landed inside that window: the
+     poll chain never armed and this page sat on "Fetch 2,300 chats" while the
+     download ran. */
+  let fetchExpected = 0;
 
   async function refreshFetch() {
     const state = await send({ type: "archive-fill-state" });
     paintFetch(state);
     clearTimeout(fetchPoll);
-    if (state && state.running) fetchPoll = setTimeout(refreshFetch, 1500);
+    const waiting = fetchExpected && Date.now() < fetchExpected;
+    if (state && state.running) fetchExpected = 0;
+    if ((state && state.running) || waiting) fetchPoll = setTimeout(refreshFetch, 1500);
   }
 
   $("fetch-history").addEventListener("click", async () => {
+    const btn = $("fetch-history");
+    if (btn.disabled) return;
+    btn.disabled = true;
     await send({ type: "archive-fill-start" });
+    fetchExpected = Date.now() + 30000;
     setTimeout(refreshFetch, 500);
   });
   $("import-export").addEventListener("click", () => {

@@ -1,5 +1,5 @@
 /**
- * Long Chat Toolkit — orchestrator.
+ * Tvara — orchestrator.
  * Wires adapter → engine → minimap → search → timeline → exporter, reads
  * settings/license from chrome.storage, and reacts live to popup changes.
  */
@@ -255,7 +255,7 @@
     ahaShown.add(location.pathname);
     let msg =
       `This chat has ${total} messages — your browser is now rendering only ` +
-      `${total - windowedCount} of them. Long Chat Toolkit keeps it fast.`;
+      `${total - windowedCount} of them. Tvara keeps it fast.`;
     if (!toolsUnlocked() && !upsoldThisSession) {
       upsoldThisSession = true; // don't nag: one upsell line per session
       msg += ` Unlock minimap, search, timestamps & backup — ${self.LCTProduct.PRICE} once, in the extension popup.`;
@@ -887,7 +887,7 @@
 
     const title = document.createElement("div");
     title.className = "lct-hint-title";
-    title.textContent = "Long Chat Toolkit is on";
+    title.textContent = "Tvara is on";
     card.appendChild(title);
 
     for (const [key, what] of rows) {

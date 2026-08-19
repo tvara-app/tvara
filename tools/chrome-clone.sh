@@ -144,8 +144,8 @@ for _ in $(seq 1 40); do
        cookies cannot be decrypted and every site will look signed out.
        (Signed out anyway? Quit this window, run it again, and watch for the
        prompt — it sometimes opens behind the browser.)
-    2. chrome://extensions → check Long Chat Toolkit is on
-       (Developer mode → Load unpacked → ~/long-chat-toolkit if it is not)
+    2. chrome://extensions → check Tvara is on
+       (Developer mode → Load unpacked → ~/tvara if it is not)
     3. open a long chat
     4. say "ready" — the checks can run from here without you clicking anything
 

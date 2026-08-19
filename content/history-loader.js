@@ -1,5 +1,5 @@
 /**
- * Long Chat Toolkit — virtual-history backfill.
+ * Tvara — virtual-history backfill.
  *
  * ChatGPT mounts only the recent tail of a long conversation. This walks its
  * native scroller to the oldest available turn so every turn the host exposes
