@@ -97,6 +97,12 @@
         parts.starred.map((s) => `- ${clip(s, 300)}`).join("\n"));
     }
 
+    if (parts.decisions && parts.decisions.length) {
+      out.push("\n## What was decided along the way\n" + parts.decisions
+        .map((d) => `**${d.role === "user" ? "Me" : "You"}:** ${clip(d.text, 420)}`)
+        .join("\n\n"));
+    }
+
     if (parts.code) out.push("\n## Where the code stands\n```\n" + clip(parts.code, CODE_CHARS) + "\n```");
 
     if (parts.recent && parts.recent.length) {
@@ -162,11 +168,27 @@
     const from = deep || recs;
     const firstUser = from.find((r) => r.role === "user" && !IMAGE_ONLY.test(r.text) && r.text.length > 12)
       || from.find((r) => r.role === "user");
+    const starred = (self.LCTOutline && self.LCTOutline.starred ? self.LCTOutline.starred() : []).slice(0, 8);
+
+    /* The turns that MATTER, chosen from the whole conversation rather than
+       taken off the end. On a long thread the last few turns are "that worked,
+       thanks" and everything that was actually decided is in the middle.
+       Nothing is rewritten: this picks, it does not paraphrase. */
+    let picked = { decisions: [], code: [] };
+    try {
+      if (self.LCTDistil) picked = self.LCTDistil.distil(from, { starred, max: 2400 });
+    } catch { /* a handover that says less is better than one that throws */ }
+
     return {
       goal: firstUser ? firstUser.text : "",
-      starred: (self.LCTOutline && self.LCTOutline.starred ? self.LCTOutline.starred() : []).slice(0, 8),
+      starred,
+      decisions: picked.decisions || [],
+      covered: picked.covered || 0,
       recent: recs.slice(-RECENT_TURNS),
-      code: lastCodeBlock(messages),
+      // The newest version of a block, not whichever was pasted last.
+      code: (picked.code && picked.code.length
+        ? picked.code[picked.code.length - 1].body
+        : lastCodeBlock(messages)),
       total: (deep || recs).length
     };
   }
@@ -229,6 +251,9 @@
     opts.append(
       row("goal", "What you originally asked", "the first thing you said", true, !data.goal),
       row("starred", `Your starred messages (${data.starred.length})`, "the parts you marked", true, !data.starred.length),
+      row("decisions", `What was decided (${data.decisions.length})`,
+        data.covered ? `picked from across ${data.covered}% of the chat` : "the turns that changed direction",
+        true, !data.decisions.length),
       row("code", "The most recent code block", "where the code stands", true, !data.code),
       row("recent", `The last ${Math.min(RECENT_TURNS, data.recent.length)} messages`, "how it ended", true, !data.recent.length)
     );
@@ -254,6 +279,7 @@
 
     const chosen = () => ({
       goal: panel.querySelector("#lct-c-goal").checked ? data.goal : "",
+      decisions: panel.querySelector("#lct-c-decisions").checked ? data.decisions : [],
       starred: panel.querySelector("#lct-c-starred").checked ? data.starred : [],
       code: panel.querySelector("#lct-c-code").checked ? data.code : "",
       recent: panel.querySelector("#lct-c-recent").checked ? data.recent : []
