@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import vm from "node:vm";
 
-const ROOT = join(homedir(), "tvara");
+const ROOT = join(import.meta.dirname, "..");
 
 /* Signatures are tested against a throwaway keypair minted here, never the
    shipped one. The production public key is pinned in lib/license.js and its
