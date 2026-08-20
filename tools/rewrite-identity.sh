@@ -34,11 +34,11 @@ if [[ -n "$(git status --porcelain)" ]]; then
 fi
 
 echo
-echo "Identities in the history right now:"
-git log --format='%an <%ae>' --all | sort | uniq -c | sort -rn | sed 's/^/   /'
+echo "Identities on this branch right now:"
+git log --format='%an <%ae>' HEAD | sort | uniq -c | sort -rn | sed 's/^/   /'
 echo
-MINE="$(git log --all --format='%ae' | grep -c "^${OLD_EMAIL}$" || true)"
-OTHERS="$(git log --all --format='%ae' | grep -vc "^${OLD_EMAIL}$" || true)"
+MINE="$(git log HEAD --format='%ae' | grep -c "^${OLD_EMAIL}$" || true)"
+OTHERS="$(git log HEAD --format='%ae' | grep -vc "^${OLD_EMAIL}$" || true)"
 echo "   → ${MINE} commit(s) would be re-authored as ${NEW_NAME} <${NEW_EMAIL}>"
 echo "   → ${OTHERS} commit(s) by other people would be left untouched"
 echo
@@ -71,10 +71,13 @@ git config user.name "$NEW_NAME"
 git config user.email "$NEW_EMAIL"
 
 echo
-echo "Identities now:"
-git log --format='%an <%ae>' --all | sort | uniq -c | sort -rn | sed 's/^/   /'
+echo "Identities on this branch now:"
+git log --format='%an <%ae>' HEAD | sort | uniq -c | sort -rn | sed 's/^/   /'
 echo
-if git log --format='%ae' --all | grep -q "^${OLD_EMAIL}$"; then
+# HEAD, not --all: --all includes refs/original/* (this command's own undo
+# refs) and the remote-tracking refs, so it double-counts and reports the old
+# address on a branch that is clean.
+if git log --format='%ae' HEAD | grep -q "^${OLD_EMAIL}$"; then
   echo "✋ The old address is STILL present. Do not push; tell Claude."
   exit 1
 fi
