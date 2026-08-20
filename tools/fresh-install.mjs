@@ -143,7 +143,35 @@ try {
     chrome.runtime.sendMessage({ type: "entitlement-state" }, r)));
   t("trial: it entitles the paid features", !!(entTrial && entTrial.entitled), JSON.stringify(entTrial));
 
-  /* ---------- 6. a garbage key is refused, and says why ---------- */
+  /* ---------- 6. the purchase redirect activates on its own ----------
+     The four steps between paying and having the thing you paid for — find the
+     email, find the icon, open the popup, paste — are where refunds come from.
+     Dodo puts the key in the return URL, so this walks the real redirect and
+     asserts the buyer has to do nothing at all. */
+  if (KEY) {
+    await pop.evaluate(() => chrome.storage.local.remove(["license", "lct-license-state-v1"]));
+    const buyer = await ctx.newPage();
+    await buyer.goto(`https://tvara-app.github.io/thanks.html?license_key=${encodeURIComponent(KEY)}&status=succeeded`,
+      { waitUntil: "domcontentloaded", timeout: 45000 });
+    await buyer.waitForTimeout(6000);
+    const box = await buyer.evaluate(() => {
+      const el = document.getElementById("auto-activate");
+      return el && !el.hidden ? { cls: el.className, text: el.textContent } : null;
+    });
+    t("purchase: the redirect page activates the licence with no paste",
+      !!(box && /Pro is active/i.test(box.text)), JSON.stringify(box));
+    t("purchase: …and the key does not stay in the address bar",
+      !/license_key=/.test(buyer.url()), buyer.url().slice(0, 80));
+    await pop.reload();
+    await pop.waitForSelector("#plan-badge");
+    await pop.waitForTimeout(1500);
+    t("purchase: …and the popup is Pro without being touched",
+      (await pop.textContent("#plan-badge")).trim() === "Pro",
+      (await pop.textContent("#plan-badge")).trim());
+    await buyer.close();
+  }
+
+  /* ---------- 7. a garbage key is refused, and says why ---------- */
   const junk = await pop.evaluate(async () => {
     const r = await self.LCTLicense.verify("LCT1.aaaa.bbbb");
     return { valid: r.valid, reason: r.reason || "" };

@@ -22,6 +22,7 @@
     "https://grok.com/*",
     "https://www.perplexity.ai/*",
     "https://gemini.google.com/*",
+    "https://tvara-app.github.io/*",
     "http://localhost/*",
     "http://127.0.0.1/*"
   ],
@@ -120,6 +121,16 @@
       ],
       "world": "MAIN",
       "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://tvara-app.github.io/thanks.html*"
+      ],
+      "js": [
+        "content/purchase.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
     }
   ],
   "commands": {

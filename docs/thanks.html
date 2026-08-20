@@ -34,6 +34,17 @@
   a { color: var(--accent); }
   footer { text-align: center; padding-top: 28px; color: var(--muted); font-size: 14px; }
 </style>
+<style>
+  /* The extension writes into this. Four states, each one a different thing to
+     do next: working, done, needs-a-decision, and not-installed. */
+  .auto { margin-top: 12px; padding: 10px 12px; border-radius: 10px; font-size: 14px;
+          border: 1px solid rgb(255 255 255 / .12); background: rgb(255 255 255 / .04); }
+  .auto small { display: block; margin-top: 4px; opacity: .7; font-size: 12.5px; }
+  .auto.working { border-color: rgb(255 255 255 / .2); }
+  .auto.ok      { border-color: rgb(120 220 160 / .45); background: rgb(120 220 160 / .08); }
+  .auto.warn    { border-color: rgb(255 190 120 / .45); background: rgb(255 190 120 / .08); }
+  .auto.idle    { opacity: .85; }
+</style>
 </head>
 <body>
 <div class="wrap">
@@ -54,6 +65,9 @@
     <button id="copy" type="button">Copy</button>
   </div>
   <p class="note">It's in your email too. Keep it: it's the only thing that proves the purchase, and reinstalling asks for it again.</p>
+  <!-- Filled in by the extension if it is installed. Hidden until then, because
+       a status box that says nothing is worse than no status box. -->
+  <div class="auto" id="auto-activate" hidden></div>
 </section>
 
 <section class="panel">

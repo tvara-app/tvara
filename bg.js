@@ -4889,6 +4889,49 @@ async function startTrial() {
 }
 
 /** Cached only within a single wake of the worker, never persisted. */
+/**
+ * Register a seat for a Dodo key, store it, and mint the entitlement.
+ *
+ * Same three steps the popup performs, in the same order and all awaited. A
+ * seat without a token looks like success and unlocks nothing, so a partial
+ * result is reported as a failure rather than an "activated".
+ */
+async function activateLicenseKey(key) {
+  const k = String(key || "").trim();
+  if (!k) return { ok: false, reason: "empty" };
+  if (self.LCTLicense.kindOf(k) === "lct1") {
+    const v = await self.LCTLicense.verify(k);
+    if (!v.valid) return { ok: false, reason: v.reason || "bad-key" };
+    await chrome.storage.local.set({
+      license: { key: k, email: v.email || "", plan: "pro", kind: "lct1", activatedAt: Date.now() }
+    });
+    return { ok: true, kind: "lct1", email: v.email || "" };
+  }
+  if (!self.LCTDodo.looksLikeKey(k)) return { ok: false, reason: "bad-key" };
+
+  let res;
+  try { res = await self.LCTDodo.activateWithSeats(k, {}); }
+  catch (error) { return { ok: false, reason: "network", detail: String(error && error.message || error) }; }
+  if (!res || !res.ok) return { ok: false, reason: (res && res.reason) || "refused", seats: res && res.seats };
+
+  const now = Date.now();
+  const record = {
+    key: k, email: res.email || "", plan: "pro", kind: "dodo",
+    instanceId: res.instanceId, licenseKeyId: res.licenseKeyId || "", activatedAt: now
+  };
+  await chrome.storage.local.set({
+    license: record,
+    "lct-license-state-v1": { lastValidatedAt: now, lastAttemptAt: now, strikes: [] }
+  });
+
+  const ent = await self.LCTEntitlement.refresh(record, res.deviceId, { force: true });
+  if (!ent.ok) {
+    return { ok: false, reason: ent.revoked ? "revoked" : "entitlement", seated: true,
+             email: record.email };
+  }
+  return { ok: true, kind: "dodo", email: record.email, evicted: res.evicted || 0 };
+}
+
 async function entitlementVerdict() {
   let license = null;
   try {
@@ -4960,6 +5003,8 @@ function _senderAllowed(sender) {
   if (/^(chrome|moz)-extension:\/\//i.test(url)) return true;
   // Accept: AI sites the content script runs on (matches manifest host_permissions)
   if (/^https:\/\/(chatgpt\.com|chat\.openai\.com|claude\.ai|gemini\.google\.com|www\.perplexity\.ai|chat\.deepseek\.com|grok\.com)/i.test(url)) return true;
+  // Our own post-purchase page, which activates the licence it was handed.
+  if (/^https:\/\/tvara-app\.github\.io\//i.test(url)) return true;
   // Accept: localhost and 127.0.0.1 (dev/test, http or https — matches manifest)
   if (/^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(url)) return true;
   return false;
@@ -4996,6 +5041,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const deviceId = await self.LCTDodo.ensureDeviceId();
         return self.LCTEntitlement.refresh(lic, deviceId, { force: !!(msg && msg.force) });
       }
+      /* Activation, driven from the post-purchase page instead of the popup.
+         The three steps are the popup's, in the popup's order, because doing
+         two of them is the failure that matters: a seat with no entitlement is
+         someone who paid and got nothing. */
+      case "license-activate": return activateLicenseKey(msg && msg.key);
       case "trial-state":  return trialState();
       case "trial-start":  return startTrial();
       // Content scripts cannot read chrome.commands, and the first-run hint
