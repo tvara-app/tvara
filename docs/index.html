@@ -98,6 +98,11 @@
     <div class="price hot">
       <div class="amt" data-price="{price}"></div>
       <div class="per">one-time purchase, no subscription, forever</div>
+      <!-- Regional pricing is set at the payment provider, not here. The figure
+           above stays the USD one on purpose: quoting a local price the checkout
+           might not honour is how you produce refunds, whereas quoting the
+           higher one and charging less never upset anybody. -->
+      <div class="per">India: <strong>₹79</strong>. Your local price is applied automatically at checkout.</div>
       <ul>
         <li>Everything in Free</li>
         <li>Minimap, search, timestamps &amp; backup on Claude</li>
