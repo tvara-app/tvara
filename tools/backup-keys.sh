@@ -23,6 +23,24 @@ OUT="$HOME/Downloads/tvara-signing-key-backup.enc"
 
 [[ -f "$KEYS/private.pem" ]] || { echo "✋ No key at $KEYS/private.pem"; exit 1; }
 
+# openssl prompts for the passphrase, which needs a terminal. Run without one
+# (a CI job, or an assistant running this for you) and it fails with a raw
+# "bad password read" from deep inside a C library, which explains nothing.
+if [[ ! -t 0 ]]; then
+  cat <<'MSG'
+✋ This needs a real terminal, because it asks you for a passphrase.
+
+   Open Terminal (⌘Space, type "Terminal"), then paste:
+
+       cd ~/tvara && npm run backup-keys
+
+   It cannot run from anywhere that has no keyboard attached, which is
+   deliberate: the passphrase must come from you and must not sit in a
+   shell history or a script.
+MSG
+  exit 1
+fi
+
 echo
 echo "This encrypts your signing key into one file you can store anywhere."
 echo "The passphrase is the only way back. Nobody can reset it, including you."
