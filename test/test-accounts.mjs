@@ -687,6 +687,34 @@ try {
   t("G5 a wipe clears every per-account usage tally", usageLeft.length === 0, JSON.stringify(usageLeft));
   t("G5 a wipe empties the archive", (await rows()).length === 0, String((await rows()).length));
 
+  /* ================= I. the network guard ================= */
+  /* bgFetch attaches the user's session to every request it makes, so the set
+     of hosts it will call is a security boundary, not a detail. It is derived
+     from host_permissions at runtime — this proves the derivation actually
+     refuses something, because an allowlist that never says no is decoration.
+     Every A-to-M test above already proves it says yes to the real providers. */
+  const sw = ctx.serviceWorkers()[0] ||
+    await ctx.waitForEvent("serviceworker", { timeout: 10000 }).catch(() => null);
+  if (!sw) {
+    t("I1 the service worker is reachable for the network-guard check", false);
+  } else {
+    const probe = async (url) => sw.evaluate(async (u) => {
+      try { await self.bgFetch(u); return "ALLOWED"; }
+      catch (e) { return String((e && e.message) || e); }
+    }, url);
+    const foreign = await probe("https://evil.example/steal");
+    t("I1 bgFetch refuses a host outside host_permissions",
+      /refusing to call evil\.example/.test(foreign), foreign);
+    // "https://grok.com@evil.example/" parses as host evil.example: everything
+    // before the @ is credentials. A conversation id is interpolated into some
+    // of these URLs, so this shape has to be refused on the PARSED host.
+    const userinfo = await probe("https://grok.com@evil.example/load-responses");
+    t("I1 …including a URL that hides another host behind userinfo",
+      /refusing to call evil\.example/.test(userinfo), userinfo);
+    const junk = await probe("not-a-url");
+    t("I1 …and an unparseable URL", /refusing to call/.test(junk), junk);
+  }
+
   t("H1 no page exceptions during the run", pageErrors.length === 0, JSON.stringify(pageErrors.slice(0, 3)));
 } catch (error) {
   fail++;

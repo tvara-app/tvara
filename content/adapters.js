@@ -96,8 +96,17 @@
    */
   function heuristicInConversation(adapter, scope, minKids) {
     const p = adapter && adapter.convPath;
-    if (p && !p.test(location.pathname)) return [];
-    return heuristicMessages(scope, minKids);
+    if (!p || p.test(location.pathname)) return heuristicMessages(scope, minKids);
+    /* The path does not match the shape we know conversations take. That is
+       either a landing page (where this layer invented 39 paragraphs as
+       messages) or a provider that has changed its URLs — and refusing outright
+       would turn "degraded but working" into "nothing" the day that happens.
+       Depth tells them apart: a conversation is /c/<id>, /chat/<id>,
+       /search/<id>, always two segments or more; a landing page is "/" or
+       "/recents". So an unknown deep path still gets the fallback, and a
+       shallow one never does. */
+    const depth = location.pathname.split("/").filter(Boolean).length;
+    return depth >= 2 ? heuristicMessages(scope, minKids) : [];
   }
 
   function heuristicMessages(scope, minKids) {
@@ -576,7 +585,12 @@
     {
       id: "synthetic",
       roleStable: true,   // an explicit data-lct-role attribute
-      convPath: /(synthetic|demo)\.html$/,
+      /* Every page the suite drives, not just two of them. The heuristic layer
+         is now gated on this pattern (a landing page must not invent messages),
+         so a test page missing from it reads as a conversation with nothing in
+         it — which is exactly how virtual-history.html broke when the gate
+         landed. */
+      convPath: /(synthetic|demo|virtual-history)\.html$/,
       label: "Test Page",
       // The layer-1 selector, quoted for the health check: matched messages that
       // do NOT satisfy it mean this platform has drifted and we are running on

@@ -1313,8 +1313,40 @@ async function loadCooldown(host) {
   } catch { return 0; }
 }
 
+/* The only hosts this worker may call with the user's cookies, read from the
+   manifest rather than typed a second time. That keeps it honest in both
+   directions: it is exactly what the user granted at install, it cannot drift
+   from host_permissions, and it needs no dev-only exception because
+   tools/pack.mjs strips the localhost entries out of the shipped build. */
+const BG_ALLOWED_HOSTS = (() => {
+  const out = new Set();
+  try {
+    for (const pattern of chrome.runtime.getManifest().host_permissions || []) {
+      const m = /^[a-z*]+:\/\/([^/*]+)/i.exec(pattern);
+      if (m && m[1]) out.add(m[1].toLowerCase());
+    }
+  } catch { /* a manifest we cannot read is not a reason to call anywhere */ }
+  return out;
+})();
+
 async function bgFetch(url, opts = {}) {
   const host = hostOf(url);
+  /* Two guards that cost nothing and close the same class of hole.
+
+     A conversation id from a provider's own listing is interpolated into some
+     of these URLs (`this.base + conv + "/load-responses"`), and a value like
+     "@evil.com/" would re-point the whole URL at another host: `new URL()`
+     reads everything before the "@" as credentials. Checking the PARSED host
+     against the allowlist catches that whatever the string looked like.
+
+     And redirects were followed by default while credentials were included.
+     lib/dodo.js already refuses to follow one, with a comment saying why — a
+     redirect off-host means a stranger's response gets parsed as a provider's
+     and written into the archive. This is the same rule, applied to the path
+     that actually carries the user's history. */
+  if (!BG_ALLOWED_HOSTS.has(host)) {
+    throw new BgError("net", `refusing to call ${host || "an unparseable URL"}`);
+  }
   const cookieHeader = await getCookieHeader(url);
   const headers = {
     Accept: "application/json, text/plain, */*",
@@ -1326,7 +1358,11 @@ async function bgFetch(url, opts = {}) {
     await hostSlot(host);
     let r;
     try {
-      r = await fetch(url, { ...opts, headers, credentials: "include" });
+      r = await fetch(url, {
+        ...opts, headers, credentials: "include",
+        redirect: "error",            // never off-host with the user's session
+        referrerPolicy: "no-referrer"
+      });
     } catch (error) {
       if (attempt === BG_FETCH_ATTEMPTS - 1) throw new BgError("net", "network unavailable");
       await sleep(backoffDelay(attempt, 0));

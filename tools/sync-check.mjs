@@ -146,7 +146,14 @@ for (const [id, p] of Object.entries(plats)) {
   else if (/waiting until/i.test(msg)) verdict = `deferring while you use the site · ${held.toLocaleString()} chats held`;
   else if (/changed its API|needs a Tvara update/i.test(msg)) { mark = "✗"; verdict = `ADAPTER BROKEN: ${msg}`; bad++; }
   else if (pr.failed) { mark = "!"; verdict = `${pr.failed} failed · ${msg}`; bad++; }
-  else if (!lastFull) { mark = "!"; verdict = "has never completed a pass"; bad++; }
+  else if (!lastFull && held) {
+    /* Holding data with no error is a long pass in progress, not a failure.
+       ChatGPT's first full pass takes hours behind its own rate limiting, and
+       calling that "never completed" while the count climbs every run is the
+       kind of false alarm that teaches you to stop reading the output. */
+    verdict = `${held.toLocaleString()} chats held · first full pass still running`;
+  }
+  else if (!lastFull) { mark = "!"; verdict = "has never completed a pass, and holds nothing"; bad++; }
   else if (!held) { mark = "!"; verdict = `completed a pass but holds nothing · ${msg}`; bad++; }
   else verdict = `${held.toLocaleString()} chats held · ${msg.toLowerCase()}`;
   console.log(`  ${mark} ${(p.label || id).padEnd(11)} ${verdict}` +
