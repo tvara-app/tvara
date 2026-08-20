@@ -152,7 +152,6 @@
   });
   open("guide-link", P.SITE + "#features");
   open("privacy-link", P.PRIVACY);
-  open("source-link", P.SOURCE);
 
   P.applyTo(document);
   /* ---------- the first useful thing ----------

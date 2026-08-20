@@ -233,7 +233,7 @@ try {
     return sent;
   });
   t("A1b buy button opens our own pricing page (no hard-coded checkout)",
-    buyUrl === "https://tharuntejandhe.github.io/tvara/#buy", String(buyUrl));
+    buyUrl === "https://tvara-app.github.io/#buy", String(buyUrl));
   t("A1b every outward link comes from one place",
     await pop.evaluate(() => !!self.LCTProduct && Object.isFrozen(self.LCTProduct)));
 

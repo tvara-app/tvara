@@ -31,7 +31,7 @@
   "minimum_chrome_version": "111",
   "browser_specific_settings": {
     "gecko": {
-      "id": "tvara@tharuntejandhe.github.io",
+      "id": "tvara@tvara-app.github.io",
       "strict_min_version": "128.0"
     }
   },

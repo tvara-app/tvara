@@ -59,7 +59,6 @@
   <h1>Make long AI chats fast again</h1>
   <p class="sub">Tvara is a browser extension that keeps huge ChatGPT, Claude &amp; Gemini conversations fast, and adds the navigation those apps forgot: minimap, in-chat search, message timestamps, resume &amp; one-click backup.</p>
   <div>
-    <a class="cta" href="https://github.com/Tharuntejandhe/tvara">View source on GitHub</a>
     <a class="cta alt" href="mailto:tvara.exten@gmail.com">Contact</a>
   </div>
   <div class="badge">🔒 Local archive · no telemetry or Tvara server</div>
@@ -119,7 +118,7 @@
            better than a dead checkout.
 
            AND in the Dodo dashboard, set the product's redirect/success URL to
-             https://tharuntejandhe.github.io/tvara/thanks.html
+             https://tvara-app.github.io/thanks.html
            (append ?key={license_key} if Dodo will template it: the page shows
            the key with a copy button when it arrives, and stays quiet when it
            does not). Without that redirect a buyer's last screen is a payment
@@ -157,7 +156,7 @@
     <li><strong>On ChatGPT only</strong>, a small read-only script runs in the page to read each message's timestamp from the app's own state. It makes no network requests and changes nothing on the page. All processing is local.</li>
     <li><strong>Purchases</strong> are handled by our payment provider (merchant of record). We receive your email address solely to issue your license key. We do not receive or store your card details.</li>
     <li><strong>Licence activation is the one request that isn't to an AI site.</strong> Activating Pro sends your licence key and a coarse device label to the payment provider's licence server so it can enforce the 5-device limit; a licensed copy re-checks there at most once a month. That is the entire payload: no cookies, no conversation text, no identifiers beyond a random per-profile ID we generate. The free tier never contacts it, and the extension requests no additional host permission to do it.</li>
-    <li>The extension's full source code is public at <a href="https://github.com/Tharuntejandhe/tvara">GitHub</a>, so you can audit every line.</li>
+    <li>The extension ships as <strong>unminified, unobfuscated JavaScript</strong>. Everything running on your machine is in the extension folder, readable, exactly as we wrote it and exactly as Chrome reviewed it.</li>
   </ul>
   <p>Questions: <a href="mailto:tvara.exten@gmail.com">tvara.exten@gmail.com</a></p>
 </section>
@@ -180,7 +179,7 @@
 </section>
 
 <footer>
-  ⚡ Tvara · <a href="https://github.com/Tharuntejandhe/tvara">Open source (MIT)</a> · <a href="mailto:tvara.exten@gmail.com">tvara.exten@gmail.com</a>
+  ⚡ Tvara · <a href="mailto:tvara.exten@gmail.com">tvara.exten@gmail.com</a>
 </footer>
 
 </div>
