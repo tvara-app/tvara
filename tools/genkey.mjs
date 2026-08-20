@@ -11,7 +11,7 @@
  * NEVER commit or share it.
  * Key format: LCT1.<b64url(payload)>.<b64url(ECDSA-P256-SHA256 signature, P1363)>
  */
-import { generateKeyPairSync, createPrivateKey, createPublicKey, sign } from "node:crypto";
+import { generateKeyPairSync, createPrivateKey, createPublicKey, createHash, sign } from "node:crypto";
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -27,6 +27,11 @@ const ENTITLEMENT_JS = join(HERE, "..", "lib", "entitlement.js");
 const b64url = (buf) =>
   Buffer.from(buf).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
+/** Must match checkKeyIntegrity() in lib/entitlement.js: first 16 bytes, hex. */
+const keyIntegrity = (spkiB64) =>
+  [...createHash("sha256").update(spkiB64).digest().subarray(0, 16)]
+    .map((b) => b.toString(16).padStart(2, "0")).join("");
+
 function init() {
   if (existsSync(PRIV_PATH)) {
     console.error(`Keypair already exists at ${KEYS_DIR} — refusing to overwrite.`);
@@ -40,9 +45,12 @@ function init() {
   writeFileSync(PUB_PATH, spkiB64);
 
   // Same pair verifies LCT1 keys and LCT2 entitlement tokens — patch both.
+  // entitlement.js also pins a hash of its own key; leaving that stale would
+  // ship a build that rejects every token it was just re-keyed to accept.
   for (const path of [LICENSE_JS, ENTITLEMENT_JS]) {
     const src = readFileSync(path, "utf8")
-      .replace(/const PUBLIC_KEY_B64 = "[^"]*";/, `const PUBLIC_KEY_B64 = "${spkiB64}";`);
+      .replace(/const PUBLIC_KEY_B64 = "[^"]*";/, `const PUBLIC_KEY_B64 = "${spkiB64}";`)
+      .replace(/const _KEY_INTEGRITY = "[^"]*";/, `const _KEY_INTEGRITY = "${keyIntegrity(spkiB64)}";`);
     writeFileSync(path, src);
   }
 
@@ -72,6 +80,17 @@ function assertKeyPairMatchesShipped(priv) {
       process.exit(1);
     }
     shipped = found;
+  }
+
+  const pinned = readFileSync(ENTITLEMENT_JS, "utf8").match(/const _KEY_INTEGRITY = "([^"]*)";/);
+  if (pinned && pinned[1] !== keyIntegrity(shipped[1])) {
+    console.error(
+      `\n\u270b lib/entitlement.js pins a stale key hash — every entitlement token\n` +
+      `   would be rejected as "key-integrity" in the shipped build.\n\n` +
+      `   expected: ${keyIntegrity(shipped[1])}\n` +
+      `   pinned  : ${pinned[1]}\n`
+    );
+    process.exit(1);
   }
 
   if (local === shipped[1]) return;

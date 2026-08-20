@@ -94,6 +94,21 @@
     }
   }
 
+  /**
+   * The HMAC key that stamps a backup as licensed. Comes from the verified
+   * token, so a locked install simply has none and seal() refuses.
+   */
+  async function stampCreds() {
+    const res = await send({ type: "archive-stamp" });
+    if (!res || res.err) return { stampKey: null, stampSub: "" };
+    let bytes;
+    try { bytes = crypt.base64ToBytes(res.secret); }
+    catch { return { stampKey: null, stampSub: "" }; }
+    const stampKey = await crypto.subtle.importKey(
+      "raw", bytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+    return { stampKey, stampSub: res.sub || "" };
+  }
+
   /** One place the "you're locked" answer from the worker becomes UI copy. */
   function lockedResponse(res) {
     if (!res || res.err !== "locked") return false;
@@ -491,7 +506,8 @@
     if (passphrase !== confirmation) throw new Error("The passphrases do not match");
 
     const payload = await collectSnapshot();
-    const sealed = await crypt.seal(payload, { passphrase });
+    const { stampKey, stampSub } = await stampCreds();
+    const sealed = await crypt.seal(payload, { passphrase, stampKey, stampSub });
     const stamp = new Date().toISOString().slice(0, 10);
     const filename = `tvara-${stamp}.lctbackup`;
     download(new Blob([sealed.json], { type: "application/octet-stream" }), filename);
@@ -596,7 +612,7 @@
 
     let snapshot;
     try {
-      snapshot = await crypt.open(text, passphrase);
+      snapshot = await crypt.open(text, passphrase, { stampKey: (await stampCreds()).stampKey });
     } catch (error) {
       const after = await send({ type: "recall-restore-guard-fail" });
       const suffix = after && !after.allowed ? ` Further attempts are paused for ${waitLabel(after.waitMs)}.` : "";

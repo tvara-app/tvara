@@ -20,74 +20,40 @@
 }
 
 /* ===== Minimap ===== */
-#lct-minimap {
-  position: fixed;
-  top: 70px;
-  /* clear of the native scrollbar's hit zone, plus any rail the host owns */
-  right: calc(14px + var(--lct-rail-inset, 0px));
-  bottom: 90px;
-  width: 24px;
-  z-index: 2147483000;
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  overflow: hidden; /* nothing inside may resize the panel — see #lct-mm-canvas */
-  border-radius: 8px;
-  background: rgba(127, 127, 127, 0.07);
-  backdrop-filter: blur(4px);
-  transition: opacity 0.2s ease, width 0.2s ease;
-  opacity: 0.85;
-}
-#lct-minimap:hover { opacity: 1; }
-#lct-minimap.lct-collapsed { width: 14px; }
 #lct-minimap.lct-collapsed #lct-mm-canvas,
 #lct-minimap.lct-collapsed #lct-mm-count,
 #lct-minimap.lct-collapsed #lct-export-bar { display: none; }
 
 #lct-mm-canvas {
-  /* min-height:0 is load-bearing: flex's auto minimum makes the canvas backing
-     store (CSS px × dpr) a layout floor, so each draw grew the box and the next
-     draw grew it again. */
-  flex: 1 1 0;
-  min-height: 0;
   min-width: 0;
   display: block;
-  width: 100%;
   cursor: pointer;
   border-radius: 0 0 var(--lct-radius) var(--lct-radius);
+  flex: none;
+  width: 100%;
+  height: 100%;
+  min-height: 48px;
+  outline: none;
 }
 
 #lct-mm-toggle {
   flex: 0 0 auto;
-  height: 20px;
-  border: none;
-  background: transparent;
-  color: inherit;
-  opacity: 0.6;
   font-size: 12px;
   line-height: 1;
   cursor: pointer;
-  border-radius: var(--lct-radius) var(--lct-radius) 0 0;
-  transition: background 0.15s ease, color 0.15s ease, opacity 0.15s ease;
-}
-#lct-mm-toggle:hover { opacity: 1; background: rgba(127,127,127,0.15); }
-
-#lct-mm-tooltip {
-  display: none;
-  position: fixed;
-  right: calc(36px + var(--lct-rail-inset, 0px));
-  max-width: 340px;
-  padding: 6px 10px;
-  z-index: 2147483001;
-  font: 12px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  border-radius: 8px;
-  background: rgba(33, 15, 23, 0.94);
-  color: #fbf6f8;
-  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.25);
-  pointer-events: none;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  order: 0;
+  position: relative;
+  width: 100%;
+  height: 27px;
+  min-height: 27px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--lct-muted);
+  font: 400 15px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  opacity: .7;
+  transition: color 200ms cubic-bezier(.16, 1, .3, 1), opacity 200ms cubic-bezier(.16, 1, .3, 1);
 }
 
 /* ===== Windowed-count pill (messages asleep) ===== */
@@ -95,15 +61,22 @@
   display: none;
   flex: 0 0 auto;
   text-align: center;
-  margin: 2px 2px 1px;
-  padding: 2px 0 3px;
-  font: 700 8.5px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  color: #ff5d8a;
-  background: rgba(255, 93, 138, 0.14);
-  border-radius: 6px;
-  letter-spacing: -0.02em;
   cursor: default;
   user-select: none;
+  order: 1;
+  align-self: center;
+  min-width: 20px;
+  margin: 6px 0 2px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;              /* a number, not a badge */
+  color: var(--lct-accent);
+  font: 500 8.5px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: -.03em;
+  font-variant-numeric: tabular-nums;
+  opacity: .75;
+  transition: opacity 200ms cubic-bezier(.16, 1, .3, 1);
 }
 
 /* ===== Export bar ===== */
@@ -125,18 +98,13 @@
   height: 20px;
   padding: 0;
   border: none;
-  border-radius: 5px;
   background: transparent;
-  color: #cbb2ba;
   cursor: pointer;
   transition: transform 0.15s ease, color 0.15s ease, background 0.15s ease;
+  color: var(--lct-muted);
+  border-radius: var(--lct-radius);
 }
 #lct-export-bar button svg { width: 13px; height: 13px; }
-#lct-export-bar button:hover {
-  color: #ff5d8a;
-  background: rgba(255, 93, 138, 0.14);
-  transform: scale(1.1);
-}
 /* standalone position when the minimap is turned off */
 #lct-export-bar.lct-floating {
   position: fixed;
@@ -173,14 +141,16 @@
   z-index: 2147483003;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 10px;
-  border-radius: 12px;
-  background: rgba(33, 15, 23, 0.97);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
-  border: 1px solid rgba(255, 255, 255, 0.08);
   transition: transform 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.2);
   font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  gap: 8px;
+  padding: 9px 11px;
+  border: 1px solid var(--lct-line);
+  border-radius: var(--lct-radius);
+  background: var(--lct-surface-strong);
+  box-shadow: var(--lct-shadow);
+  color: var(--lct-ink);
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
 }
 #lct-search.lct-s-open { transform: translateX(-50%) translateY(0); }
 #lct-search .lct-s-icon { display: flex; opacity: 0.7; color: #e8d0d8; }
@@ -190,35 +160,34 @@
   border: none;
   outline: none;
   background: transparent;
-  color: #fbf6f8;
   font-size: 13.5px;
+  color: var(--lct-ink);
 }
-#lct-search input::placeholder { color: #cbb2ba; }
 #lct-search .lct-s-count {
   min-width: 44px;
   text-align: center;
   font-size: 11.5px;
   font-weight: 700;
-  color: #ff5d8a;
+  color: var(--lct-accent);
 }
 #lct-search .lct-s-count.lct-s-none { color: #ff7a7a; }
 #lct-search button {
-  border: none;
-  background: rgba(255, 255, 255, 0.07);
   color: #e8d0d8;
   width: 26px;
   height: 26px;
-  border-radius: 7px;
   cursor: pointer;
   font-size: 12px;
   transition: background 0.15s ease;
+  border: 1px solid transparent;
+  border-radius: var(--lct-radius);
+  background: transparent;
 }
-#lct-search button:hover { background: rgba(255, 255, 255, 0.16); }
 
 /* pulse highlight on the message a search jump lands on */
 .lct-hit {
   animation: lct-pulse 1.5s ease-out;
   border-radius: 12px;
+  animation-name: lct-pulse-refined;
 }
 @keyframes lct-pulse {
   0%   { box-shadow: 0 0 0 3px rgba(255, 93, 138, 0.95); }
@@ -234,16 +203,17 @@
   z-index: 2147483002;
   padding: 9px 16px;
   border: none;
-  border-radius: 999px;
-  background: rgba(33, 15, 23, 0.95);
-  color: #fbf6f8;
   font: 600 12.5px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
   border: 1px solid rgba(255, 93, 138, 0.35);
   cursor: pointer;
   transition: transform 0.15s ease;
+  border: 1px solid rgba(255, 93, 138, .38);
+  border-radius: var(--lct-radius);
+  background: var(--lct-surface-strong);
+  color: var(--lct-ink);
+  box-shadow: var(--lct-shadow);
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
 }
-#lct-resume:hover { transform: translateX(-50%) scale(1.04); }
 
 /* ===== Star button + starred marker ===== */
 #lct-star {
@@ -255,19 +225,22 @@
   align-items: center;
   justify-content: center;
   border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 8px;
-  background: rgba(33, 15, 23, 0.92);
-  color: #cbb2ba;
   cursor: pointer;
-  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.25);
   transition: color 0.12s ease, transform 0.12s ease;
+  border-color: var(--lct-line);
+  border-radius: var(--lct-radius);
+  background: var(--lct-surface-strong);
+  color: var(--lct-muted);
+  box-shadow: var(--lct-shadow);
 }
 #lct-star svg { width: 13px; height: 13px; }
 #lct-star:hover { color: #ffd45e; transform: scale(1.08); }
 #lct-star.lct-star-on { color: #ffd45e; }
-#lct-star.lct-star-on svg { fill: #ffd45e; }
 
-.lct-starred { box-shadow: inset 3px 0 0 rgba(255, 212, 94, 0.75); border-radius: 4px; }
+.lct-starred {
+  border-radius: 4px;
+  box-shadow: inset 2px 0 0 rgba(231, 188, 88, .76);
+}
 
 /* ===== Outline panel ===== */
 #lct-outline {
@@ -279,49 +252,48 @@
   z-index: 2147483002;
   display: flex;
   flex-direction: column;
-  border-radius: 12px;
-  background: rgba(33, 15, 23, 0.97);
   border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
   font: 12.5px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  color: #fbf6f8;
   opacity: 0;
   pointer-events: none;
   transform: translateY(-8px) scale(0.98);
   transition: opacity 0.18s ease, transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+  /* Was a local ember override back when --lct-accent was blue. The shared
+     accent is ember now, so these just alias it — one accent, one theme. */
+  --lct-o-accent: var(--lct-accent);
+  --lct-o-accent-soft: var(--lct-accent-soft);
+  border-color: var(--lct-line);
+  border-radius: var(--lct-radius);
+  background: var(--lct-field), var(--lct-surface-strong);
+  color: var(--lct-ink);
+  box-shadow: var(--lct-shadow);
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
 }
 #lct-outline.lct-o-open { opacity: 1; pointer-events: auto; transform: translateY(0) scale(1); }
 
-.lct-o-head {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 8px 8px 6px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-}
 .lct-o-tab {
   border: none;
   background: transparent;
-  color: #cbb2ba;
   font: 600 12px/1 inherit;
   font-family: inherit;
   padding: 6px 10px;
-  border-radius: 7px;
   cursor: pointer;
+  color: var(--lct-muted);
+  border-radius: var(--lct-radius);
+  transition: background 0.16s ease, color 0.16s ease;
 }
-.lct-o-tab.lct-o-on { color: #fbf6f8; background: rgba(255, 255, 255, 0.09); }
 .lct-o-close {
   margin-left: auto;
-  border: none;
-  background: rgba(255, 255, 255, 0.07);
-  color: #e8d0d8;
   width: 24px;
   height: 24px;
-  border-radius: 7px;
   cursor: pointer;
   font-size: 11px;
+  border: 1px solid var(--lct-line);
+  border-radius: var(--lct-radius);
+  background: transparent;
+  color: var(--lct-muted);
+  transition: background 0.16s ease, color 0.16s ease;
 }
-.lct-o-close:hover { background: rgba(255, 255, 255, 0.16); }
 
 .lct-o-list { flex: 1; overflow-y: auto; padding: 6px; }
 .lct-o-row { display: flex; align-items: center; gap: 2px; }
@@ -333,9 +305,7 @@
   height: 22px;
   padding: 0;
   border: none;
-  border-radius: 6px;
   background: transparent;
-  color: #7d6068;
   font-size: 12px;
   line-height: 1;
   cursor: pointer;
@@ -355,23 +325,22 @@
   text-align: left;
   border: none;
   background: transparent;
-  color: #e8d0d8;
   font: 12px/1.4 inherit;
   font-family: inherit;
   padding: 5px 8px;
-  border-radius: 7px;
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.lct-o-item:hover { background: rgba(255, 93, 138, 0.14); color: #fff; }
 .lct-o-user { font-weight: 600; }
-.lct-o-user::before { content: "› "; color: #ff5d8a; }
+.lct-o-user::before {
+  content: "› ";
+  color: var(--lct-o-accent);
+}
 .lct-o-h { color: #cbb2ba; }
 .lct-o-h2 { padding-left: 18px; }
 .lct-o-h3 { padding-left: 28px; }
-.lct-o-star::before { content: "★ "; color: #ffd45e; }
 
 .lct-o-note {
   padding: 6px 10px 8px;
@@ -411,12 +380,15 @@
   padding: 5px 11px;
   border: 0;
   border-radius: 999px;
-  background: rgba(255, 93, 138, 0.16);
-  color: #ff5d8a;
   font: 600 11px/1 inherit;
   cursor: pointer;
+  background: var(--lct-accent-soft);
+  color: var(--lct-accent);
 }
-.lct-seek-stop:hover { background: rgba(255, 93, 138, 0.28); }
+.lct-seek-stop:hover {
+  background: rgba(255, 93, 138, 0.28);
+  background: color-mix(in srgb, var(--lct-accent) 26%, transparent);
+}
 
 /* ===== Message preview =====
    What you read while the site catches up. It closes itself the moment the
@@ -451,8 +423,8 @@
 .lct-p-title {
   flex: 1;
   font: 600 11.5px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  color: #ff5d8a;
   font-variant-numeric: tabular-nums;
+  color: var(--lct-accent);
 }
 .lct-p-close {
   width: 24px;
@@ -460,11 +432,11 @@
   border: 1px solid rgba(255, 220, 230, 0.14);
   border-radius: 8px;
   background: transparent;
-  color: #cbb2ba;
   font: 400 12px/1 inherit;
   cursor: pointer;
+  border-color: var(--lct-line);
+  color: var(--lct-muted);
 }
-.lct-p-close:hover { background: rgba(255, 93, 138, 0.15); color: #ff5d8a; }
 .lct-p-body {
   flex: 1;
   overflow-y: auto;
@@ -480,7 +452,7 @@
   padding: 8px 13px 11px;
   border-top: 1px solid rgba(255, 220, 230, 0.14);
   font: 500 10.5px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  color: #cbb2ba;
+  color: var(--lct-muted);
 }
 .lct-p-note:empty { display: none; }
 
@@ -514,13 +486,15 @@
   display: none;
   max-width: 280px;
   padding: 10px 12px;
-  border-radius: 10px;
-  background: rgba(33, 15, 23, 0.97);
   border: 1px solid rgba(255, 255, 255, 0.09);
-  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.45);
-  color: #fbf6f8;
   font: 400 12.5px/1.5 -apple-system, "Segoe UI", sans-serif;
   pointer-events: none; /* never trap the cursor on the way to the link */
+  border-color: var(--lct-line);
+  border-radius: var(--lct-radius);
+  background: var(--lct-field), var(--lct-surface-strong);
+  color: var(--lct-ink);
+  box-shadow: var(--lct-shadow);
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
 }
 #lct-chatcard .lct-cc-title { font-weight: 600; font-size: 13px; margin-bottom: 3px; }
 #lct-chatcard .lct-cc-dim { color: var(--lct-muted); }
@@ -529,8 +503,9 @@
   margin-top: 5px;
   padding-top: 5px;
   border-top: 1px solid rgba(255, 255, 255, 0.09);
-  color: #ff5d8a;
   font-weight: 600;
+  border-color: var(--lct-line);
+  color: var(--lct-accent);
 }
 
 /* Total Recall overlay: see the dedicated section near the end of this file
@@ -544,11 +519,7 @@
   transform: translateX(-50%) translateY(-8px);
   z-index: 2147483647;
   width: min(660px, calc(100vw - 32px));
-  border-radius: 14px;
-  background: rgba(33, 15, 23, 0.98);
   border: 1px solid rgba(255, 93, 138, 0.28);
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
-  color: #fbf6f8;
   font: 400 13.5px/1.5 -apple-system, "Segoe UI", sans-serif;
   opacity: 0;
   pointer-events: none;
@@ -560,23 +531,25 @@
   padding: 12px 16px; border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 #lct-bridge input[type="text"] {
-  flex: 1; border: none; outline: none; background: transparent; color: #fbf6f8; font-size: 15.5px;
+  flex: 1; border: none; outline: none; background: transparent; font-size: 15.5px;
 }
-#lct-bridge input[type="text"]::placeholder { color: rgba(251, 247, 245, 0.4); }
 #lct-bridge .lct-b-meta { color: rgba(251, 247, 245, 0.5); font-size: 12px; white-space: nowrap; }
 #lct-bridge .lct-b-list { max-height: 44vh; overflow-y: auto; padding: 6px; }
 #lct-bridge .lct-b-item {
   display: flex; gap: 10px; align-items: flex-start;
-  padding: 9px 11px; border-radius: 10px; cursor: pointer;
+  padding: 9px 11px; cursor: pointer;
+  border: 1px solid transparent;
+  border-radius: var(--lct-radius);
 }
-#lct-bridge .lct-b-item:hover { background: rgba(255, 93, 138, 0.08); }
-#lct-bridge .lct-b-item input[type="checkbox"] { margin-top: 3px; flex: none; width: 15px; height: 15px; accent-color: #ff5d8a; }
+#lct-bridge .lct-b-item input[type="checkbox"] {
+  margin-top: 3px;
+  flex: none;
+  width: 15px;
+  height: 15px;
+  accent-color: var(--lct-accent);
+}
 #lct-bridge .lct-b-body { min-width: 0; }
 #lct-bridge .lct-b-title { display: flex; gap: 8px; align-items: baseline; font-weight: 600; font-size: 13px; }
-#lct-bridge .lct-b-title b {
-  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
-  color: #ff5d8a; flex: none;
-}
 #lct-bridge .lct-b-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #lct-bridge .lct-b-ex {
   color: rgba(251, 247, 245, 0.62); font-size: 12.5px; margin-top: 3px;
@@ -588,10 +561,14 @@
 }
 #lct-bridge .lct-b-note { color: rgba(251, 247, 245, 0.45); font-size: 11.5px; }
 #lct-bridge .lct-b-insert {
-  flex: none; padding: 7px 14px; border: none; border-radius: 9px; cursor: pointer;
-  background: #ff5d8a; color: #fff; font: 600 12.5px/1 -apple-system, "Segoe UI", sans-serif;
+  flex: none; padding: 7px 14px; cursor: pointer;
+   font: 600 12.5px/1 -apple-system, "Segoe UI", sans-serif;
+  border: 1px solid var(--lct-accent);
+  border-radius: var(--lct-radius);
+  background: var(--lct-accent);
+  color: #2a1018;
+  font-family: "Avenir Next", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
-#lct-bridge .lct-b-insert:hover { background: #ff86a6; }
 #lct-bridge .lct-b-insert:disabled { opacity: 0.45; cursor: default; }
 
 /* The count is doing more work when part of the answer is beyond the page:
@@ -773,18 +750,7 @@
 }
 /* No hover-widen: the export buttons sit inside, and resizing under the
    pointer moves them out from under the click. */
-#lct-minimap { width: 22px; right: calc(12px + var(--lct-rail-inset, 0px)); opacity: .78; }
 #lct-minimap:hover { opacity: 1; }
-#lct-minimap.lct-collapsed { width: 13px; }
-#lct-mm-toggle { color: var(--lct-muted); }
-#lct-mm-toggle:hover { background: var(--lct-accent-soft); color: var(--lct-accent); }
-#lct-mm-count {
-  color: var(--lct-accent);
-  background: var(--lct-accent-soft);
-  border: 1px solid var(--lct-line);
-  border-radius: 999px;
-}
-#lct-export-bar button { color: var(--lct-muted); border-radius: var(--lct-radius); }
 #lct-export-bar button:hover { background: var(--lct-accent-soft); color: var(--lct-accent); transform: translateY(-1px); }
 #lct-mm-tooltip,
 #lct-time-tag,
@@ -798,66 +764,29 @@
   font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
 }
 
-#lct-search {
-  gap: 8px;
-  padding: 9px 11px;
-  border: 1px solid var(--lct-line);
-  border-radius: var(--lct-radius);
-  background: var(--lct-surface-strong);
-  box-shadow: var(--lct-shadow);
-  color: var(--lct-ink);
-  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
-}
 #lct-search .lct-s-icon,
 #lct-search button { color: var(--lct-muted); }
-#lct-search input { color: var(--lct-ink); }
 #lct-search input::placeholder { color: var(--lct-muted); }
-#lct-search .lct-s-count { color: var(--lct-accent); }
-#lct-search button { border: 1px solid transparent; border-radius: var(--lct-radius); background: transparent; }
 #lct-search button:hover { border-color: var(--lct-line); background: var(--lct-accent-soft); color: var(--lct-accent); }
-.lct-hit { animation-name: lct-pulse-refined; }
 @keyframes lct-pulse-refined {
   0% { box-shadow: 0 0 0 3px rgba(255, 93, 138, .72); }
   100% { box-shadow: 0 0 0 7px rgba(255, 93, 138, 0); }
 }
 
-#lct-resume {
-  border: 1px solid rgba(255, 93, 138, .38);
-  border-radius: var(--lct-radius);
-  background: var(--lct-surface-strong);
-  color: var(--lct-ink);
-  box-shadow: var(--lct-shadow);
-  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
-}
 #lct-resume:hover { transform: translateX(-50%) translateY(-1px); color: var(--lct-accent); }
-#lct-star {
-  border-color: var(--lct-line);
-  border-radius: var(--lct-radius);
-  background: var(--lct-surface-strong);
-  color: var(--lct-muted);
-  box-shadow: var(--lct-shadow);
-}
 #lct-star:hover, #lct-star.lct-star-on { color: #e7bc58; transform: translateY(-1px); }
 #lct-star.lct-star-on svg { fill: #e7bc58; }
-.lct-starred { box-shadow: inset 2px 0 0 rgba(231, 188, 88, .76); }
 
-#lct-outline {
-  /* Was a local ember override back when --lct-accent was blue. The shared
-     accent is ember now, so these just alias it — one accent, one theme. */
-  --lct-o-accent: var(--lct-accent);
-  --lct-o-accent-soft: var(--lct-accent-soft);
+.lct-o-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  padding: 9px;
   border-color: var(--lct-line);
-  border-radius: var(--lct-radius);
-  background: var(--lct-field), var(--lct-surface-strong);
-  color: var(--lct-ink);
-  box-shadow: var(--lct-shadow);
-  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
 }
-.lct-o-head { padding: 9px; border-color: var(--lct-line); }
-.lct-o-tab { color: var(--lct-muted); border-radius: var(--lct-radius); transition: background 0.16s ease, color 0.16s ease; }
 .lct-o-tab.lct-o-on { background: var(--lct-o-accent-soft); color: var(--lct-o-accent); }
 .lct-o-tab:hover:not(.lct-o-on) { background: color-mix(in srgb, var(--lct-ink) 6%, transparent); }
-.lct-o-close { border: 1px solid var(--lct-line); border-radius: var(--lct-radius); background: transparent; color: var(--lct-muted); transition: background 0.16s ease, color 0.16s ease; }
 .lct-o-close:hover { background: var(--lct-o-accent-soft); color: var(--lct-o-accent); }
 .lct-o-item {
   border-radius: var(--lct-radius);
@@ -875,8 +804,10 @@
    opacity 1 and pin the star visible on every row. */
 .lct-o-fav { color: var(--lct-muted); border-radius: var(--lct-radius); }
 .lct-o-fav-on, .lct-o-fav:hover { color: #e7bc58; }
-.lct-o-user::before { color: var(--lct-o-accent); }
-.lct-o-star::before { color: #e7bc58; }
+.lct-o-star::before {
+  content: "★ ";
+  color: #e7bc58;
+}
 .lct-o-h, .lct-o-note { color: var(--lct-muted); }
 
 #lct-seek, #lct-preview {
@@ -885,23 +816,8 @@
   color: var(--lct-ink);
   box-shadow: var(--lct-shadow);
 }
-.lct-seek-stop { background: var(--lct-accent-soft); color: var(--lct-accent); }
-.lct-seek-stop:hover { background: color-mix(in srgb, var(--lct-accent) 26%, transparent); }
 .lct-p-head, .lct-p-note { border-color: var(--lct-line); }
-.lct-p-title { color: var(--lct-accent); }
-.lct-p-close { border-color: var(--lct-line); color: var(--lct-muted); }
 .lct-p-close:hover { background: var(--lct-accent-soft); color: var(--lct-accent); }
-.lct-p-note { color: var(--lct-muted); }
-
-#lct-chatcard {
-  border-color: var(--lct-line);
-  border-radius: var(--lct-radius);
-  background: var(--lct-field), var(--lct-surface-strong);
-  color: var(--lct-ink);
-  box-shadow: var(--lct-shadow);
-  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
-}
-#lct-chatcard .lct-cc-badge { border-color: var(--lct-line); color: var(--lct-accent); }
 
 #lct-bridge {
   border-color: var(--lct-line);
@@ -917,18 +833,13 @@
 #lct-bridge input[type="text"]::placeholder { color: var(--lct-muted); }
 #lct-bridge .lct-b-meta,
 #lct-bridge .lct-b-note { color: var(--lct-muted); }
-#lct-bridge .lct-b-item { border: 1px solid transparent; border-radius: var(--lct-radius); }
 #lct-bridge .lct-b-item:hover { background: var(--lct-accent-soft); border-color: rgba(255, 93, 138, .12); }
-#lct-bridge .lct-b-title b { color: var(--lct-accent); }
-#lct-bridge .lct-b-ex { color: color-mix(in srgb, var(--lct-ink) 68%, transparent); }
-#lct-bridge .lct-b-item input[type="checkbox"] { accent-color: var(--lct-accent); }
-#lct-bridge .lct-b-insert {
-  border: 1px solid var(--lct-accent);
-  border-radius: var(--lct-radius);
-  background: var(--lct-accent);
-  color: #2a1018;
-  font-family: "Avenir Next", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+#lct-bridge .lct-b-title b {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+   flex: none;
+  color: var(--lct-accent);
 }
+#lct-bridge .lct-b-ex { color: color-mix(in srgb, var(--lct-ink) 68%, transparent); }
 #lct-bridge .lct-b-insert:hover { background: #ff86a6; }
 /* ===== Total Recall overlay — the cross-chat command surface =============
    Sized by measurement, not by a fixed max-height: the list animates open to
@@ -1268,10 +1179,21 @@
    border-box anywhere near the canvas. Everything expressive happens in the
    drawing — see draw() in content/minimap.js. */
 #lct-minimap {
+  position: fixed;
+  top: 70px;
+  bottom: 90px;
+  z-index: 2147483000;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
   top: clamp(64px, 12vh, 112px);
+  /* clear of the native scrollbar's hit zone, plus any rail the host owns */
   right: calc(10px + var(--lct-rail-inset, 0px));
   bottom: clamp(72px, 12vh, 116px);
   width: 40px;
+  /* load-bearing: flex's auto minimum makes the canvas backing store
+     (CSS px × dpr) a layout floor, so each draw grew the box and the next
+     draw grew it again. */
   min-height: 0;
   overflow: hidden;
   border: 1px solid transparent;
@@ -1330,21 +1252,6 @@
 #lct-minimap.lct-mm-rest:not(.lct-collapsed) #lct-export-bar { visibility: hidden; }
 #lct-minimap.lct-mm-rest:not(.lct-collapsed) #lct-mm-stage { padding: 6px 0 7px; }
 
-#lct-mm-toggle {
-  order: 0;
-  position: relative;
-  width: 100%;
-  height: 27px;
-  min-height: 27px;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: var(--lct-muted);
-  font: 400 15px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  opacity: .7;
-  transition: color 200ms cubic-bezier(.16, 1, .3, 1), opacity 200ms cubic-bezier(.16, 1, .3, 1);
-}
 /* Hairlines fade out before the edges — a full-width rule would box the panel
    into segments, which is the look this redesign is getting rid of. */
 #lct-mm-toggle::after {
@@ -1357,22 +1264,6 @@
 #lct-minimap.lct-collapsed #lct-mm-toggle::after { display: none; }
 #lct-mm-toggle:hover { background: transparent; color: var(--lct-accent); opacity: 1; }
 
-#lct-mm-count {
-  order: 1;
-  align-self: center;
-  min-width: 20px;
-  margin: 6px 0 2px;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;              /* a number, not a badge */
-  color: var(--lct-accent);
-  font: 500 8.5px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  letter-spacing: -.03em;
-  font-variant-numeric: tabular-nums;
-  opacity: .75;
-  transition: opacity 200ms cubic-bezier(.16, 1, .3, 1);
-}
 #lct-minimap:hover #lct-mm-count { opacity: 1; }
 
 #lct-mm-stage {
@@ -1382,13 +1273,6 @@
   display: flex;
   /* Tight: every px here comes straight out of the waveform's resolution. */
   padding: 6px 5px 7px;
-}
-#lct-mm-canvas {
-  flex: none;
-  width: 100%;
-  height: 100%;
-  min-height: 48px;
-  outline: none;
 }
 #lct-mm-canvas:focus-visible {
   outline: 2px solid var(--lct-accent);
@@ -1431,6 +1315,12 @@
 #lct-minimap #lct-export-bar button:active { transform: scale(.94); }
 
 #lct-mm-tooltip {
+  display: none;
+  position: fixed;
+  z-index: 2147483001;
+  pointer-events: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
   right: calc(54px + var(--lct-rail-inset, 0px));
   width: min(280px, calc(100vw - 72px));
   max-width: none;

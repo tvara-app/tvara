@@ -162,13 +162,24 @@
     }
 
     msgSet = new WeakSet();
-    for (const el of messages) msgSet.add(el);
     if (!n) return;
+
+    // Keyed once, not twice: the boundary scan and the stamping pass below both
+    // want every key, and on an id-less host keyOf(fresh) re-serialises the
+    // whole answer subtree — paid twice on the longest, still-growing messages.
+    // Membership rides along in the same pass rather than walking the list
+    // again; this runs on every engine tick, over the whole conversation.
+    const keys = new Array(n);
+    for (let i = 0; i < n; i++) {
+      const el = messages[i];
+      msgSet.add(el);
+      keys[i] = keyOf(el, i >= tailFrom);
+    }
 
     if (!settled) {
       // First scans of a conversation: everything already present is history,
       // not new. Snapshot it; only stamp what appears after we settle.
-      for (let i = 0; i < n; i++) baseline.add(keyOf(messages[i], i >= tailFrom));
+      for (let i = 0; i < n; i++) baseline.add(keys[i]);
       clearTimeout(settleTimer);
       settleTimer = setTimeout(() => {
         settled = true;
@@ -182,7 +193,7 @@
     // that the app just lazy-mounted.
     let lastKnown = -1;
     for (let i = n - 1; i >= 0; i--) {
-      const k = keyOf(messages[i], i >= tailFrom);
+      const k = keys[i];
       if (seen[k] || baseline.has(k) || exact[k]) {
         lastKnown = i;
         break;
@@ -191,7 +202,7 @@
 
     let dirty = false;
     for (let i = 0; i < n; i++) {
-      const k = keyOf(messages[i], i >= tailFrom);
+      const k = keys[i];
       if (seen[k] || baseline.has(k)) continue;
       if (lastKnown === -1) {
         // no anchors at all: brand-new chat → stamp; lost anchors → be honest

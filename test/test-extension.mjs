@@ -462,6 +462,7 @@ try {
   /* The entitlement issuer, signing with the same throwaway key the mirrored
      extension trusts. Mirrors the real Worker: bind to key + device, 90 days.
      `ent.mode` steers the branch a test wants. */
+  const TEST_KS = Buffer.alloc(32, 7).toString("base64");   // stable per-licence stamp secret
   const ent = { calls: [], mode: "ok" };
   const sha256Hex = async (value, bytes = 16) =>
     [...createHash("sha256").update(String(value)).digest().subarray(0, bytes)]
@@ -478,7 +479,7 @@ try {
     const claims = {
       v: 2, sub: await sha256Hex(body.license_key), dev: String(body.device || ""),
       plan: "pro", feat: ent.feat || ["archive.search", "archive.backup", "archive.restore"],
-      email: "buyer@example.com", iat: now, exp: now + (ent.ttlMs ?? 90 * 864e5), jti: "t1"
+      email: "buyer@example.com", ks: TEST_KS, iat: now, exp: now + (ent.ttlMs ?? 90 * 864e5), jti: "t1"
     };
     const payload = Buffer.from(JSON.stringify(claims));
     const sig = sign("sha256", payload, { key: priv, dsaEncoding: "ieee-p1363" });
@@ -717,7 +718,7 @@ try {
     const claims = {
       v: 2, sub: await sha256Hex(key), dev: await sha256Hex(deviceId), plan: "pro",
       feat: ["archive.search", "archive.backup", "archive.restore"],
-      email: "buyer@example.com", iat: now, exp: now + 90 * 864e5, jti: "seed", ...over
+      email: "buyer@example.com", ks: TEST_KS, iat: now, exp: now + 90 * 864e5, jti: "seed", ...over
     };
     const payload = Buffer.from(JSON.stringify(claims));
     const sig = sign("sha256", payload, { key: priv, dsaEncoding: "ieee-p1363" });
@@ -2292,13 +2293,23 @@ try {
   t("B11 wrong reinstall-backup passphrase cannot change the archive",
     /Wrong passphrase|altered/.test(await recall.textContent("#restore-status")));
 
+  /* Opening a v3 file needs the entitlement stamp secret, fetched exactly as
+     the page fetches it: from the worker, behind the gate. */
+  const stampSecret = await recall.evaluate(async () => {
+    const res = await new Promise((r) => chrome.runtime.sendMessage({ type: "archive-stamp" }, r));
+    return res && res.secret ? res.secret : null;
+  });
+  t("B11 the stamp secret is only handed out behind the gate", typeof stampSecret === "string");
+
   // The envelope is the only copy of the archive that ever leaves the browser,
   // so it has to survive an attacker holding the file and editing it freely.
   const backupJson = readFileSync(backupPath, "utf8");
-  const tamper = await recall.evaluate(async ({ json, pass }) => {
+  const tamper = await recall.evaluate(async ({ json, pass, SECRET }) => {
     const C = self.LCTBackupCrypto;
     const out = {};
-    const roundTrip = await C.open(json, pass);
+    const stampKey = await crypto.subtle.importKey("raw", C.base64ToBytes(SECRET),
+      { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+    const roundTrip = await C.open(json, pass, { stampKey });
     out.roundTrip = roundTrip.chats.length > 0;
     out.version = JSON.parse(json).version;
     const bend = async (mutate) => {
@@ -2317,8 +2328,8 @@ try {
     out.keySwap = await bend((e) => { e.wrap.key = e.wrap.key.slice(0, -6) + "AAAAAA"; });
     out.body = await bend((e) => { e.payload = e.payload.slice(0, -6) + "AAAAAA"; });
     return out;
-  }, { json: backupJson, pass: reinstallPassphrase });
-  t("B11 backup envelope is v2 (wrapped file key, authenticated header)", tamper.version === 2, JSON.stringify(tamper.version));
+  }, { json: backupJson, pass: reinstallPassphrase, SECRET: stampSecret });
+  t("B11 backup envelope is v3 (wrapped key, authenticated header, entitlement stamp)", tamper.version === 3, JSON.stringify(tamper.version));
   t("B11 backup decrypts with the right passphrase", tamper.roundTrip === true);
   t("B11 backup refuses a weakened KDF outright", /unsafe encryption/.test(tamper.floor), tamper.floor);
   t("B11 backup rejects a KDF downgrade at the tag", tamper.downgrade !== "accepted", tamper.downgrade);
@@ -2390,18 +2401,20 @@ try {
     .find((text) => text.startsWith("{") && text.includes("lct-backup"));
   t("B11 the scheduled pass actually wrote a backup file", !!autoJson, JSON.stringify(auto.paths));
   if (autoJson) {
-    const opened = await recall.evaluate(async ({ json, pass }) => {
+    const opened = await recall.evaluate(async ({ json, pass, SECRET }) => {
       const out = { version: JSON.parse(json).version };
+      const stampKey = await crypto.subtle.importKey("raw",
+        self.LCTBackupCrypto.base64ToBytes(SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
       try {
-        const snapshot = await self.LCTBackupCrypto.open(json, pass);
+        const snapshot = await self.LCTBackupCrypto.open(json, pass, { stampKey });
         out.chats = snapshot.chats.length;
       } catch (error) { out.error = String(error.message || error); }
-      try { await self.LCTBackupCrypto.open(json, "not the scheduled passphrase"); out.wrong = "accepted"; }
+      try { await self.LCTBackupCrypto.open(json, "not the scheduled passphrase", { stampKey }); out.wrong = "accepted"; }
       catch (error) { out.wrong = String(error.message || error); }
       return out;
-    }, { json: autoJson, pass: autoPassphrase });
+    }, { json: autoJson, pass: autoPassphrase, SECRET: stampSecret });
     t("B11 the unattended file opens with the passphrase and nothing else",
-      opened.chats > 0 && opened.version === 2, JSON.stringify(opened));
+      opened.chats > 0 && opened.version === 3, JSON.stringify(opened));
     t("B11 the unattended file is unreadable without it", opened.wrong !== "accepted", opened.wrong);
   }
 
@@ -2574,6 +2587,88 @@ try {
   t("B13 wiping local storage does not mint a second trial",
     trialFirst.until > 0 && trialSecond.until === trialFirst.until,
     JSON.stringify({ trialFirst, trialSecond }));
+
+  /* ---- B14. Adversarial probe: the DevTools console, locked ----
+     Everything here is one line someone can paste into the console on our own
+     extension page. No file patching, no repacking. Ground truth, not theory. */
+
+  await pop.evaluate(async () => {
+    await chrome.storage.local.remove(["license", "lct-entitlement-v2"]);
+    await chrome.storage.local.remove("lct-trial-v2");
+    await chrome.storage.sync.remove("lct-trial-v2");
+  });
+  const recall2 = await ctx.newPage();
+  await recall2.goto(`${POPUP.replace("/popup/popup.html", "/recall.html")}`);
+  await recall2.waitForSelector("#core-locked:not([hidden])");
+
+  const probe = await recall2.evaluate(async () => {
+    const out = {};
+    // 1. the convenience helper the page still ships
+    try { out.helper = (await self.LCTRecallDB.getAll()).length; }
+    catch (e) { out.helper = "blocked: " + e.message; }
+    // 2. hand-rolled cursor — same origin, no helper needed
+    try {
+      out.raw = await new Promise((res, rej) => {
+        const r = indexedDB.open("lct-recall");
+        r.onerror = () => rej(new Error("open failed"));
+        r.onsuccess = () => {
+          const all = r.result.transaction("chats", "readonly").objectStore("chats").getAll();
+          all.onsuccess = () => res(all.result.length);
+          all.onerror = () => rej(new Error("read failed"));
+        };
+      });
+    } catch (e) { out.raw = "blocked: " + e.message; }
+    // 3. seal a backup from the RAW read above — the helper being gone must
+    //    not be what saves us; seal() itself has to refuse.
+    try {
+      const chats = await new Promise((res, rej) => {
+        const r = indexedDB.open("lct-recall");
+        r.onerror = () => rej(new Error("open failed"));
+        r.onsuccess = () => {
+          const all = r.result.transaction("chats", "readonly").objectStore("chats").getAll();
+          all.onsuccess = () => res(all.result);
+          all.onerror = () => rej(new Error("read failed"));
+        };
+      });
+      const sealed = await self.LCTBackupCrypto.seal({
+        format: self.LCTBackupCrypto.PAYLOAD_FORMAT, version: 1,
+        createdAt: Date.now(), chats, ledger: { version: 2, checkpoints: {} }, profile: null
+      }, { passphrase: "correct horse battery staple" });
+      out.seal = sealed.json.length > 100 ? "PRODUCED A VALID BACKUP" : "short";
+    } catch (e) { out.seal = "blocked: " + e.message; }
+    // 4. overwrite the verdict object — identity, not just shape
+    try {
+      const before = self.LCTEntitlement;
+      self.LCTEntitlement = { evaluate: async () => ({ entitled: true }) };
+      out.identity = self.LCTEntitlement === before ? "held" : "REPLACED";
+    } catch (e) { out.identity = "held"; }
+    return out;
+  });
+  console.log("    B14 probe →", JSON.stringify(probe));
+
+  // The one-line read helper is gone from the page.
+  t("B14 the page no longer ships a getAll() helper",
+    typeof probe.helper === "string" && probe.helper.startsWith("blocked:"),
+    String(probe.helper));
+
+  // Sealing from a locked console must not produce a usable backup.
+  t("B14 a locked console cannot seal a backup",
+    typeof probe.seal === "string" && probe.seal.startsWith("blocked:"),
+    String(probe.seal));
+
+  // The frozen verdict object survives assignment.
+  t("B14 the entitlement API cannot be replaced", probe.identity === "held",
+    String(probe.identity));
+
+  // Raw IndexedDB is readable and always will be — asserted so the limit is
+  // recorded rather than assumed. The gate is on the backup/restore CYCLE.
+  t("B14 raw IndexedDB stays readable (documented limit, not a regression)",
+    typeof probe.raw === "number");
+
+  await recall2.close();
+  // B14 deliberately locked this install; hand the trial back for B12.
+  await pop.evaluate(() => chrome.runtime.sendMessage({ type: "trial-start" }));
+
 
   /* ============ B12. Context Bridge (cross-platform prompt injection) ====== */
   await page.reload(); // pick up the restored trial
