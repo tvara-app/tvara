@@ -22,7 +22,8 @@
     "attach:watch": "node tools/attach.mjs --watch",
     "fresh": "node tools/fresh-install.mjs",
     "live": "node tools/live-check.mjs",
-    "sync-check": "node tools/sync-check.mjs"
+    "sync-check": "node tools/sync-check.mjs",
+    "release": "node tools/release.mjs"
   },
   "devDependencies": {
     "playwright": "^1.50.0"
