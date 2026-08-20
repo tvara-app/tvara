@@ -29,7 +29,7 @@ Long conversations grind AI chat UIs to a halt. Every message stays fully render
 
 ## Pricing
 
-The speed engine is **free everywhere, forever**. All tools are free on ChatGPT (and on Perplexity, DeepSeek & Grok while support is experimental). A **7-day free trial**. One click in the popup, no signup, unlocks everything on every platform. **Pro, $3 once, no subscription**, Total Recall on every platform (including ChatGPT) + all tools on Claude & Gemini, forever.
+The speed engine is **free everywhere, forever**. All tools are free on ChatGPT (and on Perplexity, DeepSeek & Grok while support is experimental). A **7-day free trial**. One click in the popup, no signup, unlocks everything on every platform. **Pro, $1 once, no subscription**, Total Recall on every platform (including ChatGPT) + all tools on Claude & Gemini, forever.
 
 ## 🔒 Privacy · provable, not promised
 

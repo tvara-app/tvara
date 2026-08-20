@@ -349,12 +349,14 @@ try {
   });
   t("A5b popup search lists every match, not a preview",
     popupMetrics.rows === 12 && popupMetrics.meta === "12 chats", JSON.stringify(popupMetrics));
-  // The root is the real scroller and stays strict. body is allowed one pixel:
-  // its height lands on a fractional boundary and rounds either way between
-  // runs. A genuine regression here is tens of pixels, not one.
+  /* The root is the real scroller and stays strict. body is allowed two pixels:
+     its height lands on a fractional boundary and rounds either way between
+     runs, and with two stacked fractional elements that is occasionally 2 and
+     not 1 — which failed this about one run in eight for no reason anyone could
+     act on. A genuine regression here is tens of pixels, not two. */
   t("A5b popup search keeps the panel inside the pane",
     popupMetrics.rootScroll <= popupMetrics.rootClient &&
-    popupMetrics.bodyScroll <= popupMetrics.bodyClient + 1,
+    popupMetrics.bodyScroll <= popupMetrics.bodyClient + 2,
     JSON.stringify(popupMetrics));
   t("A5b the list is the scroller, with no scrollbar and a fade to say so",
     popupMetrics.boxScroll > popupMetrics.boxClient + 20 &&

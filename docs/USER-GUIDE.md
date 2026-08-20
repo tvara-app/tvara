@@ -312,7 +312,7 @@ your own scripts).
   click. Every tool unlocks on every platform, including Claude and Gemini.
   The popup counts down the days; when it ends, free platforms stay free and
   the speed engine stays on everywhere.
-- **Pro, $3, once, forever:** no subscription, no account. Buying gets you a
+- **Pro, $1, once, forever:** no subscription, no account. Buying gets you a
   license key by email, tied to that address.
 - **Activating:** popup → paste the key → **Activate**. The extension asks the
   payment provider's licence server to register this device, then stores the
@@ -414,7 +414,7 @@ when you jump.
 
 **Does the trial reset if I reinstall?**
 Trial state lives in local extension storage. We keep it honest but simple,
-it's a convenience, not a fortress. The product costs $3 once; if you find
+it's a convenience, not a fortress. The product costs $1 once; if you find
 yourself gaming the trial twice, it's probably worth the coffee money.
 
 **Something glitched on a site update.**
