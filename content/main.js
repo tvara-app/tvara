@@ -156,6 +156,7 @@
   // our node out during its own re-renders. (A prior "only-on-content-change"
   // gate here made the minimap vanish on some chats — never again.)
   function onEngineUpdate(messages, windowedCount) {
+    if (!contextAlive()) { showStaleNotice(); return; }
     lastMessages = messages;
     syncTheme(); // hosts flip theme without reloading
     syncRail();  // the host's rail shows up once the chat gets long (throttled)
@@ -521,6 +522,37 @@
 
   function showUpgradeNote() {
     flashNote(`Tools on this site are Pro: ${self.LCTProduct.PRICE} once, forever. Open the extension popup to unlock.`);
+  }
+
+  /* ---------- stale context ----------
+     Reloading or removing-then-reinstalling the extension (chrome://extensions,
+     or Chrome updating it) does not touch tabs that were already open — their
+     content script keeps running, but chrome.runtime is disconnected from
+     anything. Every message call in this file would then silently go nowhere:
+     search opens with nothing to ask, Bridge and Recall find no worker to
+     answer, and it reads as "broken" with zero errors anywhere, because
+     nothing threw — the calls just never had anywhere to land. There is no
+     way to reconnect a content script to a new extension instance short of
+     the browser mounting a fresh one, so the only honest fix is telling the
+     reader plainly and giving them the one click that actually works. */
+  let staleShown = false;
+  function contextAlive() {
+    try { return !!(chrome.runtime && chrome.runtime.id); } catch { return false; }
+  }
+  function showStaleNotice() {
+    if (staleShown) return;
+    staleShown = true;
+    const n = document.createElement("div");
+    n.id = "lct-stale";
+    const msg = document.createElement("span");
+    msg.textContent = "Tvara was updated. Refresh this tab to keep using it.";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = "Refresh";
+    btn.addEventListener("click", () => location.reload());
+    n.append(msg, btn);
+    document.documentElement.appendChild(n);
+    requestAnimationFrame(() => n.classList.add("lct-stale-show"));
   }
 
   let noteTimer = null;
@@ -988,4 +1020,9 @@
     // a few minutes — see carry.js.
     if (state.enabled && toolsUnlocked()) self.LCTCarry.deliver();
   });
+
+  // The onEngineUpdate check above only runs when the host mutates the page —
+  // a tab left open on a chat nobody is typing in can sit invalidated for a
+  // long time with no tick to catch it. This runs regardless of page activity.
+  setInterval(() => { if (!contextAlive()) showStaleNotice(); }, 4000);
 })();
