@@ -32,7 +32,7 @@ import { createInterface } from "node:readline/promises";
 import { spawn } from "node:child_process";
 import { chromium } from "playwright";
 
-const EXT = join(homedir(), "tvara");
+const EXT = join(import.meta.dirname, "..");
 const HOME = join(homedir(), ".lct-verify");
 const PROFILE = join(HOME, "profile");
 const OUT = join(EXT, "test", ".work", "live");

@@ -1,0 +1,64 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: "0 9 * * *" # 09:00 UTC daily
+  workflow_dispatch:
+
+jobs:
+  # Layer 2 fuzz + Layer 3 security now run inside `npm test` itself (see
+  # ci.yml) — every PR, not just nightly, after a cross-session review found
+  # the previous nightly-only placement meant `npm run ship` could regress a
+  # fixed vulnerability and ship before the one test that would catch it ever
+  # ran. Not duplicated here.
+  idb-edge-cases:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Fast logic-level edge cases (real-scale timing is the separate,
+      # longer `perf` job below — different failure modes, both worth having).
+      - run: node test/idb-fake.mjs
+
+  matrix-ci-slice:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      # The 3,730-row CI-automatable slice (synthetic host + isolated
+      # surfaces — no real provider credentials needed), sharded 10 ways.
+      # The other 16,920 real-provider rows are deliberately never run here —
+      # see tools/live-check.mjs --matrix and Item 0.
+      - run: node test/test-matrix.mjs --shard=${{ matrix.shard }}/10
+
+  perf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: node test/perf-idb-scale.mjs
+      - run: node tools/pack.mjs
+      - uses: treosh/lighthouse-ci-action@v11
+        with:
+          configPath: ./lighthouserc.json

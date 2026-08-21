@@ -3,7 +3,6 @@
    Node 18+ exposes WebCrypto as globalThis.crypto, same API the browser uses. */
 import { readFileSync } from "node:fs";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import vm from "node:vm";
 

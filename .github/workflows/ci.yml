@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  fast-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+
+      # Unblocked by Phase 1's repo-root fix — this now runs from any clone path.
+      # Now includes the full Layer 3 security suite (moved here from
+      # nightly-only after a cross-session review found the ship gate
+      # — npm test && pack && preflight — could regress a fixed
+      # vulnerability, get a green run, and ship, with the only thing that
+      # would have caught it running hours later against an already-shipped
+      # tree. A check that exists but isn't in the path that matters isn't
+      # a check.
+      - run: npm test
+
+      - run: npm run lint
+      - run: npm run lint:webext
+
+      # ~50-100 row PR-gate smoke slice: one row per (surface × lifecycle) at
+      # state in {free, pro}, host=synthetic. Seconds, not the full 20,650.
+      - run: node test/test-matrix.mjs --smoke
+
+      # New-commits-only, not full history — Item 0's own purge is a separate,
+      # human-approved action, not something this gate re-litigates every PR.
+      - name: Gitleaks (new commits only)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  semgrep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: semgrep/semgrep-action@v1
+        with:
+          config: p/javascript p/xss
+
+  # Tarnish (mandatoryprogrammer/tarnish) is recommended for manifest/CSP
+  # auditing of the packed build but isn't wired into CI here — its CLI
+  # invocation wasn't verified against this exact repo layout during this
+  # pass. Run it manually against dist/*.zip periodically until that's done.

@@ -1,0 +1,38 @@
+name: Weekly
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Monday 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  supply-chain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google/osv-scanner-action/osv-scanner-action@v1
+        with:
+          scan-args: |-
+            --lockfile=./package-lock.json
+
+  mutation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Scoped to the Layer 2/3 files this pass added, per stryker.conf.json —
+      # NOT the existing ~6,500-line hand-rolled suite, to keep runtime sane.
+      - run: npx stryker run
+
+  live-canary-reminder:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "::notice::The 16,920 real-provider Layer-4 matrix rows and the 6-provider adapter health check are NOT automated (Item 0: no session-cookie-bearing profiles in CI)."
+          echo "::notice::Run locally: node tools/live-check.mjs --matrix   (after tools/chrome-clone.sh + signing into your own accounts)."

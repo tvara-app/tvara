@@ -1,0 +1,25 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "packageManager": "npm",
+  "mutate": [
+    "lib/quota.js",
+    "lib/backup-crypto.js"
+  ],
+  "testRunner": "command",
+  "commandRunner": {
+    "command": "node test/fuzz-quota.mjs && node test/fuzz-backup-crypto.mjs"
+  },
+  "ignorePatterns": [
+    "test/.work*/**",
+    "dist/**",
+    ".git/**",
+    "docs/**",
+    "icons/**"
+  ],
+  "coverageAnalysis": "off",
+  "timeoutMS": 60000,
+  "reporters": ["html", "clear-text", "progress"],
+  "htmlReporter": {
+    "fileName": "test/.work/mutation-report.html"
+  }
+}

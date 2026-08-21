@@ -4,12 +4,11 @@
    extension running on test/demo.html. Output: test/.work/store/            */
 import { createHash } from "node:crypto";
 import { readFileSync, mkdirSync, rmSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { chromium } from "playwright";
 
-const EXT = join(homedir(), "tvara");
+const EXT = join(import.meta.dirname, "..");
 /* The price comes from lib/product.js, the one place it is defined. Typed in
    here instead, the pricing screenshot quietly kept advertising the old figure
    after the price changed — a store listing charging something else. */

@@ -44,6 +44,38 @@ const only = (() => {
 })();
 const wanted = PLATFORMS.filter((p) => !only || only.includes(p.id));
 
+/* --matrix: cross-reference this run against the Layer-4 combinatorial
+   matrix's real-provider slice (test/matrix-rows.mjs) — the ~82% of rows
+   that need a real, already-logged-in session and are deliberately kept off
+   CI (see the plan's Item 0). This doesn't drive those rows itself (that's
+   real UI-matrix work, not a health ping); it reports which (surface, host)
+   pairs the matrix wants covered, so a human running this attended check
+   knows what a "healthy" verdict here does and doesn't stand in for.
+   Defensive: matrix-rows.mjs's shape has changed during active development
+   on this repo — a failure here degrades to a note, never blocks the actual
+   health check below, which has run standalone since before the matrix
+   existed and must keep working if it's gone or reshaped again. */
+async function matrixRealProviderSummary() {
+  try {
+    const mod = await import(join(root, "test", "matrix-rows.mjs"));
+    if (typeof mod.generateRows !== "function") return null;
+    const rows = mod.generateRows();
+    const REAL_HOSTS = new Set(PLATFORMS.map((p) => p.id));
+    const relevant = rows.filter((r) => REAL_HOSTS.has(r.host));
+    if (!relevant.length) return null;
+    const bySurfaceHost = new Map(); // "surface|host" -> count
+    for (const r of relevant) {
+      const k = `${r.surface}|${r.host}`;
+      bySurfaceHost.set(k, (bySurfaceHost.get(k) || 0) + 1);
+    }
+    const surfaces = [...new Set(relevant.map((r) => r.surface))].sort();
+    return { totalRows: relevant.length, surfaces, bySurfaceHost };
+  } catch (err) {
+    return { error: String(err && err.message || err) };
+  }
+}
+const showMatrix = process.argv.includes("--matrix");
+
 const browser = await chromium.connectOverCDP(`http://127.0.0.1:${PORT}`).catch(() => null);
 if (!browser) {
   console.error(`✋ Nothing is listening on 127.0.0.1:${PORT}.`);
@@ -216,6 +248,30 @@ mkdirSync(OUT, { recursive: true });
 writeFileSync(join(OUT, "live-check.json"), JSON.stringify(rows, null, 2));
 console.log(`\n  report: ${join(OUT, "live-check.json")}`);
 console.log(`  ${bad} broken, ${unchecked} not checked, ${rows.length - bad - unchecked} healthy\n`);
+
+if (showMatrix) {
+  const m = await matrixRealProviderSummary();
+  console.log("─".repeat(66));
+  if (!m) {
+    console.log("\n  --matrix: test/matrix-rows.mjs not found or has no generateRows() export.");
+  } else if (m.error) {
+    console.log(`\n  --matrix: could not read the combinatorial matrix (${m.error})`);
+    console.log("  This is informational only — the health check above is unaffected.");
+  } else {
+    console.log(`\n  Layer-4 combinatorial matrix: ${m.totalRows} real-provider rows across ` +
+      `${m.surfaces.length} injected surface(s) (${m.surfaces.join(", ")}) — NOT driven by this run.`);
+    console.log("  This attended health check is the only automated signal these rows get;");
+    console.log("  the rows themselves (State × Render × A11y × Lifecycle per surface × host)");
+    console.log("  are exercised manually or via a follow-up attended pass, never in CI:\n");
+    for (const p of wanted) {
+      const surfacesForHost = m.surfaces.filter((s) => m.bySurfaceHost.has(`${s}|${p.id}`));
+      const rowCount = surfacesForHost.reduce((n, s) => n + m.bySurfaceHost.get(`${s}|${p.id}`), 0);
+      const r = rows.find((x) => x.id === p.id);
+      const healthy = r && !r.error && !r.signedOut && r.h && typeof r.h.messages === "number" && r.h.messages > 0;
+      console.log(`    ${healthy ? "✓" : "·"} ${p.name.padEnd(11)} adapter ${healthy ? "healthy" : "not confirmed this run"} — ${rowCount} matrix row(s) across ${surfacesForHost.length} surface(s) rely on that`);
+    }
+  }
+}
 
 /* Detach, do not close. browser.close() on a connectOverCDP session kills the
    Chrome it attached to, which is the user's cloned browser with their real
