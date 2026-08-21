@@ -5,3 +5,4 @@ node_modules/
 dist/
 store/
 *.mov
+.stryker-tmp/

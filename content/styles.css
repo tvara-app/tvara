@@ -596,7 +596,15 @@
   color: var(--lct-ink);
   font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
-#lct-carry .lct-c-title { font-weight: 650; font-size: 15px; }
+#lct-carry .lct-c-head { position: relative; }
+#lct-carry .lct-c-close {
+  position: absolute; top: -6px; right: -6px;
+  width: 26px; height: 26px; padding: 0; border: none; background: none;
+  color: var(--lct-muted); font-size: 20px; line-height: 1; cursor: pointer;
+  border-radius: 50%;
+}
+#lct-carry .lct-c-close:hover { background: var(--lct-accent-soft); color: var(--lct-ink); }
+#lct-carry .lct-c-title { font-weight: 650; font-size: 15px; padding-right: 22px; }
 #lct-carry .lct-c-sub { margin-top: 5px; color: var(--lct-muted); font-size: 12.5px; }
 #lct-carry .lct-c-opts { margin: 14px 0 4px; display: grid; gap: 2px; }
 #lct-carry .lct-c-opt {

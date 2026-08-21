@@ -8,6 +8,18 @@
   const send = (msg) => new Promise((res) => chrome.runtime.sendMessage(msg, res));
   const crypt = self.LCTBackupCrypto;
 
+  // clampChat() (bg.js) stores whatever host a record claims — a length clamp,
+  // not an allowlist, because dropping an honest-but-malformed record at write
+  // time would silently lose the user's own chat history, and this same field
+  // also flows through sync/export. The one place a bad host can actually do
+  // harm is here, on click, where it becomes a real navigation — so the
+  // allowlist lives at the point of use. Exact match only: a suffix/contains
+  // check admits "evil-claude.ai" or "claude.ai@evil.com".
+  const KNOWN_CHAT_HOSTS = new Set([
+    "chatgpt.com", "chat.openai.com", "claude.ai",
+    "chat.deepseek.com", "grok.com", "www.perplexity.ai", "gemini.google.com"
+  ]);
+
   const setStatus = (id, text, kind = "") => {
     const node = $(id);
     node.className = "status-copy" + (kind ? " " + kind : "");
@@ -164,6 +176,11 @@
       (res.createdAt ? ` · started ${fmtWhen(res.createdAt)}` : "");
     div.append(top, snip, info);
     div.addEventListener("click", async () => {
+      // A record's host is only ever trusted for navigation if it exactly
+      // matches a real provider — see KNOWN_CHAT_HOSTS above. Refuse to
+      // navigate rather than silently drop the record; the click just does
+      // nothing, and the archive/search/export paths are untouched.
+      if (!KNOWN_CHAT_HOSTS.has(res.host)) return;
       // stash the query so the destination chat opens its in-chat search on it
       await chrome.storage.local.set({
         "recall-jump": { host: res.host, path: res.path, q: $("q").value.trim(), at: Date.now() }

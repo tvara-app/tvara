@@ -423,12 +423,19 @@
 
   function injectExportButtons() {
     const mm = document.getElementById("lct-minimap");
+    // The minimap hides itself (display:none) under 4 messages, under a host
+    // modal, or in a cramped window — see minimap.js. A bar docked inside it
+    // at that point collapses to 0x0 with it and stops being clickable, even
+    // though the toolbar's own features have nothing to do with that rule.
+    const mmVisible = !!mm && mm.style.display !== "none";
     let bar = document.getElementById("lct-export-bar");
     if (bar) {
-      // re-dock into the minimap if one (re)appeared
-      if (mm && bar.parentElement !== mm) {
+      if (mmVisible && bar.parentElement !== mm) {
         bar.classList.remove("lct-floating");
         mm.appendChild(bar);
+      } else if (!mmVisible && !bar.classList.contains("lct-floating")) {
+        bar.classList.add("lct-floating");
+        document.documentElement.appendChild(bar);
       }
       return;
     }
@@ -448,7 +455,7 @@
       <button data-act="carry" title="Continue in a new chat: carry the goal, your starred messages and the last few turns into a fresh conversation" aria-label="Continue in a new chat">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h13"/><path d="m13 6 6 6-6 6"/><path d="M20 4v16" opacity=".45"/></svg>
       </button>
-      <button data-act="history" title="Mount every older message in the page itself, for the site's own Ctrl+F and a full backup. The map is already complete without this." aria-label="Mount every older message in the page">
+      <button data-act="history" title="Mount every older message in the page itself, so the site's own Ctrl+F can find it too. Tvara's own search and backups already cover the full conversation without this." aria-label="Mount every older message in the page">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V5"/><path d="m6 11 6-6 6 6"/><path d="M4 3h16"/></svg>
       </button>
       <button data-fmt="md" title="Backup chat as Markdown" aria-label="Backup chat as Markdown">
@@ -458,7 +465,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5c0 1.1.9 2 2 2h1"/><path d="M16 21h1a2 2 0 0 0 2-2v-5c0-1.1.9-2 2-2a2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1"/></svg>
       </button>
     `;
-    if (mm) {
+    if (mmVisible) {
       mm.appendChild(bar);
     } else {
       bar.classList.add("lct-floating");
@@ -648,7 +655,7 @@
 
   function health() {
     let messages = [];
-    try { messages = adapter.messages() || []; } catch (e) { /* adapter threw */ }
+    try { messages = adapter.messages() || []; } catch (_) { /* adapter threw */ }
     // What the selectors matched before the empty-turn filter ran, so the gap
     // between "elements on the page" and "messages" is visible rather than
     // quietly absorbed.

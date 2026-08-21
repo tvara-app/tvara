@@ -19,7 +19,7 @@
  * computed locally and deterministically:
  *
  *   · turns that are ABOUT what the conversation is about — measured by how
- *     much of the conversation's own vocabulary they carry (tf-idf against the
+ *     much of the conversation's own vocabulary they carry (BM25 against the
  *     whole thread, cosine to its centroid), so a turn using the words the
  *     thread keeps returning to scores above small talk
  *   · turns where something was DECIDED — a correction, a constraint, a choice
@@ -44,9 +44,45 @@
     "under again further once ok okay yes yeah thanks thank please sure right good great nice cool sorry hi hello hey")
     .split(" "));
 
-  const tokens = (s) => String(s || "").toLowerCase()
-    .replace(/```[\s\S]*?```/g, " ")            // code is scored separately
-    .match(/[a-z0-9][a-z0-9'+#.-]{1,}/g) || [];
+  /* An ASCII-only pattern returned NOTHING for a thread written in Chinese,
+     Japanese, Russian or Hindi: every turn scored zero centrality, the tf-idf
+     machinery was inert, and selection quietly degraded to "whichever user
+     turn is longest" — the heuristic this file exists to replace. Han and Kana
+     also have no spaces to split on, so those runs get the unigram+bigram
+     treatment below, which is what every search engine does with them. */
+  const CJK = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff66-\uff9f]/;
+  // \p{M} matters: Devanagari, Arabic and Thai carry their vowels as combining
+  // marks, and a letters-only class cuts "मुझे" into two one-letter fragments.
+  const WORD = /[\p{L}\p{N}][\p{L}\p{N}\p{M}'+#.-]*/gu;
+
+  const tokens = (s) => {
+    const src = String(s || "").toLowerCase()
+      .replace(/```[\s\S]*?```/g, " ");         // code is scored separately
+    const out = [];
+    for (const w of src.match(WORD) || []) {
+      if (CJK.test(w)) {
+        /* Unigrams AND overlapping bigrams, which is what Lucene's CJK
+           analyser emits. Bigrams approximate the word boundaries a script
+           without spaces does not give you — "限流" is a term, "限" and "流"
+           on their own are two common characters — and keeping the unigrams
+           means a single-character term is still findable. */
+        for (let i = 0; i < w.length; i++) {
+          out.push(w[i]);
+          if (i + 1 < w.length) out.push(w[i] + w[i + 1]);
+        }
+      } else if (w.length > 1) out.push(w);
+    }
+    return out;
+  };
+
+  const norm = (s) => String(s || "").replace(/\s+/g, " ").trim().toLowerCase();
+
+  /* Character counts are not comparable across scripts. Sixty Han characters
+     is a full paragraph; sixty Latin characters is half a sentence. Scoring
+     both against the same "too small to say much" threshold threw away the one
+     turn in a Chinese thread where anything was decided. */
+  const CJK_ALL = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff66-\uff9f]/g;
+  const weightedLen = (s) => s.length + 1.5 * ((s.match(CJK_ALL) || []).length);
 
   /** A turn where something was settled rather than explored. */
   const DECIDED = new RegExp("\\b(instead|actually|don'?t|do not|never|always|must|need to|has to"
@@ -63,24 +99,67 @@
    *  version of each, not the last version of whichever was pasted most
    *  recently. Keyed on a signature so an edited block replaces its ancestor. */
   function codeBlocks(records, max) {
-    const byKey = new Map();
-    records.forEach((r, order) => {
-      const text = String(r.text || "");
-      const re = /```([^\n`]*)\n?([\s\S]*?)```/g;
-      let m;
-      while ((m = re.exec(text))) {
-        const body = (m[2] || "").trim();
+    /* Identity used to be the first meaningful line alone, and that silently
+       ATE files: two unrelated JSON configs both open with "{", two Python
+       modules both open with "import os", two React components both open with
+       'import React from "react"' — one overwrote the other and vanished from
+       the handover. A revision of the same file keeps most of its body, so ask
+       the body as well as the opening line. */
+    const kept = [];
+    /* Opening line -> the blocks that share it, so a new block is compared only
+       against the handful it could possibly be a revision of, not against a
+       sliding window of everything recent. On a 3,000-block paste that is the
+       difference between linear and quadratic. */
+    const byOpening = new Map();
+    const SIBLINGS = 8;
+    (Array.isArray(records) ? records : []).forEach((r, order) => {
+      let text = "";
+      try { text = typeof r?.text === "string" ? r.text : ""; } catch { return; }
+      /* Scanned with indexOf rather than /```([^\n`]*)\n?([\s\S]*?)```/g.
+         That pattern is QUADRATIC on a fence that is never closed: the greedy
+         info-string class backtracks over every character, and each step
+         re-scans the rest of the message for a closing fence that is not
+         there. Measured at 438ms / 1754ms / 6915ms for 100k / 200k / 400k
+         characters — a paste with one stray ``` freezes the page's own thread,
+         and a megabyte of it for the better part of a minute. Every indexOf
+         below moves strictly forward, so this is one pass. */
+      for (let i = 0; ;) {
+        const open = text.indexOf("```", i);
+        if (open < 0) break;
+        const close = text.indexOf("```", open + 3);
+        if (close < 0) break;                           // unclosed: no block follows it
+        const nl = text.indexOf("\n", open + 3);
+        i = close + 3;
+        if (nl < 0 || nl > close) continue;             // inline ``x`` — no body to carry
+        const body = text.slice(nl + 1, close).trim();
         if (body.length < 40) continue;                 // a one-liner is not state
-        const lang = (m[1] || "").trim().split(/\s+/)[0] || "";
-        /* Identity of a block: the shape of its first meaningful line. Edits
-           change the body but rarely the declaration, so a later revision maps
-           to the same key and replaces the earlier one. */
-        const first = body.split("\n").find((l) => l.trim() && !/^[/#*<-]/.test(l.trim())) || body.slice(0, 60);
-        const key = lang + "|" + first.trim().replace(/\s+/g, " ").slice(0, 80);
-        byKey.set(key, { lang, body, order });          // later write wins
+        // Strip any extra fence characters first: a block wrapped in four
+        // backticks — which is what this extension's own handover emits, so it
+        // comes straight back in when that handover is pasted into a new chat
+        // — otherwise reports its language as "`".
+        const lang = text.slice(open + 3, nl).replace(/^`+/, "").trim().split(/\s+/)[0] || "";
+        const line = body.split("\n").find((l) => l.trim() && !/^[/#*<-]/.test(l.trim())) || body.slice(0, 60);
+        const first = line.trim().replace(/\s+/g, " ").slice(0, 80);
+        const sh = shingles(tokens(body));
+        const key = lang + "|" + first;
+        const siblings = byOpening.get(key);
+        let hit = -1;
+        // Same opening line AND still recognisably the same file: a revision.
+        if (siblings) {
+          for (let n = 0, k = siblings.length - 1; n < SIBLINGS && k >= 0; n++, k--) {
+            const p = kept[siblings[k]];
+            if (overlaps(p.sh, sh) > 0.5 || (!p.sh.size && !sh.size)) { hit = siblings[k]; break; }
+          }
+        }
+        const entry = { lang, body, order, sh };
+        if (hit >= 0) { kept[hit] = entry; continue; }   // later revision wins
+        kept.push(entry);
+        if (siblings) siblings.push(kept.length - 1);
+        else byOpening.set(key, [kept.length - 1]);
       }
     });
-    return [...byKey.values()].sort((a, b) => a.order - b.order).slice(-max);
+    return kept.sort((a, b) => a.order - b.order).slice(-max)
+      .map(({ lang, body, order }) => ({ lang, body, order }));
   }
 
   /* ---------- near-duplicate removal ---------- */
@@ -99,6 +178,45 @@
     return shared / small.size;                          // containment, not Jaccard
   }
 
+  /**
+   * "Is this shingle set a near-duplicate of ANY set I hold?"
+   *
+   * Asked the obvious way that is one overlaps() per held set, and on a thread
+   * that restates itself the question gets asked for every turn — so the cost
+   * is (turns × held × shingles). Inverting it, shingle → which sets contain
+   * it, answers the same question with ONE pass over the incoming set and a
+   * tally, whatever the number of held sets. Same containment, same threshold,
+   * same answer; the work is proportional to what actually matched.
+   */
+  function DupeIndex(threshold) {
+    const where = new Map();                             // shingle -> set ids
+    const sizes = [];
+    return {
+      add(sh) {
+        const id = sizes.push(sh.size) - 1;
+        for (const s of sh) {
+          const at = where.get(s);
+          if (at) at.push(id); else where.set(s, [id]);
+        }
+      },
+      hits(sh) {
+        if (!sizes.length || !sh.size) return false;
+        const tally = new Map();
+        for (const s of sh) {
+          const at = where.get(s);
+          if (!at) continue;
+          for (const id of at) {
+            const shared = (tally.get(id) || 0) + 1;
+            // Containment against the SMALLER set, exactly as overlaps() does.
+            if (shared / Math.min(sizes[id], sh.size) > threshold) return true;
+            tally.set(id, shared);
+          }
+        }
+        return false;
+      }
+    };
+  }
+
   /* ---------- selection ---------- */
 
   /**
@@ -108,27 +226,67 @@
    */
   function distil(records, opts) {
     const o = opts || {};
-    const recs = (records || []).filter((r) => r && r.text && !ACK.test(r.text.trim()));
-    const total = (records || []).length;
+    /* Whatever an adapter hands us. On a live page this has been a null, a
+       record whose text was an object, and an element proxy whose getter threw
+       on an unmounted node. A handover that carries less is fine; one that
+       throws carries nothing at all, and the caller's catch is silent. */
+    const list = Array.isArray(records) ? records : [];
+    const recs = [];
+    for (const raw of list) {
+      if (!raw) continue;
+      let text = null, role = "assistant";
+      try { text = typeof raw.text === "string" ? raw.text.trim() : null; } catch { continue; }
+      if (!text || ACK.test(text)) continue;
+      try { role = raw.role === "user" ? "user" : "assistant"; } catch { /* default */ }
+      recs.push({ role, text });
+    }
+    const total = list.length;
     if (!recs.length) return { goal: "", decisions: [], code: [], recent: [], covered: 0, total };
 
     /* Document frequency over turns, so a word used everywhere (the project's
        name, say) weighs less than one that marks a particular exchange. */
     const df = new Map();
-    const perTurn = recs.map((r) => {
-      const t = tokens(r.text).filter((w) => !STOP.has(w) && w.length > 2);
+    const lenOf = new Array(recs.length);
+    let totalLen = 0;
+    const perTurn = recs.map((r, i) => {
+      const t = tokens(r.text).filter((w) => !STOP.has(w) && (w.length > 2 || CJK.test(w)));
+      lenOf[i] = t.length;
+      totalLen += t.length;
       const tf = new Map();
       for (const w of t) tf.set(w, (tf.get(w) || 0) + 1);
       for (const w of tf.keys()) df.set(w, (df.get(w) || 0) + 1);
       return tf;
     });
     const N = recs.length;
-    const idf = (w) => Math.log(1 + N / (1 + (df.get(w) || 0)));
+    const avgLen = totalLen / N || 1;
+
+    /* BM25 rather than raw tf·idf. Raw counts let one turn that says "bucket"
+       eleven times outrank the turn that decided to use a bucket: the eleventh
+       mention is not eleven times the evidence. k1 saturates the count, b
+       normalises for turn length so a long answer does not out-score a short
+       decision on volume alone, and the BM25 idf falls away faster for a word
+       the whole thread uses. */
+    const K1 = 1.2, B = 0.75;
+    /* Both of these are asked once per (turn, term) by the centroid pass and
+       again by the scoring pass. The log and the length term do not change
+       between those calls, so compute each exactly once. */
+    const idfOf = new Map();
+    const idf = (w) => {
+      let v = idfOf.get(w);
+      if (v === undefined) {
+        const n = df.get(w) || 0;
+        v = Math.log(1 + (N - n + 0.5) / (n + 0.5));
+        idfOf.set(w, v);
+      }
+      return v;
+    };
+    const denom = lenOf.map((l) => K1 * (1 - B + B * (l / avgLen)));
+    const wOf = (n, i) => (n * (K1 + 1)) / (n + denom[i]);
 
     /* The conversation's own centre of mass, in its own words. */
     const centroid = new Map();
-    perTurn.forEach((tf) => {
-      for (const [w, n] of tf) centroid.set(w, (centroid.get(w) || 0) + n * idf(w));
+    perTurn.forEach((tf, i) => {
+      for (const [w, n] of tf) centroid.set(w, (centroid.get(w) || 0) + wOf(n, i) * idf(w));
     });
     let cNorm = 0;
     for (const v of centroid.values()) cNorm += v * v;
@@ -138,14 +296,14 @@
       const tf = perTurn[i];
       let dot = 0, norm = 0;
       for (const [w, n] of tf) {
-        const v = n * idf(w);
+        const v = wOf(n, i) * idf(w);
         norm += v * v;
         dot += v * (centroid.get(w) || 0);
       }
       norm = Math.sqrt(norm) || 1;
       const centrality = dot / (norm * cNorm);           // 0..1, about-ness
 
-      const len = r.text.length;
+      const len = weightedLen(r.text);
       let s = centrality * 100;
       if (DECIDED.test(r.text)) s += 45;                 // something was settled
       if (r.role === "user") s += 12;                    // the user sets direction
@@ -166,19 +324,42 @@
       }
     }
 
+    /* Turns the caller is already carrying in another section. Excluding them
+       here rather than de-duplicating afterwards means the budget gets spent on
+       something the handover does not have yet: before this, a starred message
+       was emitted as a star AND as a decision AND, if it was recent, a third
+       time — on a real 188-turn thread that was 73% of the handover. */
+    const skip = (o.exclude || []).map((x) => String(x || "").trim()).filter(Boolean);
+    const skipNorm = new Set();
+    const skipHead = new Set();                          // outline stores a 70-char snippet
+    const skipDupes = DupeIndex(0.6);
+    for (const x of skip) {
+      const p = norm(x);
+      skipNorm.add(p);
+      if (p.length > 40) skipHead.add(p.slice(0, 40));
+      skipDupes.add(shingles(tokens(x)));
+    }
+    const carried = (n, sh) => skip.length > 0 &&
+      (skipNorm.has(n) || (n.length > 40 && skipHead.has(n.slice(0, 40))) || skipDupes.hits(sh));
+
     const maxChars = o.max || 2600;
+    /* What the caller will actually EMIT per turn, not what it holds. compose()
+       clips each decision to 420, so charging 600 left the budget a third
+       unspent and the handover shorter than it was allowed to be. */
+    const charge = o.charge || 600;
     const picked = [];
-    const seen = [];
+    const seen = DupeIndex(0.55);
     let used = 0;
     for (const cand of [...scored].sort((a, b) => b.score - a.score)) {
       if (used >= maxChars || picked.length >= 10) break;
       if (cand.score <= 0) break;
       const sh = shingles(tokens(cand.text));
       // A thread restates itself; carrying the same paragraph twice buys nothing.
-      if (seen.some((prev) => overlaps(prev, sh) > 0.55)) continue;
-      seen.push(sh);
+      if (seen.hits(sh)) continue;
+      if (carried(norm(cand.text), sh)) continue;
+      seen.add(sh);
       picked.push(cand);
-      used += Math.min(cand.text.length, 600);
+      used += Math.min(cand.text.length, charge);
     }
     picked.sort((a, b) => a.i - b.i);                    // back into the order it happened
 

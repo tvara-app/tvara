@@ -7,6 +7,19 @@
   const $ = (id) => document.getElementById(id);
   const send = (msg) => new Promise((res) => chrome.runtime.sendMessage(msg, res));
 
+  // Kept identical to recall-page.js's own KNOWN_CHAT_HOSTS — this is the
+  // OTHER of exactly two sites in the extension that turn a stored record's
+  // host into a real navigation (chrome.tabs.create below). clampChat()
+  // (bg.js) stores whatever host a record claims — a length clamp, not an
+  // allowlist, by design (dropping a malformed-but-honest record at write
+  // time loses the user's own chat history, and this field also flows
+  // through sync/export). Exact match only: a suffix/contains check admits
+  // "evil-claude.ai" or "claude.ai@evil.com".
+  const KNOWN_CHAT_HOSTS = new Set([
+    "chatgpt.com", "chat.openai.com", "claude.ai",
+    "chat.deepseek.com", "grok.com", "www.perplexity.ai", "gemini.google.com"
+  ]);
+
   // te•••@gmail.com — enough to recognize yourself, useless to a stranger
   function maskEmail(email) {
     if (!email || !email.includes("@")) return "you";
@@ -1361,6 +1374,9 @@
     info.textContent = `${res.n} messages${res.updatedAt ? ` · ${recallWhen(res.updatedAt)}` : ""}`;
     button.append(title, snippet, info);
     button.addEventListener("click", async () => {
+      // Same guard as recall-page.js: refuse to navigate rather than drop
+      // the record — the click just does nothing for an unrecognised host.
+      if (!KNOWN_CHAT_HOSTS.has(res.host)) return;
       const q = $("recall-query").value.trim();
       await chrome.storage.local.set({
         "recall-jump": { host: res.host, path: res.path, q, at: Date.now() }

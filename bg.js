@@ -311,9 +311,12 @@ async function importBatch(chats) {
         chat.msgs.length > 0 && chat.msgs.every((m) => m && m.i);
       // Restores and retries are merge operations: a stale snapshot must not
       // overwrite a newer local conversation that arrived in the meantime.
+      // No write happens here — `ok` used to count it anyway, so a restore of
+      // a backup that was already fully synced reported hundreds of chats
+      // "added to the archive" that were, byte for byte, already there.
       if (previous && previous.n > 0 && candidateSource > 0 &&
           previousSource > candidateSource && !richer && !fixesIds) {
-        ok++;
+        skipped++;
         stored.push(id);
         continue;
       }
@@ -327,7 +330,24 @@ async function importBatch(chats) {
          1,471 archived messages that lack them. */
       const loses = !!previous && previous.n > 0 && candidateCount < previous.n;
       if (loses && !(candidateSource > 0 && previousSource > 0 && candidateSource > previousSource)) {
-        ok++;
+        // No write here either — same over-counting as the branch above.
+        skipped++;
+        stored.push(id);
+        continue;
+      }
+      /* Neither richer nor losing: the exact same message count as what is
+         already stored — the common case when a backup is restored onto the
+         browser it was made from, or a sync retry re-delivers what already
+         landed. `richer` (a strict >) does not cover a tie, so this used to
+         fall all the way through to the unconditional write below and count
+         as "added" — measured on a real restore: 937 of 941 chats reported
+         "added to the archive" when the archive already held all 941, byte
+         for byte. Still respects a genuinely newer same-length revision
+         (an edited message keeps the same count) exactly like the guard
+         above does. */
+      const ties = !!previous && previous.n > 0 && candidateCount === previous.n;
+      if (ties && !fixesIds && !(candidateSource > 0 && previousSource > 0 && candidateSource > previousSource)) {
+        skipped++;
         stored.push(id);
         continue;
       }
@@ -660,6 +680,15 @@ const BG_HOST_POLICY = {
   "gemini.google.com": { concurrency: 3, minIntervalMs: 450, listDelayMs: 600 }
 };
 const BG_FETCH_ATTEMPTS = 4;
+/* A hung connection (dropped packets, a provider that accepts and never
+   answers) left fetch() awaiting forever with nothing here to notice — no
+   retry, no error, no response ever sent back to whoever asked. Found via
+   diag/quota.html's "Check every provider now" staying disabled forever with
+   zero console errors: one stalled endpoint blocked quotaProbe's whole
+   sequential sweep, which blocked the message response. Generous enough for a
+   slow real API under normal conditions, short enough that one bad host can't
+   eat noticeably into BG_PASS_BUDGET_MS below. */
+const BG_FETCH_TIMEOUT_MS = 20000;
 const BG_RATE_TRIP = 3;                          // consecutive 429s → circuit opens
 const BG_HOST_COOLDOWN_MS = 15 * 60 * 1000;
 const BG_PASS_BUDGET_MS = 4 * 60 * 1000;         // MV3 workers get reclaimed
@@ -1410,16 +1439,21 @@ async function bgFetch(url, opts = {}) {
   for (let attempt = 0; attempt < BG_FETCH_ATTEMPTS; attempt++) {
     await hostSlot(host);
     let r;
+    const timeoutCtl = new AbortController();
+    const timeoutTimer = setTimeout(() => timeoutCtl.abort(), BG_FETCH_TIMEOUT_MS);
     try {
       r = await fetch(url, {
         ...opts, headers, credentials: "include",
         redirect: "error",            // never off-host with the user's session
-        referrerPolicy: "no-referrer"
+        referrerPolicy: "no-referrer",
+        signal: timeoutCtl.signal
       });
-    } catch (error) {
+    } catch (_) {
       if (attempt === BG_FETCH_ATTEMPTS - 1) throw new BgError("net", "network unavailable");
       await sleep(backoffDelay(attempt, 0));
       continue;
+    } finally {
+      clearTimeout(timeoutTimer);
     }
     if (r.status === 429 || (r.status === 503 && r.headers.get("Retry-After"))) {
       const retryAfterMs = parseRetryAfter(r.headers.get("Retry-After"));

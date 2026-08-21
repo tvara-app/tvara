@@ -33,12 +33,20 @@
   let remote = { q: "", hits: [], total: 0, ready: false };
   let remoteToken = 0;
 
-  /* Ask only when the page is holding LESS than the conversation. The minimap's
-     catalog is the conversation (seeded from the provider's own index); items
-     is what the host has mounted. When those agree there is nothing further
-     back to find, and the bar should not go looking. */
+  /* Ask when the page is holding LESS than the conversation — OR when there is
+     no reliable way to know that. The minimap's catalog can only prove "there
+     is more" on hosts with a stable per-message id (ChatGPT, Gemini): there it
+     is seeded from the provider's own index and legitimately outgrows `items`.
+     On hosts with neither id shape (Claude, DeepSeek, Grok, Perplexity —
+     see adapters.js stableKey()) the catalog itself is just a mirror of
+     whatever is currently mounted, so `count > items.length` can be true on
+     ChatGPT/Gemini and is close to always FALSE there even on a 1,000-message
+     chat — silently skipping the archive on exactly the hosts that need it
+     most. A host the adapter already declares `virtualizes: true` is asked
+     unconditionally instead of trusting a catalog count that cannot be. */
   const canAskArchive = () =>
-    !!(self.LCTMinimap && self.LCTMinimap.count > items.length);
+    !!(self.LCTMinimap && self.LCTMinimap.count > items.length) ||
+    !!(adapter && adapter.virtualizes);
 
   function askArchive(q) {
     const token = ++remoteToken;

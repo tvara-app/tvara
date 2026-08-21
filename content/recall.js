@@ -14,6 +14,14 @@
   const WRITE_EVERY = 3000;
   const SHOW_LIMIT = 40;
 
+  // Kept identical to recall-page.js / popup.js's own KNOWN_CHAT_HOSTS —
+  // this in-chat overlay is a third site that turns a stored record's host
+  // into a real navigation (go() below). Exact match only.
+  const KNOWN_CHAT_HOSTS = new Set([
+    "chatgpt.com", "chat.openai.com", "claude.ai",
+    "chat.deepseek.com", "grok.com", "www.perplexity.ai", "gemini.google.com"
+  ]);
+
   let adapter = null;
   let unlocked = () => false;
   let latest = null;
@@ -152,7 +160,11 @@
     head.className = "lct-r-head";
     const icon = document.createElement("span");
     icon.className = "lct-r-icon";
-    icon.innerHTML = SEARCH_ICON; // static literal above, never user or archive text
+    // SEARCH_ICON is the module-scope string literal defined above;
+    // test/security-xss-regression.mjs independently re-verifies that
+    // definition never gains interpolation.
+    // eslint-disable-next-line no-unsanitized/property -- static literal, never user or archive text
+    icon.innerHTML = SEARCH_ICON;
     input = document.createElement("input");
     input.type = "text";
     input.placeholder = "Search every chat on every platform…";
@@ -258,10 +270,10 @@
   function showState(title, detail) {
     // typing the first character must not replay the entrance animation
     const shown = list.firstElementChild;
-    if (shown && shown.dataset.state === title + " " + detail) return;
+    if (shown && shown.dataset.state === JSON.stringify([title, detail])) return;
     const box = document.createElement("div");
     box.className = "lct-r-state";
-    box.dataset.state = title + " " + detail;
+    box.dataset.state = JSON.stringify([title, detail]);
     const h = document.createElement("strong");
     h.textContent = title;
     const p = document.createElement("span");
@@ -408,6 +420,10 @@
       self.LCTSearch.open(q); // already here — drop into in-chat search
       return;
     }
+    // Refuse to navigate to an unrecognised host rather than drop the
+    // record — the click just does nothing. Same guard as recall-page.js
+    // and popup.js.
+    if (!KNOWN_CHAT_HOSTS.has(res.host)) return;
     // other chat (possibly other platform): stash the query, then navigate.
     // The destination tab's content script finds the stash and opens in-chat
     // search there — landing you on the exact text, not just the chat.

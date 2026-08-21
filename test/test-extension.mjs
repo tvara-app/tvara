@@ -5,12 +5,11 @@
    storage persistence, and the speed engine on the 1,500-message torture page. */
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { chromium } from "playwright";
 
-const SRC = join(homedir(), "tvara");
+const SRC = join(import.meta.dirname, "..");
 // Work dirs live under the OS temp dir — never committed (test/.gitignore).
 const SCRATCH = join(SRC, "test", ".work");
 const PROFILE = join(SCRATCH, "chrome-profile");
@@ -2641,7 +2640,7 @@ try {
       const before = self.LCTEntitlement;
       self.LCTEntitlement = { evaluate: async () => ({ entitled: true }) };
       out.identity = self.LCTEntitlement === before ? "held" : "REPLACED";
-    } catch (e) { out.identity = "held"; }
+    } catch (_) { out.identity = "held"; }
     return out;
   });
   console.log("    B14 probe →", JSON.stringify(probe));
@@ -2761,6 +2760,18 @@ try {
   await page.waitForSelector("#lct-carry", { timeout: 5000 });
   t("B17 the panel opens from the toolbar", await page.isVisible("#lct-carry"));
 
+  // The panel used to have no way to dismiss it besides Escape, which isn't
+  // discoverable — added a close button after a user found it "inescapable"
+  // in practice. Locks that in: click it, confirm the panel is actually gone.
+  await page.click("#lct-carry .lct-c-close");
+  t("B17 the close button actually dismisses the panel",
+    await page.evaluate(() => !document.getElementById("lct-carry")));
+  // Reopen for the rest of this block, which expects the panel open.
+  await page.locator("#lct-minimap").hover();
+  await page.waitForSelector('#lct-export-bar button[data-act="carry"]', { state: "visible" });
+  await page.click('#lct-export-bar button[data-act="carry"]');
+  await page.waitForSelector("#lct-carry", { timeout: 5000 });
+
   /* Everything below goes through the panel rather than the module: content
      scripts live in an isolated world, so page.evaluate cannot see LCTCarry —
      and the UI is the thing a user actually meets anyway. "Copy instead" is
@@ -2793,9 +2804,12 @@ try {
   t("B17 nothing is invented — every line traces to the conversation",
     await page.evaluate((text) => {
       const body = document.getElementById("chat").textContent;
+      // A line that was ITSELF a heading or a speaker label in the chat gets a
+      // markdown escape on the way out, so pasted text cannot forge this
+      // handover's own structure. Undo the escape before comparing.
       return text.split("\n")
-        .filter((l) => l.length > 60 && !l.startsWith("#") && !/^I'm continuing/.test(l))
-        .map((l) => l.replace(/^\*\*(Me|You):\*\* /, "").replace(/^- /, "").split(" […]")[0])
+        .filter((l) => l.length > 60 && !/^\\?#/.test(l) && !/^I'm continuing/.test(l))
+        .map((l) => l.replace(/^\\(?=\*\*)/, "").replace(/^\*\*(Me|You):\*\* /, "").replace(/^- /, "").split(" […]")[0])
         .every((l) => body.includes(l.slice(0, 50)));
     }, carryText), carryText.slice(0, 80));
 
