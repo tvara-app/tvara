@@ -533,7 +533,24 @@ try {
   await pop.waitForSelector("#pro-upsell:not([hidden])");
   dodoReset(OK201);
   await doActivate(DKEY);
-  await pop.waitForSelector("#pro-active:not([hidden])");
+  /* Diagnose instead of timing out. Activation has several ways to fail that
+     all look identical from outside — the popup just never turns Pro — and a
+     bare 30-second selector timeout names none of them. This failed on CI while
+     passing locally, and the log said only "waiting for #pro-active". */
+  try {
+    await pop.waitForSelector("#pro-active:not([hidden])", { timeout: 20000 });
+  } catch (error) {
+    const diag = await pop.evaluate(async () => ({
+      state: (document.getElementById("license-state") || {}).textContent || "",
+      badge: (document.getElementById("plan-badge") || {}).textContent || "",
+      token: !!(await chrome.storage.local.get("lct-entitlement-v2"))["lct-entitlement-v2"],
+      licence: !!(await chrome.storage.local.get("license")).license,
+      deviceKey: await self.LCTEntitlement.deviceKey().then((k) => !!k).catch((e) => "threw: " + e),
+      fp: await self.LCTEntitlement.deviceFpFor("x").catch((e) => "threw: " + e)
+    })).catch((e) => ({ evalFailed: String(e) }));
+    throw new Error(`A9b never reached Pro. issuer calls=${JSON.stringify(ent.calls.map((c) => ({ v: c.v, hasPub: !!c.device_pub, hasSig: !!c.sig })))} `
+      + `dodo=${JSON.stringify(dodo.calls.map((c) => c.path))} popup=${JSON.stringify(diag)}`);
+  }
   const licB = await licenseOf();
   const seatsB = await readSeats();
   t("A9b Dodo key activates to Pro", (await pop.textContent("#plan-badge")).trim() === "Pro");
