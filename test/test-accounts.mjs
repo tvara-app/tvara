@@ -90,16 +90,30 @@ const providers = await startProviders(PORT);
    APIs, rather than reporting a pass that never ran. */
 async function launch(channel) {
   rmSync(PROFILE, { recursive: true, force: true });
-  const context = await chromium.launchPersistentContext(PROFILE, {
-    channel,
-    headless: channel === "chrome" ? false : !HEADED,
-    args: [
-      `--disable-extensions-except=${EXT}`,
-      `--load-extension=${EXT}`,
-      "--disable-features=DisableLoadExtensionCommandLineSwitch"
-    ],
-    viewport: { width: 900, height: 800 }
-  });
+  /* Returning null rather than throwing is what makes the fallback below a
+     fallback. Branded Chrome is launched HEADED (see above), and on a machine
+     with no display — every CI runner — it does not merely fail to load the
+     extension, it fails to start at all: "Missing X server or $DISPLAY". That
+     threw straight past the fallback and took the whole suite with it, which is
+     a failure only CI could ever see, because the developer machine always has
+     a display. Any launch failure now means "this channel is unavailable here",
+     which is the question the caller is actually asking. */
+  let context;
+  try {
+    context = await chromium.launchPersistentContext(PROFILE, {
+      channel,
+      headless: channel === "chrome" ? false : !HEADED,
+      args: [
+        `--disable-extensions-except=${EXT}`,
+        `--load-extension=${EXT}`,
+        "--disable-features=DisableLoadExtensionCommandLineSwitch"
+      ],
+      viewport: { width: 900, height: 800 }
+    });
+  } catch (error) {
+    console.log(`note: ${channel} could not start here (${String(error.message || error).split("\n")[0]})`);
+    return null;
+  }
   // The worker's own URL is the authoritative extension id, and waiting for it
   // is also the proof that the extension actually loaded.
   const worker = context.serviceWorkers()[0] ||
@@ -112,8 +126,9 @@ async function launch(channel) {
 let started = await launch(CHANNEL);
 let usedChannel = CHANNEL;
 if (!started && CHANNEL === "chrome") {
-  console.log("note: this Google Chrome build refuses --load-extension (M136+); " +
-    "falling back to the bundled Chromium — same engine, same extension APIs.");
+  console.log("note: Google Chrome was unusable here (either an M136+ build that " +
+    "refuses --load-extension, or no display to run headed); falling back to the " +
+    "bundled Chromium — same engine, same extension APIs.");
   started = await launch("chromium");
   usedChannel = "chromium";
 }
