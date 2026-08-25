@@ -11,6 +11,10 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The gitleaks step below scans a commit RANGE, which needs history;
+          # the default shallow clone has none.
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -47,10 +51,27 @@ jobs:
 
       # New-commits-only, not full history — Item 0's own purge is a separate,
       # human-approved action, not something this gate re-litigates every PR.
+      #
+      # Runs the gitleaks CLI rather than gitleaks/gitleaks-action@v2. The
+      # action refuses to start on an ORGANIZATION-owned repository without a
+      # paid licence key ("[tvara-app] is an organization. License key is
+      # required."), so as configured it could never pass and was reporting a
+      # licensing wall as a failed security scan. The scanner itself is MIT and
+      # free; only the Action wrapper is gated.
       - name: Gitleaks (new commits only)
-        uses: gitleaks/gitleaks-action@v2
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_VERSION: "8.30.1"
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /tmp gitleaks
+          BASE="${{ github.event.pull_request.base.sha || github.event.before }}"
+          # A new branch, or a first push, reports an all-zero "before".
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            BASE="$(git rev-parse HEAD~1)"
+          fi
+          echo "scanning ${BASE}..HEAD"
+          /tmp/gitleaks git . --log-opts="${BASE}..HEAD" --redact --no-banner
 
   semgrep:
     runs-on: ubuntu-latest
