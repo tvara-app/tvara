@@ -5,7 +5,15 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const REPO = process.env.TVARA || join(process.env.HOME, "tvara");
+/* The repo is found from THIS FILE, never from $HOME.
+   
+   `join(process.env.HOME, "tvara")` happens to be correct on the machine this
+   was written on and is wrong everywhere else — including CI, which checks out
+   to /home/runner/work/tvara/tvara and failed here with ENOENT while the same
+   command passed locally. A test that resolves its own subject through the
+   developer's home directory is a test that only ever runs in one place.
+   The TVARA override stays for running against a different tree on purpose. */
+const REPO = process.env.TVARA || join(import.meta.dirname, "..");
 
 const self_ = {};
 new Function("self", readFileSync(join(REPO, "content/distil.js"), "utf8"))(self_);

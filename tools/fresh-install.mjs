@@ -16,7 +16,7 @@
  */
 import { chromium } from "playwright";
 import { spawn } from "node:child_process";
-import { rmSync, mkdirSync, readFileSync } from "node:fs";
+import { rmSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -79,7 +79,9 @@ try {
   await page.goto(`http://127.0.0.1:${PORT}/test/synthetic.html`);
   await page.waitForSelector("#lct-minimap", { timeout: 20000 });
   t("in chat: the minimap appears on a long conversation", true);
-  const health = await page.evaluate(() => new Promise((r) =>
+  // Fired for its effect on the worker, not for its answer — the assertions
+  // below read the DOM, not this.
+  await page.evaluate(() => new Promise((r) =>
     chrome.runtime.sendMessage({ type: "lct-health" }, r)).catch(() => null)).catch(() => null);
   // The minimap draws to a canvas; there are no per-message nodes to count.
   // The engine marks slept messages with the class it windows on.

@@ -55,9 +55,18 @@
     let dark = null;
     for (const el of [document.body, document.documentElement]) {
       const m = el && getComputedStyle(el).backgroundColor
-        .match(/rgba?\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)(?:[\s,/]+([\d.]+))?/);
-      if (!m || (m[4] !== undefined && +m[4] < 0.5)) continue; // see-through: keep looking
-      dark = (+m[1] * 299 + +m[2] * 587 + +m[3] * 114) / 1000 < 128;
+        /* One flat capture of the argument list, split in code.
+           Picking the components apart in the pattern needs an optional group
+           around a quantified one, which is the nested shape that backtracks —
+           and getComputedStyle hands back a normalised "rgb(0, 0, 0)" or
+           "rgba(0, 0, 0, 0.5)" that a split reads just as reliably. */
+        .match(/rgba?\(([^)]{1,64})\)/);
+      if (!m) continue;
+      const parts = m[1].split(/[\s,/]+/).filter(Boolean).map(Number);
+      if (parts.length < 3 || parts.slice(0, 3).some((n) => !Number.isFinite(n))) continue;
+      const alpha = parts.length > 3 ? parts[3] : 1;
+      if (Number.isFinite(alpha) && alpha < 0.5) continue; // see-through: keep looking
+      dark = (parts[0] * 299 + parts[1] * 587 + parts[2] * 114) / 1000 < 128;
       break;
     }
     if (dark === null) dark = matchMedia("(prefers-color-scheme: dark)").matches;

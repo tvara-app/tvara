@@ -149,7 +149,11 @@ try {
 
   // A1 — free state renders correctly
   t("A1 badge shows Free", (await pop.textContent("#plan-badge")).trim() === "Free");
-  t("A1 version shown", (await pop.textContent("#version")).trim() === "v0.8.0");
+  /* Read from the manifest rather than typed here: a hardcoded version turns
+     every release into a test edit, and the thing worth asserting is that the
+     popup shows the version it SHIPS, not one particular number. */
+  const MF_VERSION = JSON.parse(readFileSync(join(SRC, "manifest.json"), "utf8")).version;
+  t("A1 version shown", (await pop.textContent("#version")).trim() === `v${MF_VERSION}`);
   t("A1 upsell visible / active card hidden",
     (await pop.isVisible("#pro-upsell")) && !(await pop.isVisible("#pro-active")));
   t("A1 speed/minimap/time toggles on by default",
@@ -476,7 +480,12 @@ try {
     if (ent.mode === "down")     return route.abort("failed");
     const now = Date.now();
     const claims = {
-      v: 2, sub: await sha256Hex(body.license_key), dev: String(body.device || ""),
+      /* Mirrors the real worker: the device is DERIVED from the public key the
+         caller proved it holds, never read out of the body. Echoing body.device
+         back (as this did) binds the token to a field the client stopped
+         sending under protocol v3, so every activation silently failed its own
+         binding check and the popup just never turned Pro. */
+      v: 2, sub: await sha256Hex(body.license_key), dev: await sha256Hex(String(body.device_pub || ""), 16),
       plan: "pro", feat: ent.feat || ["archive.search", "archive.backup", "archive.restore"],
       email: "buyer@example.com", ks: TEST_KS, iat: now, exp: now + (ent.ttlMs ?? 90 * 864e5), jti: "t1"
     };
@@ -487,10 +496,6 @@ try {
       body: JSON.stringify({ token: `LCT2.${b64u(payload)}.${b64u(sig)}`, exp: claims.exp })
     });
   });
-  const entReset = (mode = "ok", over = {}) => {
-    ent.calls.length = 0; ent.mode = mode;
-    ent.feat = over.feat; ent.ttlMs = over.ttlMs;
-  };
 
   const DKEY = "DODO-TEST-KEY-0001";
   const OK201 = { status: 201, body: { id: "lki_new", license_key_id: "lk_1", customer: { email: "buyer@example.com" } } };
@@ -711,11 +716,18 @@ try {
      point of LCT2 (see E2 in test-license.mjs). A legitimately activated
      install also holds a signed token, so seed one, bound to this device. */
   const mintTokenFor = async (key, over = {}) => {
-    const deviceId = await pop.evaluate(async () =>
-      ((await chrome.storage.sync.get("lct-device-id-v1"))["lct-device-id-v1"] || {}).id || "");
+    /* Ask the extension what its device fingerprint IS rather than recomputing
+       it from the stored device id. Under protocol v3 identity is the hash of
+       the non-extractable key the install holds, so the two are different
+       values — and a token bound to the wrong one does not fail loudly, it just
+       never unlocks, which is a 30-second timeout instead of an assertion. */
+    const dev = await pop.evaluate(async () => {
+      const id = ((await chrome.storage.sync.get("lct-device-id-v1"))["lct-device-id-v1"] || {}).id || "";
+      return self.LCTEntitlement.deviceFpFor(id);
+    });
     const now = Date.now();
     const claims = {
-      v: 2, sub: await sha256Hex(key), dev: await sha256Hex(deviceId), plan: "pro",
+      v: 2, sub: await sha256Hex(key), dev, plan: "pro",
       feat: ["archive.search", "archive.backup", "archive.restore"],
       email: "buyer@example.com", ks: TEST_KS, iat: now, exp: now + 90 * 864e5, jti: "seed", ...over
     };
@@ -3020,7 +3032,6 @@ try {
     }, res));
   });
 
-  const mounted = await deep.evaluate(() => document.querySelectorAll("[data-message-id]").length);
   await deep.bringToFront();
   await pop.evaluate(() => chrome.storage.local.set({ "lct-cmd": { name: "in-chat-search", at: Date.now() } }));
   await deep.waitForSelector("#lct-search.lct-s-open", { timeout: 8000 });

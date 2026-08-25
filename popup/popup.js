@@ -1144,10 +1144,38 @@
       // verdict fetched before this point is stale — see the guard in load().
       planGen++;
       if (!ent.ok) {
+        /* The seat is already claimed by the time we get here, so everyone who
+           sees one of these has paid AND been charged. "Didn't answer" used to
+           cover all of them, including two that are not outages at all and that
+           the user can fix in under a minute if told which. It stays the
+           fallback; it is no longer the only answer. */
+        const ENT_FAIL = {
+          clockskew: {
+            text: "Your device's clock is too far out to verify the licence.", cls: "err",
+            note: "Set date and time to update automatically, then press Activate again. Your purchase is fine."
+          },
+          nodevice: {
+            text: "This browser profile won't let Tvara create its device key.", cls: "err",
+            note: "Storage may be blocked or the profile damaged. Try a normal window or another profile."
+          },
+          outdated: {
+            text: "This copy of Tvara is older than the licence server.", cls: "err",
+            note: "Update Tvara from the Chrome Web Store, then press Activate again."
+          },
+          proof: {
+            text: "The licence server didn't accept this device.", cls: "err",
+            note: "Press Activate again. If it keeps happening, email support with your key."
+          },
+          throttled: {
+            text: "Too many attempts just now.", cls: "warn",
+            note: "Wait a minute and press Activate again. Nothing is wrong with your purchase."
+          }
+        };
         paintLicenseState(ent.revoked
           ? { text: "That licence is not active.", cls: "err",
               note: "The payment provider does not recognise it. Contact support with your order id." }
-          : { text: "Activated, but the entitlement server didn't answer.", cls: "warn",
+          : ENT_FAIL[ent.branch] ||
+            { text: "Activated, but the entitlement server didn't answer.", cls: "warn",
               note: "Pro unlocks by itself once you're back online. Nothing to redo." });
       }
 
@@ -1599,8 +1627,19 @@
 
   async function triggerSync() {
     if (isSyncing) return;
+    /* `isSyncing` is a popup-local flag, so it only knows about syncs THIS
+       popup started — not one the background alarm started, or one begun in a
+       second window. The worker's own status is the honest answer, and it was
+       already being fetched here and then thrown away. The Recall page has
+       always used it this way (see collectSnapshot); the popup now agrees. */
     const status = await new Promise((res) =>
       chrome.runtime.sendMessage({ type: "recall-sync-status" }, res));
+    if (status && status.running) {
+      setSyncBusy(true);
+      updateSyncStatus("A check is already running…");
+      checkFreshness();
+      return;
+    }
     isSyncing = true;
     setSyncBusy(true);
     updateSyncStatus("Checking for new chats…");

@@ -270,7 +270,11 @@
     if (pill) pill.classList.remove("lct-seek-show");
   }
 
-  const commas = (n) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  /* `(\d{3})+` inside a lookahead is the textbook catastrophic-backtracking
+     regex. The input here is a message count so it can never be long enough to
+     matter — but the platform does this correctly and for free, so there is no
+     reason to keep a hand-rolled one that a reader has to reason about. */
+  const commas = (n) => Number(n).toLocaleString("en-US");
 
   function mountedCount(adapter) {
     try { return adapter.messages().length; } catch (_) { return 0; }

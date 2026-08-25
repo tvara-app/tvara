@@ -31,6 +31,14 @@ jobs:
       - run: npm test
 
       - run: npm run lint
+
+      # web-ext is FIREFOX's linter, so it is pointed at the Firefox build
+      # rather than at the source tree. Run against the source it read the
+      # Chrome manifest and failed on `background.service_worker`, which
+      # Firefox does not support and which is correct for the artifact we
+      # actually ship to Chrome — an error that could only ever be resolved by
+      # breaking the Chrome build. The script now packs the Firefox zip and
+      # lints that, where its rules genuinely apply.
       - run: npm run lint:webext
 
       # ~50-100 row PR-gate smoke slice: one row per (surface × lifecycle) at

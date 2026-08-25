@@ -89,6 +89,11 @@ export default [
     },
   },
   {
-    ignores: ["node_modules/", "dist/", "test/.work/", "test/.work-*/", "docs/**", "eslint.config.js"],
+    /* .stryker-tmp is a mutation-testing sandbox: gitignored, so CI never sees
+       it, but a stale one on a developer's disk buries `npm run lint` under
+       hundreds of errors in generated copies of files that are already linted
+       in place. Local and CI have to give the same answer or nobody reads the
+       local one. */
+    ignores: ["node_modules/", "dist/", ".stryker-tmp/", "test/.work/", "test/.work-*/", "docs/**", "eslint.config.js"],
   },
 ];

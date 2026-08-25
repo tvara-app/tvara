@@ -233,7 +233,17 @@
     return text.length > max ? cut(text, max) : text;
   }
 
-  const IMAGE_ONLY = /^(\[image:[^\]]*\]|\[image\]|\s)+$/;
+  /* Was /^(\[image:[^\]]*\]|\[image\]|\s)+$/ — a `(A|B|C)+` whose first two
+     alternatives share the "[image" prefix, which is the shape that backtracks
+     badly on a long near-miss like "[image:" + 50k chars + no closing bracket.
+     Message text is attacker-influenced (it is whatever the model wrote), so
+     this is worth not having. Folding the two bracket forms into one optional
+     group removes the ambiguity, and matching-and-removing is linear.
+     Kept flat (no quantifier inside an optional group) so the star-height
+     check in eslint-plugin-security stays satisfied rather than suppressed —
+     `[image` followed by anything up to `]` covers both spellings anyway. */
+  const IMAGE_TOKEN = /\[image[^\]]*\]|\s/g;
+  const isImageOnly = (t) => t !== "" && t.replace(IMAGE_TOKEN, "") === "";
 
   /* The page holds what the host mounted — on the 1,471-message thread this
      feature was built for, that is the last ~197 turns. "What I originally
@@ -271,7 +281,7 @@
        that actually says something, and fall back to the literal first only if
        there is nothing else. */
     const from = deep || recs;
-    const firstUser = from.find((r) => r.role === "user" && !IMAGE_ONLY.test(r.text) && r.text.length > 12)
+    const firstUser = from.find((r) => r.role === "user" && !isImageOnly(r.text) && r.text.length > 12)
       || from.find((r) => r.role === "user");
     const goal = firstUser ? firstUser.text : "";
     const recent = recs.slice(-RECENT_TURNS);

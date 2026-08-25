@@ -30,8 +30,70 @@ const PUB = publicKey;
 
 const ORIGIN = "chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef";
 const OTHER = "chrome-extension://zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz";
-const DEV = "a".repeat(32);
 const KEY = "LCT-TEST-KEY-0001";
+
+/* ---------- protocol v3: every request carries a device proof ----------
+
+   The worker no longer takes the caller's word for which device it is. It takes
+   an ECDSA signature over the request and derives the device from the key that
+   produced it, so this harness has to hold real keypairs — a hardcoded `DEV`
+   string cannot be spoken here any more, which is the entire point of the
+   change under test. */
+
+const encoder = new TextEncoder();
+const b64u = (b) => Buffer.from(b).toString("base64")
+  .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+async function makeDevice() {
+  const pair = await crypto.subtle.generateKey(
+    { name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+  const pub = b64u(await crypto.subtle.exportKey("spki", pair.publicKey));
+  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(pub));
+  return {
+    pub,
+    fp: [...new Uint8Array(digest).slice(0, 16)].map((b) => b.toString(16).padStart(2, "0")).join(""),
+    async sign(input) {
+      return b64u(await crypto.subtle.sign(
+        { name: "ECDSA", hash: "SHA-256" }, pair.privateKey, encoder.encode(input)));
+    }
+  };
+}
+
+// Must equal signingInput() in the worker. Deliberately retyped rather than
+// imported: this file's job is to notice if that function ever changes shape.
+const signingInput = (route, fields) => ["LCT3", route, ...fields].join("\u001f");
+
+let nonceSeq = 0;
+const freshNonce = () => b64u(Buffer.from(String(nonceSeq++).padStart(16, "0")));
+
+const DEVICE = await makeDevice();
+
+/**
+ * A signed request body. `over` patches the OUTER body after signing where the
+ * field is not part of the signature, and before it where it is — so a test can
+ * ask for a stale timestamp or a bad key and still get a well-formed proof over
+ * exactly those values.
+ */
+async function signedBody(over = {}, { route = "entitlement", dev = DEVICE } = {}) {
+  const licenseKey = "license_key" in over ? over.license_key : KEY;
+  const hasTs = !("ts" in over) || over.ts !== undefined;
+  const ts = "ts" in over ? over.ts : Date.now();
+  const nonce = over.nonce || freshNonce();
+
+  const fields = route === "entitlement" ? [licenseKey]
+    : route === "devices" ? [licenseKey]
+    : route === "devices-revoke" ? [licenseKey, over.target]
+    : [];
+  const sig = await dev.sign(signingInput(route, [...fields, dev.pub, nonce, String(ts)]));
+
+  const body = { v: 3, device_pub: dev.pub, nonce, sig };
+  if (route !== "trial") body.license_key = licenseKey;
+  if (route === "entitlement") body.instance_id = "inst_1";
+  if (route === "devices-revoke") body.target = over.target;
+  if (hasTs) body.ts = ts;
+  for (const k of ["device_pub", "v", "sig", "nonce"]) if (k in over) body[k] = over[k];
+  return body;
+}
 
 /** KV double: same surface the worker uses, plus a switch to make it fail. */
 function kv({ broken = false } = {}) {
@@ -82,22 +144,21 @@ const post = (body, { origin = ORIGIN, e = env(), method = "POST", path = "/enti
     body: method === "POST" ? JSON.stringify(body) : undefined
   }), e);
 
-const live = (over) => ({ license_key: KEY, device: DEV, instance_id: "inst_1", ts: Date.now(), ...over });
 
 /* ---------- origin policy ---------- */
 
 stubDodo({ status: 200, body: { valid: true, customer: { email: "buyer@example.com" } } });
 
-t("origin: a page origin is refused", (await post(live(), { origin: "https://evil.example" })).status === 403);
-t("origin: no origin at all is refused", (await post(live(), { origin: "" })).status === 403);
-t("origin: another extension is refused", (await post(live(), { origin: OTHER })).status === 403);
-t("origin: ours is allowed", (await post(live())).status === 200);
+t("origin: a page origin is refused", (await post(await signedBody(), { origin: "https://evil.example" })).status === 403);
+t("origin: no origin at all is refused", (await post(await signedBody(), { origin: "" })).status === 403);
+t("origin: another extension is refused", (await post(await signedBody(), { origin: OTHER })).status === 403);
+t("origin: ours is allowed", (await post(await signedBody())).status === 200);
 
 // The one that used to be a footgun: an unset ALLOWED_ORIGINS meant "anyone".
 t("origin: live mode with no allow-list refuses EVERY extension",
-  (await post(live(), { e: env({ ALLOWED_ORIGINS: "" }) })).status === 403);
+  (await post(await signedBody(), { e: env({ ALLOWED_ORIGINS: "" }) })).status === 403);
 t("origin: test mode still allows a scratch deploy",
-  (await post(live(), { e: env({ ALLOWED_ORIGINS: "", DODO_MODE: "test" }) })).status === 200);
+  (await post(await signedBody(), { e: env({ ALLOWED_ORIGINS: "", DODO_MODE: "test" }) })).status === 200);
 
 const pre = await post(null, { method: "OPTIONS" });
 t("origin: preflight answers 204 with CORS", pre.status === 204 &&
@@ -107,42 +168,73 @@ t("origin: preflight from a stranger is refused",
 
 /* ---------- input validation ---------- */
 
-t("input: GET is refused", (await post(live(), { method: "GET" })).status === 405);
-t("input: unknown path is 404", (await post(live(), { path: "/whatever" })).status === 404);
-t("input: the removed /trial endpoint is gone", (await post({ device: DEV }, { path: "/trial" })).status === 404);
-t("input: a malformed key is refused", (await post(live({ license_key: "no spaces allowed!" }))).status === 400);
-t("input: a malformed device is refused", (await post(live({ device: "nothex" }))).status === 400);
+t("input: GET is refused", (await post(await signedBody(), { method: "GET" })).status === 405);
+t("input: unknown path is 404", (await post(await signedBody(), { path: "/whatever" })).status === 404);
+t("input: a malformed key is refused", (await post(await signedBody({ license_key: "no spaces allowed!" }))).status === 400);
+t("input: a malformed device key is refused", (await post(await signedBody({ device_pub: "nothex" }))).status === 400);
+t("input: an unsigned request is refused", (await post(await signedBody({ sig: b64u(Buffer.alloc(64)) }))).status === 401);
+t("input: a v2 client is told to update, not merely refused",
+  (await post(await signedBody({ v: 2 }))).status === 426);
+
+/* ---------- /trial ----------
+   Deleted once on the reasoning that nothing called it, while bg.js was calling
+   it on every first run. Its absence is now a test failure rather than a
+   comment nobody re-reads. */
+{
+  const trialEnv = env();
+  const fresh = await makeDevice();
+  const first = await post(await signedBody({}, { route: "trial", dev: fresh }), { e: trialEnv, path: "/trial" });
+  const firstBody = await first.json();
+  t("trial: a fresh device is granted a start date",
+    first.status === 200 && typeof firstBody.startedAt === "number" && firstBody.already === false);
+
+  const again = await post(await signedBody({}, { route: "trial", dev: fresh }), { e: trialEnv, path: "/trial" });
+  const againBody = await again.json();
+  t("trial: the SAME device gets its original date back, not a fresh week",
+    again.status === 200 && againBody.already === true && againBody.startedAt === firstBody.startedAt);
+
+  t("trial: the archive stamp secret is issued with it",
+    typeof firstBody.ks === "string" && firstBody.ks.length > 0);
+
+  const other = await makeDevice();
+  const otherRes = await post(await signedBody({}, { route: "trial", dev: other }), { e: trialEnv, path: "/trial" });
+  t("trial: a genuinely different device gets its own trial", otherRes.status === 200);
+
+  // A /trial proof must not be usable at /entitlement, and vice versa.
+  t("trial: an entitlement-signed body is refused at /trial",
+    (await post(await signedBody({}, { dev: fresh }), { e: trialEnv, path: "/trial" })).status === 401);
+}
 
 /* ---------- replay ---------- */
 
 t("replay: a stale timestamp is refused",
-  (await post(live({ ts: Date.now() - 60 * 60 * 1000 }))).status === 400);
+  (await post(await signedBody({ ts: Date.now() - 60 * 60 * 1000 }))).status === 400);
 t("replay: a future timestamp is refused",
-  (await post(live({ ts: Date.now() + 60 * 60 * 1000 }))).status === 400);
+  (await post(await signedBody({ ts: Date.now() + 60 * 60 * 1000 }))).status === 400);
 // The hole this closes: an optional check is one you defeat by deleting a field.
 t("replay: a MISSING timestamp is refused, not waved through",
-  (await post(live({ ts: undefined }))).status === 400);
+  (await post(await signedBody({ ts: undefined }))).status === 400);
 
 /* ---------- upstream branches ---------- */
 
 stubDodo({ status: 404 });
-t("upstream: unknown licence → 404", (await post(live())).status === 404);
+t("upstream: unknown licence → 404", (await post(await signedBody())).status === 404);
 stubDodo({ status: 200, body: { valid: false } });
-t("upstream: valid:false → 404 (a missing field is not consent)", (await post(live())).status === 404);
+t("upstream: valid:false → 404 (a missing field is not consent)", (await post(await signedBody())).status === 404);
 stubDodo({ status: 200, body: {} });
-t("upstream: no verdict at all → 404", (await post(live())).status === 404);
+t("upstream: no verdict at all → 404", (await post(await signedBody())).status === 404);
 stubDodo({ status: 403 });
-t("upstream: refunded/inactive → 403", (await post(live())).status === 403);
+t("upstream: refunded/inactive → 403", (await post(await signedBody())).status === 403);
 stubDodo({ status: 500 });
-t("upstream: Dodo down → 503, never a token", (await post(live())).status === 503);
+t("upstream: Dodo down → 503, never a token", (await post(await signedBody())).status === 503);
 stubDodo({ throw: true });
-t("upstream: network failure → 503", (await post(live())).status === 503);
+t("upstream: network failure → 503", (await post(await signedBody())).status === 503);
 
 /* ---------- the happy path, and what the token actually says ---------- */
 
 const calls = stubDodo({ status: 200, body: { valid: true, customer: { email: "buyer@example.com" } } });
 const okEnv = env();
-const okRes = await post(live(), { e: okEnv });
+const okRes = await post(await signedBody(), { e: okEnv });
 const okBody = await okRes.json();
 t("issue: 200 with a token", okRes.status === 200 && typeof okBody.token === "string");
 t("issue: the token is an LCT2 triple", /^LCT2\.[\w-]+\.[\w-]+$/.test(okBody.token || ""));
@@ -158,7 +250,12 @@ const unb64 = (s) => Buffer.from(s.replace(/-/g, "+").replace(/_/g, "/"), "base6
 const claims = JSON.parse(unb64(payloadB64).toString("utf8"));
 t("issue: the signature verifies against the paired public key",
   nodeVerify("sha256", unb64(payloadB64), { key: PUB, dsaEncoding: "ieee-p1363" }, unb64(sigB64)));
-t("issue: the token is bound to this device", claims.dev === DEV);
+/* The binding is to the DERIVED fingerprint of the proven key, not to anything
+   the request asked for — the difference between a seat you hold and a seat you
+   named. */
+t("issue: the token is bound to the device that proved itself", claims.dev === DEVICE.fp);
+t("issue: ...and the request never contained that fingerprint",
+  !JSON.stringify(await signedBody()).includes(DEVICE.fp));
 t("issue: the token is bound to the licence, by hash not by key",
   typeof claims.sub === "string" && claims.sub.length === 32 && !JSON.stringify(claims).includes(KEY));
 t("issue: it carries the paid features", Array.isArray(claims.feat) && claims.feat.includes("archive.search"));
@@ -171,14 +268,19 @@ t("issue: a tampered payload no longer verifies",
 
 const seatEnv = env();
 stubDodo({ status: 200, body: { valid: true } });
+/* Seven genuine keypairs. Under v3 a "device" cannot be conjured from a string
+   any more — claiming a sixth seat means actually holding a sixth key. */
+const seatDevices = [];
+for (let i = 0; i < 7; i++) seatDevices.push(await makeDevice());
+
 const seatCodes = [];
 for (let i = 0; i < 6; i++) {
-  seatCodes.push((await post(live({ device: String(i).repeat(32) }), { e: seatEnv })).status);
+  seatCodes.push((await post(await signedBody({}, { dev: seatDevices[i] }), { e: seatEnv })).status);
 }
 t("seats: five devices are issued tokens", seatCodes.slice(0, 5).every((c) => c === 200), seatCodes.join(","));
 t("seats: the sixth is refused with 422", seatCodes[5] === 422, seatCodes.join(","));
 t("seats: a device that already has a seat re-uses it",
-  (await post(live({ device: "0".repeat(32) }), { e: seatEnv })).status === 200);
+  (await post(await signedBody({}, { dev: seatDevices[0] }), { e: seatEnv })).status === 200);
 
 // An idle seat past the token's own lifetime is reclaimable — otherwise a
 // dead laptop costs a slot forever and support has to do it by hand.
@@ -189,15 +291,85 @@ const old = Date.now() - 200 * 864e5;
 await staleEnv.RL.put(`seats:${keyFp}`, JSON.stringify(
   Object.fromEntries([0, 1, 2, 3, 4].map((i) => [String(i).repeat(32), old]))));
 t("seats: an idle seat past its token's life is reclaimed",
-  (await post(live({ device: "f".repeat(32) }), { e: staleEnv })).status === 200);
+  (await post(await signedBody({}, { dev: seatDevices[6] }), { e: staleEnv })).status === 200);
+
+/* ---------- replay ---------- */
+
+{
+  const rEnv = env();
+  stubDodo({ status: 200, body: { valid: true } });
+  const once = await signedBody();
+  t("replay: a valid request works once", (await post(once, { e: rEnv })).status === 200);
+  t("replay: the SAME body a second time is refused",
+    (await post(once, { e: rEnv })).status === 409);
+  // The window step 2 leaves open is exactly what step 3 has to close.
+  t("replay: a fresh nonce from the same device still works",
+    (await post(await signedBody(), { e: rEnv })).status === 200);
+}
+
+/* ---------- device management ----------
+
+   THE BUG THIS FIXES. Releasing a device used to update the payment provider
+   and the client's own registry, and never touched the issuer's ledger — so a
+   user who sold a laptop, released it, and activated a new one was refused by a
+   server that had just watched them free a slot. The last assertion in this
+   block is that exact sequence, and before the release endpoint existed it
+   returned 422. */
+{
+  const dEnv = env();
+  stubDodo({ status: 200, body: { valid: true } });
+
+  const fleet = [];
+  for (let i = 0; i < 5; i++) fleet.push(await makeDevice());
+  for (const d of fleet) await post(await signedBody({}, { dev: d }), { e: dEnv });
+
+  const sixth = await makeDevice();
+  t("devices: the sixth device is refused, as before",
+    (await post(await signedBody({}, { dev: sixth }), { e: dEnv })).status === 422);
+
+  // Listing
+  const listed = await post(await signedBody({}, { route: "devices", dev: fleet[0] }),
+    { e: dEnv, path: "/devices" });
+  const listBody = await listed.json();
+  t("devices: an enrolled device can list the seats",
+    listed.status === 200 && listBody.seats.length === 5 && listBody.limit === 5);
+  t("devices: the caller can tell which seat is its own",
+    listBody.seats.filter((x) => x.self).length === 1 &&
+    listBody.seats.find((x) => x.self).device === fleet[0].fp);
+  t("devices: the list carries no IP, agent or location",
+    Object.keys(listBody.seats[0]).sort().join(",") === "device,lastSeen,self");
+
+  // Authorisation: holding the KEY is not enough, you must hold a SEAT.
+  const outsider = await makeDevice();
+  t("devices: a device with no seat cannot list them, even with the right key",
+    (await post(await signedBody({}, { route: "devices", dev: outsider }),
+      { e: dEnv, path: "/devices" })).status === 403);
+  t("devices: ...nor revoke anyone",
+    (await post(await signedBody({ target: fleet[0].fp }, { route: "devices-revoke", dev: outsider }),
+      { e: dEnv, path: "/devices/revoke" })).status === 403);
+
+  // Release, then the thing that used to fail.
+  const revoked = await post(await signedBody({ target: fleet[4].fp }, { route: "devices-revoke", dev: fleet[0] }),
+    { e: dEnv, path: "/devices/revoke" });
+  const revBody = await revoked.json();
+  t("devices: an enrolled device can release another seat",
+    revoked.status === 200 && revBody.ok === true && revBody.seats === 4);
+
+  t("devices: THE FIX — a new device can take the freed seat immediately",
+    (await post(await signedBody({}, { dev: sixth }), { e: dEnv })).status === 200);
+
+  t("devices: releasing an already-released seat is a success, not an error",
+    (await post(await signedBody({ target: fleet[4].fp }, { route: "devices-revoke", dev: fleet[0] }),
+      { e: dEnv, path: "/devices/revoke" })).status === 200);
+}
 
 /* ---------- degradation ---------- */
 
 stubDodo({ status: 200, body: { valid: true } });
 t("degrade: KV down still serves a paying customer",
-  (await post(live(), { e: env({ RL: kv({ broken: true }) }) })).status === 200);
+  (await post(await signedBody(), { e: env({ RL: kv({ broken: true }) }) })).status === 200);
 t("degrade: no KV binding at all still serves",
-  (await post(live(), { e: env({ RL: undefined }) })).status === 200);
+  (await post(await signedBody(), { e: env({ RL: undefined }) })).status === 200);
 
 /* A worker deployed without its secret must not sign anything. /licenses/validate
    is the same public endpoint the client can reach, so without the key the
@@ -206,7 +378,7 @@ t("degrade: no KV binding at all still serves",
    from anyone who guessed a key format. */
 {
   const calls = stubDodo([{ status: 200, body: { valid: true } }]);
-  const res = await post(live(), { e: env({ DODO_API_KEY: undefined }) });
+  const res = await post(await signedBody(), { e: env({ DODO_API_KEY: undefined }) });
   t("misconfigured: no DODO_API_KEY mints no token", res.status !== 200, String(res.status));
   t("misconfigured: …and never reaches Dodo without it", calls.length === 0, String(calls.length));
 }
@@ -215,11 +387,11 @@ t("degrade: no KV binding at all still serves",
 
 const rlEnv = env();
 const codes = [];
-for (let i = 0; i < 22; i++) codes.push((await post(live(), { e: rlEnv })).status);
+for (let i = 0; i < 22; i++) codes.push((await post(await signedBody(), { e: rlEnv })).status);
 t("ratelimit: the first 20 in an hour pass", codes.slice(0, 20).every((c) => c === 200));
 t("ratelimit: the 21st is throttled", codes[20] === 429 && codes[21] === 429);
 t("ratelimit: throttling costs no upstream call",
-  (await post(live(), { e: rlEnv })).status === 429);
+  (await post(await signedBody(), { e: rlEnv })).status === 429);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) console.log("failed:\n  " + failed.join("\n  "));

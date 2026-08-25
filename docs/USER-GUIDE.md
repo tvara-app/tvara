@@ -12,7 +12,12 @@ contents, starred messages, timestamps, one-click backup, and Total Recall, one 
 Your archive, search index and backups stay **on your device**. When you ask
 Total Recall to check history, the background worker makes authenticated
 requests only to the AI providers listed in the extension's host permissions.
-There is no Tvara server, analytics pipeline or chat-data upload.
+No conversation text, title or prompt is ever uploaded, and there is no
+analytics pipeline of any kind.
+
+Tvara does run one server of its own — a licence issuer. It decides whether a
+licence is real and how many devices hold it, and it never receives a word of
+your conversations. Section 7 says exactly what it stores and for how long.
 
 ---
 
@@ -158,9 +163,10 @@ or opening a second one does not reset it.
 **Privacy, provable:** the archive lives in your browser's local extension
 storage. The only history network requests are scoped to the declared
 first-party AI-provider endpoints. There is no telemetry and no chat-data
-upload route of any kind; the single non-provider request the extension can
-make is licence verification, and it carries a licence key and a device hash.
-Nothing else, and never on the free tier. The Recall page shows exactly what's
+upload route of any kind; the only non-provider requests are licensing ones,
+carrying a licence key, a device public key and (unavoidably) your IP — never
+conversation text. Starting the free trial makes one of those requests too, so
+a reinstall cannot mint a second free week. The Recall page shows exactly what's
 stored (chats, messages, MB) and has a delete-everything button.
 **Honesty note:** without an import, Recall only knows chats you've opened
 since installing. It says so rather than pretending otherwise.
@@ -340,22 +346,36 @@ your own scripts).
 
 ## 7. Privacy · provable, not promised
 
-- **No Tvara server or telemetry.** The manifest grants scoped host
-  access only to supported AI providers so an explicit history check can read
-  your own account. It does not grant a generic upload destination, and the
-  extension contains no analytics or remote-code path.
-- **The one exception, stated plainly:** licensing. Activating Pro contacts the
-  payment provider's licence server, and our entitlement endpoint, which returns
-  a signed 90-day token. A licensed copy renews that token at most every 30 days
-  and re-checks the payment provider at most monthly. Between them, four things
-  leave the machine: your licence key, a coarse device label ("Chrome · macOS"),
-  a hash of a random device id, and the activation receipt id. Never conversation
-  text, never a cookie, never an account. The free tier contacts neither, ever.
+- **Your conversations never leave your device.** The manifest grants scoped
+  host access only to supported AI providers so an explicit history check can
+  read your own account. It does not grant a generic upload destination, and the
+  extension contains no analytics, telemetry or remote-code path.
+- **The exception, stated plainly:** licensing. Activating Pro contacts the
+  payment provider's licence API and our own licence issuer, which returns a
+  signed 90-day token. A licensed copy renews that token at most every 30 days
+  and re-checks the payment provider at most monthly. **Starting the free trial
+  contacts the issuer too** — an earlier version of this guide said the free
+  tier never contacted anything, which was not correct. What leaves the machine:
+  your licence key, a coarse device label ("Chrome · macOS"), your device's
+  public key, the activation receipt id, and the IP any request carries. Never
+  conversation text, never a cookie, never an account.
+- **What the issuer keeps:** a hash of your licence key, a fingerprint per
+  active device with a last-seen time, and your trial start date — each up to
+  400 days after last use — plus a **hashed** IP for 30 days, used to flag one
+  key being used from implausibly many places for a human to review. It never
+  blocks anyone automatically. Email support to see or delete any of it.
+- **Your device key:** generated once per install and **non-extractable** — the
+  browser will not export the private half to us, to you, or to anyone. It only
+  proves a request came from this device, so a device slot cannot be claimed by
+  someone who merely has your licence key.
 - **Why a token at all:** paid features are checked against a signature the
   extension verifies offline. That is what makes Pro real without an account,
   a login, or a call every time you search, and it is why the extension keeps
   working on a plane.
-- **No accounts, no analytics, no telemetry, no remote code.**
+- **No accounts, no analytics, no telemetry, no remote code, no third-party SDK.**
+- **Your archive is never held hostage.** Exporting everything the extension has
+  archived never requires a licence — not if Pro lapses, is refunded, or you
+  remove this device.
 - **When we talk to a provider:** on the sync schedule, when you press a sync
   button, and, on ChatGPT, once when you open a conversation, to read that
   conversation. Nothing leaves your browser either way.

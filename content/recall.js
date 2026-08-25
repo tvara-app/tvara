@@ -23,7 +23,6 @@
   ]);
 
   let adapter = null;
-  let unlocked = () => false;
   let latest = null;
   let writeTimer = null;
   let lastSig = "";
@@ -465,9 +464,10 @@
     input.blur();
   }
 
-  function init(theAdapter, isUnlocked) {
+  // `isUnlocked` is accepted and ignored — see the note in content/bridge.js.
+  // The gate that matters is requireEntitlement() in bg.js.
+  function init(theAdapter, _isUnlocked) {
     adapter = theAdapter;
-    unlocked = isUnlocked;
     // opening is driven by the browser commands API (see main.js)
     completeJump();
   }

@@ -156,8 +156,13 @@ else {
 
   // Prose can only be checked for CONTRADICTION: any dollar figure that is not
   // the price, in a file that talks about buying, is a stale number.
+  /* store/demo-script.md is in here because it was NOT, and it sat with "$9
+     once" in the caption of the launch video long after the price became $1 —
+     a file whose whole purpose is to be read aloud on camera. Anything that
+     quotes the price gets checked, including the things that are not code. */
   const prose = [["README", readme], ["listing", listing],
-                 ["user guide", read("docs/USER-GUIDE.md")], ["pricing page", docs]];
+                 ["user guide", read("docs/USER-GUIDE.md")], ["pricing page", docs],
+                 ["demo script", read("store/demo-script.md")]];
   const wrong = [];
   for (const [name, text] of prose) {
     for (const m of text.matchAll(/\$(\d+(?:\.\d{2})?)\b/g)) {
@@ -250,20 +255,46 @@ else {
 const shotDir = join(root, "store", "screenshots");
 if (!existsSync(shotDir)) block("no store/screenshots — a listing cannot be submitted without them");
 else {
-  const shots = readdirSync(shotDir).filter((f) => f.endsWith(".png"));
+  const dims = (f) => {
+    const out = execFileSync("sips", ["-g", "pixelWidth", "-g", "pixelHeight", join(shotDir, f)], { encoding: "utf8" });
+    return [+(out.match(/pixelWidth: (\d+)/) || [])[1], +(out.match(/pixelHeight: (\d+)/) || [])[1]];
+  };
+
+  /* The promo tiles live beside the screenshots but are a different asset with
+     different rules, and lumping them together made this check say
+     "screenshots not 1280×800" about a tile that is correct at 440×280. */
+  const all = readdirSync(shotDir).filter((f) => f.endsWith(".png"));
+  const shots = all.filter((f) => !/^(promo|marquee)-/.test(f));
+
   if (!shots.length) block("store/screenshots is empty");
   else {
     ok(`${shots.length} screenshots present`);
     if (shots.length > 5) warn(`Chrome accepts at most 5 screenshots — you have ${shots.length}, so pick the five`);
     try {
-      const bad = shots.filter((f) => {
-        const out = execFileSync("sips", ["-g", "pixelWidth", "-g", "pixelHeight", join(shotDir, f)], { encoding: "utf8" });
-        const w = +(out.match(/pixelWidth: (\d+)/) || [])[1];
-        const h = +(out.match(/pixelHeight: (\d+)/) || [])[1];
-        return !((w === 1280 && h === 800) || (w === 640 && h === 400));
-      });
+      const bad = shots.filter((f) => { const [w, h] = dims(f); return !((w === 1280 && h === 800) || (w === 640 && h === 400)); });
       bad.length ? block(`screenshots not 1280×800: ${bad.join(", ")}`) : ok("every screenshot is 1280×800");
     } catch { warn("could not measure screenshots (sips unavailable)"); }
+  }
+
+  /* The small tile is not optional in practice: without it the listing is
+     ineligible for every featured and category placement Chrome has, which for
+     a new extension is most of the discovery that is not paid or posted.
+     Rebuild it with: node tools/promo-tile.mjs */
+  const promo = "promo-440x280.png";
+  if (!all.includes(promo)) {
+    block("no small promo tile (440×280) — the listing cannot be featured without one",
+      "node tools/promo-tile.mjs");
+  } else {
+    try {
+      const [w, h] = dims(promo);
+      (w === 440 && h === 280) ? ok("small promo tile present (440×280)")
+        : block(`${promo} is ${w}×${h}, Chrome requires exactly 440×280`);
+    } catch { warn("could not measure the promo tile (sips unavailable)"); }
+  }
+
+  // Optional, and only ever a nudge: the marquee is for the front page.
+  if (!all.some((f) => /^marquee-/.test(f))) {
+    warn("no marquee tile (1400×560)", "optional — needed only for front-page featuring");
   }
 }
 

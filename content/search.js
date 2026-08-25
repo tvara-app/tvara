@@ -162,7 +162,9 @@
 
   /** 1 char is a real query in CJK scripts; require 2 only for ASCII. */
   function longEnough(q) {
-    return q.length >= 2 || (q.length === 1 && /[^\u0000-\u007f]/.test(q));
+    // Asking the code point directly says what this means — "not ASCII" —
+    // without putting a NUL into a character class to express it.
+    return q.length >= 2 || (q.length === 1 && q.codePointAt(0) > 0x7f);
   }
 
   /**

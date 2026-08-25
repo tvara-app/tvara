@@ -6,7 +6,7 @@
 #
 # Everything the old checklist asked you to do by hand, in order, idempotent:
 # creates the KV namespace if it does not exist, writes its id into
-# wrangler.toml, pins ALLOWED_ORIGINS to your extension, prompts for the two
+# wrangler.toml, pins ALLOWED_ORIGINS to your extension, fills in the three
 # secrets only if they are not already set, deploys, and then PROVES the
 # deployment works by calling it the way the extension does.
 #
@@ -77,18 +77,38 @@ echo "  ✓ ALLOWED_ORIGINS = ${ORIGIN}  (DODO_MODE = ${MODE})"
 
 # ---------- 3. secrets ----------
 EXISTING="$(wrangler secret list 2>/dev/null || echo '[]')"
-for NAME in DODO_API_KEY SIGNING_KEY; do
+for NAME in DODO_API_KEY SIGNING_KEY ARCHIVE_SECRET; do
   if printf '%s' "$EXISTING" | grep -q "\"$NAME\""; then
     echo "  ✓ secret $NAME already set"
-  else
-    if [[ "$NAME" == "SIGNING_KEY" ]]; then
+    continue
+  fi
+  case "$NAME" in
+    SIGNING_KEY)
       echo "→ SIGNING_KEY is the private half of the key in lib/entitlement.js."
       echo "  Get it with:  node tools/genkey.mjs worker-key"
-    else
+      wrangler secret put "$NAME"
+      ;;
+    DODO_API_KEY)
       echo "→ DODO_API_KEY is the server-side API key from the Dodo dashboard."
-    fi
-    wrangler secret put "$NAME"
-  fi
+      wrangler secret put "$NAME"
+      ;;
+    ARCHIVE_SECRET)
+      # Nobody needs to see this one, so nobody is asked to invent it. It is the
+      # HMAC root for the per-licence archive stamp, and its ONLY requirement is
+      # that it is random and never changes.
+      #
+      # Generated here rather than prompted because the alternative is worse in
+      # both directions: unset, archiveSecret() silently falls back to
+      # SIGNING_KEY — which works right up until the day you rotate the signing
+      # key and every backup ever sealed stops verifying — and prompted, it gets
+      # a memorable passphrase typed into it.
+      #
+      # Set it BEFORE the first sale. Changing it later invalidates the stamp on
+      # every backup already written.
+      echo "→ ARCHIVE_SECRET: generating 32 random bytes (never printed, never reused)."
+      openssl rand -base64 32 | tr -d '\n' | wrangler secret put "$NAME"
+      ;;
+  esac
 done
 
 # ---------- 4. deploy ----------
@@ -131,8 +151,20 @@ code() {
 OURS="$(code "$ORIGIN")"
 STRANGER="$(code "chrome-extension://zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz")"
 
+# /trial is a separate route with its own ledger and its own rate limit, and it
+# is the one a NON-paying user hits — so an entitlement endpoint that works
+# while this 404s is a launch where every new install silently loses its trial
+# ledger. It was exactly that for a while; it is checked now.
+trial_code() {
+  curl -s -o /dev/null -w '%{http_code}' -X POST "${URL}/trial" \
+    -H "Content-Type: application/json" -H "Origin: ${ORIGIN}" \
+    -d "{\"device\":\"$(openssl rand -hex 16)\"}" --max-time 20 || echo 000
+}
+TRIAL="$(trial_code)"
+
 echo "   our origin      → HTTP ${OURS}"
 echo "   another origin  → HTTP ${STRANGER}"
+echo "   /trial          → HTTP ${TRIAL}"
 echo
 
 FAILED=0
@@ -147,6 +179,14 @@ esac
 [[ "$STRANGER" == "403" ]] \
   && echo "   ✓ a stranger's extension is refused" \
   || { echo "   ✗ another extension was NOT refused (got ${STRANGER}) — ALLOWED_ORIGINS is not in force"; FAILED=1; }
+
+case "$TRIAL" in
+  200) echo "   ✓ /trial minted a trial for a fresh device";;
+  404) echo "   ✗ /trial is missing — every new install will fall back to its own clock"; FAILED=1;;
+  503) echo "   ✗ /trial has no KV to remember with — check the RL binding"; FAILED=1;;
+  429) echo "   ! /trial rate-limited this run; rerun to actually test it";;
+  *)   echo "   ✗ /trial answered ${TRIAL} — inspect with: wrangler tail"; FAILED=1;;
+esac
 
 echo
 if [[ "$FAILED" == "0" ]]; then

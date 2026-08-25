@@ -5029,8 +5029,12 @@ async function activateLicenseKey(key) {
 
   const ent = await self.LCTEntitlement.refresh(record, res.deviceId, { force: true });
   if (!ent.ok) {
-    return { ok: false, reason: ent.revoked ? "revoked" : "entitlement", seated: true,
-             email: record.email };
+    /* `branch` is carried out rather than collapsed into "entitlement". The
+       seat is already claimed at this point, so every one of these is a person
+       who has PAID and is looking at a failure — and "something went wrong" is
+       the difference between an email to support and a chargeback. */
+    return { ok: false, reason: ent.revoked ? "revoked" : "entitlement",
+             branch: ent.branch || "", seated: true, email: record.email };
   }
   return { ok: true, kind: "dodo", email: record.email, evicted: res.evicted || 0 };
 }
@@ -5212,6 +5216,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case "license-activate": return activateLicenseKey(msg && msg.key);
       // The page seals the file (it holds the passphrase), but the secret that
       // stamps it comes from here, behind the gate.
+      /* Deliberately NOT in the PAID map, and it must never be added to it.
+      
+         The encrypted .lctbackup is a Pro artifact: seal() binds it to an
+         entitlement stamp, open() verifies that stamp, and restoring one is
+         Pro. All of that is fine — it is an unattended, reinstall-proof backup,
+         which is a convenience worth paying for.
+      
+         This is a different thing: a plain copy of the user's own conversations,
+         which they can take out whenever they like, licence or no licence. The
+         archive is often the ONLY surviving copy of a chat the provider has
+         since deleted — that is a headline feature of this product — so gating
+         the exit is holding a person's own data hostage over a lapsed $1
+         licence. It also costs nothing commercially: nobody buys Pro in order
+         to press export once. */
+      case "recall-export":     return { chats: await archiveSnapshot() };
       case "archive-stamp": {
         const { secret, stampSub } = await stampCreds();
         return secret ? { ok: true, secret, sub: stampSub } : { err: "locked" };

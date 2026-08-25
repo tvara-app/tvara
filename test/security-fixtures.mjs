@@ -108,11 +108,21 @@ export function mintLct1Key(priv, claims = {}) {
  * count, garbage base64, flipped signature byte, wrong version) for the
  * "must fail closed" side of the entitlement-gate test.
  */
-export function mintLct2Token(priv, { licenseKey, deviceId, ks = "", exp, iat, feat, email = "" } = {}) {
+/**
+ * `dev` overrides the fingerprint when the caller knows the real one.
+ *
+ * Under protocol v3 a device's identity is the hash of the non-extractable key
+ * it holds, not the hash of its stored device id — so a token minted from
+ * `deviceId` alone binds to a device that does not exist, and the gate
+ * correctly refuses it. Tests that drive a REAL browser must ask the extension
+ * what its fingerprint actually is (see deviceFingerprint below); the deviceId
+ * path stays for the bare-Node tests, where no keypair is possible.
+ */
+export function mintLct2Token(priv, { licenseKey, deviceId, dev, ks = "", exp, iat, feat, email = "" } = {}) {
   const now = iat ?? Date.now();
   const payload = Buffer.from(JSON.stringify({
     v: 2, plan: "pro",
-    sub: sha16Hex(licenseKey), dev: sha16Hex(deviceId),
+    sub: sha16Hex(licenseKey), dev: dev || sha16Hex(deviceId),
     iat: now, exp: exp ?? now + 90 * 864e5,
     ...(ks ? { ks } : {}), ...(feat ? { feat } : {}), ...(email ? { email } : {})
   }));
@@ -186,6 +196,21 @@ export async function sendFromExtensionPage(ctx, extId, msg, path = "popup/popup
   }), msg);
   await page.close();
   return res;
+}
+
+/**
+ * The device fingerprint the running extension will actually compute.
+ *
+ * Reads it from the extension's own code rather than recomputing it here, so a
+ * change to how identity is derived cannot silently leave these tests asserting
+ * against a formula the product stopped using.
+ */
+export async function deviceFingerprint(ctx, extId, deviceId) {
+  const page = await ctx.newPage();
+  await page.goto(`chrome-extension://${extId}/popup/popup.html`);
+  const fp = await page.evaluate((id) => self.LCTEntitlement.deviceFpFor(id), deviceId);
+  await page.close();
+  return fp;
 }
 
 /** Write directly into chrome.storage.local/sync from Node, via any

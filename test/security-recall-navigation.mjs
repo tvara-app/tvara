@@ -35,7 +35,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join, extname } from "node:path";
 import {
   ROOT, SCRATCH, reporter, mirrorExtension, mintLct2Token, b64url,
-  launchExtension, sendFromExtensionPage, setStorage
+  launchExtension, sendFromExtensionPage, setStorage, deviceFingerprint
 } from "./security-fixtures.mjs";
 
 const { t, done } = reporter();
@@ -53,7 +53,13 @@ try {
   await setStorage(ctx, id, "local", {
     license: { key: LICENSE_KEY, kind: "dodo", email: "test@example.com", instanceId: "test-instance-1", activatedAt: Date.now() }
   });
-  const token = mintLct2Token(priv, { licenseKey: LICENSE_KEY, deviceId: DEVICE_ID, ks: b64url(Buffer.from("recall-nav-stamp")) });
+  /* Bound to the fingerprint the extension actually derives from its device
+     key, not to the stored device id — see mintLct2Token. Getting this wrong
+     does not fail loudly: the token simply never matches, the page stays
+     locked, and the test times out waiting for a search box that was never
+     going to appear. */
+  const dev = await deviceFingerprint(ctx, id, DEVICE_ID);
+  const token = mintLct2Token(priv, { licenseKey: LICENSE_KEY, dev, ks: b64url(Buffer.from("recall-nav-stamp")) });
   await setStorage(ctx, id, "local", { "lct-entitlement-v2": { token, fetchedAt: Date.now() } });
 
   const mkChat = (id2, msgOverrides = {}) => ({

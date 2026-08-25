@@ -126,8 +126,10 @@ await (async () => {
 
 {
   const wrongDevice = mintToken({ deviceId: "someone-elses-device" });
-  const res = await LCTEntitlement.evaluate({ key: "fuzz-key" }, "my-actual-device");
-  // evaluate() reads the token from storage, not the arg — write it first.
+  // Exercised, not asserted: evaluate() reads the token from storage, not the
+  // arg, so this first call is the "nothing stored yet" path. The assertion is
+  // on res2, after the token is written.
+  await LCTEntitlement.evaluate({ key: "fuzz-key" }, "my-actual-device");
   await LCTEntitlement.writeToken({ token: wrongDevice, fetchedAt: Date.now() });
   const res2 = await LCTEntitlement.evaluate({ key: "fuzz-key" }, "my-actual-device");
   t("a token minted for a different device is not entitled when evaluated on this one",

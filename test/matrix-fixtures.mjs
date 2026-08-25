@@ -6,7 +6,7 @@
    built to be called ONCE per shared State value and reused across every row
    in that group — a naive per-row reseed would blow the time budget on the
    two archive-scale states alone. */
-import { mintLct2Token, b64url, setStorage } from "./security-fixtures.mjs";
+import { mintLct2Token, b64url, setStorage, deviceFingerprint } from "./security-fixtures.mjs";
 
 /**
  * Configure chrome.storage to represent one of the 8 State values. `priv` is
@@ -38,7 +38,14 @@ export async function setEntitlement(ctx, extId, state, { priv, deviceId = "matr
       await setStorage(ctx, extId, "local", {
         license: { key: licenseKey, kind: "dodo", email: "matrix@example.com", instanceId: "matrix-instance-1", activatedAt: now }
       });
-      const token = mintLct2Token(priv, { licenseKey, deviceId, ks: b64url(Buffer.from("matrix-stamp-secret")) });
+      /* Bound to the fingerprint the extension actually derives from its
+         device key, not to the stored device id — under protocol v3 those are
+         different values (see mintLct2Token). Getting it wrong is silent: the
+         token simply never matches, every "pro" row behaves as locked, and the
+         first thing that notices is a 30-second timeout waiting for a search
+         box that was never going to appear. */
+      const dev = await deviceFingerprint(ctx, extId, deviceId);
+      const token = mintLct2Token(priv, { licenseKey, dev, ks: b64url(Buffer.from("matrix-stamp-secret")) });
       await setStorage(ctx, extId, "local", { "lct-entitlement-v2": { token, fetchedAt: now } });
       break;
     }

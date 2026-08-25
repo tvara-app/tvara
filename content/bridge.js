@@ -21,7 +21,6 @@
   const MAX_PASSAGES = 6;
 
   let adapter = null;
-  let unlocked = () => false;
 
   let panel = null, input = null, list = null, meta = null, insertBtn = null, note = null;
   let isOpen = false;
@@ -250,9 +249,16 @@
     input.blur();
   }
 
-  function init(theAdapter, isUnlocked) {
+  /* `isUnlocked` is accepted and deliberately ignored. It used to be stored in
+     an `unlocked` variable that nothing ever read — a gate wired up and never
+     consulted, which reads like a hole and is not one: entitlement is enforced
+     in bg.js's requireEntitlement() on every privileged message, and
+     test/security-entitlement-gate.mjs proves a content script cannot talk its
+     way past it. Keeping a dead lookalike here invites someone to "fix" the
+     gate in the wrong place. The parameter stays so main.js's call site does
+     not have to change shape for two callees. */
+  function init(theAdapter, _isUnlocked) {
     adapter = theAdapter;
-    unlocked = isUnlocked || (() => false);
     // opening is driven by the browser commands API (see main.js) — no
     // content-script hotkey, so no OS/browser reserved-combo clashes
   }

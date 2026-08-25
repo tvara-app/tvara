@@ -86,7 +86,7 @@
     paintArchiveState();
   }
 
-  const LOCK_COPY = "Pro feature. Your archive keeps building either way. Unlock from the extension popup to get it back out.";
+  const LOCK_COPY = "Pro feature. Your archive keeps building either way, and \u201cExport archive\u201d below always works \u2014 Pro adds the encrypted, reinstall-proof backup and restore.";
 
   /** Disable rather than hide: a vanished backup button reads as data loss. */
   function paintPaidSections(verdict) {
@@ -548,6 +548,30 @@
     setStatus("backup-status", `${payload.chats.length.toLocaleString()} chats encrypted in ${filename}.${automatic}`, "ok");
     await paintAutoBackup();
   }
+
+  /* The way out, always open. Deliberately does NOT consult canBackup: this
+     button is the one thing on this page that a locked, lapsed or refunded
+     install must still be able to press. See the "recall-export" case in bg.js
+     for why. */
+  $("export-archive").addEventListener("click", async () => {
+    const button = $("export-archive");
+    button.disabled = true;
+    setStatus("export-status", "Reading your archive…");
+    try {
+      const res = await send({ type: "recall-export" });
+      if (!res || res.err) throw new Error("Could not read the archive");
+      const chats = res.chats || [];
+      if (!chats.length) throw new Error("There is nothing archived yet");
+      const file = JSON.stringify(
+        { format: "tvara-archive-export", version: 1, createdAt: Date.now(), chats }, null, 2);
+      const stamp = new Date().toISOString().slice(0, 10);
+      download(new Blob([file], { type: "application/json" }), `tvara-archive-${stamp}.json`);
+      setStatus("export-status",
+        `${chats.length.toLocaleString()} chats exported. The file is not encrypted.`, "ok");
+    } catch (error) {
+      setStatus("export-status", String(error.message || error), "err");
+    } finally { button.disabled = false; }
+  });
 
   $("create-backup").addEventListener("click", async () => {
     const button = $("create-backup");

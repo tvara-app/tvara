@@ -33,7 +33,7 @@ import { join } from "node:path";
 import { generateKeyPairSync, sign } from "node:crypto";
 import {
   SCRATCH, reporter, mirrorExtension, mirrorExtensionWithMismatchedIntegrity,
-  mintLct2Token, flipSignatureByte, b64url, sha16Hex,
+  mintLct2Token, flipSignatureByte, b64url, sha16Hex, deviceFingerprint,
   launchExtension, sendFromExtensionPage, setStorage
 } from "./security-fixtures.mjs";
 
@@ -59,7 +59,8 @@ async function seedLicenseAndDevice(ctx, extId, licenseKey = LICENSE_KEY) {
   const { ctx, id } = await launchExtension(EXT, join(SCRATCH, "gate-valid-profile"));
   try {
     await seedLicenseAndDevice(ctx, id);
-    const token = mintLct2Token(priv, { licenseKey: LICENSE_KEY, deviceId: DEVICE_ID, ks: b64url(Buffer.from("test-archive-stamp-secret")) });
+    const dev = await deviceFingerprint(ctx, id, DEVICE_ID);
+    const token = mintLct2Token(priv, { licenseKey: LICENSE_KEY, dev, ks: b64url(Buffer.from("test-archive-stamp-secret")) });
     await setStorage(ctx, id, "local", { "lct-entitlement-v2": { token, fetchedAt: Date.now() } });
 
     const res = await sendFromExtensionPage(ctx, id, GATED_MSG);
@@ -81,7 +82,8 @@ async function seedLicenseAndDevice(ctx, extId, licenseKey = LICENSE_KEY) {
       !!res1 && res1.err === "locked", `response: ${JSON.stringify(res1)}`);
 
     // B2: a validly-shaped, validly-signed token — then one signature bit flipped.
-    const valid = mintLct2Token(priv, { licenseKey: LICENSE_KEY, deviceId: DEVICE_ID });
+    const devB = await deviceFingerprint(ctx, id, DEVICE_ID);
+    const valid = mintLct2Token(priv, { licenseKey: LICENSE_KEY, dev: devB });
     const tampered = flipSignatureByte(valid);
     await setStorage(ctx, id, "local", { "lct-entitlement-v2": { token: tampered, fetchedAt: Date.now() } });
     const res2 = await sendFromExtensionPage(ctx, id, GATED_MSG);
@@ -91,7 +93,7 @@ async function seedLicenseAndDevice(ctx, extId, licenseKey = LICENSE_KEY) {
     // B3: a token signed by a completely foreign, unrelated keypair.
     const foreign = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
     const foreignPayload = Buffer.from(JSON.stringify({
-      v: 2, plan: "pro", sub: sha16Hex(LICENSE_KEY), dev: sha16Hex(DEVICE_ID),
+      v: 2, plan: "pro", sub: sha16Hex(LICENSE_KEY), dev: devB,
       iat: Date.now(), exp: Date.now() + 90 * 864e5
     }));
     const foreignSig = sign("sha256", foreignPayload, { key: foreign.privateKey, dsaEncoding: "ieee-p1363" });
@@ -151,7 +153,7 @@ async function seedLicenseAndDevice(ctx, extId, licenseKey = LICENSE_KEY) {
     // the signature itself is genuinely valid. Only the integrity guard
     // (comparing sha256(PUBLIC_KEY_B64) against the untouched original
     // _KEY_INTEGRITY) stands between this and a false "entitled".
-    const token = mintLct2Token(priv, { licenseKey: LICENSE_KEY, deviceId: DEVICE_ID });
+    const token = mintLct2Token(priv, { licenseKey: LICENSE_KEY, dev: await deviceFingerprint(ctx, id, DEVICE_ID) });
     await setStorage(ctx, id, "local", { "lct-entitlement-v2": { token, fetchedAt: Date.now() } });
 
     const res = await sendFromExtensionPage(ctx, id, GATED_MSG);

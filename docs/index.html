@@ -61,7 +61,7 @@
   <div>
     <a class="cta alt" href="mailto:tvara.exten@gmail.com">Contact</a>
   </div>
-  <div class="badge">🔒 Local archive · no telemetry or Tvara server</div>
+  <div class="badge">🔒 Your conversations never leave your device · no telemetry</div>
   <nav>
     <a href="#features">Features</a> · <a href="#pricing">Pricing</a> · <a href="#privacy">Privacy</a> · <a href="#terms">Terms</a> · <a href="#refunds">Refunds</a>
   </nav>
@@ -148,27 +148,69 @@
 
 <section id="privacy" class="legal">
   <h2>Privacy Policy</h2>
-  <p><em>Effective: July 2026</em></p>
-  <p>Tvara is built so that trust is verifiable, not promised:</p>
+  <p><em>Effective: 25 August 2026. This version replaced an earlier one that said Tvara had no server of its own. That was wrong, and the sections below say exactly what there is instead.</em></p>
+
+  <h3>The short version</h3>
+  <p><strong>Your conversations never leave your device.</strong> No chat text, no titles, no prompts and no exports are ever sent to us or to anyone else. That is the claim this product is built on, and it is the one you can verify by reading the source.</p>
+  <p><strong>Tvara does run one server</strong> &mdash; a licence issuer. It exists to decide whether a licence is real and how many devices are using it. It never sees a conversation. What it does see and store is listed below, in full.</p>
+
+  <h3>Where the extension connects, and why</h3>
+  <p>Three places. There is no fourth.</p>
+  <ol>
+    <li><strong>The AI sites you are already signed into</strong> &mdash; ChatGPT, Claude, Gemini, Perplexity, DeepSeek, Grok. It makes the same authenticated requests their own pages make, using the session cookie your browser already holds, to read <em>your own</em> conversation history and (while Allowance tracking is on) your own remaining plan allowance. That data is written to local extension storage on your machine. It is not sent anywhere.</li>
+    <li><strong>Our payment provider's licence API</strong> (Dodo Payments, merchant of record) &mdash; when you activate, release a device, or on a re-check at most once a month. It receives your licence key and a coarse device label such as &ldquo;Chrome &middot; macOS&rdquo;.</li>
+    <li><strong>Our licence issuer</strong> (<code>entitlement.tvara.workers.dev</code>, a Cloudflare Worker) &mdash; described in the next section.</li>
+  </ol>
+
+  <h3>What our licence issuer receives and stores</h3>
+  <p>It is contacted when you start the free trial, when you activate Pro, when a licensed copy re-checks (at most monthly), and when you view or remove a device. <strong>Starting the free trial contacts it too</strong> &mdash; an earlier version of this policy said the free tier never did, which was not correct.</p>
+  <p>Each request carries: your licence key (Pro only), your device's public key, a random one-time number, a timestamp, and a signature. As with any web request, our server also sees your IP address.</p>
+  <p>It stores, per licence:</p>
   <ul>
-    <li><strong>The extension collects no data.</strong> Your conversations, settings, reading positions, local timestamp records and license key are stored in your browser's local extension storage. An explicit Total Recall history check contacts only the supported AI provider endpoints listed in the manifest; there is no Tvara server, analytics endpoint or chat-data upload.</li>
-    <li><strong>No accounts, no analytics, no tracking</strong>, in the extension and on this website. This site is a static page with no cookies and no third-party scripts.</li>
-    <li><strong>On ChatGPT only</strong>, a small read-only script runs in the page to read each message's timestamp from the app's own state. It makes no network requests and changes nothing on the page. All processing is local.</li>
-    <li><strong>Purchases</strong> are handled by our payment provider (merchant of record). We receive your email address solely to issue your license key. We do not receive or store your card details.</li>
-    <li><strong>Licence activation is the one request that isn't to an AI site.</strong> Activating Pro sends your licence key and a coarse device label to the payment provider's licence server so it can enforce the 5-device limit; a licensed copy re-checks there at most once a month. That is the entire payload: no cookies, no conversation text, no identifiers beyond a random per-profile ID we generate. The free tier never contacts it, and the extension requests no additional host permission to do it.</li>
-    <li>The extension ships as <strong>unminified, unobfuscated JavaScript</strong>. Everything running on your machine is in the extension folder, readable, exactly as we wrote it and exactly as Chrome reviewed it.</li>
+    <li><strong>A hash of your licence key</strong> &mdash; the key itself is never written to disk by us. Retained up to 400 days after last use.</li>
+    <li><strong>A device fingerprint</strong> for each active device (a hash of that device's public key) with the time it was last seen, so the five-device limit can be enforced and so you can remove a device. Up to 400 days.</li>
+    <li><strong>Your trial start date</strong>, against your device fingerprint, so reinstalling does not hand out a second free week. Up to 400 days.</li>
+    <li><strong>A hash of your IP address</strong>, to notice one licence key being used from an implausible number of places. Not the address itself, and <strong>deleted after 30 days</strong>. It is used to flag a licence for a human to look at; it never automatically blocks anyone.</li>
+    <li><strong>Short-lived counters</strong> for rate limiting and to stop a request being replayed. Minutes to a couple of hours.</li>
+    <li><strong>Your email address</strong>, received from the payment provider so the extension can show you which account a licence belongs to. We do not use it for marketing and there is no mailing list.</li>
   </ul>
+  <p><strong>What it never receives:</strong> conversation text, chat titles, prompts, URLs you visit, cookies, or anything read from an AI site. There is no analytics service, no tracking pixel, no advertising identifier, and no third-party SDK anywhere in the extension.</p>
+
+  <h3>Your device key</h3>
+  <p>On first use the extension generates a cryptographic key pair inside your browser and stores it there. The private half is created as <em>non-extractable</em>: the browser will not export it &mdash; not to the page, not to us, not to you. It is used only to prove to our licence issuer that a request came from this device, so that a device slot cannot be claimed by someone who merely has your key. Only the public half is ever sent.</p>
+
+  <h3>Scripts that run inside the AI pages</h3>
+  <ul>
+    <li><strong>ChatGPT message times</strong> &mdash; a read-only script reads each message's timestamp from the app's own state so real send times can be shown. It makes no network request and changes nothing on the page.</li>
+    <li><strong>The allowance reader</strong> &mdash; while <em>Allowance tracking</em> is on, this observes the rate-limit information the AI sites' own responses already carry, so the figure agrees with the site instead of being an estimate. It is strictly passive: requests are never altered, blocked, delayed or replayed. It reads rate-limit response headers, and opens a response body only when the URL's own path says the response is about limits &mdash; never chat traffic, never a stream. What reaches the extension is a short list of numbers (<code>remaining</code>, <code>limit</code>, <code>percentage</code>, <code>reset</code>): no bodies, no tokens, no URLs. This is the only place the extension hooks <code>fetch</code>/<code>XHR</code>, it is switchable off in the popup, and with it off the hooks disable themselves.</li>
+  </ul>
+
+  <h3>Your data, your call</h3>
+  <ul>
+    <li><strong>Your archive is yours.</strong> Delete it at any time from the extension &mdash; that removes it from your device immediately, and we never held a copy to begin with.</li>
+    <li><strong>Exporting your archive never requires a licence.</strong> If your Pro licence lapses, is refunded, or you remove the device, you can still export everything the extension has archived. We will not hold your own conversations behind a paywall.</li>
+    <li><strong>Access and erasure.</strong> Email <a href="mailto:tvara.exten@gmail.com">tvara.exten@gmail.com</a> from your purchase address and we will tell you exactly what our licence issuer holds for your licence, or delete it, within 30 days. Deleting it releases every device slot and cannot be undone. For payment records, the merchant of record is the controller &mdash; we will point you to them.</li>
+    <li><strong>This website</strong> is a static page with no cookies, no analytics and no third-party scripts.</li>
+  </ul>
+
+  <h3>Verifying any of this</h3>
+  <p>The extension ships as unminified, unobfuscated JavaScript, and the licence issuer's source is in the repository as <code>server/entitlement-worker.js</code>. Everything above is a statement about code you can read. If you find a place where the code and this page disagree, that is a bug &mdash; please report it and we will fix whichever one is wrong.</p>
+
   <p>Questions: <a href="mailto:tvara.exten@gmail.com">tvara.exten@gmail.com</a></p>
 </section>
 
 <section id="terms" class="legal">
   <h2>Terms of Service</h2>
-  <p><em>Effective: July 2026</em></p>
+  <p><em>Effective: 25 August 2026</em></p>
   <ul>
-    <li>Tvara is a browser extension that improves performance and navigation of third-party AI chat websites. It is an independent product, not affiliated with or endorsed by OpenAI, Anthropic, Google or Perplexity.</li>
-    <li>The Free tier may be used without payment. A Pro license is a one-time purchase that unlocks Pro features on supported platforms for personal use on your devices, with no recurring fees.</li>
-    <li>Your license key is for you; please don't redistribute it. We may revoke keys that are publicly shared.</li>
-    <li>The software is provided "as is", without warranty of any kind (see the licence terms below). Third-party sites change frequently; features degrade gracefully but may temporarily break until we ship a fix.</li>
+    <li>Tvara is a browser extension that improves performance and navigation of third-party AI chat websites. It is an independent product, <strong>not affiliated with or endorsed by</strong> OpenAI, Anthropic, Google, Perplexity, DeepSeek or xAI. All product names belong to their owners.</li>
+    <li>The Free tier may be used without payment. A Pro licence is a one-time purchase that unlocks Pro features on supported platforms for personal use, with no recurring fees.</li>
+    <li><strong>The free trial</strong> runs for 7 days, needs no payment details, and is one per device. Starting it registers your device with our licence issuer so that reinstalling does not issue a second trial.</li>
+    <li><strong>Pro works on up to 5 devices at once.</strong> You can remove a device from the popup at any time to free its slot. A removed device keeps working until its licence check expires, which can take up to 90 days &mdash; removing a slot frees the slot immediately, it does not switch off the other machine.</li>
+    <li>Your licence key is yours; please don't redistribute it. We may revoke keys that are publicly shared or resold. We do not automatically revoke on suspicion &mdash; a person reviews it first.</li>
+    <li><strong>If your licence ends</strong> for any reason &mdash; refund, chargeback, or revocation &mdash; Pro features stop, but your archived conversations stay on your device and remain exportable. We will not withhold your own data.</li>
+    <li>Tvara reads your conversation history from AI services using your own signed-in session, on your instruction. Those services set their own terms for how their products may be accessed, and your use of them remains subject to those terms. If a provider changes its service so that a feature cannot work, we will say so rather than quietly degrade.</li>
+    <li>The software is provided "as is", without warranty of any kind. Third-party sites change frequently; features degrade gracefully but may temporarily break until we ship a fix.</li>
     <li>Tvara is sold through a payment provider acting as merchant of record. Your contract for the payment is with them: they appear on your statement, collect any applicable tax, and handle chargebacks. Support for the software is ours.</li>
     <li>The extension is distributed as readable, unobfuscated source, because software that reads private conversations should be inspectable by the people who install it. Being able to read it is not permission to reuse it: all rights are reserved.</li>
     <li>These terms are governed by the laws of India.</li>

@@ -72,14 +72,42 @@
     }
 
     /* Everything below is a real state a buyer can be in, and each one says
-       what to do next. "Something went wrong" is not an instruction. */
+       what to do next. "Something went wrong" is not an instruction.
+
+       Every person reading these has ALREADY PAID. The distance between a
+       precise next step and a vague apology is the distance between a support
+       email and a chargeback, so no branch here is allowed to guess. */
     const reason = (res && res.reason) || "unreachable";
+    const branch = (res && res.branch) || "";
+
     if (reason === "limit" || (res && res.seats)) {
       say("warn", "This licence is already on five devices.",
         "Open the Tvara popup, choose Devices, and release one. Your purchase is fine.");
     } else if (reason === "revoked") {
       say("warn", "The payment provider does not recognise this licence yet.",
         "It can take a moment after payment. Reload this page, or paste the key into the popup.");
+    } else if (branch === "clockskew") {
+      /* Not a licence problem at all, and it is the one failure here the buyer
+         can fix in thirty seconds — but only if we say so. The issuer refuses
+         requests more than five minutes off to stop replay, and a machine with
+         a wrong clock trips it on every attempt, forever. */
+      say("warn", "Your device's clock is too far out to verify the licence.",
+        "Set the date and time to update automatically, then reload this page. Your purchase is fine.");
+    } else if (branch === "nodevice") {
+      /* No device keypair could be created — hardened privacy modes and
+         corrupted profiles both do this. Without one there is nothing to prove
+         and the issuer will refuse every time, so retrying is not the advice. */
+      say("warn", "This browser profile won't let Tvara create its device key.",
+        "Storage may be blocked or the profile damaged. Try a normal (non-private) window, or another profile. Your purchase is fine.");
+    } else if (branch === "outdated") {
+      say("warn", "This copy of Tvara is older than the licence server.",
+        "Update the extension from the Chrome Web Store, then reload this page.");
+    } else if (branch === "proof") {
+      say("warn", "The licence server did not accept this device.",
+        "Reload this page to try again. If it keeps happening, email tvara.exten@gmail.com with your key.");
+    } else if (branch === "throttled") {
+      say("warn", "Too many attempts in a short time.",
+        "Wait a minute, then reload this page. Nothing is wrong with your purchase.");
     } else if (reason === "entitlement") {
       say("warn", "Activated, but the licence server did not answer.",
         "Pro unlocks by itself once you are back online. Nothing to redo.");
@@ -87,10 +115,14 @@
       say("warn", "That key was not readable.",
         "Copy it from your purchase email and paste it into the Tvara popup.");
     } else {
-      // Includes "extension not installed", which is the common case and is
-      // not an error: the page already tells them to install it.
-      say("idle", "Install Tvara, then paste the key above into its popup.",
-        "The extension activates automatically here once it is installed.");
+      /* This branch used to read "Install Tvara, then paste the key" — advice
+         that was wrong every single time it appeared. This file is a content
+         script: it cannot run unless the extension is installed, so nobody
+         without it has ever seen this box. What actually happened is that the
+         background service worker did not answer within 25 seconds, usually
+         because the extension was mid-update or mid-reload. */
+      say("warn", "Tvara is installed but its background service didn't answer.",
+        "Reload this page. If that doesn't do it, paste the key into the popup by hand — your purchase is fine.");
     }
   }
 

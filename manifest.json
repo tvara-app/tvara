@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Tvara",
-  "version": "0.8.0",
-  "description": "Fix slow, laggy AI chats. Speed engine, minimap, search & backup for ChatGPT, Claude, Gemini, DeepSeek, Grok. 100% local, $0 data.",
+  "version": "1.0.0",
+  "description": "Fix slow, laggy AI chats. Speed engine, minimap, search & backup for ChatGPT, Claude, Gemini, DeepSeek, Grok. Chats stay local.",
   "permissions": [
     "alarms",
     "storage",

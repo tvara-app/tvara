@@ -25,7 +25,7 @@
  * storage, which is what proves the provider APIs still answer — it stays on
  * this machine, and the line above deletes it.
  */
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
