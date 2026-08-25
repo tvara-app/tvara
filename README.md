@@ -54,6 +54,25 @@ The speed engine is **free everywhere, forever**. All tools are free on ChatGPT 
    ```
 3. Type in the input box with the extension off vs on. Feel it.
 
+Node **24** or newer (`package.json` `engines`); CI runs 24, the Active LTS line.
+
+**If `git pull` says "divergent branches" and refuses**, and the fetch above it
+reported a `(forced update)`: `main`'s history was rewritten once, on 2026-08-21,
+to take a personal name out of every old commit, and force-pushed. A clone made
+before that holds commits that no longer exist upstream, so there is nothing for
+git to fast-forward to and it will not guess which side to keep. This is not two
+branches — there is one, and there always has been. Take the remote's copy of it:
+
+```bash
+git fetch origin
+git switch main
+git branch pre-rewrite            # only if you have local commits worth keeping
+git reset --hard origin/main      # discards anything not on origin/main
+```
+
+Then cherry-pick anything off `pre-rewrite` you still want. No history has been
+rewritten since, and none is planned.
+
 ## License issuing (owner only)
 
 ```bash
