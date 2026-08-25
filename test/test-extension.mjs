@@ -548,7 +548,8 @@ try {
       deviceKey: await self.LCTEntitlement.deviceKey().then((k) => !!k).catch((e) => "threw: " + e),
       fp: await self.LCTEntitlement.deviceFpFor("x").catch((e) => "threw: " + e)
     })).catch((e) => ({ evalFailed: String(e) }));
-    throw new Error(`A9b never reached Pro. issuer calls=${JSON.stringify(ent.calls.map((c) => ({ v: c.v, hasPub: !!c.device_pub, hasSig: !!c.sig })))} `
+    throw new Error(`A9b never reached Pro (${String(error.message || error).split("\n")[0]}). `
+      + `issuer calls=${JSON.stringify(ent.calls.map((c) => ({ v: c.v, hasPub: !!c.device_pub, hasSig: !!c.sig })))} `
       + `dodo=${JSON.stringify(dodo.calls.map((c) => c.path))} popup=${JSON.stringify(diag)}`);
   }
   const licB = await licenseOf();
