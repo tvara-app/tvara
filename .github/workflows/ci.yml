@@ -10,15 +10,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           # The gitleaks step below scans a commit RANGE, which needs history;
           # the default shallow clone has none.
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      # 24 is the Active LTS line (Krypton). The v5 actions above matter as
+      # much as the number: v4 ran on the Node 20 runtime, which GitHub
+      # deprecated and now force-runs on 24 while printing a warning on every
+      # single run. v5 targets 24 natively, so the warning goes away instead of
+      # being tolerated.
+      - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
 
       - run: npm ci
@@ -77,7 +82,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: semgrep/semgrep-action@v1
         with:
           config: p/javascript p/xss

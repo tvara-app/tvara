@@ -43,6 +43,9 @@
     "lint:webext": "node tools/pack.mjs --firefox && rm -rf dist/webext-lint && mkdir -p dist/webext-lint && unzip -q dist/*-firefox.zip -d dist/webext-lint && npx --yes web-ext@8 lint --source-dir=dist/webext-lint",
     "test:device-proof": "node test/test-device-proof.mjs"
   },
+  "engines": {
+    "node": ">=24"
+  },
   "devDependencies": {
     "@eslint/js": "^9.19.0",
     "@stryker-mutator/core": "^8.7.1",
