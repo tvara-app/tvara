@@ -27,7 +27,15 @@ const PROFILE = join(SCRATCH, "chrome-profile");
 const EXT = join(SCRATCH, "ext");
 const PORT = Number(process.env.LCT_MOCK_PORT || 8931);
 const CHANNEL = process.env.LCT_CHANNEL || "chrome";
-const HEADED = process.env.LCT_HEADED ? process.env.LCT_HEADED !== "0" : CHANNEL === "chrome";
+/* Headless unless a human explicitly asks otherwise.
+   
+   This used to default to `CHANNEL === "chrome"`, which is true by default —
+   so when branded Chrome could not start and the code fell back to the bundled
+   Chromium, the FALLBACK inherited "headed" too and died the same way on a
+   machine with no display. The fallback existed, fired correctly, and then
+   walked into the same wall. Chrome itself still has to be headed (it is the
+   only way an M136+ build might honour --load-extension); nothing else does. */
+const HEADED = process.env.LCT_HEADED ? process.env.LCT_HEADED !== "0" : false;
 
 rmSync(SCRATCH, { recursive: true, force: true });
 mkdirSync(EXT, { recursive: true });
@@ -133,7 +141,9 @@ if (!started && CHANNEL === "chrome") {
   usedChannel = "chromium";
 }
 if (!started) {
-  console.error(`FATAL: ${CHANNEL} started without the extension.`);
+  // usedChannel, not CHANNEL: after a fallback the two differ, and naming the
+  // one that was never reached sends the reader to the wrong browser.
+  console.error(`FATAL: ${usedChannel} could not start with the extension loaded.`);
   await providers.close();
   process.exit(1);
 }
