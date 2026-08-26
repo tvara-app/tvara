@@ -334,9 +334,16 @@ your own scripts).
   activate, the extension quietly frees your oldest device and carries on; it
   only stops to ask when the slots belong to devices it doesn't recognise.
 - **Moving to a new browser:** click **Remove** (which hands the slot back)
-  and activate on the new machine with the same key.
-- **Re-checks:** at most once a month, and only if you're already online. Two
-  refusals a week apart are needed before Pro is withdrawn, an outage, a
+  and activate on the new machine with the same key. **Remove frees a slot; it
+  does not switch a device off.** A removed browser that still has the key
+  keeps Pro and takes a slot again at its next check, unless all five are full
+  by then. To stop a machine you no longer control, email support and we will
+  clear the licence.
+- **Re-checks:** before a Pro action, whenever the last check is over fifteen
+  minutes old — only if you're already online. A background alarm runs every
+  twelve hours too, but only contacts the issuer while the signed 90-day token
+  is inside its final 30 days. One authoritative refusal — the issuer saying
+  the licence is unknown or inactive — withdraws Pro at once; an outage, a
   timeout or a flight never costs you access.
 - **Keys bought before this (`LCT1.…`)** are unchanged: verified by signature
   on your own machine, no network, no device limit.
@@ -352,8 +359,9 @@ your own scripts).
   extension contains no analytics, telemetry or remote-code path.
 - **The exception, stated plainly:** licensing. Activating Pro contacts the
   payment provider's licence API and our own licence issuer, which returns a
-  signed 90-day token. A licensed copy renews that token at most every 30 days
-  and re-checks the payment provider at most monthly. **Starting the free trial
+  signed 90-day token. A licensed copy renews that token once it has under 30
+  days of life left, and re-checks before a Pro action when the last check is
+  over fifteen minutes old. **Starting the free trial
   contacts the issuer too** — an earlier version of this guide said the free
   tier never contacted anything, which was not correct. What leaves the machine:
   your licence key, a coarse device label ("Chrome · macOS"), your device's
@@ -362,8 +370,12 @@ your own scripts).
 - **What the issuer keeps:** a hash of your licence key, a fingerprint per
   active device with a last-seen time, and your trial start date — each up to
   400 days after last use — plus a **hashed** IP for 30 days, used to flag one
-  key being used from implausibly many places for a human to review. It never
-  blocks anyone automatically. Email support to see or delete any of it.
+  key being used from implausibly many places for a human to review. Past that
+  threshold it also keeps a count and a timestamp against the licence for 90
+  days, as evidence for that review. It never blocks anyone automatically.
+  Your email address is not kept at all: the issuer reads it from the payment
+  provider at check time and places it in the signed token your own browser
+  holds. Email support to see or delete any of it.
 - **Your device key:** generated once per install and **non-extractable** — the
   browser will not export the private half to us, to you, or to anyone. It only
   proves a request came from this device, so a device slot cannot be claimed by

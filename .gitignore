@@ -6,3 +6,8 @@ dist/
 store/
 *.mov
 .stryker-tmp/
+.env
+.env.*
+!.env.example
+*.pem
+*.key

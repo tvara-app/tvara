@@ -130,7 +130,7 @@
       <p class="buy-sub">Instant licence key by email. 5 devices. No subscription.</p>
     </div>
   </div>
-  <p style="margin-top:14px;">Payments are processed by our merchant of record. After purchase you receive a license key by email; paste it into the extension popup to activate. Activating registers that device with the licence server, and it sends your key and a device label such as &ldquo;Chrome &middot; macOS&rdquo;, never a cookie and never any conversation text. After that a licensed copy re-checks at most once a month, and it never withdraws Pro because a check failed to get through. See <a href="#devices">devices</a>.</p>
+  <p style="margin-top:14px;">Payments are processed by our merchant of record. After purchase you receive a license key by email; paste it into the extension popup to activate. Activating registers that device with the licence server, and it sends your key and a device label such as &ldquo;Chrome &middot; macOS&rdquo;, never a cookie and never any conversation text. After that a licensed copy re-checks before a Pro action whenever its last check is over fifteen minutes old; a twice-daily background alarm runs as well, but only contacts the licence server while the signed 90-day token is inside its final 30 days. It never withdraws Pro because a check failed to get through &mdash; only because the licence server said the licence is gone. See <a href="#devices">devices</a>.</p>
 </section>
 
 <section id="devices" class="legal">
@@ -140,7 +140,7 @@
     <li>A &ldquo;device&rdquo; is a signed-in browser profile. Your laptop and desktop on the same Chrome profile share one slot; Firefox, Edge, or a second profile each take their own.</li>
     <li>Open the extension popup and click <strong>Devices</strong> to see them. <strong>Release</strong> frees the one you're on; <strong>Terminate</strong> frees any other.</li>
     <li>If every slot is full when you activate, the extension frees your <em>oldest</em> device automatically and carries on. It only stops to ask when the slots are held by devices this browser has never seen.</li>
-    <li>Clicking <strong>Remove</strong> in the popup hands the slot back, so do that before wiping a machine.</li>
+    <li>Clicking <strong>Remove</strong> in the popup hands the slot back, so do that before wiping a machine. Removing a device does not switch it off: if that browser is still installed and still holds the key, it keeps Pro and claims a slot again at its next licence check &mdash; unless all five are taken by then, in which case it is refused and asks you to free one.</li>
     <li>Lost a device without releasing it, or stuck at the limit? Email <a href="mailto:tvara.exten@gmail.com">tvara.exten@gmail.com</a> from your purchase address and we'll clear every slot on your licence, no questions.</li>
   </ul>
   <p>Licence keys issued before this change (they start <code>LCT1.</code>) are unaffected: they verify offline on your own machine and have no device limit.</p>
@@ -148,7 +148,7 @@
 
 <section id="privacy" class="legal">
   <h2>Privacy Policy</h2>
-  <p><em>Effective: 25 August 2026. This version replaced an earlier one that said Tvara had no server of its own. That was wrong, and the sections below say exactly what there is instead.</em></p>
+  <p><em>Effective: 26 August 2026. This version replaced an earlier one that said Tvara had no server of its own. That was wrong, and the sections below say exactly what there is instead.</em></p>
 
   <h3>The short version</h3>
   <p><strong>Your conversations never leave your device.</strong> No chat text, no titles, no prompts and no exports are ever sent to us or to anyone else. That is the claim this product is built on, and it is the one you can verify by reading the source.</p>
@@ -158,13 +158,13 @@
   <p>Three places. There is no fourth.</p>
   <ol>
     <li><strong>The AI sites you are already signed into</strong> &mdash; ChatGPT, Claude, Gemini, Perplexity, DeepSeek, Grok. It makes the same authenticated requests their own pages make, using the session cookie your browser already holds, to read <em>your own</em> conversation history and (while Allowance tracking is on) your own remaining plan allowance. That data is written to local extension storage on your machine. It is not sent anywhere.</li>
-    <li><strong>Our payment provider's licence API</strong> (Dodo Payments, merchant of record) &mdash; when you activate, release a device, or on a re-check at most once a month. It receives your licence key and a coarse device label such as &ldquo;Chrome &middot; macOS&rdquo;.</li>
-    <li><strong>Our licence issuer</strong> (<code>entitlement.tvara.workers.dev</code>, a Cloudflare Worker) &mdash; described in the next section.</li>
+    <li><strong>Our payment provider's licence API</strong> (Dodo Payments, merchant of record) &mdash; when you activate or release a device. It receives your licence key and a coarse device label such as &ldquo;Chrome &middot; macOS&rdquo;.</li>
+    <li><strong>Our licence issuer</strong> (<code>tvara.tharuntejandhe.workers.dev</code>, a Cloudflare Worker) &mdash; described in the next section.</li>
   </ol>
 
   <h3>What our licence issuer receives and stores</h3>
-  <p>It is contacted when you start the free trial, when you activate Pro, when a licensed copy re-checks (at most monthly), and when you view or remove a device. <strong>Starting the free trial contacts it too</strong> &mdash; an earlier version of this policy said the free tier never did, which was not correct.</p>
-  <p>Each request carries: your licence key (Pro only), your device's public key, a random one-time number, a timestamp, and a signature. As with any web request, our server also sees your IP address.</p>
+  <p>It is contacted when you start the free trial, when you activate Pro, when you view or remove a device, and on a routine re-check. The check that matters runs before a Pro action, whenever the last one was over fifteen minutes ago &mdash; that is what lets a cancelled or refunded licence stop working promptly rather than weeks later. A background alarm runs twice a day as well, but only contacts the issuer while the signed 90-day token is inside its final 30 days. <strong>Starting the free trial contacts it too</strong> &mdash; an earlier version of this policy said the free tier never did, which was not correct.</p>
+  <p>Each request carries: your licence key (Pro only), your device's public key, the activation receipt id from the payment provider, a random one-time number, a timestamp, and a signature. As with any web request, our server also sees your IP address.</p>
   <p>It stores, per licence:</p>
   <ul>
     <li><strong>A hash of your licence key</strong> &mdash; the key itself is never written to disk by us. Retained up to 400 days after last use.</li>
@@ -172,8 +172,9 @@
     <li><strong>Your trial start date</strong>, against your device fingerprint, so reinstalling does not hand out a second free week. Up to 400 days.</li>
     <li><strong>A hash of your IP address</strong>, to notice one licence key being used from an implausible number of places. Not the address itself, and <strong>deleted after 30 days</strong>. It is used to flag a licence for a human to look at; it never automatically blocks anyone.</li>
     <li><strong>Short-lived counters</strong> for rate limiting and to stop a request being replayed. Minutes to a couple of hours.</li>
-    <li><strong>Your email address</strong>, received from the payment provider so the extension can show you which account a licence belongs to. We do not use it for marketing and there is no mailing list.</li>
+    <li><strong>A sharing flag</strong>, and only past a threshold: if one licence key is seen from more than twelve distinct IP hashes inside a window, the issuer records a count and a timestamp against that licence for <strong>90 days</strong> so a person can look at it. It is evidence for review, never an automatic block.</li>
   </ul>
+  <p><strong>What it handles but does not store:</strong> your email address. The issuer asks the payment provider for it at the moment of a check and places it inside the signed token your own browser holds, so the extension can show you which account a licence belongs to. It is not written to our storage, we do not use it for marketing, and there is no mailing list.</p>
   <p><strong>What it never receives:</strong> conversation text, chat titles, prompts, URLs you visit, cookies, or anything read from an AI site. There is no analytics service, no tracking pixel, no advertising identifier, and no third-party SDK anywhere in the extension.</p>
 
   <h3>Your device key</h3>
@@ -182,7 +183,25 @@
   <h3>Scripts that run inside the AI pages</h3>
   <ul>
     <li><strong>ChatGPT message times</strong> &mdash; a read-only script reads each message's timestamp from the app's own state so real send times can be shown. It makes no network request and changes nothing on the page.</li>
-    <li><strong>The allowance reader</strong> &mdash; while <em>Allowance tracking</em> is on, this observes the rate-limit information the AI sites' own responses already carry, so the figure agrees with the site instead of being an estimate. It is strictly passive: requests are never altered, blocked, delayed or replayed. It reads rate-limit response headers, and opens a response body only when the URL's own path says the response is about limits &mdash; never chat traffic, never a stream. What reaches the extension is a short list of numbers (<code>remaining</code>, <code>limit</code>, <code>percentage</code>, <code>reset</code>): no bodies, no tokens, no URLs. This is the only place the extension hooks <code>fetch</code>/<code>XHR</code>, it is switchable off in the popup, and with it off the hooks disable themselves.</li>
+    <li><strong>The allowance reader</strong> &mdash; while <em>Allowance tracking</em> is on, this observes the rate-limit information the AI sites' own responses already carry, so the figure agrees with the site instead of being an estimate. It is strictly passive: requests are never altered, blocked, delayed or replayed. It reads rate-limit response headers, and opens a response body only when the URL's own path says the response is about limits &mdash; never chat traffic, never a stream. What crosses from the page into the extension is the rate-limit response headers, the URL <em>path</em> (never the query string), and &mdash; for those limit responses only &mdash; the parsed JSON, because the number has to be found inside it. That JSON is read in memory and discarded; what is written to disk is a redacted sample in which every string longer than 40 characters is replaced by its length, so a wrong reading stays diagnosable without keeping any prose. No part of it is transmitted anywhere. This is the only place the extension hooks <code>fetch</code>/<code>XHR</code>, it is switchable off in the popup, and with it off the hooks disable themselves.</li>
+  </ul>
+
+  <h3>What the extension keeps on your device</h3>
+  <ul>
+    <li><strong>Your archive</strong> &mdash; the conversations it has read, in the browser's own storage on your machine. The extension declares <code>unlimitedStorage</code> so a long history is not silently truncated. None of it is uploaded, and clearing it from the extension deletes it at once.</li>
+    <li><strong>Backup files</strong> &mdash; with automatic backup on, encrypted <code>.lctbackup</code> files are written to <code>Downloads/Tvara/</code> on your own disk and nowhere else. The passphrase is never stored, never synced, and cannot be recovered by us.</li>
+    <li><strong>Allowance diagnostics</strong> &mdash; the redacted response sample described above, kept so a wrong allowance figure can be explained rather than guessed at.</li>
+    <li><strong>An account tag</strong> &mdash; when you use more than one account on the same provider, the extension has to keep those archives apart. On Gemini it reads the signed-in address from Google's own account-switcher label, or the seat number in the URL, and stores only a salted hash of it. The address itself is not stored and never leaves your machine.</li>
+  </ul>
+
+  <h3>The permissions it asks for, and what each is for</h3>
+  <ul>
+    <li><code>storage</code>, <code>unlimitedStorage</code> &mdash; hold your archive and settings locally.</li>
+    <li><code>downloads</code> &mdash; write exports and scheduled encrypted backups into your Downloads folder.</li>
+    <li><code>notifications</code> &mdash; two local notices, and no others: a chat you had archived was deleted at the provider, and an allowance is running low. Both are raised on your machine; no notification service is involved.</li>
+    <li><code>alarms</code> &mdash; run the scheduled backup and the licence re-check on a timer.</li>
+    <li><strong>Host access</strong> to the AI sites listed above, and to <code>tvara-app.github.io</code> so the purchase page can hand a licence key back to the extension.</li>
+    <li><strong>Not requested:</strong> <code>cookies</code>, <code>tabs</code>, <code>history</code>, <code>bookmarks</code>, <code>webRequest</code>, <code>scripting</code>, or access to any site not named above. You can check this against <code>manifest.json</code> in the packaged extension.</li>
   </ul>
 
   <h3>Your data, your call</h3>
@@ -201,18 +220,18 @@
 
 <section id="terms" class="legal">
   <h2>Terms of Service</h2>
-  <p><em>Effective: 25 August 2026</em></p>
+  <p><em>Effective: 26 August 2026</em></p>
   <ul>
     <li>Tvara is a browser extension that improves performance and navigation of third-party AI chat websites. It is an independent product, <strong>not affiliated with or endorsed by</strong> OpenAI, Anthropic, Google, Perplexity, DeepSeek or xAI. All product names belong to their owners.</li>
     <li>The Free tier may be used without payment. A Pro licence is a one-time purchase that unlocks Pro features on supported platforms for personal use, with no recurring fees.</li>
     <li><strong>The free trial</strong> runs for 7 days, needs no payment details, and is one per device. Starting it registers your device with our licence issuer so that reinstalling does not issue a second trial.</li>
-    <li><strong>Pro works on up to 5 devices at once.</strong> You can remove a device from the popup at any time to free its slot. A removed device keeps working until its licence check expires, which can take up to 90 days &mdash; removing a slot frees the slot immediately, it does not switch off the other machine.</li>
+    <li><strong>Pro works on up to 5 devices at once.</strong> Removing a device from the popup frees its slot immediately. It does not switch that device off: if the browser is still installed and still holds the key, it keeps Pro and claims a slot again at its next licence check, unless all five are taken by then. To stop a machine you no longer control, ask us to clear the licence rather than removing its slot.</li>
     <li>Your licence key is yours; please don't redistribute it. We may revoke keys that are publicly shared or resold. We do not automatically revoke on suspicion &mdash; a person reviews it first.</li>
     <li><strong>If your licence ends</strong> for any reason &mdash; refund, chargeback, or revocation &mdash; Pro features stop, but your archived conversations stay on your device and remain exportable. We will not withhold your own data.</li>
     <li>Tvara reads your conversation history from AI services using your own signed-in session, on your instruction. Those services set their own terms for how their products may be accessed, and your use of them remains subject to those terms. If a provider changes its service so that a feature cannot work, we will say so rather than quietly degrade.</li>
     <li>The software is provided "as is", without warranty of any kind. Third-party sites change frequently; features degrade gracefully but may temporarily break until we ship a fix.</li>
     <li>Tvara is sold through a payment provider acting as merchant of record. Your contract for the payment is with them: they appear on your statement, collect any applicable tax, and handle chargebacks. Support for the software is ours.</li>
-    <li>The extension is distributed as readable, unobfuscated source, because software that reads private conversations should be inspectable by the people who install it. Being able to read it is not permission to reuse it: all rights are reserved.</li>
+    <li>The extension is distributed as readable, unobfuscated source, because software that reads private conversations should be inspectable by the people who install it. What you may do with that source is set by the <code>LICENSE</code> file in the repository the copy came from, and by nothing said on this page. Trade marks and the Tvara name are not covered by it.</li>
     <li>These terms are governed by the laws of India.</li>
   </ul>
 </section>

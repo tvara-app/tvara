@@ -11,6 +11,8 @@
  * that ships.
  */
 import { generateKeyPairSync, verify as nodeVerify } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
+import { readFileSync } from "node:fs";
 
 const worker = (await import("../server/entitlement-worker.js")).default;
 
@@ -110,9 +112,54 @@ function kv({ broken = false } = {}) {
   };
 }
 
+/**
+ * D1 double: a REAL SQLite database behind the slice of the D1 API the worker
+ * uses, loaded from the same schema.sql that deploy.sh applies.
+ *
+ * Real engine on purpose. The three things this migration is for — the seat
+ * PRIMARY KEY refusing a duplicate, ON CONFLICT DO NOTHING reporting zero
+ * changes on a replayed nonce, and a batch rolling back as one — are SQLite's
+ * behaviour. A hand-written fake would only ever assert my guess at it.
+ *
+ * `broken` makes every statement throw, which is how the degrade-open paths
+ * get proved rather than assumed.
+ */
+function d1({ broken = false } = {}) {
+  const sqlite = new DatabaseSync(":memory:");
+  sqlite.exec(readFileSync(new URL("../server/schema.sql", import.meta.url), "utf8"));
+  const boom = () => { throw new Error("D1 down"); };
+
+  const prepare = (sql) => ({
+    bind: (...args) => ({
+      async all() { if (broken) boom(); return { results: sqlite.prepare(sql).all(...args) }; },
+      async first() { if (broken) boom(); return sqlite.prepare(sql).get(...args) ?? null; },
+      async run() {
+        if (broken) boom();
+        return { meta: { changes: Number(sqlite.prepare(sql).run(...args).changes) } };
+      }
+    })
+  });
+
+  return {
+    sqlite,
+    prepare,
+    async batch(stmts) {
+      if (broken) boom();
+      const out = [];
+      sqlite.exec("BEGIN");
+      try {
+        for (const s of stmts) out.push(await s.run());
+        sqlite.exec("COMMIT");
+      } catch (e) { sqlite.exec("ROLLBACK"); throw e; }
+      return out;
+    }
+  };
+}
+
 function env(over = {}) {
   return {
     RL: kv(),
+    DB: d1(),
     SIGNING_KEY,
     DODO_API_KEY: "sk_test",
     DODO_MODE: "live",
@@ -275,7 +322,10 @@ t("issue: ...and the request never contained that fingerprint",
 t("issue: the token is bound to the licence, by hash not by key",
   typeof claims.sub === "string" && claims.sub.length === 32 && !JSON.stringify(claims).includes(KEY));
 t("issue: it carries the paid features", Array.isArray(claims.feat) && claims.feat.includes("archive.search"));
-t("issue: it expires", claims.exp > Date.now() && claims.exp <= Date.now() + 91 * 864e5);
+/* 30 days, not 90. The bound is tight on purpose: a token that quietly went
+   back to a season long would take the kill list's whole reason with it. */
+t("issue: it expires in 30 days",
+  claims.exp > Date.now() + 29 * 864e5 && claims.exp <= Date.now() + 31 * 864e5);
 t("issue: a tampered payload no longer verifies",
   !nodeVerify("sha256", Buffer.from(JSON.stringify({ ...claims, plan: "enterprise" })),
     { key: PUB, dsaEncoding: "ieee-p1363" }, unb64(sigB64)));
@@ -386,6 +436,14 @@ t("degrade: KV down still serves a paying customer",
   (await post(await signedBody(), { e: env({ RL: kv({ broken: true }) }) })).status === 200);
 t("degrade: no KV binding at all still serves",
   (await post(await signedBody(), { e: env({ RL: undefined }) })).status === 200);
+/* The same promise, now that the ledgers moved. A database we cannot reach must
+   not be able to unsell a licence somebody paid for. */
+t("degrade: D1 down still serves a paying customer",
+  (await post(await signedBody(), { e: env({ DB: d1({ broken: true }) }) })).status === 200);
+t("degrade: no D1 binding at all still serves",
+  (await post(await signedBody(), { e: env({ DB: undefined }) })).status === 200);
+t("degrade: neither binding still serves",
+  (await post(await signedBody(), { e: env({ DB: undefined, RL: undefined }) })).status === 200);
 
 /* A worker deployed without its secret must not sign anything. /licenses/validate
    is the same public endpoint the client can reach, so without the key the
@@ -408,6 +466,109 @@ t("ratelimit: the first 20 in an hour pass", codes.slice(0, 20).every((c) => c =
 t("ratelimit: the 21st is throttled", codes[20] === 429 && codes[21] === 429);
 t("ratelimit: throttling costs no upstream call",
   (await post(await signedBody(), { e: rlEnv })).status === 429);
+
+/* ---------- kill list ----------
+   The gap this closes: revocation used to mean waiting out the token. At 90
+   days that was a leaked or charged-back key we could do nothing about for a
+   season. The row is what makes the TTL a comfort rather than a commitment. */
+
+// Same derivation as the worker's — retyped, like signingInput() above, so this
+// file notices if the fingerprint ever changes shape.
+const keyFpOf = async (value) => {
+  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(String(value)));
+  return [...new Uint8Array(digest).slice(0, 16)].map((b) => b.toString(16).padStart(2, "0")).join("");
+};
+
+{
+  const e = env();
+  const keyFp = await keyFpOf(KEY);
+  const calls = stubDodo({ status: 200, body: { valid: true } });
+
+  t("killlist: a licence with no row is served as normal",
+    (await post(await signedBody(), { e })).status === 200);
+
+  e.DB.sqlite.prepare("INSERT INTO revocations (key_fp, reason, at) VALUES (?, ?, ?)")
+    .run(keyFp, "refunded", Date.now());
+
+  const before = calls.length;
+  const res = await post(await signedBody(), { e });
+  const body = await res.json();
+  t("killlist: the very next call is refused", res.status === 403, String(res.status));
+  t("killlist: the reason travels with it", body.reason === "refunded");
+  t("killlist: a revoked licence never reaches Dodo", calls.length === before);
+  t("killlist: /devices is refused too — a revoked licence cannot manage seats",
+    await (async () => {
+      const r = await post(await signedBody({}, { route: "devices" }), { e, path: "/devices" });
+      return r.status === 403 && (await r.json()).error === "licence revoked";
+    })());
+  t("killlist: an unrevoked licence on the same worker is unaffected",
+    (await post(await signedBody({ license_key: "LCT-TEST-KEY-0002" },
+      { route: "entitlement" }), { e })).status === 200);
+}
+
+/* ---------- the ledger written before D1 existed ---------- */
+
+stubDodo({ status: 200, body: { valid: true } });
+{
+  const e = env();
+  const keyFp = await keyFpOf(KEY);
+  const legacy = [];
+  for (let i = 0; i < 5; i++) legacy.push(await makeDevice());
+  const ledger = {};
+  for (const d of legacy) ledger[d.fp] = Date.now();
+  e.RL.map.set(`seats:${keyFp}`, JSON.stringify(ledger));
+
+  /* Without the import, moving to D1 would silently hand every licence five
+     fresh seats — the seat limit would reset for everybody who ever paid. */
+  const sixth = await makeDevice();
+  t("migration: seats already spent in KV are carried into D1, not released",
+    (await post(await signedBody({}, { dev: sixth }), { e })).status === 422);
+  t("migration: the carry-over stops at the seat limit",
+    Number(e.DB.sqlite.prepare("SELECT COUNT(*) AS n FROM seats WHERE key_fp = ?").get(keyFp).n) === 5);
+  t("migration: a device that already held a seat still holds it",
+    (await post(await signedBody({}, { dev: legacy[0] }), { e })).status === 200);
+}
+
+{
+  const e = env();
+  const dev = await makeDevice();
+  const started = Date.now() - 3 * 864e5;
+  e.RL.map.set(`trial:${dev.fp}`, String(started));
+  const res = await post(await signedBody({}, { route: "trial", dev }), { e, path: "/trial" });
+  const body = await res.json();
+  t("migration: a week already spent is not handed out a second time",
+    res.status === 200 && body.already === true && body.startedAt === started,
+    JSON.stringify(body));
+}
+
+/* ---------- the nonce, on the storage that can actually promise it ---------- */
+
+{
+  // No KV at all, so D1 is the only thing that could be refusing the replay.
+  const e = env({ RL: undefined });
+  const body = await signedBody();
+  const first = await post(body, { e });
+  const second = await post(body, { e });
+  t("nonce: D1 alone refuses a replay", first.status === 200 && second.status === 409,
+    `${first.status}/${second.status}`);
+}
+
+/* ---------- edge rate limit ---------- */
+
+{
+  const seen = [];
+  const e = env({ EDGE_RL: { async limit(arg) { seen.push(arg); return { success: seen.length <= 2 }; } } });
+  const codes = [];
+  for (let i = 0; i < 3; i++) codes.push((await post(await signedBody(), { e })).status);
+  t("edge limit: the binding's verdict is enforced",
+    codes[0] === 200 && codes[1] === 200 && codes[2] === 429, codes.join("/"));
+  t("edge limit: keyed on the caller, not on the licence",
+    seen.length === 3 && seen.every((x) => x && typeof x.key === "string"));
+  t("edge limit: a limiter that throws does not close the door",
+    (await post(await signedBody(), {
+      e: env({ EDGE_RL: { async limit() { throw new Error("limiter down"); } } })
+    })).status === 200);
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) console.log("failed:\n  " + failed.join("\n  "));

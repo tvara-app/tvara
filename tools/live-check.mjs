@@ -153,7 +153,7 @@ async function ask(sw, urlPrefix) {
 const rows = [];
 for (const p of wanted) {
   process.stdout.write(`→ ${p.name.padEnd(11)} `);
-  let page = null;
+  let page;
   try {
     /* Close any tab already on this origin before opening ours. A tab that was
        open before the extension last reloaded has no content script left in it

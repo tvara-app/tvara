@@ -22,6 +22,10 @@ their own machine. The things that matter most:
   forge, so the listeners are a deliberate attack surface
 - Anything that makes the extension call a host outside `host_permissions` with
   the user's session attached
+- Anything that makes the page-world allowance observer
+  (`content/inject/quota-probe.js`) **active** rather than passive — altering,
+  blocking, delaying, replaying or reordering a request the host app made, or
+  reading a body on a path that is not a limits endpoint
 - Anything that lets one user's licence be used as another's, or bypass the
   device limit at the licence server
 
@@ -34,10 +38,11 @@ their own machine. The things that matter most:
   client-side licence in existence can be patched by whoever controls the
   machine. Total Recall searches locally *because* there is no server to send
   conversations to, and that trade is intentional.
-- **The extension attaches the user's own cookies** to requests to the AI sites
-  they are signed into. That is how it reads their own history, it is scoped to
-  the hosts in `host_permissions`, and the cookie goes only back to the site it
-  came from.
+- **Requests to the AI sites carry the user's own session.** The extension makes
+  credentialed requests and the *browser* attaches the cookies; the extension
+  holds no `cookies` permission and never reads a cookie value. That is how it
+  reads their own history, it is scoped to the hosts in `host_permissions`, and
+  the cookie goes only back to the site it came from.
 
 ## What we do
 

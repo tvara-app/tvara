@@ -19,7 +19,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { chromium } from "playwright";
-import { ROOT, SCRATCH, reporter } from "./security-fixtures.mjs";
+import { ROOT, SCRATCH, reporter, idFromManifestKey } from "./security-fixtures.mjs";
 
 const { t, done } = reporter();
 const PROFILE = join(SCRATCH, "egress-proof-profile");
@@ -32,9 +32,12 @@ const mf = JSON.parse(readFileSync(join(ROOT, "manifest.json"), "utf8"));
 const REAL_PROVIDER_HOSTS = [...new Set((mf.host_permissions || [])
   .map((m) => { try { return new URL(m.replace(/\*/g, "x")).host; } catch { return null; } })
   .filter((h) => h && !/localhost|127\.0\.0\.1/.test(h)))];
-const ISSUER_HOST = new URL(
-  (readFileSync(join(ROOT, "lib", "entitlement.js"), "utf8").match(/const ISSUER = "([^"]*)";/) || [])[1] || "https://entitlement.tvara.workers.dev"
-).host;
+// No fallback: a missed match would allowlist a host the extension never uses
+// and let this proof pass without ever watching the real issuer.
+const ISSUER_URL = (readFileSync(join(ROOT, "lib", "entitlement.js"), "utf8")
+  .match(/const ISSUER = "([^"]*)";/) || [])[1];
+if (!ISSUER_URL) throw new Error("cannot read ISSUER from lib/entitlement.js");
+const ISSUER_HOST = new URL(ISSUER_URL).host;
 const ALLOWED_HOSTS = new Set([
   ...REAL_PROVIDER_HOSTS,
   "tvara-app.github.io",
@@ -48,7 +51,7 @@ const ALLOWED_HOSTS = new Set([
 console.log(`Allowlist: ${[...ALLOWED_HOSTS].join(", ")}`);
 
 const ctx = await chromium.launchPersistentContext(PROFILE, {
-  channel: "chromium",
+  channel: process.env.PW_CHANNEL || "chromium",
   headless: true,
   args: [`--disable-extensions-except=${ROOT}`, `--load-extension=${ROOT}`],
   viewport: { width: 900, height: 800 }
@@ -70,8 +73,9 @@ await ctx.route("**/*", async (route) => {
   await route.fulfill({ status: 200, contentType: "application/json", body: "{}" }).catch(() => {});
 });
 
-// Extension ID, same derivation as elsewhere in this suite.
-const id = (() => {
+// Extension ID. A manifest `key` pins the id to the key, not the path, so that
+// derivation has to come first or every chrome-extension:// URL here is wrong.
+const id = idFromManifestKey(ROOT) || (() => {
   const h = createHash("sha256").update(ROOT).digest();
   return [...h.subarray(0, 16)].map((b) => String.fromCharCode(97 + (b >> 4)) + String.fromCharCode(97 + (b & 15))).join("");
 })();

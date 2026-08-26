@@ -88,6 +88,7 @@ function verify(staging, mf, label) {
   // Loud, not silent: a dev-only match reaching a store listing is a rejection.
   const leaked = JSON.stringify(mf).match(/localhost|127\.0\.0\.1/g);
   if (leaked) { console.error(`✋ ${label}: dev-only matches survived into the manifest.`); process.exit(1); }
+  if (mf.key) { console.error(`✋ ${label}: the dev signing key survived into the manifest.`); process.exit(1); }
   console.log(`  ✓ ${label}: every referenced path is in the zip`);
 }
 
@@ -108,6 +109,10 @@ function build({ name, tweak, label }) {
   // cannot see the test tab, because a content_scripts match is not a host
   // permission. They must not ship — verify() below fails the build if they do.
   mf.host_permissions = (mf.host_permissions || []).filter((m) => !dev(m));
+  /* `key` pins the id for an UNPACKED load so the worker's ALLOWED_ORIGINS can
+     name it before the extension is published. The store issues its own id, so
+     shipping the field invites two identities for one product. */
+  delete mf.key;
   tweak(mf);
   writeFileSync(mfPath, JSON.stringify(mf, null, 2) + "\n");
 

@@ -13,7 +13,7 @@
  * POST /trial       {v,device_pub,nonce,ts,sig}                        -> {startedAt,already,ks}
  * POST /devices        {v,license_key,device_pub,nonce,ts,sig}          -> {seats:[...]}
  * POST /devices/revoke {v,license_key,target,device_pub,nonce,ts,sig}   -> {ok,seats}
- * Token: LCT2.<b64url(payload)>.<b64url(P1363 sig)>, bound to key + device, 90d.
+ * Token: LCT2.<b64url(payload)>.<b64url(P1363 sig)>, bound to key + device, 30d.
  *
  * ---------------------------------------------------------------------------
  * THE AUTHENTICATION LADDER, and what each rung is actually worth.
@@ -31,7 +31,9 @@
  *   2. Freshness (ts)    Bounds a captured request to a 5-minute life.
  *
  *   3. Nonce (single     Kills replay INSIDE that window, which step 2 alone
- *      use, KV)          permits. Each request is usable exactly once.
+ *      use, D1)          permits. Each request is usable exactly once, and in
+ *                        D1 the check and the claim are one atomic statement
+ *                        rather than the get-then-put race KV forced.
  *
  *   4. Device proof      THE REAL ONE. The client signs the request with an
  *      (ECDSA P-256)     ECDSA key generated at install as NON-EXTRACTABLE and
@@ -52,7 +54,12 @@
  *   6. Seat ledger       Five proven devices. Server-side, survives a storage
  *                        wipe, and now unforgeable thanks to step 4.
  *
- *   7. Signed token      90 days, ECDSA, bound to licence + device.
+ *   7. Kill list         A revoked licence is refused at the next check, not
+ *                        when its token finally expires. This is what lets the
+ *                        token stay long enough to survive an outage without
+ *                        making revocation take a season.
+ *
+ *   8. Signed token      30 days, ECDSA, bound to licence + device.
  *
  * What none of this stops: someone editing their own copy of lib/entitlement.js
  * to skip the check entirely. That is unwinnable on any client, it is the price
@@ -66,10 +73,31 @@
  *   wrangler secret put ARCHIVE_SECRET   # openssl rand -base64 32
  *   wrangler deploy
  *
- * Bindings expected: KV namespace `RL` (rate limit + seat ledger).
+ * Bindings expected:
+ *   DB      — D1. Seats, nonces, trials, revocations. The ledgers that decide.
+ *   RL      — KV. Rate-limit buckets and the sharing observer, plus the seat
+ *             and trial records written before D1 existed, which are imported
+ *             on first touch and then never read again.
+ *   EDGE_RL — optional Cloudflare rate-limit binding, keyed on IP. The hard
+ *             bound the KV counters never were.
+ *
+ * Every one of them degrades OPEN. A ledger that is unreachable must not be
+ * able to unsell a licence somebody paid for.
  */
 
-const TTL_MS = 90 * 864e5;
+/* Was 90 days. Shortened because there is now a kill list: revocation no
+   longer has to wait out the token, so the token no longer has to be short to
+   make revocation possible. 30 days is still far longer than any outage the
+   client's offline path is meant to survive — see lib/entitlement.js, where
+   age alone never withdraws a purchase. */
+const TTL_MS = 30 * 864e5;
+
+/* Deliberately NOT TTL_MS. Seat eviction asks "has this device been gone long
+   enough to be gone?", and that answer must not change because the token
+   lifetime moved. Shortening TTL_MS used to silently make seats three times
+   easier to evict out from under an occasional-use machine. */
+const SEAT_IDLE_MS = 90 * 864e5;
+
 const FEATURES = ["archive.search", "archive.backup", "archive.restore"];
 const SEAT_LIMIT = 5;
 
@@ -175,41 +203,97 @@ async function verifyDeviceProof(devicePubB64, sigB64, input) {
   } catch { return null; }
 }
 
+/* ---------- D1 ---------- */
+
+/**
+ * The ledgers that decide, on storage that agrees with itself.
+ *
+ * WHY NOT KV. KV `get` is served from an edge cache and `put` propagates
+ * eventually, so two colos can hold different answers for as long as a minute.
+ * For a rate-limit brake that is acceptable and documented. For "has this
+ * nonce been spent", "how many seats has this licence spent" and "is this
+ * licence revoked" it is not: the window is exactly long enough to spend a
+ * nonce twice, claim a sixth seat, or use a licence somebody revoked.
+ *
+ * D1 is one SQLite primary. A read reflects every write that preceded it.
+ *
+ * WHAT IT COSTS. A missing or failing DB degrades open, the same way the KV
+ * paths always did — see the ladder at the top of this file. That is a real
+ * trade and it is the right one here: a $1 one-time licence must not stop
+ * working because our database had a bad afternoon. deploy.sh's smoke test is
+ * what catches a binding that never got created.
+ */
+const d1 = (env) => (env && env.DB) || null;
+
 /* ---------- nonce ledger (step 3) ---------- */
 
 /**
  * One use per nonce. Step 2 already bounds a captured request to five minutes;
  * this closes the replays that fit inside them.
  *
- * HONEST LIMIT: KV get-then-put is not atomic, so two truly simultaneous
- * replays of the same nonce can both read "unseen" and both pass. Making that
- * airtight needs a Durable Object, which is a real dependency for a narrow
- * win — the damage from a doubled request is bounded by the seat ledger and
- * the rate limiter, both of which sit downstream. Documented rather than
- * hidden, so the next person does not mistake it for a guarantee.
+ * In D1 the check and the claim are ONE statement: INSERT ... ON CONFLICT DO
+ * NOTHING reports zero rows changed when the id was already there. The KV
+ * version below could not do that — get-then-put let two simultaneous replays
+ * both read "unseen" — and it is kept only for a deployment that has KV but no
+ * D1 yet, where a leaky nonce check still beats no nonce check.
  *
- * On a worker with no KV at all this can only pass — and that is deliberate,
- * for consistency rather than convenience. Without KV there is no seat ledger
- * and no rate limiter either, so singling out the nonce to fail closed would
- * turn a misconfiguration into a total outage while leaving the other two
- * silently disabled. What is actually lost is narrow: steps 1, 2, 4 and 5
- * (origin, freshness, device proof, upstream validation) hold without KV, so
- * the residual threat is an attacker who ALREADY holds the device key and the
- * licence replaying inside a five-minute window. deploy.sh's smoke test is
- * what catches a missing binding, and it catches it before a customer does.
+ * The expiry sweep rides along in the same batch, so the table cleans itself
+ * without a cron and without a random-sampling trick that would make this
+ * function's behaviour depend on a coin flip.
+ *
+ * With neither binding this can only pass, deliberately: steps 1, 2, 4 and 5
+ * (origin, freshness, device proof, upstream validation) all hold without
+ * storage, so the residual threat is an attacker who ALREADY holds the device
+ * key and the licence, replaying inside a five-minute window.
  */
 async function seenNonce(env, nonce, devFp) {
+  const id = `n:${await sha256Hex(nonce + ":" + devFp, 16)}`;
+  const db = d1(env);
+  if (db) {
+    try {
+      const now = Date.now();
+      const res = await db.batch([
+        db.prepare("DELETE FROM nonces WHERE expires_at < ?1").bind(now),
+        db.prepare("INSERT INTO nonces (id, expires_at) VALUES (?1, ?2) ON CONFLICT(id) DO NOTHING")
+          .bind(id, now + NONCE_TTL_S * 1000)
+      ]);
+      const claim = res && res[1];
+      return ((claim && claim.meta && claim.meta.changes) || 0) === 0;
+    } catch { return false; }
+  }
   if (!env.RL) return false;
-  const k = `n:${await sha256Hex(nonce + ":" + devFp, 16)}`;
   try {
-    if (await env.RL.get(k)) return true;
-    await env.RL.put(k, "1", { expirationTtl: NONCE_TTL_S });
+    if (await env.RL.get(id)) return true;
+    await env.RL.put(id, "1", { expirationTtl: NONCE_TTL_S });
     return false;
   } catch {
-    // KV erroring is not the same as KV absent: an outage must not lock out a
-    // paying customer, and steps 2, 4 and 6 are all still in force.
+    // An outage is not a verdict: steps 2, 4 and 6 are all still in force.
     return false;
   }
+}
+
+/* ---------- kill list (step 7) ---------- */
+
+/**
+ * Revocation that does not have to wait out a token.
+ *
+ * Without this, the only way to stop honouring a licence was to let its token
+ * expire — 90 days of nothing we could do about a key that leaked or a payment
+ * that was charged back. The table is written by hand (see schema.sql): an
+ * upstream 403 is an answer about one call, not grounds to permanently retire
+ * somebody's purchase, and that judgement stays with a person.
+ *
+ * Returns the reason string so support can see WHY without a second lookup,
+ * and false when there is no D1 — a database we cannot reach must not be able
+ * to revoke everyone at once.
+ */
+async function revoked(env, keyFp) {
+  const db = d1(env);
+  if (!db) return false;
+  try {
+    const row = await db.prepare("SELECT reason FROM revocations WHERE key_fp = ?1").bind(keyFp).first();
+    return row ? String(row.reason || "revoked") : false;
+  } catch { return false; }
 }
 
 /* ---------- origin policy ---------- */
@@ -314,10 +398,28 @@ async function rateLimited(env, keyFp, ip) {
  * costs nothing to perform (make a profile, reinstall), not the deliberate
  * one. That is the whole intent — the deliberate farmer was never a customer.
  *
- * Returns null when there is no KV to remember with, and the caller falls back
- * to its own clock: a free week is not worth refusing to work over.
+ * Returns null when there is no ledger to remember with, and the caller falls
+ * back to its own clock: a free week is not worth refusing to work over.
  */
 async function claimTrial(env, devFp) {
+  const db = d1(env);
+  if (db) {
+    try {
+      const seen = await db.prepare("SELECT started_at FROM trials WHERE dev_fp = ?1").bind(devFp).first();
+      if (seen) return { startedAt: Number(seen.started_at) || 0, already: true };
+
+      /* The week they already spent, if they spent it before D1 existed.
+         Skipping this would hand a second free trial to every device that ever
+         started one — the exact farming the ledger is here to stop. */
+      const carried = await trialFromKV(env, devFp);
+      const startedAt = carried || Date.now();
+      await db.prepare("INSERT INTO trials (dev_fp, started_at) VALUES (?1, ?2) ON CONFLICT(dev_fp) DO NOTHING")
+        .bind(devFp, startedAt).run();
+      const row = await db.prepare("SELECT started_at FROM trials WHERE dev_fp = ?1").bind(devFp).first();
+      const at = Number(row && row.started_at) || startedAt;
+      return { startedAt: at, already: Boolean(carried) || at !== startedAt };
+    } catch { /* fall through to KV rather than refuse a trial over an outage */ }
+  }
   if (!env.RL) return null;
   const ledgerKey = `trial:${devFp}`;
   try {
@@ -327,6 +429,13 @@ async function claimTrial(env, devFp) {
     await env.RL.put(ledgerKey, String(now), { expirationTtl: TRIAL_TTL_S });
     return { startedAt: now, already: false };
   } catch { return null; }
+}
+
+/** The pre-D1 trial record, or 0. Never throws: a missing carry-over costs a
+ *  free week, and a thrown one would cost the whole request. */
+async function trialFromKV(env, devFp) {
+  if (!env.RL) return 0;
+  try { return Number(await env.RL.get(`trial:${devFp}`)) || 0; } catch { return 0; }
 }
 
 /**
@@ -438,6 +547,38 @@ async function dodoValidate(env, licenseKey, instanceId) {
  * the copy that decides. Clearing extension storage does not reset it.
  */
 async function claimSeat(env, keyFp, devFp) {
+  const db = d1(env);
+  if (db) {
+    try {
+      const rows = await seatRows(db, env, keyFp);
+      const now = Date.now();
+      const held = rows.some((r) => r.dev_fp === devFp);
+      const writes = [];
+
+      if (!held && rows.length >= SEAT_LIMIT) {
+        // Evict only genuinely idle seats; an active fleet must hit the wall.
+        const stale = rows
+          .filter((r) => now - Number(r.last_seen) > SEAT_IDLE_MS)
+          .sort((a, b) => Number(a.last_seen) - Number(b.last_seen));
+        if (!stale.length) return { ok: false, seats: rows.length };
+        writes.push(db.prepare("DELETE FROM seats WHERE key_fp = ?1 AND dev_fp = ?2")
+          .bind(keyFp, stale[0].dev_fp));
+      }
+
+      writes.push(db.prepare(
+        "INSERT INTO seats (key_fp, dev_fp, last_seen) VALUES (?1, ?2, ?3) " +
+        "ON CONFLICT(key_fp, dev_fp) DO UPDATE SET last_seen = excluded.last_seen"
+      ).bind(keyFp, devFp, now));
+
+      // One transaction: the eviction and the claim that depends on it cannot
+      // half-apply and leave the licence a seat short.
+      await db.batch(writes);
+      return { ok: true, seats: await seatCount(db, keyFp) };
+    } catch {
+      return { ok: true, seats: 0 };  // a DB outage must not lock a paying user out
+    }
+  }
+
   if (!env.RL) return { ok: true, seats: 0 };
   const ledgerKey = `seats:${keyFp}`;
   try {
@@ -446,9 +587,8 @@ async function claimSeat(env, keyFp, devFp) {
     const now = Date.now();
 
     if (!seats[devFp] && Object.keys(seats).length >= SEAT_LIMIT) {
-      // Evict only genuinely idle seats; an active fleet must hit the wall.
       const stale = Object.entries(seats)
-        .filter(([, t]) => now - Number(t) > TTL_MS)
+        .filter(([, t]) => now - Number(t) > SEAT_IDLE_MS)
         .sort((a, b) => Number(a[1]) - Number(b[1]));
       if (!stale.length) return { ok: false, seats: Object.keys(seats).length };
       delete seats[stale[0][0]];
@@ -462,6 +602,37 @@ async function claimSeat(env, keyFp, devFp) {
   }
 }
 
+/** Rows for one licence, importing the pre-D1 KV ledger the first time we find
+ *  none. Without the import, moving to D1 would silently release every seat
+ *  every licence had ever claimed. */
+async function seatRows(db, env, keyFp) {
+  const read = async () => {
+    const res = await db.prepare("SELECT dev_fp, last_seen FROM seats WHERE key_fp = ?1").bind(keyFp).all();
+    return (res && res.results) || [];
+  };
+  const rows = await read();
+  if (rows.length || !env.RL) return rows;
+
+  let raw = null;
+  try { raw = await env.RL.get(`seats:${keyFp}`, "json"); } catch { return rows; }
+  if (!raw || typeof raw !== "object") return rows;
+  const carried = Object.entries(raw).slice(0, SEAT_LIMIT);
+  if (!carried.length) return rows;
+
+  try {
+    await db.batch(carried.map(([fp, seen]) => db.prepare(
+      "INSERT INTO seats (key_fp, dev_fp, last_seen) VALUES (?1, ?2, ?3) " +
+      "ON CONFLICT(key_fp, dev_fp) DO NOTHING"
+    ).bind(keyFp, String(fp), Number(seen) || 0)));
+  } catch { return rows; }
+  return read();
+}
+
+async function seatCount(db, keyFp) {
+  const row = await db.prepare("SELECT COUNT(*) AS n FROM seats WHERE key_fp = ?1").bind(keyFp).first();
+  return Number(row && row.n) || 0;
+}
+
 /**
  * The seat list, as the ledger actually holds it.
  *
@@ -471,6 +642,14 @@ async function claimSeat(env, keyFp, devFp) {
  * disagreed with this one the moment a seat was released.
  */
 async function readSeats(env, keyFp) {
+  const db = d1(env);
+  if (db) {
+    try {
+      const out = {};
+      for (const r of await seatRows(db, env, keyFp)) out[r.dev_fp] = Number(r.last_seen) || 0;
+      return out;
+    } catch { return null; }
+  }
   if (!env.RL) return null;
   try {
     const raw = await env.RL.get(`seats:${keyFp}`, "json");
@@ -493,6 +672,16 @@ async function readSeats(env, keyFp) {
  * the caller's point of view it is.
  */
 async function releaseSeat(env, keyFp, targetFp) {
+  const db = d1(env);
+  if (db) {
+    try {
+      // Import first: releasing a seat the ledger has not carried over yet
+      // would report success and free nothing.
+      await seatRows(db, env, keyFp);
+      await db.prepare("DELETE FROM seats WHERE key_fp = ?1 AND dev_fp = ?2").bind(keyFp, targetFp).run();
+      return { ok: true, seats: await seatCount(db, keyFp) };
+    } catch { return { ok: false, reason: "unavailable" }; }
+  }
   if (!env.RL) return { ok: false, reason: "unavailable" };
   const ledgerKey = `seats:${keyFp}`;
   try {
@@ -556,6 +745,21 @@ export default {
     }
     if (!originAllowed(origin, env)) return new Response("forbidden", { status: 403 });
     if (request.method !== "POST") return json({ error: "method" }, 405, origin);
+
+    /* ---------- edge rate limit ----------
+       The KV counters further down are a brake: their get-then-put races, so a
+       burst can slip through. This is the bound. It runs at the edge before the
+       body is read, so a flood costs us one binding call rather than a parse, a
+       signature verify and a KV round trip.
+
+       Optional, and failing open on purpose — a limiter we cannot reach must
+       not become an outage. The KV brakes still apply either way. */
+    if (env.EDGE_RL) {
+      try {
+        const seen = await env.EDGE_RL.limit({ key: request.headers.get("CF-Connecting-IP") || "unknown" });
+        if (seen && seen.success === false) return json({ error: "slow down" }, 429, origin);
+      } catch { /* not a verdict */ }
+    }
 
     const url = new URL(request.url);
     const route = url.pathname;
@@ -668,6 +872,15 @@ export default {
     /* ---------- licence-scoped routes ---------- */
     const keyFp = await sha256Hex(licenseKey);
 
+    /* ---------- step 7: kill list ----------
+       Before the seat lookup and before Dodo, and covering /devices too: a
+       revoked licence must not be able to keep managing seats it no longer
+       owns. This is checked on every call rather than only at issue, which is
+       the whole point — it is what makes revocation take minutes instead of
+       the token's remaining life. */
+    const killed = await revoked(env, keyFp);
+    if (killed) return json({ error: "licence revoked", reason: killed }, 403, origin);
+
     /* ---------- /devices and /devices/revoke ----------
        Authorisation here is HOLDING A SEAT, not holding the key.
        
@@ -724,7 +937,7 @@ export default {
     const seat = await claimSeat(env, keyFp, devFp);
     if (!seat.ok) return json({ error: "device limit reached", seats: seat.seats }, 422, origin);
 
-    /* ---------- step 7: token ---------- */
+    /* ---------- step 8: token ---------- */
     const now = Date.now();
     const token = await mintToken(env, {
       v: 2,                       // token format, not protocol version

@@ -24,7 +24,7 @@ const server = spawn("python3", ["-m", "http.server", "8918", "--bind", "127.0.0
 await new Promise((r) => setTimeout(r, 800));
 
 const ctx = await chromium.launchPersistentContext(PROFILE, {
-  channel: "chromium",
+  channel: process.env.PW_CHANNEL || "chromium",
   headless: true,
   viewport: { width: 1280, height: 800 },
   deviceScaleFactor: 2, // popup shot uses device pixels for a crisp composite
@@ -41,6 +41,15 @@ function extId() {
         if (s.path === EXT) return id;
     } catch { /* next */ }
   }
+  // A manifest `key` pins the id to the key, not the path — check it before
+  // falling back to the path derivation, which is wrong whenever `key` is set.
+  try {
+    const mf = JSON.parse(readFileSync(join(EXT, "manifest.json"), "utf8"));
+    if (mf.key) {
+      return [...createHash("sha256").update(Buffer.from(mf.key, "base64")).digest().subarray(0, 16)]
+        .map((b) => String.fromCharCode(97 + (b >> 4)) + String.fromCharCode(97 + (b & 15))).join("");
+    }
+  } catch { /* no manifest read — fall through */ }
   return [...createHash("sha256").update(EXT).digest().subarray(0, 16)]
     .map((b) => String.fromCharCode(97 + (b >> 4)) + String.fromCharCode(97 + (b & 15))).join("");
 }

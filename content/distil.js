@@ -113,7 +113,7 @@
     const byOpening = new Map();
     const SIBLINGS = 8;
     (Array.isArray(records) ? records : []).forEach((r, order) => {
-      let text = "";
+      let text;
       try { text = typeof r?.text === "string" ? r.text : ""; } catch { return; }
       /* Scanned with indexOf rather than /```([^\n`]*)\n?([\s\S]*?)```/g.
          That pattern is QUADRATIC on a fence that is never closed: the greedy
@@ -234,7 +234,7 @@
     const recs = [];
     for (const raw of list) {
       if (!raw) continue;
-      let text = null, role = "assistant";
+      let text, role = "assistant";
       try { text = typeof raw.text === "string" ? raw.text.trim() : null; } catch { continue; }
       if (!text || ACK.test(text)) continue;
       try { role = raw.role === "user" ? "user" : "assistant"; } catch { /* default */ }

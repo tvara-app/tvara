@@ -249,7 +249,7 @@
     $("out").replaceChildren();
     $("copy").hidden = true;
 
-    let tabs = [];
+    let tabs;
     try { tabs = await chrome.tabs.query({ url: MATCHES }); }
     catch { tabs = []; }
 

@@ -216,7 +216,7 @@
       const changed = await waitForHistoryChange(adapter, previous, task, scroller, stepBudget(samples));
       if (task.cancelled || task.route !== location.href) return "cancelled";
 
-      let next = previous;
+      let next;
       try { next = signature(adapter, adapter.messages()); } catch (_) { return "exhausted"; }
       if (changed || next !== previous) {
         if (samples.length < 12) samples.push(Math.max(1, Date.now() - startedAt));
@@ -317,7 +317,7 @@
     moveTo(scroller, maxScrollTop(scroller) * anchor.ratio || anchor.fallbackTop);
     for (let attempt = 0; attempt < 8 && !task.cancelled; attempt++) {
       await pause(90);
-      let messages = [];
+      let messages;
       try { messages = adapter.messages(); } catch (_) { return; }
       const el = findAnchor(adapter, messages, anchor);
       if (!el || !el.isConnected) continue;
@@ -333,7 +333,7 @@
     if (!task || task.route !== route) return;
     if (task.cancelled) return finish(task, "cancelled");
 
-    let messages = [];
+    let messages;
     try { messages = adapter.messages(); } catch (_) { return finish(task, "idle"); }
     if (messages.length < 2) return finish(task, "idle");
 

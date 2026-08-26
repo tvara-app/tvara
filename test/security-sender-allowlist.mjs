@@ -74,7 +74,7 @@ try {
 
   const PROFILE = join(SCRATCH, "chrome-profile");
   const ctx = await chromium.launchPersistentContext(PROFILE, {
-    channel: "chromium",
+    channel: process.env.PW_CHANNEL || "chromium",
     headless: true,
     args: [`--disable-extensions-except=${PACKED}`, `--load-extension=${PACKED}`],
   });

@@ -1,13 +1,13 @@
 {
   "manifest_version": 3,
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA26+guhHml/CClIKXeYELInJxS2CHBRNAFaaI7A6yVP/jZxkHtXcx+cYdaY8G2GQwilewKZtpwpVvY0k2xy2n/IPSduu2diMeQO/RmtmjKoG+r3+rdGPsJt+qbO8rkLdaSVRDoM36d5TMYIkQZdezjZ5RksQ6ybcIl2z0CqAk0IwCN1yusvkFUB3pNhIi5YB6Wg1siY0uu7hWclXvDMCc+I8Es53XFo9LKCMmLyA/AzC0Iea2AkJu9ITJnS4Hg7xae2aDh+OXoh8SfoVBMUZFbjjFAy4dUs19F+3SjtgGo81Jb7fsBlGRix4Ub0u46y4dmjMrSZ22Hi4aFmwr3zrN/wIDAQAB",
   "name": "Tvara",
   "version": "1.0.0",
-  "description": "Fix slow, laggy AI chats. Speed engine, minimap, search & backup for ChatGPT, Claude, Gemini, DeepSeek, Grok. Chats stay local.",
+  "description": "Fix slow AI chats. Speed, minimap, search & backup for ChatGPT, Claude, Gemini, Perplexity, DeepSeek, Grok. Chats stay local.",
   "permissions": [
     "alarms",
     "storage",
     "unlimitedStorage",
-    "cookies",
     "downloads",
     "notifications"
   ],

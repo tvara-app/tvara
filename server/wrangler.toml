@@ -1,6 +1,11 @@
-name = "entitlement"
+name = "tvara"
 main = "entitlement-worker.js"
-compatibility_date = "2025-01-01"
+workers_dev = true
+# Off: a preview URL keeps an OLD version of this worker permanently reachable
+# at its own hostname. For the one endpoint that decides who is Pro, every past
+# build staying live is a standing rollback nobody reviewed.
+preview_urls = false
+compatibility_date = "2026-08-01"
 
 # ─────────────────────────────────────────────────────────────────────────────
 #   Do not follow this file by hand. Run:
@@ -13,10 +18,33 @@ compatibility_date = "2025-01-01"
 #   was skipped.
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Rate-limit buckets + the server-side seat ledger. deploy.sh creates it.
+# The ledgers that decide: seats, nonces, trials, revocations. deploy.sh
+# creates the database and applies schema.sql.
+#
+# These lived in KV and moved because KV is eventually consistent across edges.
+# A rate-limit brake can tolerate two colos disagreeing for a minute. "Has this
+# nonce been spent", "how many seats has this licence spent" and "is this
+# licence revoked" cannot.
+[[d1_databases]]
+binding = "DB"
+database_name = "tvara"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
+# Rate-limit buckets and the sharing observer. Still KV, deliberately: they were
+# never a bound, and the comment in rateLimited() says so. Also still holds the
+# pre-D1 seat and trial records, which are imported on first touch.
 [[kv_namespaces]]
 binding = "RL"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+id = "b345d802a1c248bc9684c6ab28bf3153"
+
+# The hard bound the KV counters are not — enforced at the edge, keyed on IP,
+# before the body is read. 60 requests per minute is roomy for a shared NAT and
+# tight against a script. Failing open in the worker if the binding is absent.
+[[unsafe.bindings]]
+name = "EDGE_RL"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 60, period = 60 }
 
 [vars]
 DODO_MODE = "live"
@@ -24,7 +52,7 @@ DODO_MODE = "live"
 # In live mode an EMPTY value refuses everyone — deliberately. An open default
 # on a live payment endpoint is a standing invitation to spend our KV writes
 # and our upstream quota, and the failure it causes is silent.
-ALLOWED_ORIGINS = ""
+ALLOWED_ORIGINS = "chrome-extension://hbejlhhmbhkeaebcgmblchnodeampcgl"
 
 # Firefox has no stable extension origin — the moz-extension:// UUID is minted
 # per install, so ALLOWED_ORIGINS can never name it and every Firefox user got a
@@ -36,3 +64,10 @@ ALLOW_FIREFOX = "1"
 #   wrangler secret put DODO_API_KEY   # Dodo Payments server-side API key
 #   wrangler secret put SIGNING_KEY    # node tools/genkey.mjs worker-key
 
+
+# Worker Traces — invocation logs, exceptions, timings. Server-side only: this
+# worker never sees chat text, so it costs the extension's no-telemetry promise
+# nothing. It is the only error tracking in the product by design.
+[observability]
+enabled = true
+head_sampling_rate = 1

@@ -64,6 +64,38 @@ else
   echo "  ✓ KV namespace already configured"
 fi
 
+# ---------- 1b. D1 database ----------
+if grep -q "REPLACE_WITH_D1_DATABASE_ID" wrangler.toml; then
+  echo "→ creating D1 database tvara…"
+  OUT="$(wrangler d1 create tvara 2>&1 || true)"
+  UUID='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+  D1_ID="$(printf '%s' "$OUT" | grep -oE "$UUID" | head -1 || true)"
+  # Already created on an earlier run that failed later: ask for the id rather
+  # than making the operator go and dig it out of the dashboard.
+  if [[ -z "$D1_ID" ]]; then
+    D1_ID="$(wrangler d1 info tvara --json 2>/dev/null | grep -oE "$UUID" | head -1 || true)"
+  fi
+  if [[ -z "$D1_ID" ]]; then
+    echo "✋ could not read the database id from wrangler's output:"
+    echo "$OUT"
+    echo "   Put it into wrangler.toml by hand and re-run."
+    exit 1
+  fi
+  sed "s/REPLACE_WITH_D1_DATABASE_ID/${D1_ID}/" wrangler.toml > wrangler.toml.tmp
+  mv wrangler.toml.tmp wrangler.toml
+  echo "  ✓ D1 database ${D1_ID}"
+else
+  echo "  ✓ D1 database already configured"
+fi
+
+# Every deploy, not just the first. schema.sql is CREATE TABLE IF NOT EXISTS
+# throughout, so re-applying is free — and a table added in a later version must
+# not depend on anyone remembering a step.
+echo "→ applying schema.sql…"
+wrangler d1 execute tvara --remote --file schema.sql >/dev/null 2>&1 \
+  || { echo "✋ schema apply failed — seats, nonces and the kill list would all degrade open"; exit 1; }
+echo "  ✓ schema applied"
+
 # ---------- 2. origin pin ----------
 python3 - "$ORIGIN" "$MODE" <<'PY'
 import re, sys

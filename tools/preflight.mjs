@@ -215,7 +215,7 @@ else {
     : block(`pricing page answered ${siteCode || "nothing"} — stores require a reachable privacy policy`, site);
 
   // A junk POST is enough: anything that answers proves a worker is deployed.
-  let code = 0;
+  let code;
   try {
     const res = await fetch(issuer + "/entitlement", {
       method: "POST",

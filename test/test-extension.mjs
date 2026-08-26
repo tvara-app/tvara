@@ -62,7 +62,17 @@ if (!entPatched.includes(TEST_PUB) || !entPatched.includes(TEST_ISSUER)) {
 writeFileSync(entPath, entPatched);
 
 // Unpacked extension ID = sha256(absolute path) first 16 bytes, nibbles mapped a..p
-const computedId = [...createHash("sha256").update(EXT).digest().subarray(0, 16)]
+/* A manifest `key` pins the extension id to the KEY, not the folder path. The
+   mirrors below copy the key through, so the path derivation is wrong whenever
+   `key` is set — seed from the key when it is there. */
+function idSeed(dir) {
+  try {
+    const k = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")).key;
+    if (k) return Buffer.from(k, "base64");
+  } catch { /* no manifest yet — fall back to the path */ }
+  return dir;
+}
+const computedId = [...createHash("sha256").update(idSeed(EXT)).digest().subarray(0, 16)]
   .map((b) => String.fromCharCode(97 + (b >> 4)) + String.fromCharCode(97 + (b & 15)))
   .join("");
 
@@ -101,7 +111,7 @@ const DOWNLOADS = join(SCRATCH, "downloads");
 rmSync(DOWNLOADS, { recursive: true, force: true });
 mkdirSync(DOWNLOADS, { recursive: true });
 const ctx = await chromium.launchPersistentContext(PROFILE, {
-  channel: "chromium", // extensions require the chromium channel's new headless
+  channel: process.env.PW_CHANNEL || "chromium", // extensions require the chromium channel's new headless
   headless: true,
   args: [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`,
          `--download-directory=${DOWNLOADS}`],
@@ -550,7 +560,8 @@ try {
     })).catch((e) => ({ evalFailed: String(e) }));
     throw new Error(`A9b never reached Pro (${String(error.message || error).split("\n")[0]}). `
       + `issuer calls=${JSON.stringify(ent.calls.map((c) => ({ v: c.v, hasPub: !!c.device_pub, hasSig: !!c.sig })))} `
-      + `dodo=${JSON.stringify(dodo.calls.map((c) => c.path))} popup=${JSON.stringify(diag)}`);
+      + `dodo=${JSON.stringify(dodo.calls.map((c) => c.path))} popup=${JSON.stringify(diag)}`,
+      { cause: error });
   }
   const licB = await licenseOf();
   const seatsB = await readSeats();

@@ -154,6 +154,18 @@ function computedExtensionId(EXT) {
     .join("");
 }
 
+/** The ID a manifest `key` pins. Chrome derives it from the public key, not
+ *  the path, so the path-derived guess below is wrong whenever `key` is set. */
+export function idFromManifestKey(EXT) {
+  try {
+    const mf = JSON.parse(readFileSync(join(EXT, "manifest.json"), "utf8"));
+    if (!mf.key) return null;
+    return [...createHash("sha256").update(Buffer.from(mf.key, "base64")).digest().subarray(0, 16)]
+      .map((b) => String.fromCharCode(97 + (b >> 4)) + String.fromCharCode(97 + (b & 15)))
+      .join("");
+  } catch { return null; }
+}
+
 /** Authoritative fallback: read the ID Chrome actually registered. */
 function idFromProfile(profileDir, EXT) {
   for (const f of ["Preferences", "Secure Preferences"]) {
@@ -173,14 +185,14 @@ export async function launchExtension(EXT, profileDir, opts = {}) {
   rmSync(profileDir, { recursive: true, force: true });
   mkdirSync(profileDir, { recursive: true });
   const ctx = await chromium.launchPersistentContext(profileDir, {
-    channel: "chromium",
+    channel: process.env.PW_CHANNEL || "chromium",
     headless: true,
     args: [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`],
     viewport: { width: 900, height: 800 },
     ...opts
   });
   await new Promise((r) => setTimeout(r, 1500)); // let Chrome register the extension
-  const id = idFromProfile(profileDir, EXT) || computedExtensionId(EXT);
+  const id = idFromProfile(profileDir, EXT) || idFromManifestKey(EXT) || computedExtensionId(EXT);
   return { ctx, id };
 }
 

@@ -72,7 +72,7 @@ const html = `<!doctype html><meta charset="utf-8"><style>
 </script>`;
 
 mkdirSync(join(EXT, "store", "screenshots"), { recursive: true });
-const browser = await chromium.launch({ channel: "chromium" });
+const browser = await chromium.launch({ channel: process.env.PW_CHANNEL || "chromium" });
 const page = await browser.newPage({ viewport: { width: 440, height: 280 }, deviceScaleFactor: 1 });
 await page.setContent(html, { waitUntil: "load" });
 await page.screenshot({ path: OUT });

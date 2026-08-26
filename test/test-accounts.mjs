@@ -69,7 +69,17 @@ const manifest = JSON.parse(readFileSync(manPath, "utf8"));
 manifest.host_permissions = [...new Set([...(manifest.host_permissions || []), "http://127.0.0.1/*"])];
 writeFileSync(manPath, JSON.stringify(manifest, null, 2));
 
-const computedId = [...createHash("sha256").update(EXT).digest().subarray(0, 16)]
+/* A manifest `key` pins the extension id to the KEY, not the folder path. The
+   mirrors below copy the key through, so the path derivation is wrong whenever
+   `key` is set — seed from the key when it is there. */
+function idSeed(dir) {
+  try {
+    const k = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")).key;
+    if (k) return Buffer.from(k, "base64");
+  } catch { /* no manifest yet — fall back to the path */ }
+  return dir;
+}
+const computedId = [...createHash("sha256").update(idSeed(EXT)).digest().subarray(0, 16)]
   .map((b) => String.fromCharCode(97 + (b >> 4)) + String.fromCharCode(97 + (b & 15))).join("");
 function idFromProfile() {
   for (const f of ["Preferences", "Secure Preferences"]) {

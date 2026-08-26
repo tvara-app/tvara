@@ -156,7 +156,7 @@
       if (!messages.length) return;
       const vis = visibleRange();
       const current = vis ? vis.first : 0;
-      let next = current;
+      let next;
       if (e.key === "Home") next = 0;
       else if (e.key === "End") next = messages.length - 1;
       else if (e.key === "ArrowUp") next = current - 1;

@@ -97,7 +97,7 @@
 
   function rescan() {
     if (!enabled || !adapter) return;
-    let messages = [];
+    let messages;
     try {
       messages = adapter.messages();
     } catch (_) {

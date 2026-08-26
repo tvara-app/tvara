@@ -38,7 +38,7 @@ const server = spawn("python3", ["-m", "http.server", String(PORT), "--bind", "1
 await new Promise((r) => setTimeout(r, 900));
 
 const ctx = await chromium.launchPersistentContext(join(WORK, "profile"), {
-  channel: "chromium", headless: true, viewport: { width: 1280, height: 900 },
+  channel: process.env.PW_CHANNEL || "chromium", headless: true, viewport: { width: 1280, height: 900 },
   args: [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`]
 });
 

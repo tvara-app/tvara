@@ -1289,13 +1289,6 @@ async function beat(run, platformId) {
   await chrome.storage.local.set({ [BG_RUN]: { ...run, heartbeatAt: Date.now(), platform: platformId } });
 }
 
-async function getCookieHeader(url) {
-  try {
-    const cookies = await chrome.cookies.getAll({ url });
-    return cookies.map((c) => c.name + "=" + c.value).join("; ");
-  } catch { return ""; }
-}
-
 // kind drives retry policy; message strings stay verbatim because the outer
 // catch and the signedOut flag still match on them.
 class BgError extends Error {
@@ -1429,11 +1422,12 @@ async function bgFetch(url, opts = {}) {
   if (!BG_ALLOWED_HOSTS.has(host)) {
     throw new BgError("net", `refusing to call ${host || "an unparseable URL"}`);
   }
-  const cookieHeader = await getCookieHeader(url);
+  /* No Cookie header: it is a forbidden request header, so fetch() drops any
+     value set here. `credentials: "include"` below is what actually carries the
+     provider session, and it needs no chrome.cookies permission. */
   const headers = {
     Accept: "application/json, text/plain, */*",
-    ...(opts.headers || {}),
-    Cookie: cookieHeader
+    ...(opts.headers || {})
   };
   let lastRate = null;
   for (let attempt = 0; attempt < BG_FETCH_ATTEMPTS; attempt++) {
@@ -2412,7 +2406,7 @@ async function chatSearch(host, path, query) {
   const q = String(query || "").trim().toLowerCase();
   if (q.length < 2) return { status: "short" };
   const id = (String(host || "") + String(path || "")).slice(0, 600);
-  let rec = null;
+  let rec;
   try {
     const d = await db();
     rec = await reqP(tx(d, "readonly").get(id));
@@ -3129,7 +3123,7 @@ async function quotaProbe(platformId, opts = {}) {
       note: adapter ? "no candidate endpoints, observation only" : "unknown platform" };
   }
 
-  let ctx = null;
+  let ctx;
   try {
     ctx = await quotaPrepare(adapter);
   } catch (error) {
@@ -3279,7 +3273,7 @@ async function quotaMaybeWarn(platformId, acct, record) {
 // Read-modify-write over one storage key: two platforms polling at once lost
 // one another's ledger entry and both warned again on the next read.
 async function quotaMaybeWarnNow(platformId, acct, record) {
-  let settings = null;
+  let settings;
   try { settings = (await chrome.storage.local.get("settings")).settings; } catch { return; }
   if (settings && settings.quota === false) return;
   if (settings && settings.quotaWarn === false) return;
@@ -4854,16 +4848,45 @@ async function autoSyncTick() {
   return result;
 }
 
+/* ---------- entitlement renewal ----------
+   Without a clock, refresh() only ever ran from the popup — so a user who
+   never opened it never renewed, and a refunded licence was never told to
+   clear its token. Not forced: needsRefresh() (30d of life left) and
+   RETRY_FLOOR_MS (6h) decide whether a tick costs an issuer call. */
+const BG_ENT_ALARM = "lct-entitlement";
+const BG_ENT_PERIOD_MIN = 720;
+
+async function entitlementTick() {
+  try {
+    const got = await chrome.storage.local.get("license");
+    const lic = got && got.license;
+    if (!lic || !lic.key) return;
+    const deviceId = await self.LCTDodo.ensureDeviceId();
+    await self.LCTEntitlement.refresh(lic, deviceId, {});
+  } catch { /* offline, dead context, or no device key — backoff owns the retry */ }
+}
+
+async function ensureEntitlementAlarm() {
+  try {
+    const existing = await chrome.alarms.get(BG_ENT_ALARM);
+    if (existing && existing.periodInMinutes === BG_ENT_PERIOD_MIN) return;
+    await chrome.alarms.create(BG_ENT_ALARM,
+      { delayInMinutes: 5, periodInMinutes: BG_ENT_PERIOD_MIN });
+  } catch { /* alarms unavailable */ }
+}
+
 try {
   chrome.alarms.onAlarm.addListener((alarm) => {
     if (!alarm) return;
     if (alarm.name === BG_FILL_ALARM) { if (!fillRunning) fillStart(); }
     else if (alarm.name === BG_AUTO_ALARM || alarm.name === BG_RESUME_ALARM) autoSyncTick();
     else if (alarm.name === BG_AUTOBACKUP_ALARM) maybeAutoBackup("alarm");
+    else if (alarm.name === BG_ENT_ALARM) entitlementTick();
   });
   const wake = () => {
     ensureAutoSyncAlarm();
     ensureAutoBackupAlarm();
+    ensureEntitlementAlarm();
     // A reinstall wipes storage.local, so the badge has to be repainted from
     // whatever survived rather than assumed to be still on screen.
     readDeletions().then((state) => paintDeletionBadge(Object.keys(state.items).length));
@@ -4949,6 +4972,33 @@ const TRIAL_KEY = "lct-trial-v2";
  * wipe and a reinstall on the same profile, so "clear data, trial again" costs
  * a whole new browser profile instead of one click.
  */
+/* A trial that started offline carries the CLIENT's start date, and the client
+   is the party with a reason to lie about it. This re-asks the issuer, which
+   keyed the real date to a non-extractable device key and remembers it for 400
+   days — so "clear everything and start again" gets the original week back
+   instead of a fresh one. Throttled: one attempt an hour, and only ever for a
+   record that is not already verified. */
+const TRIAL_RECHECK_MS = 36e5;
+let _trialRecheckAt = 0;
+
+async function verifyTrialStart(rec) {
+  if (!rec || rec.verified) return rec;
+  const now = Date.now();
+  if (now - _trialRecheckAt < TRIAL_RECHECK_MS) return rec;
+  _trialRecheckAt = now;
+  try {
+    const deviceFp = await self.LCTEntitlement.sha256Hex(await self.LCTDodo.ensureDeviceId());
+    const server = await self.LCTEntitlement.registerTrial(deviceFp);
+    if (!server || !server.startedAt) return rec;
+    // The issuer's date wins even when it is EARLIER — that is the whole point.
+    const fixed = { ...rec, startedAt: server.startedAt, verified: true,
+      ...(server.ks ? { ks: server.ks } : {}) };
+    try { await chrome.storage.sync.set({ [TRIAL_KEY]: fixed }); } catch { /* quota */ }
+    try { await chrome.storage.local.set({ [TRIAL_KEY]: fixed }); } catch { /* dead context */ }
+    return fixed;
+  } catch { return rec; }
+}
+
 async function trialState() {
   let rec = null;
   try {
@@ -4961,11 +5011,18 @@ async function trialState() {
       rec = got && got[TRIAL_KEY];
     } catch { /* dead context */ }
   }
+  if (rec) rec = await verifyTrialStart(rec);
   const startedAt = Number(rec && rec.startedAt) || 0;
   if (!startedAt) return { started: false, active: false, spent: false, until: 0, ks: "" };
   const until = startedAt + TRIAL_MS;
-  return { started: true, active: Date.now() < until, spent: Date.now() >= until, until,
-    ks: String((rec && rec.ks) || "") };
+  /* The high-water clock, not Date.now(). A trial measured against a clock the
+     user owns ends whenever they decide it does: winding the machine back a
+     year renews it indefinitely. clockNow() never reports earlier than the
+     latest time this profile has already seen. */
+  let nowTrusted = Date.now();
+  try { nowTrusted = (await self.LCTEntitlement.clockNow()).trusted; } catch { /* pre-init */ }
+  return { started: true, active: nowTrusted < until, spent: nowTrusted >= until, until,
+    verified: !!(rec && rec.verified), ks: String((rec && rec.ks) || "") };
 }
 
 async function startTrial() {
@@ -5122,7 +5179,37 @@ async function stampCreds() {
   return { stampKey, stampSub, secret };
 }
 
+/* ---------- point-of-use revalidation ----------
+   The 12h alarm bounds how long a cancelled licence keeps working in the
+   background; this bounds it to the next Pro action. A licence refunded at
+   14:00 is refused at 14:00:01, because the action itself pays for the round
+   trip once the token has gone stale.
+
+   Only an ANSWER locks. A refusal from the issuer clears the token in
+   attempt(); a timeout or an outage leaves the cached verdict exactly as it
+   was, so a Pro user offline on a plane is never blocked by their own
+   connectivity. The race below is what keeps that promise cheap: a slow
+   network costs one action's worth of delay, not the action. */
+const ENT_FRESH_MS = 15 * 60e3;
+const ENT_BLOCK_MS = 5000;
+
+async function revalidateIfStale() {
+  try {
+    const rec = await self.LCTEntitlement.readToken();
+    // No token: a trial or an LCT1 key, neither of which the issuer decides.
+    if (!rec || Date.now() - (rec.fetchedAt || 0) < ENT_FRESH_MS) return;
+    const got = await chrome.storage.local.get("license");
+    const lic = got && got.license;
+    if (!lic || !lic.key || /^LCT1\./.test(lic.key)) return;
+    const deviceId = await self.LCTDodo.ensureDeviceId();
+    // Forced: an unforced refresh does nothing until the 30d renewal window,
+    // and revocation cannot wait 60 days for it to open.
+    await self.LCTEntitlement.refresh(lic, deviceId, { force: true });
+  } catch { /* offline or dead context — the cached verdict stands */ }
+}
+
 async function requireEntitlement(feature) {
+  await Promise.race([revalidateIfStale(), sleep(ENT_BLOCK_MS)]);
   const v = await entitlementVerdict();
   if (!v.entitled) return { ok: false, reason: v.reason || "locked" };
   if (v.via !== "trial" && Array.isArray(v.features) && !v.features.includes(feature)) {

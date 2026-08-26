@@ -83,7 +83,7 @@ const ctx = await chromium.launchPersistentContext(PROFILE, {
   // worker under the channel it bundles, and that worker is how we ask the
   // content scripts anything. Headed either way — sign-in and bot checks both
   // want a real window.
-  channel: "chromium",
+  channel: process.env.PW_CHANNEL || "chromium",
   headless: false,
   viewport: null,
   args: [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`]

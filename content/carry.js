@@ -126,7 +126,7 @@
     for (const el of messages) {
       let role = "assistant";
       try { role = adapter.role(el); } catch { /* default */ }
-      let text = "";
+      let text;
       try { text = self.LCTExporter.elementToText(el); } catch { text = el.textContent || ""; }
       text = String(text || "").trim();
       if (text) recs.push({ role, text });
@@ -508,7 +508,7 @@
    * prompt box and take it off the shelf.
    */
   async function deliver() {
-    let rec = null;
+    let rec;
     try {
       const got = await self.LCTStore.get([HANDOFF_KEY]);
       rec = got && got[HANDOFF_KEY];

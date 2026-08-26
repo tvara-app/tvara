@@ -25,7 +25,7 @@ const { EXT } = mirrorExtension("purchase-flow");
 const THANKS = join(ROOT, "docs", "thanks.html");
 
 const ctx = await chromium.launchPersistentContext(PROFILE, {
-  channel: "chromium",
+  channel: process.env.PW_CHANNEL || "chromium",
   headless: true,
   args: [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`],
   viewport: { width: 900, height: 800 }

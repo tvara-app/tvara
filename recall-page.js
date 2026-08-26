@@ -657,7 +657,7 @@
     } catch (error) {
       const after = await send({ type: "recall-restore-guard-fail" });
       const suffix = after && !after.allowed ? ` Further attempts are paused for ${waitLabel(after.waitMs)}.` : "";
-      throw new Error(String(error.message || error) + suffix);
+      throw new Error(String(error.message || error) + suffix, { cause: error });
     }
     await send({ type: "recall-restore-guard-reset" });
 
