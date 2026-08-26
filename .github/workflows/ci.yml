@@ -4,6 +4,10 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Push events are the only trigger CI had, and GitHub drops them during an
+  # Actions incident (26 Aug 2026: a push to main produced no run at all).
+  # Without this the only way back to a green tick is an empty commit.
+  workflow_dispatch:
 
 jobs:
   fast-checks:
