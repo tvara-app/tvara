@@ -613,7 +613,7 @@ async function seatRows(db, env, keyFp) {
   const rows = await read();
   if (rows.length || !env.RL) return rows;
 
-  let raw = null;
+  let raw;
   try { raw = await env.RL.get(`seats:${keyFp}`, "json"); } catch { return rows; }
   if (!raw || typeof raw !== "object") return rows;
   const carried = Object.entries(raw).slice(0, SEAT_LIMIT);
