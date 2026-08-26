@@ -160,6 +160,22 @@ t("origin: live mode with no allow-list refuses EVERY extension",
 t("origin: test mode still allows a scratch deploy",
   (await post(await signedBody(), { e: env({ ALLOWED_ORIGINS: "", DODO_MODE: "test" }) })).status === 200);
 
+/* Firefox: the moz-extension:// UUID is per-install, so ALLOWED_ORIGINS can
+   never name it. Without ALLOW_FIREFOX every Firefox user is a 403. */
+const MOZ = "moz-extension://d0e1f2a3-4b5c-6d7e-8f90-a1b2c3d4e5f6";
+t("origin: firefox is refused while ALLOW_FIREFOX is off",
+  (await post(await signedBody(), { origin: MOZ })).status === 403);
+t("origin: firefox is allowed with ALLOW_FIREFOX = 1",
+  (await post(await signedBody(), { origin: MOZ, e: env({ ALLOW_FIREFOX: "1" }) })).status === 200);
+t("origin: ALLOW_FIREFOX does not open the chrome allow-list",
+  (await post(await signedBody(), { origin: OTHER, e: env({ ALLOW_FIREFOX: "1" }) })).status === 403);
+t("origin: ALLOW_FIREFOX does not admit a page origin",
+  (await post(await signedBody(), { origin: "https://evil.example", e: env({ ALLOW_FIREFOX: "1" }) })).status === 403);
+t("origin: firefox preflight answers 204 with its own origin echoed", await (async () => {
+  const r = await post(null, { method: "OPTIONS", origin: MOZ, e: env({ ALLOW_FIREFOX: "1" }) });
+  return r.status === 204 && r.headers.get("Access-Control-Allow-Origin") === MOZ;
+})());
+
 const pre = await post(null, { method: "OPTIONS" });
 t("origin: preflight answers 204 with CORS", pre.status === 204 &&
   pre.headers.get("Access-Control-Allow-Origin") === ORIGIN);

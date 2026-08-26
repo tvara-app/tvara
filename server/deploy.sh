@@ -74,6 +74,14 @@ src = re.sub(r'DODO_MODE = "[^"]*"', f'DODO_MODE = "{mode}"', src)
 open("wrangler.toml", "w").write(src)
 PY
 echo "  ✓ ALLOWED_ORIGINS = ${ORIGIN}  (DODO_MODE = ${MODE})"
+# Firefox has no stable origin to pin, so it is a flag rather than a list entry.
+# Print it: silence here is how every Firefox user became a 403 last time.
+FF="$(grep -E '^ALLOW_FIREFOX' wrangler.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')"
+if [[ "$FF" == "1" ]]; then
+  echo "  ✓ ALLOW_FIREFOX = 1  (any moz-extension:// origin may call)"
+else
+  echo "  ✓ ALLOW_FIREFOX = ${FF:-0}  (the Firefox build cannot reach this worker)"
+fi
 
 # ---------- 3. secrets ----------
 EXISTING="$(wrangler secret list 2>/dev/null || echo '[]')"

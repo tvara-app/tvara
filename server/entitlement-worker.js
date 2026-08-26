@@ -224,10 +224,19 @@ async function seenNonce(env, nonce, devFp) {
  * the variable refuses everyone, including us, which is a bug we find in the
  * first minute rather than one we find on a bill. Test mode keeps the open
  * default so a scratch deploy is still one command.
+ *
+ * ALLOW_FIREFOX = "1" admits any moz-extension:// origin. Off unless the
+ * Firefox build ships.
  */
 function originAllowed(origin, env) {
   if (!origin) return false;
   if (!/^(chrome|moz)-extension:\/\/[a-z0-9-]+$/i.test(origin)) return false;
+  /* Firefox mints a fresh moz-extension:// UUID per INSTALL, so no allow-list
+     can name our own Firefox build — every Firefox user was a 403 on purchase,
+     trial and revoke. Gate the scheme instead. The origin was only ever a cost
+     gate; the device signature authorises the call, and it is verified before
+     any nonce or upstream spend. */
+  if (String(env.ALLOW_FIREFOX || "") === "1" && /^moz-extension:/i.test(origin)) return true;
   const list = String(env.ALLOWED_ORIGINS || "").split(",").map((s) => s.trim()).filter(Boolean);
   if (list.length) return list.includes(origin);
   return env.DODO_MODE === "test";
@@ -412,7 +421,7 @@ async function dodoValidate(env, licenseKey, instanceId) {
   if (res.status >= 500) return { branch: "service" };
   if (!res.ok) return { branch: "badrequest" };
 
-  let data = null;
+  let data;
   try { data = await res.json(); } catch { return { branch: "service" }; }
 
   // Only a literal true is a pass. Missing field is not consent.
