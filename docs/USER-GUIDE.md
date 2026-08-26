@@ -84,6 +84,10 @@ accumulated knowledge from every other tool.
 **How it stays private and free:** it doesn't call a Tvara API,
 use a key, or run a local model. It simply feeds the context to the model
 you're already signed into and paying for.
+**Long chats give more:** a short chat contributes one passage. A long one
+contributes several, taken from different points in the thread rather than
+three views of the same paragraph — the row says *+2 more from this chat* when
+it does.
 **Fail-safe:** you always pick before anything is inserted (no surprise
 noise), and if the prompt box can't be found it copies the context to your
 clipboard so you can paste it. It never touches the page it shouldn't.
@@ -96,6 +100,14 @@ sites, none of which can search each other.
 Recall page from the popup) → one search box across **every archived chat on
 every platform** → click a result and land in that chat with the in-chat
 search already open on your words.
+**Temporary and private chats:** off by default, because a temporary chat is
+you telling that platform not to keep it. Turn on **Archive temporary chats**
+in the popup and Tvara keeps them in your local archive too — temporary,
+private, incognito and signed-out chats on every supported site. While one is
+being archived a small badge sits in the corner of the page, so it is never a
+silent recording. These chats are labelled *temporary* in results and cannot be
+reopened on the platform: the original was never saved there.
+
 **How the archive builds:**
 - **Automatic, in the background:** a check runs by itself roughly every 3
   hours, shortly after the browser starts, and whenever you open one of the

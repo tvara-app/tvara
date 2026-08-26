@@ -341,7 +341,10 @@
     // string and hash constantly (model pickers, scroll anchors, share flags);
     // keying on href threw the whole catalog away several times a minute and
     // replayed the entrance sweep, which is what read as a flickering map.
-    const route = location.hostname + location.pathname;
+    // Temporary chats share one URL, so a URL-only key never changes between
+    // them and the previous chat's catalog leaks in as ghost entries.
+    const eph = self.LCTAdapters.ephemeral(adapter, msgEls);
+    const route = eph ? eph.id : location.hostname + location.pathname;
     if (catalogRoute !== route) clearCatalog(route);
     catalogAdapter = adapter;
     const keys = msgEls.map(keyOf);

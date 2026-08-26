@@ -102,6 +102,10 @@ function clampChat(chat) {
     id: String(chat.id || "").slice(0, 600),
     host: String(chat.host || "").slice(0, 100),
     path: String(chat.path || "").slice(0, 500),
+    // Never kept by the provider: temporary/private mode, or signed out.
+    // Omitted rather than 0, like acct above, so "absent" uniformly means an
+    // ordinary chat — including every record predating this flag.
+    ...(chat.temp ? { temp: 1 } : {}),
     platform: String(chat.platform || "").slice(0, 40),
     title: String(chat.title || "").slice(0, 200),
     createdAt: typeof chat.createdAt === "number" ? chat.createdAt : 0,
@@ -427,6 +431,40 @@ function snippetFor(chat, words, long, lowered) {
   return { text: chat.msgs[0].t.slice(0, 160), msgIndex: 0, role: "user" };
 }
 
+/* How many windows a chat is worth. Bridge only, and length-scaled: one window
+   from the first hit represents a 12-message chat fine and a 400-message one
+   badly, because the matches are spread through it and the first is rarely the
+   best. */
+const passageCap = (n) => (n < 12 ? 0 : n < 40 ? 2 : n < 120 ? 3 : 4);
+
+/* Windows spaced across the conversation, not the first N — on a long thread
+   those all land in the opening exchange. Verbatim, like everything else that
+   travels: this picks, it never rewrites. */
+function passagesFor(chat, words, lowered, cap) {
+  if (cap < 2) return [];
+  const hits = [];
+  for (let i = 0; i < chat.msgs.length; i++) {
+    const t = chat.msgs[i].t;
+    const low = (lowered && lowered[i]) || t.toLowerCase();
+    let at = -1;
+    for (const w of words) {
+      const k = low.indexOf(w);
+      if (k !== -1 && (at < 0 || k < at)) at = k;
+    }
+    if (at >= 0) hits.push({ i, at, t, r: chat.msgs[i].r });
+  }
+  if (hits.length < 2) return [];
+  const want = Math.min(cap, hits.length);
+  const step = (hits.length - 1) / (want - 1);
+  const out = [];
+  for (let k = 0; k < want; k++) {
+    const h = hits[Math.round(k * step)];
+    const start = Math.max(0, h.at - 120);
+    out.push({ i: h.i, r: h.r, t: (start ? "…" : "") + h.t.slice(start, h.at + 520) });
+  }
+  return out;
+}
+
 async function search(query, long) {
   const words = String(query || "").toLowerCase().split(/\s+/).filter((w) => w.length >= 2).slice(0, 8);
   if (!words.length) return { results: [], scanned: 0 };
@@ -451,7 +489,10 @@ async function search(query, long) {
         results.push({
           id: chat.id, host: chat.host, path: chat.path, platform: chat.platform,
           title: chat.title, n: chat.n, createdAt: chat.createdAt,
-          updatedAt: chat.updatedAt, score: s, snippet: snip.text, role: snip.role
+          updatedAt: chat.updatedAt, score: s, snippet: snip.text, role: snip.role,
+          // Temporary chat: no original to reopen on the platform.
+          ...(chat.temp ? { temp: 1 } : {}),
+          ...(long ? { passages: passagesFor(chat, words, lowered, passageCap(chat.n || 0)) } : {})
         });
       }
       c.continue();
@@ -4978,24 +5019,67 @@ const TRIAL_KEY = "lct-trial-v2";
    days — so "clear everything and start again" gets the original week back
    instead of a fresh one. Throttled: one attempt an hour, and only ever for a
    record that is not already verified. */
-const TRIAL_RECHECK_MS = 36e5;
-let _trialRecheckAt = 0;
+const TRIAL_RECHECK_MS = 36e5;          // never verified: hourly
+/* Verified records are re-asked too, daily, while they are still granting Pro.
+   `verified` is a flag in storage the user can write, so taking it at face
+   value forever made it the whole defence: set startedAt to today and
+   verified:true each week and the trial never ends. The issuer keeps the real
+   date for 400 days, so one call a day undoes that and costs a request. */
+const TRIAL_REVERIFY_MS = 864e5;
+/* A start date cannot be in the future. An hour of slack absorbs an ordinary
+   clock that is a little fast; past that the record is not evidence. */
+const TRIAL_FUTURE_SLACK_MS = 36e5;
 
-async function verifyTrialStart(rec) {
-  if (!rec || rec.verified) return rec;
+/* Persisted rather than a module variable: this worker unloads within seconds
+   of going idle, so an in-memory "last checked" resets constantly and the
+   throttle it implements does not exist. */
+async function writeTrial(rec) {
+  try { await chrome.storage.sync.set({ [TRIAL_KEY]: rec }); } catch { /* quota */ }
+  try { await chrome.storage.local.set({ [TRIAL_KEY]: rec }); } catch { /* dead context */ }
+  return rec;
+}
+
+async function verifyTrialStart(rec, nowTrusted) {
+  if (!rec) return rec;
   const now = Date.now();
-  if (now - _trialRecheckAt < TRIAL_RECHECK_MS) return rec;
-  _trialRecheckAt = now;
+  const startedAt = Number(rec.startedAt) || 0;
+
+  /* Clamp first, and persist the clamp. A future date is either a badly set
+     clock or a hand-edited record, and both are answered the same way: the
+     trial started no earlier than now. Persisting matters — clamping on every
+     read without writing it back would hand out a fresh week every time. */
+  if (startedAt > now + TRIAL_FUTURE_SLACK_MS) {
+    /* `clamped` is what stops this being a renewable week. Clamping alone still
+       hands out seven fresh days, so a record edited once a week never ends.
+       A date that cannot be real is not evidence a trial started, so it grants
+       nothing until the issuer says otherwise — and the issuer knows, because
+       it kept the original. An ordinary offline trial never reaches here: its
+       start date is the local clock, which is not in the future. */
+    rec = await writeTrial({ ...rec, startedAt: now, verified: false, clamped: true, checkedAt: 0 });
+  }
+
+  const started = Number(rec.startedAt) || 0;
+  const granting = started + TRIAL_MS > nowTrusted;   // still worth anything?
+  const since = now - (Number(rec.checkedAt) || 0);
+  const due = rec.verified
+    ? (granting && since >= TRIAL_REVERIFY_MS)
+    : (since >= TRIAL_RECHECK_MS);
+  if (!due) return rec;
+
+  // Stamp the attempt before the call: an issuer that is down must not be
+  // re-asked on every single verdict.
+  rec = await writeTrial({ ...rec, checkedAt: now });
   try {
     const deviceFp = await self.LCTEntitlement.sha256Hex(await self.LCTDodo.ensureDeviceId());
     const server = await self.LCTEntitlement.registerTrial(deviceFp);
     if (!server || !server.startedAt) return rec;
     // The issuer's date wins even when it is EARLIER — that is the whole point.
-    const fixed = { ...rec, startedAt: server.startedAt, verified: true,
-      ...(server.ks ? { ks: server.ks } : {}) };
-    try { await chrome.storage.sync.set({ [TRIAL_KEY]: fixed }); } catch { /* quota */ }
-    try { await chrome.storage.local.set({ [TRIAL_KEY]: fixed }); } catch { /* dead context */ }
-    return fixed;
+    // Verified: whatever it used to be, the issuer's date is now the record,
+    // so the clamp marker goes with it.
+    const clean = { ...rec };
+    delete clean.clamped;
+    return writeTrial({ ...clean, startedAt: server.startedAt, verified: true,
+      checkedAt: now, ...(server.ks ? { ks: server.ks } : {}) });
   } catch { return rec; }
 }
 
@@ -5011,16 +5095,26 @@ async function trialState() {
       rec = got && got[TRIAL_KEY];
     } catch { /* dead context */ }
   }
-  if (rec) rec = await verifyTrialStart(rec);
-  const startedAt = Number(rec && rec.startedAt) || 0;
-  if (!startedAt) return { started: false, active: false, spent: false, until: 0, ks: "" };
-  const until = startedAt + TRIAL_MS;
   /* The high-water clock, not Date.now(). A trial measured against a clock the
      user owns ends whenever they decide it does: winding the machine back a
      year renews it indefinitely. clockNow() never reports earlier than the
-     latest time this profile has already seen. */
+     latest time this profile has already seen.
+     Read BEFORE verification, because verification needs it to decide whether
+     the record is still granting anything worth a request. */
   let nowTrusted = Date.now();
   try { nowTrusted = (await self.LCTEntitlement.clockNow()).trusted; } catch { /* pre-init */ }
+
+  if (rec) rec = await verifyTrialStart(rec, nowTrusted);
+  const startedAt = Number(rec && rec.startedAt) || 0;
+  // NaN, negative, a string, a future date verification could not reach the
+  // issuer about — none of those start a trial.
+  const unsettled = !!(rec && rec.clamped && !rec.verified);
+  if (!(startedAt > 0) || startedAt > Date.now() + TRIAL_FUTURE_SLACK_MS || unsettled) {
+    // Reported as "never started" so the offer still stands: a user whose clock
+    // was wrong gets their trial the moment the issuer can be reached.
+    return { started: false, active: false, spent: false, until: 0, ks: "" };
+  }
+  const until = startedAt + TRIAL_MS;
   return { started: true, active: nowTrusted < until, spent: nowTrusted >= until, until,
     verified: !!(rec && rec.verified), ks: String((rec && rec.ks) || "") };
 }
@@ -5040,11 +5134,9 @@ async function startTrial() {
     if (server) { startedAt = server.startedAt; verified = true; trialKs = server.ks || ""; }
   } catch { /* issuer unreachable */ }
 
-  const rec = { startedAt: startedAt || Date.now(), v: 2,
-    ...(verified ? { verified: true } : {}), ...(trialKs ? { ks: trialKs } : {}) };
   // Both stores: sync is the durable record, local is the offline fallback.
-  try { await chrome.storage.sync.set({ [TRIAL_KEY]: rec }); } catch { /* quota/offline */ }
-  try { await chrome.storage.local.set({ [TRIAL_KEY]: rec }); } catch { /* dead context */ }
+  await writeTrial({ startedAt: startedAt || Date.now(), v: 2, checkedAt: Date.now(),
+    ...(verified ? { verified: true } : {}), ...(trialKs ? { ks: trialKs } : {}) });
   return trialState();
 }
 

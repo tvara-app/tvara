@@ -584,6 +584,14 @@
 #lct-bridge .lct-b-body { min-width: 0; }
 #lct-bridge .lct-b-title { display: flex; gap: 8px; align-items: baseline; font-weight: 600; font-size: 13px; }
 #lct-bridge .lct-b-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#lct-bridge .lct-b-more {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  font-style: normal;
+  opacity: 0.62;
+}
+
 #lct-bridge .lct-b-ex {
   color: rgba(251, 247, 245, 0.62); font-size: 12.5px; margin-top: 3px;
   overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
@@ -1484,4 +1492,21 @@
     animation: none !important;
     transition-duration: 1ms !important;
   }
+}
+
+/* Temporary-chat recording indicator. Opt-in only — see recall.js tempBadge(). */
+#lct-temp-badge {
+  position: fixed;
+  left: 12px;
+  bottom: 12px;
+  z-index: 2147483600;
+  padding: 5px 10px;
+  border-radius: 999px;
+  font: 500 11px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+  letter-spacing: 0.01em;
+  color: #fff;
+  background: rgba(180, 60, 40, 0.92);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.22);
+  pointer-events: none;
+  user-select: none;
 }

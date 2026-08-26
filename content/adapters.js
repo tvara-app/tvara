@@ -739,5 +739,60 @@
     };
   }
 
-  self.LCTAdapters = { detect, findScroller, pickComposer, accountHint, stableKey };
+  /* ---------- ephemeral conversations (temporary / private / signed out) ----------
+   *
+   * Temporary chat, private chat, incognito, signed-out: one shared fact — the
+   * provider never persists the conversation, so no id, so the URL stays on the
+   * landing path. That is why convPath disables every per-chat feature at once,
+   * on all six hosts.
+   *
+   * Structural, not branded. A "Temporary chat" badge is six selectors, six
+   * wordings, dead on the next redesign and absent in any other language. The
+   * structure is the same everywhere: real messages, on a URL no saved chat
+   * lives at. A query flag confirms where a host sets one; nothing depends on it.
+   *
+   * Id derived, not random. Every temporary chat on a host shares one URL, so a
+   * URL-derived id collides and they overwrite each other. The first message
+   * hashes to an id stable for the life of the chat and different for the next.
+   *
+   * null for anything that is not an unpersisted conversation.
+   */
+  const EPHEMERAL_FLAG = /[?&](temporary-chat|temporary|private|incognito)=(1|true)\b/i;
+
+  /* FNV-1a, 32 bits. Not a security hash: only has to differ between two
+     conversations, and runs on an engine tick. */
+  function shortHash(s) {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = (h + (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24)) >>> 0;
+    }
+    return h.toString(36);
+  }
+
+  function ephemeral(adapter, msgs) {
+    if (!adapter || !adapter.convPath || adapter.id === "synthetic") return null;
+    if (adapter.convPath.test(location.pathname)) return null;   // a saved chat
+    const list = msgs || [];
+    // The floor used elsewhere in this file: below it, landing-page prose
+    // reads as a conversation.
+    if (list.length < 2) return null;
+    /* Provider id AND opening text, not one or the other. The id alone assumes
+       it is unique across conversations — true for ChatGPT's UUIDs, false for
+       any host numbering messages per chat, where two temporary chats would
+       collide and silently overwrite each other in the archive. The text alone
+       collides whenever two chats open with the same prompt. Together they do
+       not, and neither costs anything. */
+    let id = "";
+    try { id = adapter.stableKey(list[0]) || ""; } catch { /* text still stands */ }
+    const text = String(list[0].textContent || "").replace(/\s+/g, " ").trim().slice(0, 200);
+    if (!id && !text) return null;
+    const seed = id + "|" + text;
+    return {
+      id: location.hostname + location.pathname + "#temp-" + shortHash(seed),
+      flagged: EPHEMERAL_FLAG.test(location.search)
+    };
+  }
+
+  self.LCTAdapters = { detect, findScroller, pickComposer, accountHint, stableKey, ephemeral };
 })();

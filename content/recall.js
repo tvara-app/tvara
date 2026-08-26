@@ -27,6 +27,8 @@
   let writeTimer = null;
   let lastSig = "";
   let lastPreSig = "";
+  /* Temporary/private/signed-out chats. Off unless the user opts in. */
+  let tempArchive = false;
 
   /* ---------- indexer ---------- */
 
@@ -94,14 +96,30 @@
     writeTimer = null;
     const msgs = latest;
     if (!msgs || msgs.length < 2) return;
+    /* Not a conversation URL: either a home/settings screen with nothing to
+       index, or a temporary chat — a real conversation the host chose not to
+       keep. Off by default, deliberately: the user told that platform not to
+       keep this, and a quiet local copy is still a surprise.
+
+       BEFORE the signature guard, not after. A rejected flush that had already
+       stamped lastPreSig poisoned every later one: on a chat that is no longer
+       being typed into, the signature never changes again, so a single early
+       return — settings still loading, toggle off — meant the conversation was
+       never archived at all. This gate is a regex on the common path, so it is
+       also the cheaper of the two. */
+    let eph = null;
+    if (!adapter.convPath || !adapter.convPath.test(location.pathname)) {
+      eph = tempArchive ? self.LCTAdapters.ephemeral(adapter, msgs) : null;
+      if (!eph && adapter.id !== "synthetic") return;
+    }
+    /* Opted in, but still visible. A silent recorder on a page whose whole
+       point is "do not keep this" is the wrong shape even when asked for. */
+    tempBadge(!!eph);
+
     // cheap pre-check BEFORE the expensive full-text extraction
     const preSig = msgs.length + ":" + ((msgs[msgs.length - 1].textContent || "").length);
     if (preSig === lastPreSig) return;
     lastPreSig = preSig;
-    if (!adapter.convPath || !adapter.convPath.test(location.pathname)) {
-      // not a conversation URL (home page, settings…) — index nothing
-      if (adapter.id !== "synthetic") return;
-    }
 
     const out = [];
     const tailFrom = msgs.length - TAIL;
@@ -126,9 +144,14 @@
       chrome.runtime.sendMessage({
         type: "recall-upsert",
         chat: {
-          id: location.hostname + location.pathname,
+          // Temporary chats all sit at one URL, so the id comes from the
+          // opening turn instead.
+          id: eph ? eph.id : location.hostname + location.pathname,
           host: location.hostname,
           path: location.pathname,
+          // Recall labels these and suppresses "open the original": the
+          // source chat no longer exists on the platform.
+          ...(eph ? { temp: 1 } : {}),
           platform: adapter.label,
           title: titleOf(msgs),
           createdAt: (self.LCTTimeline.earliest() || 0) * 1000,
@@ -136,6 +159,20 @@
         }
       }, () => void chrome.runtime.lastError); // SW asleep/reloading — next flush catches up
     } catch { /* extension reloading — never break the host page */ }
+  }
+
+  let badgeEl = null;
+  function tempBadge(on) {
+    if (!on) {
+      if (badgeEl) { badgeEl.remove(); badgeEl = null; }
+      return;
+    }
+    if (badgeEl && badgeEl.isConnected) return;
+    badgeEl = document.createElement("div");
+    badgeEl.id = "lct-temp-badge";
+    badgeEl.textContent = "Archiving this temporary chat";
+    badgeEl.title = "Tvara · turn off under “Archive temporary chats”";
+    document.documentElement.appendChild(badgeEl);
   }
 
   /* ---------- overlay ---------- */
@@ -414,6 +451,9 @@
   function go(res) {
     if (!res) return;
     const q = input.value.trim();
+    /* A temporary chat was never saved by the host, so res.path is the landing
+       page. Navigating there loses the overlay and lands on nothing. */
+    if (res.temp) return;
     close();
     if (res.host === location.hostname && res.path === location.pathname) {
       self.LCTSearch.open(q); // already here — drop into in-chat search
@@ -472,5 +512,31 @@
     completeJump();
   }
 
-  self.LCTRecall = { init, update, open, close, get isOpen() { return isOpen; } };
+  /* On: effective from the next flush, so an on-screen chat lands within
+     WRITE_EVERY. Off: stops new writes, keeps what exists — silent deletion is
+     the worse surprise, and Recall can delete by hand.
+
+     Turning it on clears the signature guards, or a chat already open and no
+     longer changing would stay unarchived until the user typed again. Turning
+     it off drops the badge here, because the flush that would normally clear it
+     may never run for the same reason. */
+  function setTempArchive(on) {
+    const was = tempArchive;
+    tempArchive = !!on;
+    if (!was && tempArchive) {
+      lastSig = ""; lastPreSig = "";
+      /* Drive the flush from here rather than waiting for the engine. On a
+         conversation nobody is typing into any more the engine settles and
+         stops calling update(), so "it will be picked up on the next tick" is a
+         tick that never comes — the chat open when the toggle was flipped, the
+         one the user was looking at, would be the one that never got archived. */
+      if (latest && !writeTimer) writeTimer = setTimeout(flush, 0);
+    }
+    if (!tempArchive) tempBadge(false);
+  }
+
+  self.LCTRecall = {
+    init, update, open, close, setTempArchive,
+    get isOpen() { return isOpen; }
+  };
 })();

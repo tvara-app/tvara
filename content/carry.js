@@ -27,7 +27,7 @@
 
   const HANDOFF_KEY = "lct-carry-v1";
   const HANDOFF_TTL_MS = 3 * 60 * 1000;   // a new tab that never opens is not a handoff
-  const MAX_CHARS = 6000;                 // beyond this a prompt box starts to fight back
+  const MAX_CHARS = 6000;                 // floor; scaled by maxFor() below
   const RECENT_TURNS = 6;
   const GOAL_CHARS = 700;
   const TURN_CHARS = 900;
@@ -113,6 +113,22 @@
 
   /* Per-section ceilings, and the floors they may be squeezed to when the whole
      thing is over budget. */
+  /* Both budgets below scale with the conversation, because the thing they
+     ration does. A 10-turn chat has no middle: the opening and the last few
+     turns already are the whole thread. A 400-turn one is almost entirely
+     middle — its last six turns are "that worked, thanks" — so a fixed 2400
+     characters of decisions gave the longest chats, the ones this feature
+     exists for, the thinnest sample. */
+  const middleBudget = (total) => {
+    const n = Math.max(0, total | 0);
+    if (n < 12) return 0;                                  // nothing to sample
+    return Math.min(5200, 1200 + n * 40);                  // 2400 at 30 turns
+  };
+  /* Raising the middle inside a fixed total just crowds out the other sections,
+     so the total rises too. 12000 is where a composer starts to fight back. */
+  const maxFor = (total) =>
+    Math.min(12000, MAX_CHARS + Math.max(0, (total | 0) - 20) * 30);
+
   const FULL = { goal: GOAL_CHARS, star: 300, decision: 420, code: CODE_CHARS, turn: TURN_CHARS };
   const FLOOR = { goal: 140, star: 90, decision: 120, code: 220, turn: 160 };
   const KEYS = Object.keys(FULL);
@@ -189,7 +205,7 @@
   }
 
   function compose(parts, opts) {
-    const max = (opts && opts.max) || MAX_CHARS;
+    const max = (opts && opts.max) || maxFor(parts.total);
     const p = {
       ...parts,
       recent: (parts.recent || []).slice(),
@@ -313,14 +329,17 @@
        thanks" and everything that was actually decided is in the middle.
        Nothing is rewritten: this picks, it does not paraphrase. */
     let picked = { decisions: [], code: [] };
+    /* 0 means "no middle worth sampling". Passed through it would read as
+       falsy inside distil() and restore its own default, which is backwards. */
+    const midMax = middleBudget(from.length);
     try {
-      if (self.LCTDistil) {
+      if (self.LCTDistil && midMax > 0) {
         picked = self.LCTDistil.distil(from, {
           // Whatever another section already carries, so this one is spent on
           // turns the handover does not have yet.
           exclude: [goal, ...starred, ...recent.map((m) => m.text)],
           charge: 420,                                  // what render() emits per decision
-          max: 2400
+          max: midMax
         });
       }
     } catch { /* a handover that says less is better than one that throws */ }
@@ -436,7 +455,10 @@
       decisions: panel.querySelector("#lct-c-decisions").checked ? data.decisions : [],
       starred: panel.querySelector("#lct-c-starred").checked ? data.starred : [],
       code: panel.querySelector("#lct-c-code").checked ? data.code : "",
-      recent: panel.querySelector("#lct-c-recent").checked ? data.recent : []
+      recent: panel.querySelector("#lct-c-recent").checked ? data.recent : [],
+      // Drives maxFor() in compose() — the conversation's length, not the
+      // ticked subset's.
+      total: data.total
     });
 
     const repaint = () => {

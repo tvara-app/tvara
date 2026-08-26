@@ -108,6 +108,7 @@
     $("toggle-minimap").checked = !s || s.minimap !== false;
     $("toggle-time").checked = !s || s.time !== false;
     $("toggle-history").checked = !!(s && s.history === true);
+    $("toggle-temp").checked = !!(s && s.tempArchive === true);
     // Default on. It is the mechanism that makes the allowance panel truthful
     // rather than decorative, so the panel is meaningless with it off.
     $("toggle-quota").checked = !s || s.quota !== false;
@@ -879,6 +880,7 @@
       minimap: $("toggle-minimap").checked,
       time: $("toggle-time").checked,
       history: $("toggle-history").checked,
+      tempArchive: $("toggle-temp").checked,
       quota: $("toggle-quota").checked,
       quotaWarn: warnOn()
     };
@@ -886,7 +888,7 @@
     await chrome.storage.local.set({ settings });
   }
 
-  for (const id of ["toggle-enabled", "toggle-minimap", "toggle-time", "toggle-history", "toggle-quota"]) {
+  for (const id of ["toggle-enabled", "toggle-minimap", "toggle-time", "toggle-history", "toggle-temp", "toggle-quota"]) {
     $(id).addEventListener("change", saveSettings);
   }
 

@@ -4,7 +4,7 @@
   "description": "Make long AI chats fast again.",
   "type": "module",
   "scripts": {
-    "test": "node test/test-license.mjs && node test/test-parsers.mjs && node test/test-quota.mjs && node test/test-distil.mjs && node test/test-handover-adversarial.mjs && node test/test-worker.mjs && node test/test-refund-webhook.mjs && node test/test-device-proof.mjs && node test/fuzz-quota.mjs && node test/fuzz-backup-crypto.mjs && node test/fuzz-entitlement.mjs && node test/fuzz-license.mjs && node test/fuzz-worker.mjs && node test/security-xss-regression.mjs && node test/security-sender-allowlist.mjs && node test/security-entitlement-gate.mjs && node test/security-purchase-flow.mjs && node test/security-recall-navigation.mjs && node test/security-egress-proof.mjs && node test/test-accounts.mjs && node test/test-extension.mjs",
+    "test": "node test/test-license.mjs && node test/test-parsers.mjs && node test/test-quota.mjs && node test/test-distil.mjs && node test/test-ephemeral.mjs && node test/test-handover-adversarial.mjs && node test/test-worker.mjs && node test/test-refund-webhook.mjs && node test/test-device-proof.mjs && node test/fuzz-quota.mjs && node test/fuzz-backup-crypto.mjs && node test/fuzz-entitlement.mjs && node test/fuzz-license.mjs && node test/fuzz-worker.mjs && node test/security-xss-regression.mjs && node test/security-sender-allowlist.mjs && node test/security-entitlement-gate.mjs && node test/security-purchase-flow.mjs && node test/security-recall-navigation.mjs && node test/security-egress-proof.mjs && node test/test-accounts.mjs && node test/test-extension.mjs && node test/test-temp-chat.mjs && node test/test-edge-cases.mjs",
     "test:worker": "node test/test-worker.mjs",
     "test:refund": "node test/test-refund-webhook.mjs",
     "test:parsers": "node test/test-parsers.mjs",
@@ -30,6 +30,9 @@
     "refund:check": "node tools/webhook-check.mjs",
     "verify-keys": "node tools/verify-keys.mjs",
     "test:distil": "node test/test-distil.mjs",
+    "test:ephemeral": "node test/test-ephemeral.mjs",
+    "test:temp-chat": "node test/test-temp-chat.mjs",
+    "test:edge": "node test/test-edge-cases.mjs",
     "test:handover": "node test/test-handover-adversarial.mjs",
     "test:fuzz-quota": "node test/fuzz-quota.mjs",
     "test:fuzz-backup-crypto": "node test/fuzz-backup-crypto.mjs",

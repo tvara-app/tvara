@@ -18,7 +18,8 @@
 (() => {
   "use strict";
 
-  const MAX_PASSAGES = 6;
+  const MAX_PASSAGES = 6;      // chats, not windows
+  const MAX_BLOCK = 8000;      // total inserted; past this a composer fights back
 
   let adapter = null;
 
@@ -90,14 +91,31 @@
 
   function buildBlock(picked) {
     const lines = ["Context from my earlier AI chats:"];
+    /* An even share per chat rather than first-come: without it one long thread
+       spends the whole budget and the sixth pick arrives empty. */
+    const share = Math.floor(MAX_BLOCK / Math.max(1, picked.length));
     for (const r of picked) {
       const when = fmtWhen(r.updatedAt);
-      const tag = "[" + (r.platform || r.host) + (when ? " · " + when : "") + "]";
-      lines.push(tag + " " + r.excerpt.replace(/\s+/g, " ").trim());
+      const tag = "[" + (r.platform || r.host) +
+        (when ? " · " + when : "") + (r.temp ? " · temporary" : "") + "]";
+      let spent = 0;
+      for (const t of passagesOf(r)) {
+        const one = t.replace(/\s+/g, " ").trim();
+        if (!one || spent + one.length > share) break;
+        lines.push(tag + " " + one);
+        spent += one.length;
+      }
     }
     lines.push(""); // blank line before the user's own prompt
     lines.push("");
     return lines.join("\n");
+  }
+
+  /* Long chats come back with several windows from different parts of the
+     thread (see passagesFor in bg.js); short ones with the single snippet. */
+  function passagesOf(r) {
+    if (r.passages && r.passages.length) return r.passages.map((p) => p.t || "");
+    return [r.excerpt || ""];
   }
 
   /* ---------- panel ---------- */
@@ -174,6 +192,13 @@
     ex.className = "lct-b-ex";
     ex.textContent = r.excerpt; // archive data, never markup
     body.append(top, ex);
+    const extra = (r.passages && r.passages.length) || 0;
+    if (extra > 1) {
+      const more = document.createElement("i");
+      more.className = "lct-b-more";
+      more.textContent = `+${extra - 1} more from this chat`;
+      body.append(more);
+    }
     row.append(cb, body);
     return row;
   }

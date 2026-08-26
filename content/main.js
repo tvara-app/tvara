@@ -15,6 +15,8 @@
     enabled: true,
     minimap: true,
     time: true,
+    tempArchive: false,  // opt-in: the host was told not to keep these
+
     history: false,    // walk the host's scroller on open — off, it moves the page
     pro: false,
     trialUntil: 0      // ms epoch; 0 = no trial started
@@ -36,7 +38,12 @@
   // The CONVERSATION, not location.href: these hosts rewrite their own query
   // string and hash while you sit still, and treating that as a chat switch
   // reset every per-chat cache several times a minute.
-  const routeId = () => location.hostname + location.pathname;
+  const routeId = () => {
+    // Same URL for every temporary chat, so per-chat caches would survive the
+    // switch from one to the next.
+    const eph = self.LCTAdapters.ephemeral(adapter, lastMessages);
+    return eph ? eph.id : location.hostname + location.pathname;
+  };
   let currentRoute = routeId();
   let statsTimer = null;
 
@@ -590,6 +597,7 @@
       state.minimap = settings.minimap !== false;
       state.time = settings.time !== false;
       state.history = settings.history === true;   // opt-in: it moves the page
+      state.tempArchive = settings.tempArchive === true;
     }
     // The worker holds the signed entitlement; content scripts only ask.
     // A hostile page shares this DOM but not this message channel.
@@ -600,6 +608,7 @@
   }
 
   function applyState() {
+    self.LCTRecall.setTempArchive(state.enabled && state.tempArchive);
     self.LCTHistoryLoader.setAuto(state.enabled && state.history && toolsUnlocked());
     self.LCTTimeline.setDisplay(state.enabled && state.time && toolsUnlocked());
     self.LCTOutline.setEnabled(state.enabled && toolsUnlocked());

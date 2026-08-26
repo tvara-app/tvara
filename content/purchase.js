@@ -46,24 +46,47 @@
     }
   }
 
+  function activate(key) {
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (v) => { if (!done) { done = true; resolve(v); } };
+      setTimeout(() => finish(null), 25000);
+      try {
+        chrome.runtime.sendMessage({ type: "license-activate", key }, (r) => {
+          void chrome.runtime.lastError;
+          finish(r || null);
+        });
+      } catch { finish(null); }                    // extension reloading
+    });
+  }
+
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  /* The licence is created asynchronously after the payment clears, so a fast
+     redirect can arrive before it exists and the issuer answers "unknown
+     licence". That is a race, not a failure, and it used to be handed to the
+     buyer as "reload this page" — a manual step, on the one page where nobody
+     should have to do anything, in the seconds right after paying.
+     Four tries over ~15s covers it. Anything still unknown after that is a real
+     problem and gets the message it always did. */
+  const RETRY_MS = [2000, 4000, 8000];
+
   async function run() {
     const key = findKey();
     if (!key || key.length > 200) return;          // nothing to do, stay silent
 
     say("working", "Activating your licence…");
 
-    let res = null;
-    try {
-      res = await new Promise((resolve) => {
-        let done = false;
-        const finish = (v) => { if (!done) { done = true; resolve(v); } };
-        setTimeout(() => finish(null), 25000);
-        chrome.runtime.sendMessage({ type: "license-activate", key }, (r) => {
-          void chrome.runtime.lastError;
-          finish(r || null);
-        });
-      });
-    } catch { /* extension reloading */ }
+    let res = await activate(key);
+    for (let i = 0; i < RETRY_MS.length; i++) {
+      // Only the not-yet-issued branch is worth waiting on. A seat limit, a bad
+      // key or a wrong clock will answer exactly the same in eight seconds.
+      const notYet = res && !res.ok && res.reason === "revoked";
+      if (!notYet) break;
+      say("working", "Confirming your purchase with the payment provider…");
+      await wait(RETRY_MS[i]);
+      res = await activate(key);
+    }
 
     if (res && res.ok) {
       say("ok", "Pro is active on this device.",
@@ -84,8 +107,8 @@
       say("warn", "This licence is already on five devices.",
         "Open the Tvara popup, choose Devices, and release one. Your purchase is fine.");
     } else if (reason === "revoked") {
-      say("warn", "The payment provider does not recognise this licence yet.",
-        "It can take a moment after payment. Reload this page, or paste the key into the popup.");
+      say("warn", "The payment provider still does not recognise this licence.",
+        "We waited and retried. Reload this page in a minute, or paste the key into the popup. Your payment went through — email tvara.exten@gmail.com with the key if it keeps saying this.");
     } else if (branch === "clockskew") {
       /* Not a licence problem at all, and it is the one failure here the buyer
          can fix in thirty seconds — but only if we say so. The issuer refuses
