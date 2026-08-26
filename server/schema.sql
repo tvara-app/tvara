@@ -51,3 +51,12 @@ CREATE TABLE IF NOT EXISTS revocations (
   reason TEXT,
   at     INTEGER NOT NULL
 );
+
+-- Webhook deliveries already applied. Standard Webhooks retries, and a retried
+-- refund must not re-run the seat sweep. The row is claimed before the work and
+-- deleted again if the work fails, so a failed delivery is still retryable.
+CREATE TABLE IF NOT EXISTS webhook_events (
+  id TEXT    PRIMARY KEY,
+  at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS webhook_events_by_at ON webhook_events (at);

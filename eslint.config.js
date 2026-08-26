@@ -64,7 +64,7 @@ export default [
   },
   {
     // Node-side: hand-rolled tests, dev tools, the entitlement worker.
-    files: ["test/**/*.mjs", "tools/**/*.mjs", "server/**/*.js"],
+    files: ["test/**/*.mjs", "tools/**/*.mjs", "server/**/*.js", "server/**/*.mjs"],
     languageOptions: {
       ecmaVersion: "latest",
       sourceType: "module",

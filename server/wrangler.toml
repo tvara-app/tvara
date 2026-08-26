@@ -28,7 +28,7 @@ compatibility_date = "2026-08-01"
 [[d1_databases]]
 binding = "DB"
 database_name = "tvara"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "afebbfde-fc06-47f7-aa19-4c494557987d"
 
 # Rate-limit buckets and the sharing observer. Still KV, deliberately: they were
 # never a bound, and the comment in rateLimited() says so. Also still holds the
@@ -61,8 +61,9 @@ ALLOWED_ORIGINS = "chrome-extension://hbejlhhmbhkeaebcgmblchnodeampcgl"
 ALLOW_FIREFOX = "1"
 
 # Secrets — never in this file. deploy.sh prompts for whichever is missing:
-#   wrangler secret put DODO_API_KEY   # Dodo Payments server-side API key
-#   wrangler secret put SIGNING_KEY    # node tools/genkey.mjs worker-key
+#   wrangler secret put DODO_API_KEY        # Dodo Payments server-side API key
+#   wrangler secret put SIGNING_KEY         # node tools/genkey.mjs worker-key
+#   wrangler secret put DODO_WEBHOOK_SECRET # Dodo → Developer → Webhooks (whsec_…)
 
 
 # Worker Traces — invocation logs, exceptions, timings. Server-side only: this

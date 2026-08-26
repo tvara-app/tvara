@@ -732,10 +732,219 @@ async function mintToken(env, claims) {
   return `LCT2.${b64url(payload)}.${b64url(sig)}`;
 }
 
+/* ---------- refunds: the Dodo webhook ----------
+ *
+ * Until now a refund was two manual steps: refund in the dashboard, then hand-
+ * write a revocations row. Step two is the one that gets forgotten, and the
+ * result is a refunded customer keeping Pro indefinitely.
+ *
+ * schema.sql says revocation rows are written BY HAND so an upstream hiccup can
+ * never revoke a purchase on its own. That still holds. This does not open the
+ * kill list to Dodo generally — it opens it to two terminal events, verified by
+ * signature, where the money has already left. Everything else is a no-op.
+ */
+
+const WEBHOOK_SKEW_MS = 5 * 60 * 1000;
+const WEBHOOK_MAX_BODY = 64 * 1024;
+
+/* Terminal only. dispute.opened is a claim, refund.failed is money that never
+   moved; a revocation from either takes Pro from someone who still paid. */
+const REVOKING = {
+  "refund.succeeded": "refunded",
+  "dispute.lost": "chargeback",
+  "dispute.accepted": "chargeback"
+};
+
+/* Equal-length compare without an early exit. A length mismatch is already
+   public from the header, so only this case needs the care. */
+function timingSafeEqual(a, b) {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+/**
+ * Standard Webhooks: HMAC-SHA256 over "<id>.<timestamp>.<raw body>".
+ * Returns "ok" | "unconfigured" | "malformed" | "stale" | "bad" — the caller
+ * maps those to statuses, because they are not the same failure.
+ */
+async function verifyWebhook(env, headers, raw) {
+  const secret = String(env.DODO_WEBHOOK_SECRET || "");
+  if (!secret) return "unconfigured";
+
+  const id = headers.get("webhook-id") || "";
+  const ts = headers.get("webhook-timestamp") || "";
+  const sigHeader = headers.get("webhook-signature") || "";
+  if (!id || !ts || !sigHeader) return "malformed";
+
+  // Freshness: without it a captured delivery replays forever.
+  const when = Number(ts) * 1000;
+  if (!Number.isFinite(when) || Math.abs(Date.now() - when) > WEBHOOK_SKEW_MS) return "stale";
+
+  // whsec_ is a label; the secret is the base64 after it.
+  const body = secret.startsWith("whsec_") ? secret.slice(6) : secret;
+  let keyBytes;
+  try { keyBytes = Uint8Array.from(atob(body), (c) => c.charCodeAt(0)); }
+  catch { return "unconfigured"; }
+
+  const key = await crypto.subtle.importKey(
+    "raw", keyBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const mac = await crypto.subtle.sign("HMAC", key, enc.encode(id + "." + ts + "." + raw));
+  const want = btoa(String.fromCharCode(...new Uint8Array(mac)));
+
+  // Space-separated "<version>,<signature>" pairs: during a secret rotation
+  // more than one is valid at once.
+  for (const part of sigHeader.split(" ")) {
+    const comma = part.indexOf(",");
+    if (comma < 0) continue;
+    if (part.slice(0, comma) !== "v1") continue;
+    if (timingSafeEqual(part.slice(comma + 1), want)) return "ok";
+  }
+  return "bad";
+}
+
+/**
+ * One delivery, one effect. Deliveries retry, and a retry must not re-run the
+ * seat sweep. Claimed before the work, released if the work fails — a claim
+ * held over a failure would swallow the retry that was going to fix it.
+ */
+async function claimWebhook(env, id) {
+  const db = d1(env);
+  if (!db) return true;                       // no ledger: revoking twice is a no-op
+  try {
+    const r = await db.prepare(
+      "INSERT INTO webhook_events (id, at) VALUES (?1, ?2) ON CONFLICT DO NOTHING"
+    ).bind(id, Date.now()).run();
+    return (r.meta.changes || 0) > 0;
+  } catch { return true; }
+}
+
+async function releaseWebhook(env, id) {
+  const db = d1(env);
+  if (!db) return;
+  try { await db.prepare("DELETE FROM webhook_events WHERE id = ?1").bind(id).run(); }
+  catch { /* the retry re-claims or re-runs; neither is harmful */ }
+}
+
+/**
+ * A refund names a payment and a customer, never a licence — Dodo issues the
+ * licence as a separate object. Ask which keys the customer holds and keep the
+ * one this payment bought.
+ *
+ * { ok:false } means we could not find out, which is not the same as "there was
+ * none" and must be retried rather than treated as nothing to do.
+ */
+async function licencesForRefund(env, data) {
+  if (!env.DODO_API_KEY) return { ok: false, keys: [] };
+  const customerId = String((data && data.customer && data.customer.customer_id) || "");
+  const paymentId = String((data && data.payment_id) || "");
+  if (!customerId) return { ok: true, keys: [] };
+
+  const base = env.DODO_MODE === "test"
+    ? "https://test.dodopayments.com" : "https://live.dodopayments.com";
+  let res;
+  try {
+    res = await fetch(base + "/license_keys?page_size=100&customer_id=" + encodeURIComponent(customerId), {
+      headers: { Authorization: "Bearer " + env.DODO_API_KEY, Accept: "application/json" },
+      signal: AbortSignal.timeout(DODO_TIMEOUT_MS)
+    });
+  } catch { return { ok: false, keys: [] }; }
+  if (!res.ok) return { ok: false, keys: [] };
+
+  let payload;
+  try { payload = await res.json(); } catch { return { ok: false, keys: [] }; }
+  const items = Array.isArray(payload && payload.items) ? payload.items : [];
+  const keysOf = (list) => list.map((k) => String((k && k.key) || "")).filter(Boolean);
+
+  // Only what this payment bought. Revoking every key a customer holds because
+  // one of several purchases was refunded is the wrong blast radius.
+  if (paymentId) return { ok: true, keys: keysOf(items.filter((k) => k && k.payment_id === paymentId)) };
+
+  /* No payment on the event, so nothing attributes it. One licence is still
+     unambiguous. Several is a guess, and guessing wrong takes Pro from a
+     purchase nobody refunded — so it revokes none and reports the ambiguity for
+     a human, which is what the kill list was always meant to need. */
+  if (items.length === 1) return { ok: true, keys: keysOf(items) };
+  return { ok: true, keys: [], ambiguous: items.length };
+}
+
+/** Kill list plus seats: a refunded licence holding five of five would refuse
+    the owner's next purchase from the same machines. */
+async function revokeLicence(env, keyFp, reason) {
+  const db = d1(env);
+  if (!db) return false;
+  try {
+    await db.batch([
+      db.prepare(
+        "INSERT INTO revocations (key_fp, reason, at) VALUES (?1, ?2, ?3) " +
+        "ON CONFLICT(key_fp) DO UPDATE SET reason = excluded.reason, at = excluded.at"
+      ).bind(keyFp, reason, Date.now()),
+      db.prepare("DELETE FROM seats WHERE key_fp = ?1").bind(keyFp)
+    ]);
+    return true;
+  } catch { return false; }
+}
+
+async function handleWebhook(request, env) {
+  const declared = Number(request.headers.get("Content-Length") || 0);
+  if (declared > WEBHOOK_MAX_BODY) return json({ error: "too large" }, 413, "");
+  const raw = await request.text();
+  if (raw.length > WEBHOOK_MAX_BODY) return json({ error: "too large" }, 413, "");
+
+  const verdict = await verifyWebhook(env, request.headers, raw);
+  if (verdict === "unconfigured") return json({ error: "webhook not configured" }, 503, "");
+  if (verdict !== "ok") return json({ error: "bad signature" }, 401, "");
+
+  let evt;
+  try { evt = JSON.parse(raw); } catch { return json({ error: "bad json" }, 400, ""); }
+
+  const type = String((evt && evt.type) || "");
+  const reason = REVOKING[type];
+  // 200 for anything we do not act on: a 4xx here is retried until Dodo
+  // disables the endpoint, taking the events we DO act on with it.
+  if (!reason) return json({ ok: true, ignored: type }, 200, "");
+
+  const id = request.headers.get("webhook-id") || "";
+  if (!(await claimWebhook(env, id))) return json({ ok: true, duplicate: true }, 200, "");
+
+  const found = await licencesForRefund(env, (evt && evt.data) || {});
+  if (!found.ok) {
+    await releaseWebhook(env, id);
+    return json({ error: "upstream" }, 500, "");     // 5xx: please retry
+  }
+
+  let revoked = 0;
+  for (const key of found.keys) {
+    if (await revokeLicence(env, await sha256Hex(key), reason)) revoked++;
+  }
+  // Resolved keys but wrote nothing: the ledger is down, not the refund absent.
+  if (found.keys.length && !revoked) {
+    await releaseWebhook(env, id);
+    return json({ error: "ledger" }, 500, "");
+  }
+  /* Surfaced rather than swallowed: Worker Traces is where an operator finds
+     out a refund arrived that nobody could attribute. */
+  if (found.ambiguous) {
+    console.warn("dodo webhook: " + type + " with no payment_id and " +
+      found.ambiguous + " licences for the customer — revoked nothing");
+    return json({ ok: true, revoked: 0, ambiguous: found.ambiguous }, 200, "");
+  }
+  return json({ ok: true, revoked }, 200, "");
+}
+
 /* ---------- handler ---------- */
 
 export default {
   async fetch(request, env) {
+    /* Dodo's webhook, ahead of the origin gate: a server-to-server call carries
+       no Origin and no device proof. Its own signature is the authentication,
+       and handleWebhook checks it before the body is trusted for anything. */
+    if (new URL(request.url).pathname === "/webhook/dodo") {
+      if (request.method !== "POST") return json({ error: "method" }, 405, "");
+      return handleWebhook(request, env);
+    }
+
     const origin = request.headers.get("Origin") || "";
 
     /* ---------- step 1: origin ---------- */

@@ -117,7 +117,7 @@ fi
 
 # ---------- 3. secrets ----------
 EXISTING="$(wrangler secret list 2>/dev/null || echo '[]')"
-for NAME in DODO_API_KEY SIGNING_KEY ARCHIVE_SECRET; do
+for NAME in DODO_API_KEY SIGNING_KEY ARCHIVE_SECRET DODO_WEBHOOK_SECRET; do
   if printf '%s' "$EXISTING" | grep -q "\"$NAME\""; then
     echo "  ✓ secret $NAME already set"
     continue
@@ -130,6 +130,12 @@ for NAME in DODO_API_KEY SIGNING_KEY ARCHIVE_SECRET; do
       ;;
     DODO_API_KEY)
       echo "→ DODO_API_KEY is the server-side API key from the Dodo dashboard."
+      wrangler secret put "$NAME"
+      ;;
+    DODO_WEBHOOK_SECRET)
+      # Without it /webhook/dodo answers 503 and every refund stays manual.
+      echo "→ DODO_WEBHOOK_SECRET signs Dodo's webhooks (Developer → Webhooks)."
+      echo "  It looks like whsec_… — paste it whole."
       wrangler secret put "$NAME"
       ;;
     ARCHIVE_SECRET)
@@ -177,62 +183,20 @@ if [[ -n "$EXPECTED" && "$URL" != "$EXPECTED" ]]; then
 fi
 
 # ---------- 5. prove it ----------
-# Three calls, each isolating one link in the chain. A junk licence key SHOULD
-# come back 404 — that answer can only be produced by a worker that accepted our
-# origin, parsed the body, and got a real verdict out of Dodo.
-echo
-echo "→ smoke test against ${URL}"
-code() {
-  curl -s -o /dev/null -w '%{http_code}' -X POST "${URL}/entitlement" \
-    -H "Content-Type: application/json" -H "Origin: $1" \
-    -d "{\"license_key\":\"SMOKE-${RANDOM}${RANDOM}\",\"device\":\"$(printf 'a%.0s' {1..32})\",\"ts\":$(date +%s000)}" \
-    --max-time 20 || echo 000
-}
-OURS="$(code "$ORIGIN")"
-STRANGER="$(code "chrome-extension://zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz")"
-
-# /trial is a separate route with its own ledger and its own rate limit, and it
-# is the one a NON-paying user hits — so an entitlement endpoint that works
-# while this 404s is a launch where every new install silently loses its trial
-# ledger. It was exactly that for a while; it is checked now.
-trial_code() {
-  curl -s -o /dev/null -w '%{http_code}' -X POST "${URL}/trial" \
-    -H "Content-Type: application/json" -H "Origin: ${ORIGIN}" \
-    -d "{\"device\":\"$(openssl rand -hex 16)\"}" --max-time 20 || echo 000
-}
-TRIAL="$(trial_code)"
-
-echo "   our origin      → HTTP ${OURS}"
-echo "   another origin  → HTTP ${STRANGER}"
-echo "   /trial          → HTTP ${TRIAL}"
-echo
-
-FAILED=0
-case "$OURS" in
-  404) echo "   ✓ reachable, origin accepted, Dodo answered (junk key correctly unknown)";;
-  403) echo "   ✗ our own origin was REFUSED — the id above is not the one the worker trusts"; FAILED=1;;
-  503) echo "   ✗ Dodo did not answer — check DODO_API_KEY and DODO_MODE"; FAILED=1;;
-  000) echo "   ✗ nothing answered at ${URL} — the deploy did not take"; FAILED=1;;
-  429) echo "   ✗ rate-limited (429) — this run proves nothing; wait and retry"; FAILED=1;;
-  *)   echo "   ? unexpected ${OURS} — inspect with: wrangler tail"; FAILED=1;;
-esac
-[[ "$STRANGER" == "403" ]] \
-  && echo "   ✓ a stranger's extension is refused" \
-  || { echo "   ✗ another extension was NOT refused (got ${STRANGER}) — ALLOWED_ORIGINS is not in force"; FAILED=1; }
-
-case "$TRIAL" in
-  200) echo "   ✓ /trial minted a trial for a fresh device";;
-  404) echo "   ✗ /trial is missing — every new install will fall back to its own clock"; FAILED=1;;
-  503) echo "   ✗ /trial has no KV to remember with — check the RL binding"; FAILED=1;;
-  429) echo "   ! /trial rate-limited this run; rerun to actually test it";;
-  *)   echo "   ✗ /trial answered ${TRIAL} — inspect with: wrangler tail"; FAILED=1;;
-esac
-
-echo
-if [[ "$FAILED" == "0" ]]; then
-  echo "✅ issuer live at ${URL}"
-  echo "   lib/entitlement.js must point at exactly this host (ISSUER)."
-else
+# Delegated to server/smoke.mjs, because every route is now behind an ECDSA
+# device signature and curl cannot make one. The curl probes that used to live
+# here spoke protocol 2, so a healthy deploy answered 426 to all of them and
+# this script printed ❌ — a check that cries wolf is a check you stop reading.
+#
+# It exits non-zero if any link in the chain is broken, and names which one.
+# Plain ./smoke.mjs, not $(dirname "$0")/ — line 18 already cd'd into this
+# script's directory, so a path rebuilt from $0 would be resolved a second time
+# and miss whenever this is invoked as ./server/deploy.sh from the repo root.
+command -v node >/dev/null || { echo "✋ node not found — needed for the smoke test"; exit 1; }
+if ! node ./smoke.mjs "$URL" "$ORIGIN"; then
   echo "❌ deployed, but NOT safe to sell against yet — fix the ✗ above first."
   exit 1
 fi
+
+echo "✅ issuer live at ${URL}"
+echo "   lib/entitlement.js must point at exactly this host (ISSUER)."
