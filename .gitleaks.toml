@@ -1,0 +1,19 @@
+# Gitleaks configuration for the CI scan in .github/workflows/ci.yml.
+#
+# The default rules stay on; this file only adds an allowlist. The one class of
+# false positive this repo produces is chrome.storage key NAMES. They match
+# generic-api-key because they look like `const SOMETHING_KEY = "lct-…-v1"`,
+# but every one of them is a public, versioned identifier that ships inside the
+# bundle and is readable from any devtools console — there is nothing to leak.
+#
+# Deliberately narrow: only the `lct-<name>-v<n>` shape is exempt, so a real
+# credential assigned to a variable ending in _KEY is still a finding.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "chrome.storage key names are public identifiers, not credentials"
+regexes = [
+  '''^lct-[a-z0-9-]+-v[0-9]+$''',
+]
