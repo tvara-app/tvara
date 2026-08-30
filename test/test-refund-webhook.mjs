@@ -45,14 +45,25 @@ function kv() {
   };
 }
 
+/* node:sqlite binds positionally and rejects ?N outright ("column index out of
+   range"); D1 accepts it, and every statement the Worker ships is written that
+   way. Rewrite into bare ? and reorder the arguments to match, so this double
+   runs the same SQL production does instead of silently sending the Worker
+   down its KV fallback. */
+function numbered(sql, args) {
+  const order = [];
+  const rewritten = sql.replace(/\?(\d+)/g, (_, n) => { order.push(Number(n) - 1); return "?"; });
+  return order.length ? [rewritten, order.map((i) => args[i])] : [sql, args];
+}
+
 function d1() {
   const sqlite = new DatabaseSync(":memory:");
   sqlite.exec(readFileSync(new URL("../server/schema.sql", import.meta.url), "utf8"));
   const prepare = (sql) => ({
     bind: (...a) => ({
-      async all() { return { results: sqlite.prepare(sql).all(...a) }; },
-      async first() { return sqlite.prepare(sql).get(...a) ?? null; },
-      async run() { return { meta: { changes: Number(sqlite.prepare(sql).run(...a).changes) } }; }
+      async all() { const [q, b] = numbered(sql, a); return { results: sqlite.prepare(q).all(...b) }; },
+      async first() { const [q, b] = numbered(sql, a); return sqlite.prepare(q).get(...b) ?? null; },
+      async run() { const [q, b] = numbered(sql, a); return { meta: { changes: Number(sqlite.prepare(q).run(...b).changes) } }; }
     })
   });
   return {
@@ -132,6 +143,15 @@ const refund = (payment = PAYMENT) => ({
   payload_type: "Refund", refund_id: "ref_1", payment_id: payment,
   status: "succeeded", customer: { customer_id: CUSTOMER, email: "a@b.c" }
 });
+
+/* A held licence key is stored ENCRYPTED now: an order that is fulfilled and
+   never claimed used to hold a plaintext bearer secret indefinitely, which is
+   the one case schema.sql's "a liability with a shelf life" did not cover.
+   These assertions check both halves — that the row is not the key, and that
+   the key is still in there. */
+const heldIsSealed = (row) =>
+  typeof row.lic_key === "string" && row.lic_key.startsWith("enc1:") &&
+  !row.lic_key.includes(BOUGHT);
 
 const keyFp = async (key) => {
   const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
@@ -475,6 +495,200 @@ for (const [label, headers] of [
   const rev = rows(e, "SELECT * FROM revocations");
   t("a chargeback after a refund updates the reason rather than duplicating",
     rev.length === 1 && rev[0].reason === "chargeback", JSON.stringify(rev));
+}
+
+/* ---------- delivery ----------
+
+   The webhook is not only how a purchase is taken away — it is now the ONLY
+   thing that says a purchase happened. A redirect cannot: it is a client
+   telling us it paid.
+
+   `payment.succeeded` and `license_key.created` are independent and arrive in
+   whichever order they arrive, so both orderings are walked. */
+
+const REF = "a".repeat(32);
+const DEV = "b".repeat(32);
+const BOUGHT = "TVARA-DELIVERED-0003";
+
+const paid = (ref = REF, dev = DEV) => ({
+  payload_type: "Payment", payment_id: PAYMENT, status: "succeeded",
+  customer: { customer_id: CUSTOMER, email: "a@b.c" },
+  metadata: { tv_ref: ref, tv_dev: dev }
+});
+
+const issued = (payment = PAYMENT) => ({
+  payload_type: "LicenseKey", id: "lk_new", key: BOUGHT,
+  payment_id: payment, customer_id: CUSTOMER
+});
+
+const order = (e) => e.DB.sqlite.prepare("SELECT * FROM orders WHERE ref = ?").get(REF);
+
+{
+  // Payment first, then the licence — the ordinary order.
+  const e = env();
+  e.DB.sqlite.prepare(
+    "INSERT INTO orders (ref, dev_fp, state, created_at, updated_at) VALUES (?, ?, 'created', ?, ?)"
+  ).run(REF, DEV, Date.now(), Date.now());
+
+  await worker.fetch(delivery("payment.succeeded", paid(), { id: "msg_p1" }), e);
+  t("payment.succeeded marks the order paid", order(e).state === "paid", JSON.stringify(order(e)));
+  t("…and records who to ask about it later", order(e).payment_id === PAYMENT);
+
+  await worker.fetch(delivery("license_key.created", issued(), { id: "msg_k1" }), e);
+  const row = order(e);
+  t("license_key.created attaches the key by payment",
+    row.state === "fulfilled" && heldIsSealed(row), JSON.stringify(row));
+}
+
+{
+  /* The licence beats the payment here. Nothing may be lost by that: the key
+     lands on an order that is still 'created', and the retried payment event
+     must not knock a fulfilled order backwards. */
+  const e = env();
+  e.DB.sqlite.prepare(
+    "INSERT INTO orders (ref, dev_fp, state, payment_id, created_at, updated_at) VALUES (?, ?, 'created', ?, ?, ?)"
+  ).run(REF, DEV, PAYMENT, Date.now(), Date.now());
+
+  await worker.fetch(delivery("license_key.created", issued(), { id: "msg_k2" }), e);
+  t("a licence arriving before its payment still lands", order(e).state === "fulfilled");
+
+  await worker.fetch(delivery("payment.succeeded", paid(), { id: "msg_p2" }), e);
+  t("…and the payment event does not move it backwards",
+    order(e).state === "fulfilled" && heldIsSealed(order(e)), JSON.stringify(order(e)));
+}
+
+{
+  // The order row never got written — the ledger was down when the session
+  // opened. The provider's own metadata is the durable link, so the webhook
+  // creates it rather than dropping a purchase on the floor.
+  const e = env();
+  await worker.fetch(delivery("payment.succeeded", paid(), { id: "msg_p3" }), e);
+  const row = order(e);
+  t("a payment with no order row writes one from the metadata",
+    row && row.state === "paid" && row.dev_fp === DEV, JSON.stringify(row));
+}
+
+{
+  // Bought some other way — an invoice, a support-issued key, a purchase from
+  // before this endpoint existed. Nothing to attribute, and not an error.
+  const e = env();
+  const res = await worker.fetch(delivery("payment.succeeded",
+    { payload_type: "Payment", payment_id: PAYMENT, customer: { customer_id: CUSTOMER } },
+    { id: "msg_p4" }), e);
+  const body = await res.json();
+  t("a payment carrying none of our metadata is accepted and attributed to nothing",
+    res.status === 200 && body.unattributed === true, JSON.stringify(body));
+  t("…and invents no order", !order(e));
+}
+
+{
+  /* Metadata we cannot use is not a reason to retry forever. A 5xx here is
+     Dodo's instruction to redeliver, and it keeps redelivering until it
+     disables the endpoint — taking the events that DO work with it. */
+  const e = env();
+  const res = await worker.fetch(delivery("payment.succeeded",
+    paid(REF, "not-a-device-fingerprint"), { id: "msg_bad" }), e);
+  const body = await res.json();
+  t("a payment with unusable metadata settles instead of retrying forever",
+    res.status === 200 && body.unattributed === true, `${res.status} ${JSON.stringify(body)}`);
+  t("…and writes no order from it", !order(e));
+}
+
+{
+  // Standard Webhooks retries. A retried delivery must not re-run anything.
+  const e = env();
+  await worker.fetch(delivery("payment.succeeded", paid(), { id: "msg_dup" }), e);
+  const again = await worker.fetch(delivery("payment.succeeded", paid(), { id: "msg_dup" }), e);
+  const body = await again.json();
+  t("a retried delivery is a no-op", again.status === 200 && body.duplicate === true, JSON.stringify(body));
+}
+
+{
+  /* A refund landing in the seconds between fulfilment and the buyer's first
+     claim. The kill list is not enough on its own here: the order is still
+     holding a live key, and claiming it would hand Pro to a refunded purchase. */
+  const e = env();
+  e.DB.sqlite.prepare(
+    "INSERT INTO orders (ref, dev_fp, state, payment_id, lic_key, key_fp, created_at, updated_at) " +
+    "VALUES (?, ?, 'fulfilled', ?, ?, ?, ?, ?)"
+  ).run(REF, DEV, PAYMENT, LICENCE, await keyFp(LICENCE), Date.now(), Date.now());
+
+  licenceMode = "single";
+  await worker.fetch(delivery("refund.succeeded", refund(), { id: "msg_rf" }), e);
+  licenceMode = "ok";
+  const row = order(e);
+  t("a refund closes the order and drops the key it was holding",
+    row.state === "refunded" && row.lic_key === null, JSON.stringify(row));
+}
+
+{
+  /* A THROW between claiming the receipt and finishing the work.
+     Every failure RETURN in the handler releases the claim before asking Dodo
+     to retry. A throw skipped all of them, and the retry then read as a
+     duplicate and was answered 200 — the refund lost, silently, forever. This
+     injects a fault into the ledger after the claim has been taken and asks
+     for the two things that make "please retry" true: a 5xx, and a second
+     delivery that is actually acted on rather than deduped away. */
+  const e = env();
+  const realPrepare = e.DB.prepare.bind(e.DB);
+  let armed = true;
+  e.DB.prepare = (sql) => {
+    // Let the receipt be claimed, then break the very next statement.
+    if (armed && !/webhook_events/.test(sql)) { armed = false; throw new Error("ledger exploded"); }
+    return realPrepare(sql);
+  };
+
+  licenceMode = "single";
+  const boom = await worker.fetch(delivery("refund.succeeded", refund(), { id: "msg_throw" }), e);
+  t("a webhook that throws mid-flight asks Dodo to retry", boom.status === 500,
+    String(boom.status));
+
+  e.DB.prepare = realPrepare;
+  const retry = await worker.fetch(delivery("refund.succeeded", refund(), { id: "msg_throw" }), e);
+  const retryBody = await retry.json();
+  t("...and the retry is ACTED ON, not swallowed as a duplicate",
+    retry.status === 200 && retryBody.duplicate !== true, JSON.stringify(retryBody));
+  licenceMode = "ok";
+}
+
+/* ---------- a licence key that arrives before its payment ----------
+
+   Dodo delivers license_key.created and payment.succeeded in either order. The
+   key event carries no metadata of ours, so it is matched on payment_id — and
+   when the payment has not landed yet there is no order to match. That used to
+   be answered 200 with the key discarded, which means it is never redelivered:
+   the buyer's claim then waits forever on a key nobody holds. */
+{
+  const e = env();
+  const REF = "a".repeat(32);
+  const DEV = "b".repeat(32);
+  const PAY = "pay_early_1";
+  const EARLY_KEY = "TVARA-EARLY-0001";
+
+  const first = await worker.fetch(delivery("license_key.created", { key: EARLY_KEY, payment_id: PAY }), e);
+  t("an early license_key.created is accepted", first.status === 200, String(first.status));
+  t("...no order is fulfilled by it — there is none yet",
+    rows(e, "SELECT * FROM orders").length === 0);
+
+  const parked = rows(e, "SELECT * FROM pending_keys");
+  t("...the key is PARKED rather than dropped", parked.length === 1 && parked[0].payment_id === PAY,
+    JSON.stringify(parked));
+  t("...and parked sealed, never in the clear",
+    parked[0] && String(parked[0].lic_key).startsWith("enc1:") &&
+    !String(parked[0].lic_key).includes(EARLY_KEY), JSON.stringify(parked[0]));
+
+  const second = await worker.fetch(delivery("payment.succeeded", {
+    metadata: { tv_ref: REF, tv_dev: DEV }, payment_id: PAY,
+    customer: { customer_id: CUSTOMER }
+  }), e);
+  t("the payment.succeeded that follows is accepted", second.status === 200, String(second.status));
+
+  const order = rows(e, "SELECT * FROM orders")[0];
+  t("...and the parked key is adopted: the order is fulfilled",
+    order && order.state === "fulfilled" && order.payment_id === PAY, JSON.stringify(order));
+  t("...with the key attached, still sealed",
+    order && String(order.lic_key || "").startsWith("enc1:"), JSON.stringify(order && order.lic_key));
+  t("...and the parking bay is emptied", rows(e, "SELECT * FROM pending_keys").length === 0);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

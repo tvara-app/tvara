@@ -1,16 +1,22 @@
 #!/usr/bin/env node
 /* content/purchase.js runs on exactly one page: our own post-purchase
-   thanks.html. It reads a licence key out of the URL (or a #key element as
-   fallback) and hands it to bg.js. Three things must hold for a hostile
-   ?license_key= value: the client-side length cap keeps it from ever being
-   sent for absurd input, whatever DOES reach bg.js is validated there before
-   any storage write, and the raw key is never written into the DOM anywhere
-   on the page — say() only ever writes hardcoded status strings.
+   thanks.html.
 
-   Corrects a stale assumption from an earlier pass at this test: purchase.js
-   has no postMessage listener. The key arrives via location.search, read by
-   findKey(), forwarded via chrome.runtime.sendMessage. Tested that way. */
-import { mkdirSync, rmSync } from "node:fs";
+   WHAT THIS TEST IS NOW ABOUT. It used to read a licence key out of the
+   query string and hand it to bg.js, and this file tested that a hostile
+   ?license_key= value was capped, validated server-side, and never written into
+   the DOM. Those were mitigations for a design that put a bearer secret in a
+   URL — where browser history, profile sync, the omnibox and every other
+   extension holding `tabs` can read it.
+
+   The design is gone. The extension opens the checkout itself, holds the order
+   ref, and claims the licence over a device key WebCrypto will not export. So
+   the assertions here are stronger than the old ones: the URL is INERT. No
+   value in it can produce an activation, reach bg.js as a key, or appear on the
+   page — not because it is filtered, but because nothing reads it.
+
+   A filter can be got round. A parser that does not exist cannot. */
+import { mkdirSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { chromium } from "playwright";
 import { ROOT, SCRATCH, reporter, mirrorExtension } from "./security-fixtures.mjs";
@@ -23,6 +29,20 @@ const PROFILE = join(WORK, "chrome-profile");
 
 const { EXT } = mirrorExtension("purchase-flow");
 const THANKS = join(ROOT, "docs", "thanks.html");
+
+/* ---------- 0. the source itself, before a browser is involved ----------
+   The cheapest and most durable check there is: the code that used to read the
+   URL is not there to be re-enabled. */
+{
+  const src = readFileSync(join(ROOT, "content", "purchase.js"), "utf8");
+  t("purchase.js never reads the query string",
+    !/location\.search|URLSearchParams/.test(src));
+  t("purchase.js never names a licence-key parameter",
+    !/license_key|licence_key/i.test(src));
+  const page = readFileSync(THANKS, "utf8");
+  t("thanks.html never reads a licence key out of its own URL",
+    !/license_key|licence_key/i.test(page));
+}
 
 const ctx = await chromium.launchPersistentContext(PROFILE, {
   channel: process.env.PW_CHANNEL || "chromium",
@@ -37,89 +57,82 @@ await new Promise((r) => setTimeout(r, 1500));
 await ctx.route("https://tvara-app.github.io/thanks.html*", (route) =>
   route.fulfill({ path: THANKS, contentType: "text/html" }));
 
-// A plausible-shaped garbage key (passes looksLikeKey's charset check) makes
-// it past content/purchase.js and into a REAL network call inside lib/dodo.js
-// (activateWithSeats → activate → POST live.dodopayments.com/licenses/activate).
-// Route both Dodo hosts to a fast, deterministic 403 so the test never depends
-// on live network reachability and never waits out the real 10s timeout.
+/* Nothing in this test should reach a payment provider. Routing both hosts to a
+   deterministic 403 means a regression that DID start calling one fails here
+   rather than hanging on a real 10s timeout. */
 await ctx.route(/^https:\/\/(live|test)\.dodopayments\.com\//, (route) =>
   route.fulfill({ status: 403, contentType: "application/json", body: "{}" }));
 
-// One service worker for the whole context; install the passive observer
-// once. It logs every license-activate message it sees without touching
-// sendResponse, so the real router still answers each one normally.
+/* One service worker for the whole context. The observer logs every message the
+   page sends without touching sendResponse, so the real router still answers
+   each one normally. */
 const sw = ctx.serviceWorkers()[0] || await ctx.waitForEvent("serviceworker");
 await sw.evaluate(() => {
-  self.__seenLicenseActivate = [];
+  self.__seenMessages = [];
   if (!self.__lctTestObserverInstalled) {
     self.__lctTestObserverInstalled = true;
     chrome.runtime.onMessage.addListener((msg) => {
-      if (msg && msg.type === "license-activate") {
-        self.__seenLicenseActivate.push({ key: msg.key, len: (msg.key || "").length });
-      }
+      self.__seenMessages.push({ type: (msg && msg.type) || "", key: (msg && msg.key) || "" });
     });
   }
 });
 
-async function runScenario(licenseKeyParam) {
+async function runScenario(query) {
   const page = await ctx.newPage();
-  await sw.evaluate(() => { self.__seenLicenseActivate = []; }); // fresh per scenario
+  await sw.evaluate(() => { self.__seenMessages = []; });
 
-  const url = "https://tvara-app.github.io/thanks.html?license_key=" + encodeURIComponent(licenseKeyParam);
-  await page.goto(url, { waitUntil: "load" });
-  await new Promise((r) => setTimeout(r, 1500)); // document_idle + the message round trip
+  await page.goto("https://tvara-app.github.io/thanks.html" + query, { waitUntil: "load" });
+  await new Promise((r) => setTimeout(r, 2000)); // document_idle + a poll round trip
 
-  const seen = await sw.evaluate(() => self.__seenLicenseActivate || []);
-  // Scoped to what content/purchase.js itself writes (the #auto-activate
-  // status box), NOT the whole page: thanks.html has its OWN, unrelated,
-  // already-safe key display (a `#key` <code> box, filled via .textContent,
-  // gated on its own `/[<>"']/` filter) — that box legitimately shows a
-  // clean key back to the buyer and is not the thing under test here.
-  const purchaseJsDom = await page.evaluate(() => {
+  const seen = await sw.evaluate(() => self.__seenMessages || []);
+  // Scoped to what content/purchase.js itself writes. It is the only element on
+  // the page the extension touches.
+  const statusDom = await page.evaluate(() => {
     const box = document.getElementById("auto-activate");
     return box ? box.outerHTML : "";
   });
+  const url = page.url();
 
   await page.close();
-  return { seen, purchaseJsDom };
+  return { seen, statusDom, url };
 }
 
-/* ---------- 1. oversized key: client-side cap must block the send entirely ---------- */
+/* ---------- 1. a licence key in the URL activates nothing ---------- */
 {
-  const oversized = "A".repeat(250);
-  const { seen } = await runScenario(oversized);
-  t(">200-char key never reaches sendMessage (client-side cap)", seen.length === 0,
-    `saw ${seen.length} license-activate message(s)`);
+  const planted = "TVARA_PLANTED_" + Math.random().toString(36).slice(2, 10);
+  const { seen, statusDom } = await runScenario("?license_key=" + planted);
+  t("a key planted in the URL never becomes an activation",
+    !seen.some((m) => m.type === "license-activate"),
+    JSON.stringify(seen));
+  t("no message carries the planted value at all",
+    !seen.some((m) => String(m.key).includes(planted)), JSON.stringify(seen));
+  t("the status box never echoes the planted value", !statusDom.includes(planted),
+    statusDom.slice(0, 200));
 }
 
-/* ---------- 2. malformed-but-short key: must reach bg.js, and bg.js must reject it ---------- */
+/* ---------- 2. markup in the URL reaches no sink ---------- */
 {
   const marker = "XSSMARKER_" + Math.random().toString(36).slice(2, 10);
-  const malformed = `<img src=x onerror=alert('${marker}')>`; // well under 200 chars, fails looksLikeKey's charset
-  const { seen, purchaseJsDom } = await runScenario(malformed);
-  t("malformed key (fails looksLikeKey) still reaches bg.js", seen.length === 1,
-    `saw ${seen.length} messages`);
-  if (seen.length) {
-    t("bg.js received the key verbatim (nothing silently mutated it first)", seen[0].key === malformed);
-  }
-  t("purchase.js's own status box never contains the raw key/marker",
-    !purchaseJsDom.includes(marker) && !purchaseJsDom.includes("onerror=alert"),
-    `#auto-activate outerHTML: ${purchaseJsDom.slice(0, 200)}`);
+  const payload = `<img src=x onerror=alert('${marker}')>`;
+  const { seen, statusDom } = await runScenario(
+    "?license_key=" + encodeURIComponent(payload) + "&key=" + encodeURIComponent(payload));
+  t("markup in the URL produces no activation",
+    !seen.some((m) => m.type === "license-activate"), JSON.stringify(seen));
+  t("the status box contains neither the marker nor the handler",
+    !statusDom.includes(marker) && !statusDom.includes("onerror=alert"),
+    statusDom.slice(0, 200));
 }
 
-/* ---------- 3. a plausible-length garbage key: reaches the real activate() call ---------- */
+/* ---------- 3. what the page DOES do ----------
+   It asks the background whether a purchase is waiting. With none in flight the
+   honest answer is "none", and the page has to say so rather than spin forever
+   on a machine that never opened a checkout. */
 {
-  const marker2 = "PLAINMARKER_" + Math.random().toString(36).slice(2, 10);
-  const garbage = marker2; // alnum/underscore only — passes looksLikeKey's charset, still not a real key
-  const { seen, purchaseJsDom } = await runScenario(garbage);
-  t("plausible-shaped garbage key reaches bg.js", seen.length === 1, `saw ${seen.length} messages`);
-  // Dodo routed to 403 above → classify() → "inactive" → activateLicenseKey
-  // returns {ok:false, reason:"refused", ...} → purchase.js's warn branch.
-  t("bg.js does not activate on a 403 from the licence provider",
-    purchaseJsDom.includes("warn") || purchaseJsDom.includes("idle"),
-    `#auto-activate outerHTML: ${purchaseJsDom.slice(0, 200)}`);
-  t("purchase.js's own status box never contains the raw key/marker", !purchaseJsDom.includes(marker2),
-    `#auto-activate outerHTML: ${purchaseJsDom.slice(0, 200)}`);
+  const { seen, statusDom } = await runScenario("");
+  t("the page asks the background to finish the claim",
+    seen.some((m) => m.type === "checkout-poll"), JSON.stringify(seen));
+  t("with no purchase in flight the page says so and stops",
+    /class="auto (idle|warn)"/.test(statusDom), statusDom.slice(0, 200));
 }
 
 await ctx.close();

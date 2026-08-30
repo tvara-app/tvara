@@ -35,6 +35,7 @@ mkdirSync(EXT, { recursive: true });
 const sync = spawnSync("rsync", [
   "-a", "--exclude", ".git", "--exclude", "node_modules",
   "--exclude", "test/.work*", "--exclude", ".stryker-tmp",
+  "--exclude", "dist", "--exclude", "store", "--exclude", "tools/.keys",
   SRC + "/", EXT + "/"
 ]);
 if (sync.status !== 0) { console.error("FATAL: could not mirror the extension"); process.exit(1); }

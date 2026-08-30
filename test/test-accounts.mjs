@@ -44,7 +44,9 @@ mkdirSync(EXT, { recursive: true });
    URLs point at the scripted server, and 127.0.0.1 is a permitted host so the
    worker may read those responses. Every rule under test is the real code. */
 const sync = spawnSync("rsync", ["-a", "--exclude", ".git", "--exclude", "node_modules",
-  "--exclude", "test/.work", "--exclude", "test/.work-accounts", SRC + "/", EXT + "/"]);
+  "--exclude", "test/.work*", "--exclude", "dist", "--exclude", "store",
+  "--exclude", "tools/.keys", "--exclude", ".stryker-tmp",
+  SRC + "/", EXT + "/"]);
 if (sync.status !== 0) { console.error("FATAL: could not mirror the extension"); process.exit(1); }
 
 const bgPath = join(EXT, "bg.js");
@@ -107,7 +109,10 @@ const providers = await startProviders(PORT);
    back to the bundled Chromium, which is the same engine and the same extension
    APIs, rather than reporting a pass that never ran. */
 async function launch(channel) {
-  rmSync(PROFILE, { recursive: true, force: true });
+  /* Retried: the fallback runs straight after a branded-Chrome launch that
+     timed out, and that Chrome is still letting go of the profile directory —
+     an unretried rm hits ENOTEMPTY and kills the suite over a race, not a bug. */
+  rmSync(PROFILE, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
   /* Returning null rather than throwing is what makes the fallback below a
      fallback. Branded Chrome is launched HEADED (see above), and on a machine
      with no display — every CI runner — it does not merely fail to load the
@@ -175,7 +180,30 @@ const send = (msg) => page.evaluate((m) => new Promise((res) => {
   chrome.runtime.sendMessage(m, (reply) => { void chrome.runtime.lastError; res(reply); });
 }), msg);
 
-const syncNow = () => send({ type: "recall-bg-sync" });
+/* The worker opens an archive pass of its own as it wakes (firstRunBootstrap
+   in bg.js). A sync asked for while that one holds the run is answered
+   "already-running" and writes nothing, so every assertion here would read an
+   empty archive — which is exactly what it did. Wait for the run to clear
+   before asking, and once more if a pass claims it in between. */
+const BG_RUN_KEY = "lct-recall-sync-run-v1";
+const syncIdle = () => page.evaluate((k) => new Promise((res) => {
+  let waited = 0;
+  const look = async () => {
+    const r = (await chrome.storage.local.get(k))[k];
+    if (!r || r.state !== "running") return res(true);
+    if ((waited += 200) > 60000) return res(false);   // never hang the suite
+    setTimeout(look, 200);
+  };
+  look();
+}), BG_RUN_KEY);
+
+const syncNow = async () => {
+  await syncIdle();
+  const reply = await send({ type: "recall-bg-sync" });
+  if (!reply || reply.status !== "already-running") return reply;
+  await syncIdle();
+  return send({ type: "recall-bg-sync" });
+};
 
 /** Every archived row, with the account it is attributed to. */
 const rows = () => page.evaluate(() => new Promise((res, rej) => {

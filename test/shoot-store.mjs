@@ -7,14 +7,19 @@ import { readFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { chromium } from "playwright";
+import { mirrorExtension, mintTrialToken } from "./security-fixtures.mjs";
 
-const EXT = join(import.meta.dirname, "..");
+const ROOT = join(import.meta.dirname, "..");
+/* Shot from a mirror whose signing key is a test key, because Total Recall is
+   gated on a trial the ISSUER signs and the issuer refuses an unknown origin.
+   Nothing visible differs: same code, same pixels, only the trust anchor. */
+const { EXT, priv: SHOOT_KEY } = mirrorExtension("shoot");
 /* The price comes from lib/product.js, the one place it is defined. Typed in
    here instead, the pricing screenshot quietly kept advertising the old figure
    after the price changed — a store listing charging something else. */
-const PRICE = (readFileSync(join(EXT, "lib", "product.js"), "utf8")
+const PRICE = (readFileSync(join(ROOT, "lib", "product.js"), "utf8")
   .match(/PRICE:\s*"([^"]+)"/) || [])[1] || "$0";
-const WORK = join(EXT, "test", ".work");
+const WORK = join(ROOT, "test", ".work");
 const PROFILE = join(WORK, "shoot-profile");
 const OUT = join(WORK, "store");
 rmSync(PROFILE, { recursive: true, force: true });
@@ -96,7 +101,12 @@ const shoot = (page, name) =>
 // The first-run hint is correct behaviour and wrong for a store shot: these
 // images show the product in use, not its first four seconds. Marking it seen
 // before the page loads is the same thing every real second visit does.
-await pop.evaluate(() => chrome.storage.local.set({ "lct-hint-v1": Date.now() }));
+await pop.evaluate(() => chrome.storage.local.set({
+  "lct-hint-v1": Date.now(),
+  // The onboarding tour is a first-run overlay; its card lands on top of the
+  // controls these shots drive. Marked seen, exactly as a second visit does.
+  "lct-tour-v1": Date.now()
+}));
 
 const page = await ctx.newPage();
 await page.goto("http://127.0.0.1:8918/test/demo.html");
@@ -188,8 +198,17 @@ await page.click("#lct-outline .lct-o-close");
 // write a `trial` key by hand, which stopped meaning anything when the trial
 // moved to a worker-owned, sync-backed record, and the shots quietly became
 // pictures of a locked panel.
-await pop.evaluate(() => new Promise((res) =>
-  chrome.runtime.sendMessage({ type: "trial-start" }, res)));
+/* A trial grants nothing unless the issuer signed it (bg.js trialState), so
+   the token is minted here against the mirror's test key and written into the
+   record the worker reads. `dev` must be this install's own device
+   fingerprint — trialGrant compares the two and refuses a mismatch. */
+const shootDev = await pop.evaluate(() => self.LCTEntitlement.deviceFpFor(""));
+const shootTt = mintTrialToken(SHOOT_KEY, { dev: shootDev, startedAt: Date.now() });
+await pop.evaluate(async ({ tt }) => {
+  const rec = { startedAt: Date.now(), v: 2, checkedAt: Date.now(), tt, verified: true };
+  await chrome.storage.sync.set({ "lct-trial-v2": rec });
+  await chrome.storage.local.set({ "lct-trial-v2": rec });
+}, { tt: shootTt });
 await page.waitForFunction(() => !!window.chrome, null).catch(() => {});
 await pop.evaluate(() => new Promise((res) => {
   chrome.storage.local.set({ __lct_shot: 1 }, () => {

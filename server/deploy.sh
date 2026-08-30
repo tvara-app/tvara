@@ -117,6 +117,9 @@ fi
 
 # ---------- 3. secrets ----------
 EXISTING="$(wrangler secret list 2>/dev/null || echo '[]')"
+# MAIL_API_KEY is deliberately absent: verification is Google-only and no code
+# is mailed. Set it by hand alongside OTP_ENABLED=1 if the email route is ever
+# switched back on.
 for NAME in DODO_API_KEY SIGNING_KEY ARCHIVE_SECRET DODO_WEBHOOK_SECRET; do
   if printf '%s' "$EXISTING" | grep -q "\"$NAME\""; then
     echo "  ✓ secret $NAME already set"

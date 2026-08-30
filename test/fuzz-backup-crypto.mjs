@@ -189,6 +189,39 @@ async function sealValid(extra = {}, { stampKey, passphrase = PASSPHRASE, stampS
   t("fast-check: 75 random (sealPassphrase, differentWrongPassphrase) pairs never let the wrong one open", counterexample === null, counterexample || "");
 }
 
+/* ---------- the trial archive stamp was re-keyed once ----------
+
+   It used to be derived from the device fingerprint and is now derived from the
+   identity one. Every v3 file sealed during a trial before that deploy verifies
+   under the OLD secret alone, so open() takes a list. The list must widen what
+   opens and nothing else: an unrelated key in it is still no key. */
+{
+  const oldSecret = await mintStampKey(3);       // device-derived, pre-re-key
+  const newSecret = await mintStampKey(4);       // identity-derived, current
+  const sealedBefore = await sealValid({}, { stampKey: oldSecret });
+
+  let refused = false;
+  try { await C.open(sealedBefore.json, PASSPHRASE, { stampKey: newSecret }); }
+  catch { refused = true; }
+  t("re-key: a file sealed under the old secret does not open under the new one alone", refused);
+
+  let opened;
+  try { opened = await C.open(sealedBefore.json, PASSPHRASE, { stampKey: newSecret, stampKeys: [oldSecret] }); }
+  catch (e) { opened = e.message; }
+  t("re-key: it opens once the old secret is offered alongside",
+    opened && opened.format === C.PAYLOAD_FORMAT, typeof opened === "string" ? opened : "");
+
+  let stillClosed = false;
+  try {
+    await C.open(sealedBefore.json, PASSPHRASE, { stampKey: newSecret, stampKeys: [await mintStampKey(9)] });
+  } catch { stillClosed = true; }
+  t("re-key: an unrelated key in the list is still no key — the list is not a bypass", stillClosed);
+
+  let noKeys = false;
+  try { await C.open(sealedBefore.json, PASSPHRASE, {}); } catch { noKeys = true; }
+  t("re-key: no keys at all still refuses a v3 file", noKeys);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) { console.log("\nFAILED:"); failed.forEach((l) => console.log("  " + l)); }
 process.exitCode = fail ? 1 : 0;

@@ -1470,21 +1470,32 @@ async function bgFetch(url, opts = {}) {
     Accept: "application/json, text/plain, */*",
     ...(opts.headers || {})
   };
+  /* Per-call ceilings. The history pass is worth four attempts and twenty
+     seconds a piece — it is the archive, and it can take its time. An allowance
+     reading is not: it is a number on a panel the user is looking at right now,
+     and a provider that has not answered in a few seconds should leave a ring
+     unfilled rather than hold the whole dial. */
+  const attempts = Math.max(1, Number(opts.attempts) || BG_FETCH_ATTEMPTS);
+  const timeoutMs = Math.max(1000, Number(opts.timeoutMs) || BG_FETCH_TIMEOUT_MS);
+  const init = { ...opts };
+  delete init.attempts;
+  delete init.timeoutMs;
+
   let lastRate = null;
-  for (let attempt = 0; attempt < BG_FETCH_ATTEMPTS; attempt++) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
     await hostSlot(host);
     let r;
     const timeoutCtl = new AbortController();
-    const timeoutTimer = setTimeout(() => timeoutCtl.abort(), BG_FETCH_TIMEOUT_MS);
+    const timeoutTimer = setTimeout(() => timeoutCtl.abort(), timeoutMs);
     try {
       r = await fetch(url, {
-        ...opts, headers, credentials: "include",
+        ...init, headers, credentials: "include",
         redirect: "error",            // never off-host with the user's session
         referrerPolicy: "no-referrer",
         signal: timeoutCtl.signal
       });
     } catch (_) {
-      if (attempt === BG_FETCH_ATTEMPTS - 1) throw new BgError("net", "network unavailable");
+      if (attempt === attempts - 1) throw new BgError("net", "network unavailable");
       await sleep(backoffDelay(attempt, 0));
       continue;
     } finally {
@@ -1500,7 +1511,7 @@ async function bgFetch(url, opts = {}) {
     if (r.status === 401 || r.status === 403) throw new BgError("auth", "unauthorized", { status: r.status });
     if (r.status === 404 || r.status === 410) throw new BgError("gone", "http " + r.status, { status: r.status });
     if (!r.ok) {
-      if (r.status >= 500 && attempt < BG_FETCH_ATTEMPTS - 1) { await sleep(backoffDelay(attempt, 0)); continue; }
+      if (r.status >= 500 && attempt < attempts - 1) { await sleep(backoffDelay(attempt, 0)); continue; }
       // The status rides along because not every provider spells "this
       // conversation is gone" as a 404 — Perplexity says 400 — and an adapter
       // can only reclassify what it can see.
@@ -3013,6 +3024,31 @@ const QUOTA_PROBE_TTL = 24 * 60 * 60 * 1000;    // re-discover once a day
 
 const quotaKey = (id, acct) => QUOTA_PREFIX + id + "|" + (acct || "");
 
+/* An account can be tagged two ways — the page hint before an adapter can name
+ * it, the provider's own id afterwards — and the record written under the old
+ * tag used to survive as a second account in the panel forever. An identical
+ * window fingerprint with an older reading is that ghost, never a real second
+ * account: two live accounts keep diverging.
+ */
+const quotaFingerprint = (rec) =>
+  (rec && Array.isArray(rec.windows) ? rec.windows : [])
+    .map((w) => w.key + ":" + w.remaining + ":" + w.limit).join(",");
+
+async function retireStaleQuotaTags(id, acct, fresh) {
+  const fp = quotaFingerprint(fresh);
+  if (!fp) return;
+  const keep = quotaKey(id, acct);
+  const all = await getByPrefix(QUOTA_PREFIX + id + "|", [QUOTA_PROBE_KEY]);
+  const dead = [];
+  for (const [key, rec] of Object.entries(all)) {
+    if (key === keep || !rec || typeof rec !== "object") continue;
+    if (quotaFingerprint(rec) !== fp) continue;
+    if ((rec.observedAt || 0) >= (fresh.observedAt || 0)) continue;
+    dead.push(key);
+  }
+  if (dead.length) await chrome.storage.local.remove(dead);
+}
+
 const quotaCtx = new Map();        // host -> { ctx, at }
 const quotaPolledAt = new Map();   // id -> ms
 const quotaInflight = new Map();   // id -> Promise
@@ -3106,7 +3142,8 @@ async function quotaTry(adapter, ctx, endpoint) {
     if (!ctx || !ctx.tok) return { path, skipped: "no token" };
     headers.Authorization = "Bearer " + ctx.tok;
   }
-  const init = { method: endpoint.method || "GET", headers };
+  // Two tries, eight seconds: an unfilled ring beats a dial that waits.
+  const init = { method: endpoint.method || "GET", headers, attempts: 2, timeoutMs: 8000 };
   if (endpoint.body) {
     init.body = JSON.stringify(endpoint.body);
     headers["Content-Type"] = "application/json";
@@ -3233,6 +3270,15 @@ async function quotaLearned(platformId) {
  * not four, and the second caller wants the first call's answer anyway.
  */
 async function quotaPoll(platformId, reason = "manual") {
+  /* The switch, enforced where the network call is rather than only in the
+     page. Every earlier caller was a content script, which checks the setting
+     itself; the worker now polls on its own clock too, and "Allowance tracking
+     off" has to mean no request leaves this browser for a provider's limits. */
+  try {
+    const { settings } = await chrome.storage.local.get("settings");
+    if (settings && settings.quota === false) return { id: platformId, skipped: "tracking off" };
+  } catch { /* no settings — the default is on */ }
+
   const inflight = quotaInflight.get(platformId);
   if (inflight) return inflight;
 
@@ -3271,6 +3317,48 @@ async function quotaPoll(platformId, reason = "manual") {
   quotaInflight.set(platformId, run);
   try { return await run; }
   finally { quotaInflight.delete(platformId); }
+}
+
+/* ---------- asking every provider at once ----------
+   Every caller of quotaPoll used to be a page, so a reading only ever existed
+   for a platform whose site had been opened: a fresh install held no allowance, no
+   plan for any account, and drew an empty panel until the user happened to
+   visit a chat site. The worker holds the cookies and needs no tab, so it asks
+   on its own. Sequential and paced — six providers at once on the user's own
+   session is a pattern worth not looking like. */
+const BG_QUOTA_SWEEP = "lct-quota-sweep-v1";
+const BG_QUOTA_SWEEP_MIN_MS = 15 * 60 * 1000;
+let sweepRunning = null;
+
+async function quotaSweep(reason = "manual") {
+  // One sweep at a time, and the second caller wants the first one's answer.
+  if (sweepRunning) return sweepRunning;
+  if (reason !== "manual" && reason !== "install") {
+    let last = 0;
+    try {
+      const held = (await chrome.storage.local.get(BG_QUOTA_SWEEP))[BG_QUOTA_SWEEP];
+      last = (held && held.at) || 0;
+    } catch { /* no prior sweep */ }
+    if (Date.now() - last < BG_QUOTA_SWEEP_MIN_MS) return { status: "throttled", last };
+  }
+  const run = (async () => {
+    /* All six at once. Sequential-with-a-pause was borrowed from the history
+       pass, where it stops eight concurrent requests landing on ONE host; these
+       are six different hosts, one or two small requests each, and each host's
+       own slot still paces it. Serialised, a single signed-out provider's
+       timeout delayed every ring behind it — which is the whole first minute
+       after install, the one minute the panel is being looked at. */
+    const results = await Promise.all([...BG_PLATFORM_IDS].map((id) =>
+      // A first sweep must not be silently dropped by the per-platform poll
+      // floor, which a page visit seconds earlier would otherwise have armed.
+      quotaPoll(id, reason === "install" ? "manual" : reason)));
+    try { await chrome.storage.local.set({ [BG_QUOTA_SWEEP]: { at: Date.now(), reason } }); }
+    catch { /* dead context */ }
+    return { status: "done", results };
+  })();
+  sweepRunning = run;
+  try { return await run; }
+  finally { sweepRunning = null; }
 }
 
 /** The account tag a reading belongs to. Same tag the archive uses, so a
@@ -3402,6 +3490,7 @@ async function quotaStore(platformId, acct, reading) {
     // three into a repaint loop. A re-read that says the same thing is not news.
     if (held[key] && JSON.stringify(held[key]) === JSON.stringify(merged)) return merged;
     await chrome.storage.local.set({ [key]: merged });
+    retireStaleQuotaTags(platformId, acct, merged).catch(() => { /* best effort */ });
     quotaMaybeWarn(platformId, acct, merged).catch(() => { /* never block a write */ });
     return merged;
   } catch {
@@ -3734,7 +3823,7 @@ async function bgSyncPlatform(adapter, run, opts = {}) {
       [BG_SYNC_PROG(adapter.id)]: {
         state: "paused", phase: "paused", runId: run.id, platform: adapter.id,
         done: 0, total: 0, cooldownUntil,
-        msg: `${adapter.label} is rate-limiting, resumes automatically`, at: Date.now()
+        msg: `${adapter.label} is rate-limiting. It resumes automatically.`, at: Date.now()
       }
     });
     return { ok: true, result: "cooling-down" };
@@ -4104,8 +4193,8 @@ async function bgSyncAccount(adapter, run, opts, ctx, tabs, seat = { seat: 0, se
           state: circuitOpen ? "paused" : "syncing", phase: circuitOpen ? "paused" : "syncing",
           runId: run.id, platform: adapter.id, done: attempted, attempted, total, succeeded, failed,
           msg: circuitOpen
-            ? `${archived} saved · ${adapter.label} is rate-limiting, ${opts.canResume === false ? "check again shortly" : "resumes automatically"}`
-            : `${archived} saved · ${left} left${opts.canResume === false ? ", check again to continue" : ", resumes automatically"}`,
+            ? `${archived} saved. ${adapter.label} is rate-limiting. ${opts.canResume === false ? "Check again shortly." : "It resumes automatically."}`
+            : `${archived} saved, ${left} left.${opts.canResume === false ? " Check again to continue." : " It resumes automatically."}`,
           at: Date.now()
         }
       });
@@ -4145,7 +4234,7 @@ async function reportPlatformError(adapter, run, error, fields) {
     : /unexpected token\s*['"]?<?|valid json|json\.parse|unexpected provider response|invalid provider response/i.test(reason)
       ? `Needs an active session`
       : rateLimited
-        ? `${adapter.label} is rate-limiting, resumes automatically`
+        ? `${adapter.label} is rate-limiting. It resumes automatically.`
         : shapeChanged
           ? `${adapter.label} changed its API. This needs a Tvara update`
           : `Couldn't reach ${adapter.label}`;
@@ -4513,7 +4602,7 @@ function summarize(platforms, running, recovery, runId) {
   // A rate limit is not user-actionable and must not paint the error state.
   const cooling = entries.filter((p) => p.progress && p.progress.state === "paused");
   if (cooling.length) {
-    return { state: "paused", message: cooling[0].progress.msg || "Paused · resumes automatically",
+    return { state: "paused", message: cooling[0].progress.msg || "Paused. Resumes automatically.",
       checkedAt: 0, connected: entries.filter((p) => !(p.progress && p.progress.signedOut)).length };
   }
 
@@ -4573,7 +4662,10 @@ async function wipeRecall() {
   // "Delete everything" has to mean the backup key material too, or a wiped
   // browser would keep writing readable archives of whatever comes next.
   await chrome.storage.local.remove(localKeys.concat([BG_SYNC_WORK, BG_HOST_COOLDOWN, BG_PAGE_SCHEME,
-    BG_DELETIONS, BG_SWEEP_STATE, BG_AUTOBACKUP, BG_AUTOBACKUP_STATE, BG_RESTORE_GUARD,
+    // Not BG_BOOTSTRAP: a wipe must not read as an install and start a fresh
+    // full sync of everything the user has just asked to be rid of. The quota
+    // sweep flag does go, so readings can be taken again straight away.
+    BG_DELETIONS, BG_SWEEP_STATE, BG_QUOTA_SWEEP, BG_AUTOBACKUP, BG_AUTOBACKUP_STATE, BG_RESTORE_GUARD,
     // The account roster and every per-account usage tally are part of
     // "delete everything" — they describe who was signed in, which is exactly
     // what a wipe is meant to remove.
@@ -4877,8 +4969,16 @@ async function visitSync(platform) {
   return autoSyncTick();
 }
 
-async function autoSyncTick() {
+async function autoSyncTick(options = {}) {
   if (!(await autoSyncEnabled())) return { status: "disabled" };
+  /* Readings and the plan on each account go stale faster than the archive
+     does, and this is the only clock the extension has that does not need a
+     tab. Own throttle (15 min), so a resume tick minutes after the last pass
+     costs nothing. It also picks up a first sweep the worker was reclaimed in
+     the middle of, which is why it runs before the pass rather than after. */
+  if (!options.skipQuota) {
+    try { await quotaSweep("auto"); } catch { /* readings are not the pass */ }
+  }
   const started = Date.now();
   const result = await bgSyncAll({ reason: "auto" });   // owns recovery + overlap guards
   try {
@@ -4916,6 +5016,48 @@ async function ensureEntitlementAlarm() {
   } catch { /* alarms unavailable */ }
 }
 
+/* Installing IS the go signal. Nothing below waits for a chat site to be
+   opened or for a button to be pressed: the allowance readings, the plan on
+   each account and the archive all start from here, because an extension whose
+   panel is empty until the user stumbles onto the right tab reads as broken.
+   Readings first — they land in seconds and they are what the popup draws;
+   the archive pass takes minutes and owns its own resume. */
+const BG_BOOTSTRAP = "lct-bootstrap-v1";
+let bootstrapRunning = null;
+
+async function firstRunBootstrap(reason) {
+  // wake() runs as the worker starts and onInstalled follows just behind it.
+  // They must share one pass, or a fresh profile can launch two archive scans.
+  if (bootstrapRunning) return bootstrapRunning;
+  const run = (async () => {
+    let ran = false;
+    try {
+      const held = (await chrome.storage.local.get(BG_BOOTSTRAP))[BG_BOOTSTRAP];
+      ran = !!(held && held.at);
+    } catch { /* storage unavailable — treat as never run */ }
+    // An install is the one reason that overrides the flag: a reinstall wipes
+    // storage anyway, and an upgrade from a build without this must still get it.
+    if (ran && reason !== "install") return { status: "already" };
+    try { await chrome.storage.local.set({ [BG_BOOTSTRAP]: { at: Date.now(), reason } }); }
+    catch { /* dead context */ }
+
+    /* The allowance dial and archive are independent. Waiting for an
+       unauthenticated provider to time out before starting the archive made a
+       newly installed extension look empty for far too long. Both begin now;
+       each writes progress as soon as it has a result. */
+    const [quota, archive] = await Promise.allSettled([
+      quotaSweep("install"),
+      autoSyncEnabled().then((enabled) => enabled
+        ? autoSyncTick({ skipQuota: true })
+        : { status: "disabled" })
+    ]);
+    return { status: "done", quota: quota.status, archive: archive.status };
+  })();
+  bootstrapRunning = run;
+  try { return await run; }
+  finally { if (bootstrapRunning === run) bootstrapRunning = null; }
+}
+
 try {
   chrome.alarms.onAlarm.addListener((alarm) => {
     if (!alarm) return;
@@ -4923,11 +5065,15 @@ try {
     else if (alarm.name === BG_AUTO_ALARM || alarm.name === BG_RESUME_ALARM) autoSyncTick();
     else if (alarm.name === BG_AUTOBACKUP_ALARM) maybeAutoBackup("alarm");
     else if (alarm.name === BG_ENT_ALARM) entitlementTick();
+    else if (alarm.name === BG_ORDER_ALARM) claimPendingOrder().catch(() => {});
   });
   const wake = () => {
     ensureAutoSyncAlarm();
     ensureAutoBackupAlarm();
     ensureEntitlementAlarm();
+    // A purchase started before the last shutdown is still owed a licence.
+    ensureOrderAlarm().catch(() => {});
+    firstRunBootstrap("wake").catch(() => {});   // no-op once it has run
     // A reinstall wipes storage.local, so the badge has to be repainted from
     // whatever survived rather than assumed to be still on screen.
     readDeletions().then((state) => paintDeletionBadge(Object.keys(state.items).length));
@@ -4938,21 +5084,23 @@ try {
 } catch (_) { /* alarms API unavailable */ }
 
 /* ---------- first run ----------
-   An extension whose whole value is three keystrokes and a background archive
-   is invisible until someone is told about it. One tab, on a fresh install
-   only: never on an update (that is someone else's tab being stolen) and never
-   twice (the flag is checked before the tab is opened, and a second install
-   onto the same profile finds it already set). */
+   Chrome does not expose an API that pins an extension or opens its native
+   extensions menu. It does let us open a first-run tab. Put the actual
+   puzzle-menu and pin instruction there immediately, keep it open until the
+   browser confirms the pin, and reinforce the same instruction in the
+   in-chat tour where our own controls can be physically highlighted. */
+
 try {
   chrome.runtime.onInstalled.addListener(async (details) => {
     if (!details || details.reason !== "install") return;
+    try { await chrome.storage.local.remove(["lct-welcomed-v1", "lct-tour-v1"]); }
+    catch (_) { /* storage unavailable — the onboarding has its own fallback */ }
+    // Create before awaiting any provider. This is the install prompt, not a
+    // reward for a network request completing.
     try {
-      const KEY = "lct-welcomed-v1";
-      const got = await chrome.storage.local.get(KEY);
-      if (got && got[KEY]) return;
-      await chrome.storage.local.set({ [KEY]: Date.now() });
-      chrome.tabs.create({ url: chrome.runtime.getURL("welcome.html") });
-    } catch (_) { /* storage or tabs unavailable — silence beats a broken install */ }
+      await chrome.tabs.create({ url: chrome.runtime.getURL("onboarding.html?install=1"), active: true });
+    } catch (_) { /* a managed browser may prohibit extension tabs */ }
+    firstRunBootstrap("install").catch(() => {});
   });
 } catch (_) { /* onInstalled unavailable */ }
 
@@ -5020,11 +5168,12 @@ const TRIAL_KEY = "lct-trial-v2";
    instead of a fresh one. Throttled: one attempt an hour, and only ever for a
    record that is not already verified. */
 const TRIAL_RECHECK_MS = 36e5;          // never verified: hourly
-/* Verified records are re-asked too, daily, while they are still granting Pro.
-   `verified` is a flag in storage the user can write, so taking it at face
-   value forever made it the whole defence: set startedAt to today and
-   verified:true each week and the trial never ends. The issuer keeps the real
-   date for 400 days, so one call a day undoes that and costs a request. */
+/* Token-backed records are re-asked daily. This is no longer the defence — the
+   signature is, and it expires exactly when the week does, so a stale token
+   cannot outlive the trial it grants. What the daily call buys is the issuer's
+   own corrections: it keys the week on a verified email and only ever moves a
+   start date EARLIER, so re-asking is how a client that started its week on one
+   install learns the real, earlier date after a second one. */
 const TRIAL_REVERIFY_MS = 864e5;
 /* A start date cannot be in the future. An hour of slack absorbs an ordinary
    clock that is a little fast; past that the record is not evidence. */
@@ -5039,7 +5188,13 @@ async function writeTrial(rec) {
   return rec;
 }
 
-async function verifyTrialStart(rec, nowTrusted) {
+/* `holds` is whether the token in the record actually grants right now, which
+   the caller has already checked. Not re-derived here from rec.tt: a token that
+   is present but does not verify — the device key was regenerated, the record
+   came from another machine — must be re-asked on the SHORT clock like a
+   record with no token at all, or a legitimate user waits a day for a
+   correction that takes one request. */
+async function verifyTrialStart(rec, nowTrusted, holds) {
   if (!rec) return rec;
   const now = Date.now();
   const startedAt = Number(rec.startedAt) || 0;
@@ -5061,7 +5216,12 @@ async function verifyTrialStart(rec, nowTrusted) {
   const started = Number(rec.startedAt) || 0;
   const granting = started + TRIAL_MS > nowTrusted;   // still worth anything?
   const since = now - (Number(rec.checkedAt) || 0);
-  const due = rec.verified
+  /* No token, no grant — so a record without one is due on the SHORT clock
+     however verified it claims to be. That covers the upgrade case too: a
+     record written before the issuer signed anything says verified:true and
+     unlocks nothing, and this is what fetches it a signature within the hour
+     instead of at the end of the week. */
+  const due = holds
     ? (granting && since >= TRIAL_REVERIFY_MS)
     : (since >= TRIAL_RECHECK_MS);
   if (!due) return rec;
@@ -5072,14 +5232,20 @@ async function verifyTrialStart(rec, nowTrusted) {
   try {
     const deviceFp = await self.LCTEntitlement.sha256Hex(await self.LCTDodo.ensureDeviceId());
     const server = await self.LCTEntitlement.registerTrial(deviceFp);
-    if (!server || !server.startedAt) return rec;
+    /* No signed grant is not an answer. registerTrial already refused a token
+       that does not verify against the pinned key or does not bind to this
+       device, so reaching here without one means the issuer said "unverified"
+       or could not be reached — either way the local record stands unchanged
+       and keeps granting nothing. */
+    if (!server || !server.tt || !server.startedAt) return rec;
     // The issuer's date wins even when it is EARLIER — that is the whole point.
-    // Verified: whatever it used to be, the issuer's date is now the record,
-    // so the clamp marker goes with it.
+    // The token carries that date INSIDE the signature, so the clamp marker,
+    // which only ever described an unsigned record, goes with it.
     const clean = { ...rec };
     delete clean.clamped;
     return writeTrial({ ...clean, startedAt: server.startedAt, verified: true,
-      checkedAt: now, ...(server.ks ? { ks: server.ks } : {}) });
+      tt: server.tt, checkedAt: now, ...(server.ks ? { ks: server.ks } : {}),
+      ...(server.ksPrev ? { ksPrev: server.ksPrev } : {}) });
   } catch { return rec; }
 }
 
@@ -5104,19 +5270,61 @@ async function trialState() {
   let nowTrusted = Date.now();
   try { nowTrusted = (await self.LCTEntitlement.clockNow()).trusted; } catch { /* pre-init */ }
 
-  if (rec) rec = await verifyTrialStart(rec, nowTrusted);
+  /* The grant, and the ONLY grant: an ECDSA signature from the issuer over this
+     identity's start date, bound to this install's device key, expiring when
+     the week does. Everything else in the record — the date, the `verified`
+     flag, `ks` — is writable by whoever owns the browser, so none of it decides
+     anything. Checked on every call rather than cached, for the same reason the
+     licence gate is (see PAID above).
+
+     Verified BEFORE the recheck, because the recheck's schedule depends on
+     whether what we hold is worth anything, and again after it if the issuer
+     handed back a different one. */
+  const grantOf = async (r) => {
+    if (!r || !r.tt) return null;
+    // A gate that throws is a gate that is not answering. No grant, not an error.
+    try { return await self.LCTEntitlement.trialGrant(r.tt, nowTrusted); }
+    catch { return null; }
+  };
+  let grant = await grantOf(rec);
+  if (rec) {
+    const had = rec.tt;
+    rec = await verifyTrialStart(rec, nowTrusted, !!(grant && grant.grants));
+    if (rec && rec.tt !== had) grant = await grantOf(rec);
+  }
+
+  /* Answered from the signature and nothing else, ahead of every check below —
+     those exist to judge a record NOBODY signed. Editing the record's own copy
+     of the dates, or deleting them, moves nothing here. */
+  if (grant && grant.startedAt) {
+    return { started: true, active: nowTrusted < grant.until,
+      spent: nowTrusted >= grant.until, until: grant.until,
+      verified: true, grants: grant.grants, ks: grant.ks,
+      // Not in the token — it is the pre-re-key archive secret, kept locally.
+      ksPrev: String((rec && rec.ksPrev) || "") };
+  }
+
   const startedAt = Number(rec && rec.startedAt) || 0;
   // NaN, negative, a string, a future date verification could not reach the
   // issuer about — none of those start a trial.
-  const unsettled = !!(rec && rec.clamped && !rec.verified);
+  /* `verified` is a flag anyone can write; `tt` is a signature nobody can
+     forge. The clamp is only lifted by the second one. */
+  const unsettled = !!(rec && rec.clamped && !rec.tt);
   if (!(startedAt > 0) || startedAt > Date.now() + TRIAL_FUTURE_SLACK_MS || unsettled) {
     // Reported as "never started" so the offer still stands: a user whose clock
     // was wrong gets their trial the moment the issuer can be reached.
     return { started: false, active: false, spent: false, until: 0, ks: "" };
   }
+
+  /* An unsigned week. `active` is about the CLOCK; `grants` is about
+     entitlement, and here they part company: the seven days run and unlock
+     nothing. That is what makes an issuer outage useless to farm — uninstall,
+     reinstall, and the fresh week still opens no Pro feature until an identity
+     is proved, at which point the issuer hands back the ORIGINAL start date. */
   const until = startedAt + TRIAL_MS;
-  return { started: true, active: nowTrusted < until, spent: nowTrusted >= until, until,
-    verified: !!(rec && rec.verified), ks: String((rec && rec.ks) || "") };
+  return { started: true, active: nowTrusted < until, spent: nowTrusted >= until,
+    until, verified: false, grants: false,
+    reason: (grant && grant.reason) || "unsigned", ks: "" };
 }
 
 async function startTrial() {
@@ -5127,17 +5335,203 @@ async function startTrial() {
   // storage wipes, so a returning user gets their ORIGINAL start date back
   // rather than a fresh week. Offline, we fall back to our own clock — a
   // 7-day trial is not worth refusing to work without a network.
-  let startedAt = 0, verified = false, trialKs = "";
+  let startedAt = 0, trialTt = "", trialKs = "", trialKsPrev = "";
   try {
     const deviceFp = await self.LCTEntitlement.sha256Hex(await self.LCTDodo.ensureDeviceId());
     const server = await self.LCTEntitlement.registerTrial(deviceFp);
-    if (server) { startedAt = server.startedAt; verified = true; trialKs = server.ks || ""; }
+    /* `unverified` is the issuer saying "no identity, so I am keeping no
+       record". The week still starts — refusing to run offline is a hostile
+       answer to a network problem — but it grants nothing until an identity is
+       proved, so there is nothing here worth farming. */
+    if (server && !server.unverified && server.tt) {
+      startedAt = server.startedAt; trialTt = server.tt; trialKs = server.ks || "";
+      trialKsPrev = server.ksPrev || "";
+    }
   } catch { /* issuer unreachable */ }
 
   // Both stores: sync is the durable record, local is the offline fallback.
-  await writeTrial({ startedAt: startedAt || Date.now(), v: 2, checkedAt: Date.now(),
-    ...(verified ? { verified: true } : {}), ...(trialKs ? { ks: trialKs } : {}) });
+  /* checkedAt is the throttle stamp, so it only marks an issuer that ANSWERED.
+     Stamping it after an unreachable issuer armed the one-hour wait against the
+     very first retry: the week started unverified and stayed that way for an
+     hour with nothing the user could do. */
+  await writeTrial({ startedAt: startedAt || Date.now(), v: 2, checkedAt: trialTt ? Date.now() : 0,
+    ...(trialTt ? { tt: trialTt, verified: true } : {}), ...(trialKs ? { ks: trialKs } : {}),
+    ...(trialKsPrev ? { ksPrev: trialKsPrev } : {}) });
   return trialState();
+}
+
+
+/* ---------- identity ----------
+ *
+ * WHY. Every ledger used to key on a device keypair held in this extension's
+ * own IndexedDB, and uninstalling destroys it. That made the trial resettable
+ * by removing Tvara and adding it back, and it made a paid licence unfindable
+ * afterwards — the buyer re-pasted a key out of an email and burned a fresh
+ * seat doing it. A verified email survives both.
+ *
+ * The address is never stored here. It goes to the issuer, which keeps only
+ * its hash, and what comes back is an opaque token that names an identity and
+ * grants nothing by itself.
+ */
+
+/* Empty disables the Google button; the code path stays inert and the OTP
+   route is unaffected. Fill in from Google Cloud Console → Credentials →
+   OAuth client ID → Web application. */
+const GOOGLE_CLIENT_ID = "276513864843-6mf2p200h51i1b1m9ghkuav7fctmt5ku.apps.googleusercontent.com";
+
+/**
+ * Google sign-in only where the redirect can be registered.
+ *
+ * Firefox mints a fresh moz-extension UUID per INSTALL, so its redirect URL is
+ * different on every machine and no OAuth client can name it. Rather than
+ * offer a button that 400s for every Firefox user, this reports false there
+ * and the OTP route — which has no such problem — carries them.
+ */
+function googleSignInAvailable() {
+  if (!GOOGLE_CLIENT_ID) return false;
+  try {
+    return String(chrome.identity.getRedirectURL()).includes(".chromiumapp.org");
+  } catch { return false; }
+}
+
+async function identityState() {
+  let rec = null;
+  try { rec = await self.LCTEntitlement.readIdentity(); } catch { /* pre-init */ }
+  return { verified: !!(rec && rec.idt), at: Number(rec && rec.at) || 0,
+    google: googleSignInAvailable() };
+}
+
+/** Ask the issuer to mail a code. */
+async function identitySendCode(email) {
+  try { return await self.LCTEntitlement.identityStart(email); }
+  catch { return { branch: "network" }; }
+}
+
+/**
+ * Spend the code, then settle everything that was waiting on an identity: a
+ * trial that was running unverified becomes verified against the issuer's own
+ * start date, and a purchase made before the uninstall comes back.
+ */
+async function identityConfirmCode(email, code) {
+  let res;
+  try { res = await self.LCTEntitlement.identityVerify(email, code); }
+  catch { return { branch: "network" }; }
+  if (res.branch !== "ok") return res;
+  return { ...res, settled: await settleAfterVerify(res.json) };
+}
+
+/**
+ * The Google route to the same anchor.
+ *
+ * `nonce` is minted by the entitlement lib, travels inside the id_token, and
+ * is checked against the signature on the request that presents it — so an
+ * id_token obtained anywhere else cannot be posted here.
+ */
+async function identityGoogleSignIn() {
+  if (!googleSignInAvailable()) return { branch: "unavailable" };
+  const nonce = await self.LCTEntitlement.identityGoogleNonce();
+  const redirect = chrome.identity.getRedirectURL();
+  const url = "https://accounts.google.com/o/oauth2/v2/auth"
+    + "?client_id=" + encodeURIComponent(GOOGLE_CLIENT_ID)
+    + "&response_type=id_token"
+    + "&scope=" + encodeURIComponent("openid email")
+    + "&redirect_uri=" + encodeURIComponent(redirect)
+    + "&nonce=" + encodeURIComponent(nonce)
+    // Always ask which account. Silently reusing whichever one the browser is
+    // signed into is how a person anchors their trial to the wrong mailbox.
+    + "&prompt=select_account";
+
+  let landed;
+  try {
+    landed = await chrome.identity.launchWebAuthFlow({ url, interactive: true });
+  } catch { return { branch: "cancelled" }; }
+  if (!landed) return { branch: "cancelled" };
+
+  /* The id_token comes back in the FRAGMENT, which never reaches a server —
+     that is the point of this response type. */
+  const hash = String(landed).split("#")[1] || "";
+  const idToken = new URLSearchParams(hash).get("id_token") || "";
+  if (!idToken) return { branch: "cancelled" };
+
+  let res;
+  try { res = await self.LCTEntitlement.identityGoogle(idToken); }
+  catch { return { branch: "network" }; }
+  if (res.branch !== "ok") return res;
+  return { ...res, settled: await settleAfterVerify(res.json) };
+}
+
+/**
+ * What a fresh verification is worth, applied immediately.
+ *
+ * Two things can be waiting: a week this identity already spent (so the local
+ * record must be corrected DOWN to the issuer's date, never up), and a licence
+ * it owns (so Pro comes back without a key). Both are best-effort — a failure
+ * here leaves the identity verified and the next ordinary check picks it up.
+ */
+async function settleAfterVerify(answer) {
+  const out = { trial: false, restored: false };
+  const startedAt = Number(answer && answer.startedAt) || 0;
+  if (startedAt) {
+    /* The answer says this identity already has a week, but says it in an
+       unsigned body — and a date without a signature grants nothing now. Ask
+       /trial for the signed record of the SAME week. It cannot start a second
+       one: the issuer keys the trial on this identity and hands back the
+       existing row, correcting the date downwards if ours drifted. */
+    const server = await self.LCTEntitlement.registerTrial("");
+    if (server && server.tt) {
+      await writeTrial({ startedAt: server.startedAt, v: 2, verified: true,
+        tt: server.tt, checkedAt: Date.now(), ...(server.ks ? { ks: server.ks } : {}),
+        ...(server.ksPrev ? { ksPrev: server.ksPrev } : {}) });
+      out.trial = true;
+    }
+  }
+  if (answer && answer.owns) out.restored = (await identityRestore()).restored === true;
+  return out;
+}
+
+/**
+ * Bring a purchase back after a reinstall.
+ *
+ * The issuer does the work: it finds the licence this identity owns, checks it
+ * is still live upstream, reclaims a seat (evicting this identity's own
+ * stalest one rather than refusing the buyer), and hands back a signed token.
+ * Nothing here trusts that token — writeToken stores it and the ordinary
+ * verify path decides what it is worth.
+ */
+async function identityRestore() {
+  let res;
+  try { res = await self.LCTEntitlement.restorePurchase(); }
+  catch { return { ok: false, reason: "network" }; }
+  if (res.branch === "unverified") return { ok: false, reason: "unverified" };
+  if (res.branch !== "ok") return { ok: false, reason: res.branch };
+  const json = res.json || {};
+  if (!json.restored || typeof json.key !== "string" || !json.key) {
+    return { ok: true, restored: false };
+  }
+
+  const now = Date.now();
+  await chrome.storage.local.set({
+    license: { key: json.key, email: "", plan: "pro", kind: "dodo",
+      instanceId: "", licenseKeyId: "", activatedAt: now, restored: true },
+    "lct-license-state-v1": { lastValidatedAt: now, lastAttemptAt: now, strikes: [] }
+  });
+  if (typeof json.token === "string" && json.token) {
+    try { await self.LCTEntitlement.writeToken({ token: json.token, fetchedAt: now }); }
+    catch { /* the next refresh fetches one */ }
+  }
+  return { ok: true, restored: true, seats: Number(json.seats) || 0 };
+}
+
+/**
+ * Forget the identity on THIS install only.
+ *
+ * Deliberately does not touch the issuer's ledger: signing out is not a way to
+ * release a spent trial. It also leaves the licence record alone — someone
+ * switching the anchored mailbox should not lose the Pro they already have.
+ */
+async function identitySignOut() {
+  try { await self.LCTEntitlement.clearIdentity(); } catch { /* already gone */ }
+  return identityState();
 }
 
 /** Cached only within a single wake of the worker, never persisted. */
@@ -5188,6 +5582,146 @@ async function activateLicenseKey(key) {
   return { ok: true, kind: "dodo", email: record.email, evicted: res.evicted || 0 };
 }
 
+/* ---------- checkout ----------
+
+   The Buy button used to open a web page that had a payment link on it. It now
+   asks the issuer to open a session and opens THAT, then waits here — because
+   the popup is closed within a second of the click and paying takes a minute.
+
+   Two things drive the claim, and neither is trusted on its own:
+
+     - The page the buyer lands on afterwards pings us. Fast, and the ordinary
+       case: the licence is active before they have read the thank-you.
+     - A one-minute alarm. Slower, and the one that survives the service worker
+       being torn down mid-purchase, the tab being closed on the receipt, or the
+       browser being quit and reopened an hour later.
+
+   The buyer does nothing in either path. Nothing is pasted, nothing is read out
+   of an email, and no licence key is ever in a URL.
+*/
+const BG_ORDER_ALARM = "lct-order-claim";
+const BG_ORDER_KEY = "lct-pending-order-v1";
+/* The client half of "a paid order reports expired".
+   This used to be 24 hours, to match the issuer's ORDER_TTL_MS, on the reasoning
+   that past it the order is gone server-side. That is only true of an order
+   NOBODY PAID FOR — the issuer sweeps those after a day and keeps a settled one
+   for the support window. So a webhook that ran slow meant this threw away the
+   ref for an order the buyer had already paid, before asking anyone about it.
+   Age no longer decides: the issuer's own terminal answers — unknown, expired,
+   refunded — clear the record (see the tail of claimPendingOrder). This is the
+   backstop for an issuer that can never be reached at all. */
+const BG_ORDER_KEEP_MS = 180 * 864e5;
+
+async function readPendingOrder() {
+  try {
+    const got = await chrome.storage.local.get(BG_ORDER_KEY);
+    const order = got && got[BG_ORDER_KEY];
+    return order && typeof order.ref === "string" ? order : null;
+  } catch { return null; }
+}
+
+async function clearPendingOrder() {
+  try { await chrome.storage.local.remove(BG_ORDER_KEY); } catch { /* dead context */ }
+  try { await chrome.alarms.clear(BG_ORDER_ALARM); } catch { /* alarms unavailable */ }
+}
+
+/** Re-arm on wake. A purchase started before the last shutdown is still owed. */
+async function ensureOrderAlarm() {
+  const pending = await readPendingOrder();
+  if (!pending) {
+    try { await chrome.alarms.clear(BG_ORDER_ALARM); } catch { /* alarms unavailable */ }
+    return;
+  }
+  try {
+    if (!(await chrome.alarms.get(BG_ORDER_ALARM))) {
+      await chrome.alarms.create(BG_ORDER_ALARM, { delayInMinutes: 1, periodInMinutes: 1 });
+    }
+  } catch { /* alarms unavailable — the landing-page ping still closes the loop */ }
+}
+
+/**
+ * Open a checkout and remember what we are owed.
+ *
+ * The URL is the issuer's answer, and lib/entitlement.js has already refused
+ * anything that is not the payment provider's own https host — a server saying
+ * "send them here to type a card number" is exactly the instruction that must
+ * not be taken on trust.
+ */
+async function startCheckoutFlow() {
+  const res = await self.LCTEntitlement.startCheckout();
+  if (res.branch !== "ok") return { ok: false, reason: res.branch };
+
+  try {
+    await chrome.storage.local.set({ [BG_ORDER_KEY]: { ref: res.ref, startedAt: Date.now() } });
+  } catch { /* dead context — the tab below is still worth opening */ }
+  try { await chrome.alarms.create(BG_ORDER_ALARM, { delayInMinutes: 1, periodInMinutes: 1 }); }
+  catch { /* alarms unavailable */ }
+
+  try { await chrome.tabs.create({ url: res.url }); }
+  catch { return { ok: true, ref: res.ref, url: res.url, opened: false }; }
+  return { ok: true, ref: res.ref, url: res.url, opened: true };
+}
+
+/**
+ * One claim attempt.
+ *
+ * Returns a state rather than a boolean so a page that is still open can say
+ * something true while it waits. Every failure is a state too: this runs on a
+ * timer behind a purchase somebody has already paid for, and a thrown error
+ * here is a silent one.
+ */
+async function claimPendingOrder() {
+  const pending = await readPendingOrder();
+  if (!pending) return { state: "none" };
+
+  if (Date.now() - Number(pending.startedAt || 0) > BG_ORDER_KEEP_MS) {
+    await clearPendingOrder();
+    return { state: "expired" };
+  }
+
+  /* A key already in hand means a previous tick claimed it and activation is
+     what failed. Do not ask again — the issuer hands a key back ONCE and would
+     answer "claimed" and nothing else. */
+  let key = String(pending.key || "");
+  let state = key ? "ready" : "";
+
+  if (!key) {
+    const res = await self.LCTEntitlement.claimCheckout(pending.ref);
+    // Not an answer about the order — a network or proof problem. Keep waiting.
+    if (res.branch !== "ok") return { state: "waiting", branch: res.branch };
+    state = res.state;
+    key = String(res.key || "");
+
+    if (key) {
+      /* Persisted BEFORE activation is attempted. A failed activation is
+         retryable; a key that only ever lived in a local variable is a person
+         who paid, got nothing, and has to be found by hand in support. */
+      pending.key = key;
+      try { await chrome.storage.local.set({ [BG_ORDER_KEY]: pending }); }
+      catch { /* dead context; the emailed copy is the remaining path */ }
+    }
+  }
+
+  if (key) {
+    const act = await activateLicenseKey(key);
+    if (act.ok) {
+      await clearPendingOrder();
+      return { state: "active", email: act.email || "" };
+    }
+    // Keep the record. The key is ours now and the next tick can try again.
+    return { state: "held", reason: act.reason || "", branch: act.branch || "" };
+  }
+
+  /* Terminal server-side. "claimed" without a key of our own means this install
+     took it and lost it before it could be stored — rare, and the emailed copy
+     is the recovery, which is why the popup keeps its paste box. */
+  if (state === "refunded" || state === "expired" || state === "claimed" || state === "unknown") {
+    await clearPendingOrder();
+    return { state };
+  }
+  return { state: state || "pending" };
+}
+
 async function entitlementVerdict() {
   let license = null;
   try {
@@ -5197,7 +5731,8 @@ async function entitlementVerdict() {
 
   const trial = await trialState();
   if (!license || !license.key) {
-    return { entitled: trial.active, via: trial.active ? "trial" : "none", trial, features: trial.active ? (self.LCTEntitlement?.FEATURES || []) : [] };
+    return { entitled: !!trial.grants, via: trial.grants ? "trial" : "none", trial,
+      features: trial.grants ? (self.LCTEntitlement?.FEATURES || []) : [] };
   }
 
   let deviceId = "";
@@ -5206,7 +5741,7 @@ async function entitlementVerdict() {
   const res = await self.LCTEntitlement.evaluate(license, deviceId);
   if (res.entitled) return { ...res, via: res.kind, trial };
   // A dead licence still leaves an unspent trial usable.
-  if (trial.active) return { entitled: true, via: "trial", trial, features: self.LCTEntitlement.FEATURES.slice(), reason: res.reason };
+  if (trial.grants) return { entitled: true, via: "trial", trial, features: self.LCTEntitlement.FEATURES.slice(), reason: res.reason };
   return { ...res, via: "none", trial };
 }
 
@@ -5268,7 +5803,22 @@ async function stampCreds() {
       stampSub = await self.LCTEntitlement.sha256Hex(got.license.key);
     }
   } catch { /* dead context */ }
-  return { stampKey, stampSub, secret };
+  return { stampKey, stampSub, secret, alts: await stampAltSecrets() };
+}
+
+/**
+ * Secrets that only ever OPEN a file, never seal one.
+ *
+ * The trial archive stamp was re-keyed from the device fingerprint to the
+ * identity one. Every v3 backup sealed during a trial before that deploy
+ * verifies under the old secret alone, and without this every one of them
+ * became permanently unreadable.
+ */
+async function stampAltSecrets() {
+  const v = await entitlementVerdict();
+  if (!v.entitled || v.via !== "trial") return [];
+  const prev = v.trial && v.trial.ksPrev;
+  return prev ? [String(prev)] : [];
 }
 
 /* ---------- point-of-use revalidation ----------
@@ -5393,6 +5943,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
          two of them is the failure that matters: a seat with no entitlement is
          someone who paid and got nothing. */
       case "license-activate": return activateLicenseKey(msg && msg.key);
+
+      /* Extension pages only. `_senderAllowed` admits our own web pages so the
+         post-purchase page can report in, and "open a tab at a URL of the
+         server's choosing" is not a lever a web page should be able to pull. */
+      case "checkout-start": {
+        if (!/^(chrome|moz)-extension:\/\//i.test(sender && sender.url || "")) {
+          return { ok: false, reason: "forbidden" };
+        }
+        return startCheckoutFlow();
+      }
+      // The fast half of the claim: the page the buyer lands on, saying it is
+      // there. The alarm is the half that works when they close the tab.
+      case "checkout-poll": return claimPendingOrder();
+      case "checkout-state": {
+        const pending = await readPendingOrder();
+        return { pending: !!pending, ref: (pending && pending.ref) || "",
+                 held: !!(pending && pending.key) };
+      }
       // The page seals the file (it holds the passphrase), but the secret that
       // stamps it comes from here, behind the gate.
       /* Deliberately NOT in the PAID map, and it must never be added to it.
@@ -5411,16 +5979,30 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
          to press export once. */
       case "recall-export":     return { chats: await archiveSnapshot() };
       case "archive-stamp": {
-        const { secret, stampSub } = await stampCreds();
-        return secret ? { ok: true, secret, sub: stampSub } : { err: "locked" };
+        const { secret, stampSub, alts } = await stampCreds();
+        return secret ? { ok: true, secret, sub: stampSub, alts } : { err: "locked" };
       }
       case "trial-state":  return trialState();
       case "trial-start":  return startTrial();
+      case "identity-state":    return identityState();
+      case "identity-send":     return identitySendCode(msg && msg.email);
+      case "identity-confirm":  return identityConfirmCode(msg && msg.email, msg && msg.code);
+      case "identity-google":   return identityGoogleSignIn();
+      case "identity-restore":  return identityRestore();
+      case "identity-signout":  return identitySignOut();
       // Content scripts cannot read chrome.commands, and the first-run hint
       // must print the keys the browser actually bound rather than the ones
       // the manifest asked for.
       case "commands":
         try { return chrome.commands.getAll(); } catch { return []; }
+      // chrome.action is worker-only too, and the tour uses it to decide
+      // whether to ask for a pin at all. `known:false` means the browser has
+      // no getUserSettings — the ask is shown then, being the lesser annoyance.
+      case "toolbar-pinned":
+        try {
+          const s = await chrome.action.getUserSettings();
+          return { pinned: !!(s && s.isOnToolbar), known: true };
+        } catch { return { pinned: false, known: false }; }
       case "recall-upsert":      return upsert(msg.chat);
       case "recall-import":      return importBatch(msg.chats);
       case "recall-search":      return search(msg.q, msg.long);
@@ -5457,6 +6039,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case "quota-observed":     return quotaObserved(String(msg.host || ""), msg.observations || [], String(msg.hint || "").slice(0, 120));
       case "quota-refresh":      return quotaPoll(PAGE_PLATFORMS[String(msg.host || "")] || String(msg.platform || ""), String(msg.reason || "manual"));
       case "quota-state":        return quotaState();
+      // Every provider, one pass. The popup asks for this when it has nothing
+      // to draw, so a panel opened before any chat site was visited fills in.
+      case "quota-sweep":        return quotaSweep(String(msg.reason || "manual"));
       case "quota-probe":        return quotaProbe(String(msg.platform || ""), { dryRun: !!msg.dryRun });
       case "quota-diagnose":     return quotaDiagnose(String(msg.platform || ""));
       // The parsers are pure, and a silent regression in them is what turns a
