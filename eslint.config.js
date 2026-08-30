@@ -35,7 +35,6 @@ export default [
       "diag/**/*.js",
       "bg.js",
       "recall-page.js",
-      "welcome.js",
     ],
     plugins: { "no-unsanitized": noUnsanitized, security },
     languageOptions: {

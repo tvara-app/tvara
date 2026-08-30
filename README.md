@@ -25,28 +25,32 @@ Long conversations grind AI chat UIs to a halt. Every message stays fully render
 - **📑 Outline.** An auto table of contents: every prompt you sent plus every heading in the answers, click to jump. Capped at 400 entries with the cap disclosed on screen.
 - **⭐ Starred messages.** Hover any message to star it; find the gold of a long brainstorm again in one click. Saved per conversation, locally.
 - **🪪 Chat Card.** Hover a conversation in the sidebar: message count, questions asked, stars, created (real time on ChatGPT) / first-seen date, last opened, and a "your longest visited chat" badge. Local records only, no API calls, chats you haven't opened honestly say "Not tracked yet".
-- **⏳ Allowance, audited.** The figures behind the warning above: how much of each plan's limit is left, as **the provider's own figure**, with the time it resets. The popup leads with a verdict, *"nothing is running low"* or *"Claude is running low, 12% left, resets 9:46 PM"*, because a row of "100%" answers a question nobody asks. It is a percentage because that is what these services actually meter: Claude weights a rolling multi-hour window by tokens, ChatGPT caps per model, so "31 of 45 messages" is a number with no referent, and we don't show one. The extension reads the quota data the sites already send your browser and, when you open the popup, asks the provider directly, which is why usage from your phone or another browser is included. **A provider that publishes nothing gets an empty ring and the words "not reported"**, never an estimate. Every figure is auditable: hover a row to see which field and which arithmetic produced it, or open **Allowance tracking → check accuracy** in the popup to compare it against what the site itself displays, side by side. Switchable off in one click.
+- **⏳ Allowance, audited.** The figures behind the warning above: how much of each plan's limit is left, as **the provider's own figure**, with the time it resets. The popup leads with a verdict, *"nothing is running low"* or *"Claude is running low, 12% left, resets 9:46 PM"*, because a row of "100%" answers a question nobody asks. It is a percentage because that is what these services actually meter: Claude weights a rolling multi-hour window by tokens, ChatGPT caps per model, so "31 of 45 messages" is a number with no referent, and we don't show one. The extension reads the quota data the sites already send your browser and also asks the provider directly — once when it is installed, on its own three-hourly clock, and when you open the popup — which is why the dial is populated before you have opened a chat site, and why usage from your phone or another browser is included. **A provider that publishes nothing gets an empty ring and the words "not reported"**, never an estimate. Every figure is auditable: hover a row to see which field and which arithmetic produced it, or open **Allowance tracking → check accuracy** in the popup to compare it against what the site itself displays, side by side. Switchable off in one click.
 
 ## Pricing
 
-The speed engine is **free everywhere, forever**. All tools are free on ChatGPT (and on Perplexity, DeepSeek & Grok while support is experimental). A **7-day free trial**. One click in the popup, no signup, unlocks everything on every platform (starting it registers your device with the licence issuer, so a reinstall does not mint a second week). **Pro, $1 once, no subscription**, Total Recall on every platform (including ChatGPT) + all tools on Claude & Gemini, forever.
+The speed engine is **free everywhere, forever**. All tools are free on ChatGPT (and on Perplexity, DeepSeek & Grok while support is experimental). A **7-day free trial**, unlocking everything on every platform. Starting it takes one Google sign-in, which asks for your email address and nothing else. That is the whole signup, and it exists for a reason that cuts both ways: the trial is remembered against the account rather than against the install, so uninstalling and reinstalling neither costs you the days you have left nor mints you a second week. The same account brings a **purchase** back after a reinstall without pasting a key out of an email. (Sign-in needs Chrome or Edge; Firefox cannot complete Google's redirect, so the trial and Pro are unavailable there.) **Pro, $1 once, no subscription**, Total Recall on every platform (including ChatGPT) + all tools on Claude & Gemini, forever.
 
 ## 🔒 Privacy · provable, not promised
 
 - **Your conversations never leave your device.** No chat text, title or prompt is uploaded anywhere, by any code path. Archive text is kept in local extension storage; the only portable copy is the encrypted backup file you make yourself. There is no analytics, no telemetry and no third-party SDK.
-- **There IS one Tvara server, and it never sees a conversation.** A licence issuer ([`server/entitlement-worker.js`](server/entitlement-worker.js), a Cloudflare Worker) decides whether a licence is real and how many devices hold it. It is contacted when you start the free trial, when you activate Pro, on a re-check before a Pro action when the last check is over fifteen minutes old — that is what stops a refunded licence working — and on a twice-daily background alarm, which only reaches the issuer while the signed 90-day token is inside its final 30 days, and when you view or remove a device. It receives your licence key, your device's public key, and — as any web request does — your IP. It stores a hash of the key, a device fingerprint, your trial start date (all up to 400 days), a **hashed** IP for 30 days to notice one key being used from implausibly many places, and — only past that threshold — a sharing flag for 90 days that a person reviews. Your email address is not stored: the issuer reads it from the payment provider at check time and puts it inside the signed token your own browser holds. It never receives conversation text, titles, prompts or URLs. This README said "no Tvara server" for a long time; that was wrong, and this bullet is the correction.
+- **There IS one Tvara server, and it never sees a conversation.** A licence issuer ([`server/entitlement-worker.js`](server/entitlement-worker.js), a Cloudflare Worker) decides whether a licence is real and how many devices hold it. It is contacted when you start the free trial, when you activate Pro, on a re-check before a Pro action when the last check is over fifteen minutes old — that is what stops a refunded licence working — and on a twice-daily background alarm, which only reaches the issuer while the signed 30-day token is inside its final 10 days, and when you view or remove a device. It receives your licence key, your device's public key, and — as any web request does — your IP. It stores a hash of the key, a device fingerprint, a **hash** of your verified email address, your trial start date (all up to 400 days, swept daily rather than promised), the link between that address hash and a licence you bought — kept as long as the licence, because it is what brings Pro back after a reinstall — a **hashed** IP for 30 days to notice one key being used from implausibly many places, and — only past that threshold — a sharing flag for 90 days that a person reviews. Your email address is not stored in the clear anywhere: verification mails the code and drops the address, and the address the payment provider holds is read at check time and put inside the signed token your own browser keeps. It never receives conversation text, titles, prompts or URLs. This README said "no Tvara server" for a long time; that was wrong, and this bullet is the correction.
 - **Three network destinations, and no fourth.** The declared first-party AI-provider endpoints (history, and — while **Allowance tracking** is on — your remaining plan allowance, at most once a minute per provider); the payment provider's licence API; and the licence issuer above.
 - **The allowance observer reads numbers, not conversations.** To show a figure that agrees with the site, a page-world script watches the responses those sites already receive. It is passive: requests are never altered, blocked, delayed or replayed, and the page gets exactly what the network gave it. It reads rate-limit **response headers**, and it only opens a response body when the URL's own path says it is about limits, never chat traffic, never a stream. What crosses from the page is the rate-limit response headers, the URL path (never the query string), and — for limit-named URLs only — the parsed JSON, because the number has to be found inside it. That JSON is read in memory; what gets written to disk is a redacted sample with every string over 40 characters replaced by its length, and no header bearing a token is kept. None of it is transmitted anywhere. This is the one place the extension hooks `fetch`/`XHR`, it is switchable off in the popup, and with it off the hooks disable themselves.
 - **The backup file assumes it will be stolen.** PBKDF2-SHA256 at 1,000,000 rounds over a 32-byte random salt derives a key that only ever wraps a fresh random file key; the body is AES-256-GCM under that. Both layers authenticate the header, so a downgraded iteration count, a swapped compression field or a key envelope lifted from another file fails to open rather than opening weaker. Files declaring fewer than 600,000 rounds are refused outright. Repeated wrong passphrases lock the restore box with an escalating delay held in the worker, so reloading the page is not a way out of it. The passphrase is never stored, never synced, and cannot be recovered by anyone including us.
 - **Backup key material never roams.** The wrapped file key that makes unattended backups possible lives in extension-local storage only, never `storage.sync`. Anything that can read it can already read the plaintext archive beside it, so it costs nothing; putting it on a sync server would.
 - **Nothing deletes your archive but you.** No provider response, no failed request and no listing glitch removes archived text. The only code path that deletes is the one behind your answer to the prompt.
-- **Licensing without an account.** Pro works on **5 devices**, release one from the popup any time — which frees the slot on both the payment provider and our own issuer. Every licence request is signed by a per-install ECDSA key generated **non-extractable**, so a device slot cannot be claimed by anyone who merely holds your key: the browser will not export that key to us, to you, or to anyone. Activation contacts the payment provider and the issuer once; after that the extension re-checks before a Pro action whenever the last check is over fifteen minutes old, and a twice-daily background alarm reaches the issuer only while the signed 90-day token is inside its final 30 days. It never withdraws Pro because of a network error — only because the issuer said the licence is gone, and one such answer is enough. Keys sold before this (`LCT1.…`) stay fully offline, verified by ECDSA P-256 inside the extension.
+- **One verified email, and nothing else.** There is no password, no profile and no account page — the address is an anchor, not a login. It is what makes a reinstall keep your trial and give back your Pro, which a device-held key cannot do: uninstalling destroys the key. The issuer stores only `sha256(address)`; the address itself is used to send the code and then dropped. Pro works on **5 devices**, release one from the popup any time — which frees the slot on both the payment provider and our own issuer. Every licence request is signed by a per-install ECDSA key generated **non-extractable**, so a device slot cannot be claimed by anyone who merely holds your key: the browser will not export that key to us, to you, or to anyone. Activation contacts the payment provider and the issuer once; after that the extension re-checks before a Pro action whenever the last check is over fifteen minutes old, and a twice-daily background alarm reaches the issuer only while the signed 30-day token is inside its final 10 days. It never withdraws Pro because of a network error — only because the issuer said the licence is gone, and one such answer is enough. Keys sold before this (`LCT1.…`) stay fully offline, verified by ECDSA P-256 inside the extension.
 - **Your archive is never held hostage.** Exporting everything the extension has archived does not require a licence. If Pro lapses, is refunded, or you remove the device, the export still works.
 - **Open source.** Read every line.
 
 ## Install (dev)
 
 1. `chrome://extensions` → enable **Developer mode** → **Load unpacked** → select this folder.
+   Keep signing keys out of it: Chrome scans an unpacked folder and warns about every
+   `.pem` it finds, including the ones inside `test/.work*` mirrors. Both keypairs live
+   in `~/.lct-keys/` — the licence key (`private.pem`, see `tools/genkey.mjs`) and the
+   CRX dev key (`crx-dev.pem`), which fixes the extension's ID across reloads.
 2. Open a long ChatGPT/Claude/Gemini chat, or the torture test:
    ```bash
    cd test && python3 -m http.server 8080
@@ -92,6 +96,7 @@ content/exporter.js          structured Markdown/JSON extraction (blocks, lists,
 content/search.js            in-chat search over the full message cache (windowed included)
 content/timeline.js          message times: first-seen clock + honest labeling + lazy-mount guard
 content/inject/fiber-times.js ChatGPT exact times, read-only, page-world, no network, auto-degrades
+content/tour.js              the guided tour and the hover labels: the only UI that explains itself
 content/main.js              orchestrator: settings/license/pricing wiring, resume, health report
 bg.js                        archive DB, provider sync, deletion review, scheduled backup
 lib/backup-crypto.js         the .lctbackup envelope, one implementation, both sides
@@ -101,7 +106,6 @@ lib/dodo.js                  Dodo Payments activation, 5-device seats, point-of-
 lib/entitlement.js           LCT2 token: the server-signed half of the paywall
 lib/product.js               every outward-facing URL, in one frozen object
 popup/                       settings UI
-welcome.html/.js/.css        first run: the three shortcuts, as the browser actually bound them
 diag/health.html             adapter health across your open chat tabs
 diag/quota.html              allowance accuracy, checkable against the site itself
 server/entitlement-worker.js the issuer, the one place a client cannot patch
@@ -129,11 +133,18 @@ manifest entries, `<script src>`, and `chrome.runtime.getURL()` alike. The zip
 before this check shipped a `content/recall-sync.js` that had been deleted
 months earlier.
 
-The payment link lives in **one place**: the `#checkout` href on
-`docs/index.html`. Every Buy button in the extension points at that page rather
-than at a checkout URL, so changing provider, product or price never needs a
-store review, and while the link is still the placeholder, the page says so
-instead of sending buyers to a dead checkout.
+There is **no payment link anywhere in this repository**, and preflight fails
+if one comes back. Checkout used to be a hard-coded href on `docs/index.html`,
+which put the product id and the provider into cached, hand-edited content and
+sent the buyer's licence key home in a redirect URL — where history, profile
+sync and any extension holding `tabs` can read it.
+
+The issuer opens the checkout instead, one session per purchase: the extension
+signs a `POST /checkout` with the device key it already holds, the worker owns
+the product and the price and returns a session URL carrying our own order ref,
+and the **webhook** is the only thing that decides money moved. The extension
+then claims the licence over the same device proof. Price and provider move with
+a `wrangler deploy`; the extension knows neither, and no key is ever in a URL.
 
 ## Filling the archive
 
@@ -158,16 +169,23 @@ so this list is enforced rather than remembered.
 
 1. **Create the product** with the payment provider (merchant of record, so VAT
    and invoices are theirs, not ours). One-time price, no subscription.
-2. **Point it home.** Paste the payment link into the `#checkout` href in
-   `docs/index.html`, and set the provider's success/redirect URL to
-   `…/thanks.html`, the page that tells a buyer what to do with the key they
-   just bought. Both are one line each.
+2. **Tell the issuer what it sells.** `DODO_PRODUCT_ID` in
+   `server/wrangler.toml`, and `RETURN_URL` pointing at `…/thanks.html` — the
+   page that reports the automatic activation back to the buyer. Nothing goes
+   on the website, and the return URL must never template a licence key into
+   itself; preflight blocks on both.
+   `node tools/refund-setup.mjs` subscribes the webhook, which now carries the
+   delivery events (`payment.succeeded`, `license_key.created`) as well as the
+   revoking ones — miss those and every purchase silently falls back to email.
 3. **Deploy the issuer:** `./server/deploy.sh <extension-id>`. A licence cannot
    unlock anything until this exists, which is why preflight blocks on it.
-4. **The price lives in two constants**, `PRICE` in `lib/product.js` and
-   `PRICE` in `docs/index.html`, because the extension and the site deploy
-   separately. Everything else reads them. Preflight fails if they disagree or
-   if a stale figure survives in prose.
+4. **The price is DISPLAYED from two constants**, `PRICE` in `lib/product.js`
+   and `PRICE` in `docs/index.html`, because the extension and the site deploy
+   separately. Neither is authoritative: what a buyer is charged is the product
+   on the issuer, the only place that can both quote a figure and take the
+   money. Preflight's job is to stop the two shop windows drifting apart from
+   each other, and it fails if they disagree or if a stale figure survives in
+   prose.
 
 A purchase is withdrawn by an **answer**, never by an outage: a licence the
 provider reports as unknown or inactive clears the token, but an issuer that

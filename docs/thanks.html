@@ -3,142 +3,308 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<meta name="robots" content="noindex" />
-<!-- The licence key can arrive in the query string; never let it leave in a Referer. -->
+<meta name="robots" content="noindex, nofollow" />
+<meta name="color-scheme" content="light dark" />
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+<meta name="theme-color" content="#0b0e14" media="(prefers-color-scheme: dark)" />
+<!-- Nothing sensitive reaches this URL any more: the licence is claimed by the
+     extension over its own device proof, not handed back in a query string.
+     The header stays because there is no reason to leak a referrer either way. -->
 <meta name="referrer" content="no-referrer" />
-<title>You're Pro · Tvara</title>
-<meta name="description" content="Activate your Tvara Pro licence." />
+<title>Payment received · Tvara</title>
+<meta name="description" content="Your Tvara Pro licence is being activated." />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%E2%9A%A1%3C/text%3E%3C/svg%3E" />
 <style>
+  /* ── tokens ───────────────────────────────────────────────────────────────
+     One scale, two schemes. Every colour below is a token: a page that hard-
+     codes a hex in the middle of a rule is a page where dark mode is a rewrite
+     rather than a variable swap. */
   :root {
-    --bg: #0e1117; --panel: #161b26; --text: #e8eaf0; --muted: #9aa3b5;
-    --accent: #7aa2ff; --ok: #4ec9a0; --line: rgba(255,255,255,0.08);
+    color-scheme: light dark;
+
+    --bg: #fbfbfd;
+    --surface: #ffffff;
+    --line: #e6e8ec;
+    --line-strong: #d6dae1;
+    --text: #14171f;
+    --muted: #5c6473;
+    --faint: #878e9c;
+
+    --accent: #3d5afe;
+    --ok: #0f8a5f;
+    --ok-bg: #e9f7f1;
+    --warn: #a45c00;
+    --warn-bg: #fdf3e4;
+
+    --shadow: 0 1px 2px rgb(16 20 30 / .04), 0 8px 24px -12px rgb(16 20 30 / .12);
+    --radius: 14px;
+    --step: clamp(1.5rem, 1.1rem + 1.4vw, 2rem);
   }
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: var(--bg); color: var(--text); font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-  .wrap { max-width: 680px; margin: 0 auto; padding: 0 24px 72px; }
-  header { padding: 64px 0 32px; text-align: center; }
-  .tick { width: 56px; height: 56px; margin: 0 auto 18px; border-radius: 50%; background: rgba(78,201,160,.12); border: 1px solid rgba(78,201,160,.4); color: var(--ok); font-size: 28px; line-height: 54px; }
-  h1 { font-size: 32px; line-height: 1.2; }
-  .sub { color: var(--muted); margin-top: 10px; }
-  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 24px; margin-top: 20px; }
-  h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-bottom: 14px; }
-  ol { margin: 0 0 0 20px; }
-  ol li { margin-bottom: 12px; color: var(--muted); }
-  ol li strong { color: var(--text); }
-  .keybox { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
-  code#key { flex: 1 1 260px; padding: 12px 14px; border-radius: 10px; background: #0b0e14; border: 1px solid var(--line); color: var(--text); font: 14px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
-  button { padding: 12px 18px; border: 0; border-radius: 10px; background: var(--accent); color: #0b0e14; font: 700 14px/1 inherit; cursor: pointer; }
-  button.copied { background: var(--ok); }
-  .note { color: var(--muted); font-size: 14.5px; margin-top: 12px; }
-  .fine { color: var(--muted); font-size: 13.5px; }
-  a { color: var(--accent); }
-  footer { text-align: center; padding-top: 28px; color: var(--muted); font-size: 14px; }
-</style>
-<style>
-  /* The extension writes into this. Four states, each one a different thing to
-     do next: working, done, needs-a-decision, and not-installed. */
-  .auto { margin-top: 12px; padding: 10px 12px; border-radius: 10px; font-size: 14px;
-          border: 1px solid rgb(255 255 255 / .12); background: rgb(255 255 255 / .04); }
-  .auto small { display: block; margin-top: 4px; opacity: .7; font-size: 12.5px; }
-  .auto.working { border-color: rgb(255 255 255 / .2); }
-  .auto.ok      { border-color: rgb(120 220 160 / .45); background: rgb(120 220 160 / .08); }
-  .auto.warn    { border-color: rgb(255 190 120 / .45); background: rgb(255 190 120 / .08); }
-  .auto.idle    { opacity: .85; }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b0e14;
+      --surface: #12161f;
+      --line: #222836;
+      --line-strong: #2d3546;
+      --text: #e7eaf0;
+      --muted: #98a1b2;
+      --faint: #6f7889;
+
+      --accent: #8aa4ff;
+      --ok: #4ecfa0;
+      --ok-bg: rgb(78 207 160 / .1);
+      --warn: #f0b264;
+      --warn-bg: rgb(240 178 100 / .1);
+
+      --shadow: none;
+    }
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 400 16px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:hover { text-decoration-thickness: 2px; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+
+  .shell { max-width: 34rem; margin-inline: auto; padding: clamp(2.5rem, 8vw, 5rem) 1.5rem 4rem; }
+
+  /* ── hero ────────────────────────────────────────────────────────────────
+     The heading states only what is already TRUE when the page loads. The
+     old one opened with a green tick and "You're Pro" while activation was
+     still in flight — a success claimed before it happened, which is the one
+     thing a post-purchase page must never do. */
+  .hero { text-align: center; margin-bottom: var(--step); }
+  .eyebrow {
+    margin: 0 0 .5rem;
+    font-size: .75rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--faint);
+  }
+  h1 {
+    margin: 0;
+    font-size: clamp(1.6rem, 1.2rem + 1.8vw, 2.125rem);
+    line-height: 1.15; letter-spacing: -.022em; font-weight: 650;
+  }
+  .lede { margin: .625rem 0 0; color: var(--muted); }
+
+  /* ── the status card, which is the whole page ─────────────────────────── */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 1.25rem;
+  }
+  .status { display: flex; gap: .875rem; align-items: flex-start; }
+
+  .indicator { flex: none; width: 22px; height: 22px; margin-top: .1875rem; color: var(--accent); }
+  .indicator svg { display: block; width: 100%; height: 100%; }
+  .indicator [data-icon] { display: none; }
+  :root[data-state="working"] .indicator [data-icon="spinner"],
+  :root:not([data-state]) .indicator [data-icon="spinner"] { display: block; }
+  :root[data-state="ok"]    .indicator [data-icon="check"]  { display: block; }
+  :root[data-state="warn"]  .indicator [data-icon="alert"]  { display: block; }
+  :root[data-state="idle"]  .indicator [data-icon="info"]   { display: block; }
+
+  :root[data-state="ok"]   .indicator { color: var(--ok); }
+  :root[data-state="warn"] .indicator { color: var(--warn); }
+  :root[data-state="idle"] .indicator { color: var(--faint); }
+
+  :root[data-state="ok"]   .card { border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); background: var(--ok-bg); }
+  :root[data-state="warn"] .card { border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); background: var(--warn-bg); }
+
+  /* The element content/purchase.js writes into. It owns text and state class;
+     the layout above owns everything visual, so the two never fight. */
+  .auto { min-width: 0; font-weight: 500; }
+  .auto small { display: block; margin-top: .25rem; font-size: .8125rem; font-weight: 400; color: var(--muted); }
+
+  .spin { transform-origin: 50% 50%; animation: spin 720ms linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .draw { stroke-dasharray: 24; stroke-dashoffset: 24; animation: draw 320ms ease-out forwards; }
+  @keyframes draw { to { stroke-dashoffset: 0; } }
+  @media (prefers-reduced-motion: reduce) {
+    .spin { animation-duration: 2.4s; }
+    .draw { animation: none; stroke-dashoffset: 0; }
+  }
+
+  .aside { margin: .875rem .25rem 0; color: var(--muted); font-size: .875rem; }
+
+  /* ── secondary, folded away ───────────────────────────────────────────────
+     Three equal cards gave the manual fallback and the support notes the same
+     weight as the thing actually happening. Almost nobody needs them; the two
+     who do can open them. */
+  details {
+    margin-top: .75rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--surface);
+    overflow: hidden;
+  }
+  summary {
+    padding: .875rem 1.125rem;
+    font-size: .9375rem; font-weight: 550;
+    cursor: pointer; list-style: none;
+    display: flex; align-items: center; gap: .5rem;
+  }
+  summary::-webkit-details-marker { display: none; }
+  summary::before {
+    content: ""; flex: none; width: .5rem; height: .5rem;
+    border-right: 1.5px solid var(--faint); border-bottom: 1.5px solid var(--faint);
+    transform: rotate(-45deg); transition: transform 160ms ease;
+  }
+  details[open] summary::before { transform: rotate(45deg); }
+  summary:hover { background: color-mix(in srgb, var(--line) 40%, transparent); }
+  .details-body { padding: 0 1.125rem 1.125rem; color: var(--muted); font-size: .9375rem; }
+  .details-body > * + * { margin-top: .75rem; }
+  .details-body strong { color: var(--text); font-weight: 600; }
+  ol { margin: 0; padding-left: 1.125rem; }
+  ol li + li { margin-top: .5rem; }
+
+  footer {
+    margin-top: 2.5rem; padding-top: 1.25rem;
+    border-top: 1px solid var(--line);
+    display: flex; flex-wrap: wrap; gap: .375rem 1rem; justify-content: center;
+    font-size: .8125rem; color: var(--faint);
+  }
+  footer a { color: var(--faint); text-decoration: none; }
+  footer a:hover { color: var(--text); text-decoration: underline; }
 </style>
 </head>
 <body>
-<div class="wrap">
+<main class="shell">
 
-<header>
-  <div class="tick">✓</div>
-  <h1>Thank you. You're Pro.</h1>
-  <p class="sub">One paste and it's on, forever, on up to five devices.</p>
-</header>
-
-<!-- Shown only when the payment provider hands the key back in the redirect.
-     If it doesn't, the email is the delivery and this block stays hidden,
-     never a box that looks like it should contain something and doesn't. -->
-<section class="panel" id="key-panel" hidden>
-  <h2>Your licence key</h2>
-  <div class="keybox">
-    <code id="key"></code>
-    <button id="copy" type="button">Copy</button>
+  <div class="hero">
+    <p class="eyebrow">Tvara</p>
+    <h1>Payment received</h1>
+    <p class="lede">Your Pro licence is switching itself on. Nothing to copy, nothing to paste.</p>
   </div>
-  <p class="note">It's in your email too. Keep it: it's the only thing that proves the purchase, and reinstalling asks for it again.</p>
-  <!-- Filled in by the extension if it is installed. Hidden until then, because
-       a status box that says nothing is worse than no status box. -->
-  <div class="auto" id="auto-activate" hidden></div>
-</section>
 
-<section class="panel">
-  <h2>Switch it on</h2>
-  <ol>
-    <li><strong>Open the extension</strong>: click the Tvara icon in your browser toolbar. (Not there? Click the puzzle-piece icon and pin it.)</li>
-    <li><strong>Paste your key</strong> into the <em>Licence key</em> box near the bottom of the popup and press <strong>Activate</strong>.</li>
-    <li><strong>Reload your chat tabs.</strong> The badge reads <em>Pro</em>, and Total Recall, Context Bridge and every tool on Claude &amp; Gemini are unlocked.</li>
-  </ol>
-  <p class="note">Activation contacts the licence server once to register this device. It sends your key and a device label like “Chrome · macOS”, never a cookie, never any conversation text.</p>
-</section>
+  <!-- Written by content/purchase.js. Four states, each a different thing to do
+       next: working, done, needs-a-decision, and not-installed.
 
-<section class="panel">
-  <h2>If something isn't right</h2>
-  <p class="fine"><strong>No email yet?</strong> Give it two minutes, then check spam. Still nothing? Mail me and I'll send it by hand.</p>
-  <p class="fine" style="margin-top:10px;"><strong>Key won't activate?</strong> Copy it again from the email (a trailing space is the usual culprit). If it still refuses, mail me the order id and I'll fix it, not troubleshoot at you.</p>
-  <p class="fine" style="margin-top:10px;"><strong>Out of devices?</strong> Release one from the popup's <em>Devices</em> list, or mail me from your purchase address and I'll clear every slot, no questions.</p>
-  <p class="fine" style="margin-top:10px;"><strong>Not what you hoped?</strong> Full refund within 14 days, no hoops. Just ask.</p>
-  <p class="note"><a href="mailto:tvara.exten@gmail.com?subject=Tvara%20Pro">tvara.exten@gmail.com</a>, a real person, usually same day.</p>
-</section>
+       There is deliberately no licence key on this page. The copy of Tvara that
+       opened the checkout claims its own licence from the licence server over a
+       device key WebCrypto will not export, so nothing here is worth reading out
+       of somebody's browser history. -->
+  <section class="card" aria-label="Activation status">
+    <div class="status">
+      <span class="indicator" aria-hidden="true">
+        <svg data-icon="spinner" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25">
+          <circle cx="12" cy="12" r="9" opacity=".2" />
+          <path class="spin" d="M21 12a9 9 0 0 0-9-9" stroke-linecap="round" />
+        </svg>
+        <svg data-icon="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25">
+          <circle cx="12" cy="12" r="9" opacity=".25" />
+          <path class="draw" d="m7.75 12.25 2.75 2.75 5.75-5.75" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        <svg data-icon="alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25">
+          <circle cx="12" cy="12" r="9" opacity=".25" />
+          <path d="M12 7.75v4.75" stroke-linecap="round" />
+          <circle cx="12" cy="16.25" r="1.1" fill="currentColor" stroke="none" />
+        </svg>
+        <svg data-icon="info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25">
+          <circle cx="12" cy="12" r="9" opacity=".25" />
+          <path d="M12 11.25v5" stroke-linecap="round" />
+          <circle cx="12" cy="7.9" r="1.1" fill="currentColor" stroke="none" />
+        </svg>
+      </span>
+      <!-- role/aria-live so the one thing that changes asynchronously is
+           announced. Without it a screen-reader user is told nothing at all. -->
+      <div class="auto working" id="auto-activate" role="status" aria-live="polite">Checking with Tvara&hellip;</div>
+    </div>
+  </section>
 
-<footer>
-  <a href="./">Tvara</a> ·
-  <a href="./#devices">Devices</a> ·
-  <a href="./#refunds">Refunds</a> ·
-  <a href="./#privacy">Privacy</a>
-</footer>
+  <p class="aside">You can close this tab &mdash; activation carries on in the background. Your licence key is emailed to you as well.</p>
 
-</div>
+  <details>
+    <summary>Activate by hand, or on another device</summary>
+    <div class="details-body">
+      <ol>
+        <li><strong>Open the extension.</strong> Click the Tvara icon in your toolbar. Not there? Click the puzzle-piece icon and pin it.</li>
+        <li><strong>Sign in with Google</strong> using the same account you bought with, then press <strong>Restore my purchase</strong>. That is the whole thing on a second through fifth device &mdash; there is no key to find.</li>
+        <li><strong>Reload your chat tabs.</strong> The badge reads <em>Pro</em>.</li>
+      </ol>
+      <p>If you bought with one account and sign in with another, open <em>Bought before, or lost access to that account?</em> under the buy button, paste the key from your purchase email into the <em>Licence key</em> box and press <strong>Activate</strong>. Either route sends your key and a coarse device label such as &ldquo;Chrome &middot; macOS&rdquo; &mdash; never a cookie, never any conversation text.</p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Something isn&rsquo;t right</summary>
+    <div class="details-body">
+      <p><strong>No email yet?</strong> Give it two minutes, then check spam. Still nothing and I&rsquo;ll send it by hand.</p>
+      <p><strong>Key won&rsquo;t activate?</strong> Copy it again from the email &mdash; a trailing space is the usual culprit. If it still refuses, send me the order id and I&rsquo;ll fix it rather than troubleshoot at you.</p>
+      <p><strong>Out of devices?</strong> Release one from the popup&rsquo;s <em>Devices</em> list, or mail me from your purchase address and I&rsquo;ll clear every slot, no questions.</p>
+      <p><strong>Not what you hoped?</strong> Full refund within 14 days, no hoops. Just ask.</p>
+      <p><a href="mailto:tvara.exten@gmail.com?subject=Tvara%20Pro">tvara.exten@gmail.com</a> &mdash; a real person, usually same day.</p>
+    </div>
+  </details>
+
+  <footer>
+    <a href="./">Tvara</a>
+    <a href="./#devices">Devices</a>
+    <a href="./#refunds">Refunds</a>
+    <a href="./#privacy">Privacy</a>
+  </footer>
+
+</main>
+
+<noscript>
+  <p style="max-width:34rem;margin:0 auto 3rem;padding:0 1.5rem;color:#878e9c;font:400 15px/1.6 system-ui,sans-serif;">
+    Activation needs JavaScript. Your payment went through either way &mdash; open the
+    Tvara popup, sign in with the Google account you bought with, and press
+    Restore my purchase.
+  </p>
+</noscript>
 
 <script>
-/* Payment providers can template the licence key into the redirect. Support
-   the usual spellings, show it if it is there, and stay quiet if it is not:
-   an empty "your key" box on the page you land on after paying is worse than
-   no box at all. */
+/* A licence key used to arrive here in the query string and a script on this
+   page was what scrubbed it back out. Both are gone: nothing in this URL is
+   secret now, so there is nothing to hide and nothing to strip.
+
+   What is left is two jobs the page owns rather than the extension.
+
+   1. MIRROR THE STATE. content/purchase.js owns #auto-activate — its text and
+      its `auto <state>` class — and knows nothing about this page's layout.
+      Reflecting that class onto <html> lets the icon, the card and the border
+      all follow one source of truth without the extension having to reach into
+      any of them. One writer, many readers.
+
+   2. ANSWER FOR A BROWSER THAT HAS NO EXTENSION. content/purchase.js is a
+      content script: if Tvara is not installed it never runs, and the spinner
+      would turn for ever. The timeout below is the honest answer in that case —
+      they paid on a machine without the extension, and the email is their
+      delivery. */
 (function () {
-  var q = new URLSearchParams(location.search);
-  var key = q.get("key") || q.get("license_key") || q.get("licence_key") || "";
-  if (!key || key.length > 200 || /[<>"']/.test(key)) return;
+  var box = document.getElementById("auto-activate");
+  if (!box) return;
+  var root = document.documentElement;
 
-  /* Take it out of the address bar the moment we have it. The key is the only
-     credential there is and it is bearer-equivalent for every device seat, so
-     it must not survive in browser history, in profile sync, or in the URL a
-     user copies to a friend to show them the page. The page still works: the
-     value is already in `key`. */
-  try { history.replaceState({}, "", location.pathname); } catch (e) { /* file:// */ }
+  var mirror = function () {
+    var state = (box.className.match(/\b(working|ok|warn|idle)\b/) || [])[1];
+    if (state) root.dataset.state = state;
+  };
+  mirror();
+  new MutationObserver(mirror).observe(box, { attributes: true, attributeFilter: ["class"] });
 
-  var box = document.getElementById("key");
-  box.textContent = key;                      // textContent: never markup
-  document.getElementById("key-panel").hidden = false;
-
-  document.getElementById("copy").addEventListener("click", function () {
-    var btn = this;
-    var done = function () {
-      btn.textContent = "Copied";
-      btn.classList.add("copied");
-      setTimeout(function () { btn.textContent = "Copy"; btn.classList.remove("copied"); }, 1800);
-    };
-    if (navigator.clipboard) {
-      navigator.clipboard.writeText(key).then(done, function () {
-        // Selecting it is the fallback everyone already knows how to finish.
-        var r = document.createRange(); r.selectNodeContents(box);
-        var s = getSelection(); s.removeAllRanges(); s.addRange(r);
-        btn.textContent = "Press ⌘C";
-      });
-    } else {
-      var r = document.createRange(); r.selectNodeContents(box);
-      var s = getSelection(); s.removeAllRanges(); s.addRange(r);
-      btn.textContent = "Press ⌘C";
-    }
-  });
+  setTimeout(function () {
+    if (box.dataset.owned) return;               // the extension got here first
+    box.className = "auto idle";
+    box.textContent = "Tvara isn't running in this browser.";
+    var small = document.createElement("small");
+    small.textContent = "Install it, then sign in with the Google account you bought with.";
+    box.appendChild(small);
+    mirror();
+  }, 8000);
 })();
 </script>
 </body>

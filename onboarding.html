@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Welcome to Tvara</title>
+  <link rel="stylesheet" href="onboarding.css" />
+</head>
+<body>
+  <main class="shell">
+    <header class="masthead">
+      <div class="brand"><span class="mark" aria-hidden="true"><img src="icons/icon128.png" alt=""></span><span>Tvara</span></div>
+      <span class="status"><i></i> Installed</span>
+    </header>
+
+    <section class="welcome" aria-labelledby="welcome-title">
+      <p class="eyebrow">Your local AI chat toolkit</p>
+      <h1 id="welcome-title">Tvara is installed.<br /><em>Pin it before you move on.</em></h1>
+      <p class="lede">Your live allowance readings and local archive start now. Keep Tvara one click away by pinning its icon to Chrome’s toolbar.</p>
+    </section>
+
+    <section class="pin-panel" aria-labelledby="pin-title">
+      <div class="pin-copy">
+        <p class="step">FIRST THING</p>
+        <h2 id="pin-title">Pin Tvara to your toolbar</h2>
+        <p>Click the <strong>puzzle icon</strong> in the top-right of Chrome. In the Extensions menu, click the <strong>pin</strong> on Tvara’s row.</p>
+        <button id="check-pin" type="button">Check pin status</button>
+        <p id="pin-status" class="pin-status" role="status">Waiting for Chrome to confirm the pin. This page checks automatically.</p>
+      </div>
+      <div class="toolbar-art" aria-label="Illustration of the Chrome extensions menu and pin control">
+        <div class="browser-bar"><span class="address"></span><span class="puzzle" aria-hidden="true">&#x1F9E9;</span><span class="more" aria-hidden="true">&#x22EE;</span></div>
+        <div class="menu"><div class="menu-title">Extensions</div><div class="extension-row"><span class="tiny-mark" aria-hidden="true"><img src="icons/icon128.png" alt=""></span><b>Tvara</b><span class="pin" aria-label="Pin Tvara">&#x1F4CC;</span></div></div>
+        <div class="puzzle-arrow" aria-hidden="true">&#x2191;</div>
+        <div class="pin-arrow" aria-hidden="true">&#x2192;</div>
+        <span class="callout callout-menu">1. Open Extensions</span>
+        <span class="callout callout-pin">2. Pin Tvara here</span>
+      </div>
+    </section>
+
+    <section class="stats" aria-labelledby="stats-title">
+      <div class="section-heading"><div><p class="eyebrow">Live on this install</p><h2 id="stats-title">Your numbers</h2></div><span id="updated">Reading local data...</span></div>
+      <div class="stat-grid">
+        <div class="stat"><strong id="chat-count">0</strong><span>chats archived</span></div>
+        <div class="stat"><strong id="message-count">0</strong><span>messages saved</span></div>
+        <div class="stat"><strong id="provider-count">0</strong><span>providers reporting</span></div>
+      </div>
+      <div id="quota-list" class="quota-list" aria-live="polite">
+        <div class="quota-row"><span class="quota-name">Claude</span><span class="quota-value pending">Checking…</span></div>
+        <div class="quota-row"><span class="quota-name">Grok</span><span class="quota-value pending">Checking…</span></div>
+        <div class="quota-row"><span class="quota-name">ChatGPT</span><span class="quota-value pending">Checking…</span></div>
+        <div class="quota-row"><span class="quota-name">Perplexity</span><span class="quota-value pending">Checking…</span></div>
+        <div class="quota-row"><span class="quota-name">DeepSeek</span><span class="quota-value pending">Checking…</span></div>
+        <div class="quota-row"><span class="quota-name">Gemini</span><span class="quota-value pending">Checking…</span></div>
+      </div>
+    </section>
+
+    <footer><span>Numbers update as each provider responds.</span><button id="continue" type="button" disabled>Continue to Tvara</button></footer>
+  </main>
+  <script src="onboarding.js"></script>
+</body>
+</html>

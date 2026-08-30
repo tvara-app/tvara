@@ -5,20 +5,21 @@
   "use strict";
 
   const $ = (id) => document.getElementById(id);
-  const send = (msg) => new Promise((res) => chrome.runtime.sendMessage(msg, res));
+  /* lastError is READ, always. A popup or Recall tab left open across an
+     extension reload is orphaned: every later message fails, and a lastError
+     nobody reads is logged as "Could not establish connection. Receiving end
+     does not exist." on the extensions page — an error report for something no
+     user can act on and no developer can fix. Reading it marks it handled; the
+     caller gets undefined and paints what it already had. */
+  const send = (msg) => new Promise((res) => {
+    try { chrome.runtime.sendMessage(msg, (reply) => { void chrome.runtime.lastError; res(reply); }); }
+    catch { res(null); }                          // context torn down mid-call
+  });
 
-  // Kept identical to recall-page.js's own KNOWN_CHAT_HOSTS — this is the
-  // OTHER of exactly two sites in the extension that turn a stored record's
-  // host into a real navigation (chrome.tabs.create below). clampChat()
-  // (bg.js) stores whatever host a record claims — a length clamp, not an
-  // allowlist, by design (dropping a malformed-but-honest record at write
-  // time loses the user's own chat history, and this field also flows
-  // through sync/export). Exact match only: a suffix/contains check admits
-  // "evil-claude.ai" or "claude.ai@evil.com".
-  const KNOWN_CHAT_HOSTS = new Set([
-    "chatgpt.com", "chat.openai.com", "claude.ai",
-    "chat.deepseek.com", "grok.com", "www.perplexity.ai", "gemini.google.com"
-  ]);
+  // Is the tab the user is looking at one of ours? Navigation by a stored
+  // record goes through LCTProduct.chatUrl() instead — a host allowlist alone
+  // never was enough, because the path is concatenated onto it.
+  const KNOWN_CHAT_HOSTS = new Set(self.LCTProduct.CHAT_HOSTS);
 
   // te•••@gmail.com — enough to recognize yourself, useless to a stranger
   function maskEmail(email) {
@@ -30,11 +31,23 @@
 
   /* ---------- paint helpers (pure: data in, DOM out) ---------- */
 
+  /* The plan chip.
+
+     A purchase and a trial both unlock everything, so these two used to differ
+     by pill fill alone — a paying customer and a free week read the same at a
+     glance, which is the one distinction this chip exists to make. Pro now
+     carries the brand accent and a verified mark, and nothing else on the
+     surface is allowed to use that fill.
+
+     Built from nodes rather than a template string so textContent stays exactly
+     "Pro" / "Trial" / "Free". An SVG child contributes no text; a stray space
+     would, and the store screenshot harness compares without trimming. */
+  const paintBadge = (el, pro, trialActive) => self.LCTProduct.paintBadge(el, pro, trialActive);
+
   function paintPlan(pro, maskedEmail, trialUntil, overdueDays) {
     const badge = $("plan-badge");
     const trialActive = !pro && trialUntil > Date.now();
-    badge.textContent = pro ? "Pro" : trialActive ? "Trial" : "Free";
-    badge.className = "badge " + (pro ? "pro" : trialActive ? "trial" : "free");
+    paintBadge(badge, pro, trialActive);
     /* evaluate() has computed `stale` and `overdueDays` since it was written,
        with a comment saying the UI shows it — and nothing read either field.
        A licence 200 days past its check-in showed a plain "Pro" badge and no
@@ -43,12 +56,15 @@
     badge.title = pro && overdueDays > 0
       ? `Pro. Last checked in ${overdueDays} day${overdueDays === 1 ? "" : "s"} ago. ` +
         `Connect once and it refreshes itself.`
+      : pro ? "Pro — purchased. A one-time licence, yours forever."
+      : trialActive ? "Free trial. Everything is unlocked while it runs."
       : "";
     badge.classList.toggle("overdue", !!(pro && overdueDays > 0));
     $("pro-upsell").hidden = pro || trialActive;
     $("pro-active").hidden = !pro;
     $("trial-active").hidden = !trialActive;
-    if (pro) $("licensed-to").textContent = "Licensed to " + (maskedEmail || "you");
+    if (pro) $("licensed-to").textContent =
+      "One-time licence · " + (maskedEmail || "this browser");
     paintRecallAccess(pro || trialActive);
 
     const startBtn = $("trial-start");
@@ -96,7 +112,7 @@
     const on = !s || s.quotaWarn !== false;
     const link = $("quota-warn-link");
     if (!link) return;
-    link.textContent = on ? "warn me at 20%" : "warnings off";
+    link.textContent = on ? "warn at 20%" : "warnings off";
     link.classList.toggle("off", !on);
     link.title = on
       ? "You'll get one notification per platform when it drops under 20%, and again under 10%. Click to turn off."
@@ -525,13 +541,19 @@
     const checked = (quota && quota.checked) || {};
 
     const rowMap = new Map();
+    const unseen = [];                // supported, but never opened here
     const seats = new Map();          // platform id -> how many accounts seen
     const seat = (id) => seats.set(id, (seats.get(id) || 0) + 1);
 
     // 1. A row per ACCOUNT that has a reading. Per account because the
     //    allowance belongs to the account — two logins on one host are two
     //    windows and never a sum.
+    // A source that did not learn the account id is not a second account. Seat
+    // the identified records first, then let an anonymous one fill in only
+    // where nothing identified has claimed that platform.
+    const identified = new Set(records.filter((r) => r.acct).map((r) => r.id));
     for (const rec of records) {
+      if (!rec.acct && identified.has(rec.id)) continue;
       const win = rec.window || null;
       const key = rec.id + "|" + (rec.acct || "");
       seat(rec.id);
@@ -567,6 +589,10 @@
     //    and read "not reported" — never a zero.
     for (const p of KNOWN_PLATFORMS) {
       if (seats.has(p.id)) continue;
+      // A platform never seen on this install is not news, it is a catalogue.
+      // Summarised below the legend instead of costing a row each — unless it
+      // is all we have, in which case the catalogue IS the panel.
+      if (!checked[p.id]) { unseen.push(p); continue; }
       seat(p.id);
       rowMap.set(p.id + "|", {
         id: p.id, acct: "", label: p.label, plan: "", account: "", ordinal: 0,
@@ -574,6 +600,20 @@
         meter: "", unit: "", basis: "", source: "", observedAt: 0,
         checked: !!checked[p.id]
       });
+    }
+
+    // Nothing has ever reported here: show the catalogue rather than an
+    // empty panel, which is what a fresh install and every test profile sees.
+    if (!rowMap.size) {
+      for (const p of unseen) {
+        seat(p.id);
+        rowMap.set(p.id + "|", {
+          id: p.id, acct: "", label: p.label, plan: "", account: "", ordinal: 0,
+          reported: false, pctLeft: null, resetAt: 0, remaining: null, limit: null,
+          meter: "", unit: "", basis: "", source: "", observedAt: 0, checked: false
+        });
+      }
+      unseen.length = 0;
     }
 
     // Only name the account when there is more than one to confuse: a single
@@ -647,13 +687,17 @@
       verdict.textContent = `${c.label}: ${c.remaining.toLocaleString()} ${what} left` +
         (c.resetAt ? `, resets ${resetLabel(c.resetAt)}` : "");
     } else if (!reported.length) {
-      /* Nothing to draw. Six rings with no arcs and six legend rows reading
-         "not reported" is a panel full of the word "no", and it is the first
-         thing in the popup: it looks like the feature is broken when in fact
-         nobody has opened a chat site yet. One line, and the space back. */
-      verdict.textContent = "No allowance readings yet. Open a chat site and they appear here.";
-      $("usage-bars").replaceChildren(verdict);
-      return;
+      /* Nothing reported yet, and the dial is still drawn. It used to be
+         replaced by this one line, which meant the panel a new install opens on
+         — the first thing anyone sees of this product — had no dial in it at
+         all, and the rings only ever appeared after the user had guessed that
+         visiting a chat site was the trigger. The worker now asks every
+         provider at install (bg.js firstRunBootstrap), so the honest state here
+         is "asking", and six dotted rings are what "asking" looks like. */
+      const asked = ranked.some((it) => it.checked);
+      verdict.textContent = asked
+        ? "No allowance published for these accounts yet."
+        : "Reading your accounts…";
     } else if (lowest.pctLeft <= 0) {
       verdict.className += " hot";
       verdict.textContent = `${lowest.label} is out` +
@@ -683,6 +727,13 @@
     if (dialPainted) panel.classList.add("no-intro");
     dialPainted = true;
     panel.append(usageDialEl(items), usageLegendEl(items));
+    // Supported but never opened here: one muted line, not a row each.
+    if (unseen.length) {
+      const rest = document.createElement("p");
+      rest.className = "usage-rest";
+      rest.textContent = "Also covered: " + unseen.map((p) => p.label).join(", ");
+      panel.append(rest);
+    }
     $("usage-bars").replaceChildren(verdict, panel);
   }
 
@@ -749,6 +800,13 @@
 
   async function load() {
     let gen = planGen;
+    /* Both worker questions go out together. Serialised, opening the popup
+       paid a cold service-worker start, then waited for quota-state, then
+       waited again for entitlement-state before anything below the toggles
+       could paint. They are independent reads; the worker answers them in
+       parallel. */
+    const quotaAsked = send({ type: "quota-state" });
+    const verdictAsked = send({ type: "entitlement-state" });
     // The trial clock is NOT read here: the worker's entitlement verdict below
     // is the only authority on it, and a second copy could disagree.
     const all = await chrome.storage.local.get(["settings", "license", ...STATS_KEYS]);
@@ -771,7 +829,7 @@
        rather than reassembling storage keys here is what killed the phantom
        "request" platform: this popup no longer derives providers from key
        names at all. */
-    const quota = await send({ type: "quota-state" });
+    const quota = await quotaAsked;
     paintUsage(total, quota);
 
     /* The headline needs something true to say when you are not sitting in a
@@ -802,8 +860,18 @@
       ((quota && quota.records) || []).map((r) => r && r.id).filter(Boolean)
     );
     for (const id of Object.keys((quota && quota.checked) || {})) refreshable.add(id);
-    for (const id of refreshable) {
-      send({ type: "quota-refresh", platform: id, reason: "popup" });
+    if (refreshable.size) {
+      for (const id of refreshable) {
+        send({ type: "quota-refresh", platform: id, reason: "popup" });
+      }
+    } else {
+      /* Nothing has ever been read here — a fresh install whose bootstrap
+         sweep has not landed, or one that was interrupted. Refreshing the
+         platforms we know about is a no-op in that state, which is exactly how
+         the panel used to stay empty forever: the only trigger for a first
+         reading was visiting a chat site. Ask for all six instead; the worker
+         throttles the sweep and the readings land as a storage change. */
+      send({ type: "quota-sweep", reason: "popup" });
     }
 
     // The worker decides; the popup only renders. Asking it here rather than
@@ -816,12 +884,17 @@
        first paint. Ask again rather than paint what is already out of date;
        this repaints everything below, so it cannot just bail out either — the
        Manage-devices button is only ever shown from here. */
-    let verdict = await send({ type: "entitlement-state" });
+    let verdict = await verdictAsked;
     for (let i = 0; i < 3 && gen !== planGen; i++) {
       gen = planGen;
       verdict = await send({ type: "entitlement-state" });
     }
-    const trialUntil = (verdict && verdict.trial && verdict.trial.until) || 0;
+    /* Only a GRANTING trial paints as one. An unverified week runs its clock
+       and unlocks nothing, so showing a "Trial — 7 days left" badge over a
+       locked Recall would be the popup lying about what the user has. It reads
+       as Free, with the upsell and the verify prompt still standing. */
+    const trial = verdict && verdict.trial;
+    const trialUntil = (trial && trial.grants && trial.until) || 0;
     const pro = !!(verdict && verdict.entitled && verdict.via !== "trial");
     const licenseKind = (verdict && verdict.kind) || null;
     const masked = license && license.key ? maskEmail(license.email) : null;
@@ -914,7 +987,7 @@
     if (running) {
       const done = (state && state.done) || 0;
       title.textContent = "Downloading your chats' text…";
-      sub.textContent = `${done.toLocaleString()} done · ${left.toLocaleString()} to go · tap to stop`;
+      sub.textContent = `${done.toLocaleString()} done, ${left.toLocaleString()} to go. Tap to stop.`;
       row.classList.add("busy");
       return;
     }
@@ -925,14 +998,14 @@
        return to "Download the text of 2,300 chats", so the user clicked again
        and watched the same nothing happen. Say what it said. */
     if (state && state.note) {
-      sub.textContent = `${state.note}. Sign in, then tap to continue`;
+      sub.textContent = `${state.note}. Sign in, then tap to continue.`;
       row.classList.add("stalled");
       return;
     }
     row.classList.remove("stalled");
     if (state && state.failed) {
       const mins0 = Math.max(1, Math.round((left * 1.5) / 60));
-      sub.textContent = `${state.failed.toLocaleString()} couldn't be fetched. Tap to retry · about ${mins0} min`;
+      sub.textContent = `${state.failed.toLocaleString()} couldn't be fetched. Tap to retry. About ${mins0} min.`;
       return;
     }
     /* Measured, not guessed: 30 chats took 45 seconds against a real account,
@@ -940,7 +1013,7 @@
        not just the pause between them. Stated as "about", because the number
        that decides it is the provider's latency and that is not ours. */
     const mins = Math.max(1, Math.round((left * 1.5) / 60));
-    sub.textContent = `Recall can only search what is here · about ${mins} min`;
+    sub.textContent = `Recall can only search what it has downloaded. About ${mins} min.`;
   }
 
   /* Set when we have asked the worker to start and have not yet seen it say so.
@@ -1006,14 +1079,108 @@
 
   /* ---------- trial ---------- */
 
-  // The worker owns the clock and refuses a second trial per profile.
+  // The worker owns the clock and refuses a second trial per identity.
   $("trial-start").addEventListener("click", async () => {
+    /* An unverified week runs its seven days and unlocks nothing, so sending
+       someone into one without saying so would be a trial that silently does
+       not work. Sign in first. */
+    if (!identityVerified) {
+      const gbtn = $("identity-google");
+      identityMsg(gbtn.hidden
+        ? "The trial needs Chrome or Edge — Google sign-in cannot work in this browser."
+        : "Sign in with Google first — it is what keeps your trial when you reinstall.", "warn");
+      if (!gbtn.hidden) gbtn.focus();
+      return;
+    }
     const t = await send({ type: "trial-start" });
-    const until = (t && t.until) || 0;
+    // Same rule as the verdict paint above: a week that grants nothing is not
+    // a trial as far as this UI is concerned.
+    const until = (t && t.grants && t.until) || 0;
     planGen++;   // same race as activation: a load() in flight predates the trial
     paintPlan(false, null, until);
     saveCache({ trialUntil: until });
   });
+
+  /* ---------- identity ----------
+     The address is the anchor: the trial ledger and licence ownership hang off
+     it, so reinstalling — or moving to another browser — brings both back. The
+     extension never stores the address, only the token the issuer returns. */
+
+  let identityVerified = false;
+
+  function identityMsg(text, cls = "") {
+    const el = $("identity-status");
+    el.textContent = text || "";
+    el.className = cls;
+  }
+
+  function paintIdentity(state) {
+    identityVerified = !!(state && state.verified);
+    const google = !!(state && state.google);
+    $("identity").hidden = false;
+    $("identity-done").hidden = !identityVerified;
+    // Firefox cannot register a redirect URL, so the button is absent there
+    // rather than present and broken. bg.js decides; this only paints.
+    $("identity-google").hidden = identityVerified || !google;
+    // Sign-in is the only route now, so a browser that cannot do it needs a
+    // reason on screen. An empty card reads as a bug.
+    $("identity-nogoogle").hidden = identityVerified || google;
+    $("identity-why").textContent = identityVerified
+      ? "Signed in. Your trial and your purchase follow this account."
+      : "Sign in once. Your trial and your purchase follow the account \u2014 reinstall, or move to another browser, and they come back.";
+  }
+
+  async function refreshIdentity() {
+    try { paintIdentity(await send({ type: "identity-state" })); }
+    catch { /* the worker will be awake by the next open */ }
+  }
+
+  /** Everything a fresh verification unlocked, in one line. */
+  function paintSettled(settled) {
+    if (settled && settled.restored) {
+      identityMsg("Pro restored on this device.", "ok");
+      planGen++;
+      location.reload();
+      return;
+    }
+    if (settled && settled.trial) {
+      identityMsg("Verified \u2014 your trial is back where it was.", "ok");
+      planGen++;
+      location.reload();
+      return;
+    }
+    identityMsg("Verified.", "ok");
+  }
+
+  $("identity-google").addEventListener("click", async () => {
+    identityMsg("Opening Google\u2026");
+    const res = await send({ type: "identity-google" });
+    if (!res || res.branch !== "ok") {
+      identityMsg(res && res.branch === "cancelled"
+        ? "Sign-in cancelled." : "Google sign-in did not complete. Try again in a moment.", "warn");
+      return;
+    }
+    await refreshIdentity();
+    paintSettled(res.settled);
+  });
+
+  $("identity-restore").addEventListener("click", async () => {
+    identityMsg("Looking for your purchase\u2026");
+    const res = await send({ type: "identity-restore" });
+    if (res && res.ok && res.restored) { planGen++; location.reload(); return; }
+    identityMsg(res && res.ok
+      ? "No purchase found for this account."
+      : "Could not check right now. Try again in a minute.", res && res.ok ? "" : "warn");
+  });
+
+  $("identity-signout").addEventListener("click", async () => {
+    /* Local only. Signing out is not a way to release a spent trial, and it
+       deliberately leaves an activated licence alone. */
+    paintIdentity(await send({ type: "identity-signout" }));
+    identityMsg("");
+  });
+
+  refreshIdentity();
 
   /* ---------- license ---------- */
 
@@ -1406,12 +1573,14 @@
     button.addEventListener("click", async () => {
       // Same guard as recall-page.js: refuse to navigate rather than drop
       // the record — the click just does nothing for an unrecognised host.
-      if (!KNOWN_CHAT_HOSTS.has(res.host)) return;
+      // Host and path resolved together — see chatUrl() in lib/product.js.
+      const url = self.LCTProduct.chatUrl(res.host, res.path);
+      if (!url) return;
       const q = $("recall-query").value.trim();
       await chrome.storage.local.set({
         "recall-jump": { host: res.host, path: res.path, q, at: Date.now() }
       });
-      chrome.tabs.create({ url: "https://" + res.host + res.path });
+      chrome.tabs.create({ url });
     });
     return button;
   }
@@ -1427,8 +1596,7 @@
     }
     $("recall-query-meta").textContent = "Searching…";
     $("recall-results").setAttribute("aria-busy", "true");
-    const res = await new Promise((resolve) =>
-      chrome.runtime.sendMessage({ type: "recall-search", q }, resolve));
+    const res = await send({ type: "recall-search", q });
     $("recall-results").removeAttribute("aria-busy");
     if (!res || res.err || q !== $("recall-query").value.trim()) return;
     const results = res.results || [];
@@ -1459,6 +1627,148 @@
   });
   $("recall-results").addEventListener("scroll", markRecallEdges, { passive: true });
 
+  /* ---------- where am I, and can I be shown around ----------
+     tab.url is only readable for a tab we hold a host permission on, which is
+     exactly the set of chat sites — so an undefined url IS the answer, and no
+     "tabs" permission is needed to get it. */
+  const activeChatTab = async () => {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab || !tab.url) return null;
+      return KNOWN_CHAT_HOSTS.has(new URL(tab.url).hostname) ? tab : null;
+    } catch { return null; }
+  };
+
+  activeChatTab().then((tab) => {
+    if (tab) return;
+    showNudge();
+  });
+
+  // The live counter reads "0 messages asleep right now" on a tab the engine
+  // does not run on, which looks like a broken extension rather than the wrong
+  // tab. One or the other, never both.
+  function showNudge() {
+    $("site-nudge").hidden = false;
+    $("stat-windowed").hidden = true;
+    $("stat-label").hidden = true;
+  }
+
+  /* ---------- popup tour ---------- */
+
+  const popupTourSteps = [
+    {
+      id: "allowance",
+      anchor: () => document.querySelector(".pulse"),
+      title: "Your live reading",
+      body: "The top of this window shows messages asleep in the current chat and, when providers publish it, the allowance left on each account. Allowance tracking can be switched off below."
+    },
+    {
+      id: "settings",
+      anchor: () => document.querySelector(".rows > .row"),
+      title: "Choose what runs in chats",
+      body: "These switches are your defaults: Speed engine keeps long chats quick; Minimap adds the in-chat map; Timestamps show on hover. Changes apply to every supported chat."
+    },
+    {
+      id: "history",
+      anchor: () => $("toggle-history")?.closest(".row"),
+      title: "History and private chats",
+      body: "Load full history on open builds a complete map sooner, but may scroll the page while it does. Archive temporary chats is off by default; turn it on only when you want those chats kept in your local archive."
+    },
+    {
+      id: "archive",
+      anchor: () => $("open-recall")?.closest(".row"),
+      title: "Find and maintain your archive",
+      body: "Total Recall searches your saved chats across platforms. Archive core keeps that local archive current, while the allowance row lets you set low-allowance warnings or check a reading against the provider."
+    },
+    {
+      id: "chat",
+      anchor: () => $("tour-link"),
+      title: "See the controls in a chat",
+      body: "The in-chat tour covers the minimap, its toolbar and keyboard shortcuts. You can return to this popup tour any time from Show me around."
+    }
+  ];
+  let popupTourAt = 0;
+
+  function closePopupTour() {
+    $("popup-tour").hidden = true;
+  }
+
+  function positionPopupTour() {
+    const target = popupTourSteps[popupTourAt].anchor();
+    const ring = $("popup-tour-ring");
+    const card = document.querySelector(".popup-tour-card");
+    if (!target || !target.isConnected) {
+      ring.hidden = true;
+      card.style.top = "12px";
+      card.style.bottom = "auto";
+      return;
+    }
+    const r = target.getBoundingClientRect();
+    const pad = 4;
+    ring.hidden = false;
+    ring.style.left = `${Math.max(4, r.left - pad)}px`;
+    ring.style.top = `${Math.max(4, r.top - pad)}px`;
+    ring.style.width = `${Math.min(innerWidth - 8, r.width + pad * 2)}px`;
+    ring.style.height = `${r.height + pad * 2}px`;
+    const topHalf = r.top + r.height / 2 < innerHeight / 2;
+    card.style.top = topHalf ? "auto" : "12px";
+    card.style.bottom = topHalf ? "12px" : "auto";
+  }
+
+  function renderPopupTour() {
+    const step = popupTourSteps[popupTourAt];
+    $("popup-tour").hidden = false;
+    $("popup-tour").dataset.step = step.id;
+    $("popup-tour-count").textContent = `${popupTourAt + 1} of ${popupTourSteps.length}`;
+    $("popup-tour-title").textContent = step.title;
+    $("popup-tour-body").textContent = step.body;
+    $("popup-tour-back").hidden = popupTourAt === 0;
+    $("popup-tour-next").textContent = popupTourAt === popupTourSteps.length - 1 ? "Show in chat" : "Next";
+    positionPopupTour();
+    requestAnimationFrame(positionPopupTour);
+  }
+
+  async function showChatTour() {
+    try { await chrome.storage.local.remove("lct-tour-v1"); } catch { /* full or gone */ }
+    const tab = await activeChatTab();
+    if (!tab) { closePopupTour(); showNudge(); return; }
+    try {
+      await chrome.tabs.sendMessage(tab.id, { type: "lct-tour" });
+      window.close();
+    } catch {
+      closePopupTour();
+      showNudge();
+    }
+  }
+
+  $("popup-tour-close").addEventListener("click", closePopupTour);
+  $("popup-tour-skip").addEventListener("click", closePopupTour);
+  $("popup-tour-back").addEventListener("click", () => {
+    popupTourAt--;
+    renderPopupTour();
+  });
+  $("popup-tour-next").addEventListener("click", () => {
+    if (popupTourAt === popupTourSteps.length - 1) { showChatTour(); return; }
+    popupTourAt++;
+    renderPopupTour();
+  });
+  window.addEventListener("resize", positionPopupTour, { passive: true });
+
+  for (const chip of document.querySelectorAll(".nudge-chip")) {
+    chip.addEventListener("click", () => {
+      chrome.tabs.create({ url: chip.dataset.url });
+      window.close();
+    });
+  }
+
+  // Starts in the window that owns the settings, then offers the in-chat tour
+  // as its last step.
+  $("tour-link").addEventListener("click", (e) => {
+    e.preventDefault();
+    popupTourAt = 0;
+    renderPopupTour();
+  });
+
   // Shortcuts are the browser's (remappable per device/OS/browser) — send the
   // user straight to the page where they can view or change them.
   $("shortcuts-link").addEventListener("click", (e) => {
@@ -1469,13 +1779,111 @@
     chrome.tabs.create({ url });
   });
 
-  // Buying happens on our own pricing page, not inside the popup: a checkout
-  // iframe in a 380px panel is a worse place to hand over a card than a full
-  // tab, and it keeps the payment provider out of the extension entirely.
-  $("buy-pro").addEventListener("click", () => {
-    chrome.tabs.create({ url: self.LCTProduct.BUY });
-    window.close();
+  /* ---------- buying ----------
+
+     No payment link, no pricing page in the middle. The button asks the issuer
+     to open a checkout session and the background opens it, owns the wait, and
+     activates the licence when it lands. The popup is closed a second after the
+     click and paying takes a minute, so nothing that matters can live here.
+
+     A card is still typed in a full tab, not in a 380px panel — that part of
+     the old comment was right and is unchanged.
+
+     The paste box below stays. It is how a buyer moves their licence to a
+     second machine, and how they recover if every webhook in one delivery
+     window is lost. */
+  const CHECKOUT_COPY = {
+    unverified: {
+      text: "Verify your email before buying.", cls: "warn",
+      note: "It is what brings Pro back if you reinstall, without a key to find."
+    },
+    closed: {
+      text: "The store isn't open yet.", cls: "warn",
+      note: "Nothing to pay for right now — every free tool still works."
+    },
+    throttled: {
+      text: "Too many checkouts started just now.", cls: "warn",
+      note: "Wait a minute and press it again. Nothing was charged."
+    },
+    nodevice: {
+      text: "This browser profile won't let Tvara create its device key.", cls: "err",
+      note: "Storage may be blocked or the profile damaged. Try a normal window or another profile."
+    },
+    outdated: {
+      text: "This copy of Tvara is older than the licence server.", cls: "err",
+      note: "Update Tvara from the store, then try again."
+    },
+    network: {
+      text: "Couldn't reach the licence server.", cls: "warn",
+      note: "Nothing was charged. Try again when you're back online."
+    }
+  };
+  // Everything else — service, proof, replay, badrequest, forbidden — is ours,
+  // not the user's, and the only thing they need told is that no money moved.
+  const CHECKOUT_FALLBACK = {
+    text: "Couldn't open the checkout.", cls: "warn",
+    note: "Nothing was charged. Try again in a minute."
+  };
+
+  /** Repaint after a licence arrives without the popup having typed anything. */
+  async function paintProFromStorage() {
+    const { license } = await chrome.storage.local.get("license");
+    const masked = maskEmail((license && license.email) || "");
+    planGen++;
+    paintPlan(true, masked, (cache && cache.trialUntil) || 0);
+    const seatCount = Object.keys((await self.LCTDodo.readSeats()).seats).length;
+    saveCache({ pro: true, masked, licenseKind: (license && license.kind) || "dodo", seatCount });
+  }
+
+  $("buy-pro").addEventListener("click", async () => {
+    /* The issuer refuses an anonymous checkout, and being told that after the
+       round trip is worse than being asked first: the address is what makes
+       the purchase findable again after a reinstall, so it is part of buying,
+       not an extra step bolted onto it. */
+    if (!identityVerified) {
+      const gbtn = $("identity-google");
+      identityMsg(gbtn.hidden
+        ? "Buying needs Chrome or Edge — Google sign-in cannot work in this browser."
+        : "Sign in with Google first — it is what brings Pro back if you reinstall.", "warn");
+      if (!gbtn.hidden) gbtn.focus();
+      return;
+    }
+    const btn = $("buy-pro");
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Opening checkout…";
+    const res = await send({ type: "checkout-start" });
+    // The tab is open and the background is waiting on it; there is nothing
+    // left for a 380px panel to do.
+    if (res && res.ok) { window.close(); return; }
+    btn.disabled = false;
+    btn.textContent = label;
+    paintLicenseState(CHECKOUT_COPY[res && res.reason] || CHECKOUT_FALLBACK);
   });
+
+  /* A purchase already in flight — from an earlier popup, or from before the
+     browser was last closed. Says so instead of showing a Buy button to
+     somebody who has already paid, and nudges the claim along while it is open. */
+  (async () => {
+    const state = await send({ type: "checkout-state" });
+    if (!state || !state.pending) return;
+    if (state.held) revealLicenseBox(false);
+    paintLicenseState(state.held
+      ? { text: "Finishing your activation…", cls: "warn",
+          note: "Your key arrived. This retries on its own." }
+      : { text: "Waiting for your payment to clear…", cls: "warn",
+          note: "You can close this — it finishes on its own, and your key is emailed to you as well." });
+
+    const done = await send({ type: "checkout-poll" });
+    if (!done) return;
+    if (done.state === "active") {
+      paintLicenseState(null);
+      await paintProFromStorage();
+    } else if (done.state === "refunded") {
+      paintLicenseState({ text: "That purchase was refunded.", cls: "err",
+        note: "Nothing to activate. Reply to your purchase email if this is wrong." });
+    }
+  })();
   $("help-link").addEventListener("click", (e) => {
     e.preventDefault();
     chrome.tabs.create({ url: self.LCTProduct.HELP });
@@ -1504,6 +1912,20 @@
 
   self.LCTProduct.applyTo(document);
 
+  /* The paste box is a recovery path, not a way in: signing in is. It stays
+     folded away so the card has one obvious action, and opens for the two
+     people who need it — a pre-Dodo LCT1 key, or a buyer whose Google account
+     is not the address they paid with. */
+  function revealLicenseBox(focus) {
+    const row = $("license-row");
+    if (row.hidden) {
+      row.hidden = false;
+      $("license-toggle").setAttribute("aria-expanded", "true");
+    }
+    if (focus) $("license-input").focus();
+  }
+
+  $("license-toggle").addEventListener("click", () => revealLicenseBox(true));
   $("license-activate").addEventListener("click", activate);
   $("license-input").addEventListener("keydown", (e) => {
     if (e.key === "Enter") activate();
@@ -1619,8 +2041,7 @@
   });
 
   async function checkFreshness(retry = true) {
-    const status = await new Promise((res) =>
-      chrome.runtime.sendMessage({ type: "recall-sync-status" }, res));
+    const status = await send({ type: "recall-sync-status" });
     // A cold service worker can drop the very first message of a session.
     if (!status && retry) return setTimeout(() => checkFreshness(false), 350);
     paintSummary(status && status.summary);
@@ -1634,8 +2055,7 @@
        second window. The worker's own status is the honest answer, and it was
        already being fetched here and then thrown away. The Recall page has
        always used it this way (see collectSnapshot); the popup now agrees. */
-    const status = await new Promise((res) =>
-      chrome.runtime.sendMessage({ type: "recall-sync-status" }, res));
+    const status = await send({ type: "recall-sync-status" });
     if (status && status.running) {
       setSyncBusy(true);
       updateSyncStatus("A check is already running…");
@@ -1645,7 +2065,7 @@
     isSyncing = true;
     setSyncBusy(true);
     updateSyncStatus("Checking for new chats…");
-    chrome.runtime.sendMessage({ type: "recall-bg-sync" }, () => checkFreshness());
+    send({ type: "recall-bg-sync" }).then(() => checkFreshness());
   }
 
   async function refreshSyncUI() {

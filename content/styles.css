@@ -94,28 +94,17 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  width: 26px;
+  height: 26px;
   padding: 0;
-  border: none;
-  background: transparent;
+  border: 1px solid var(--lct-line);
+  border-radius: 9px;
+  background: var(--lct-surface-strong);
   cursor: pointer;
-  transition: transform 0.15s ease, color 0.15s ease, background 0.15s ease;
+  transition: transform 0.15s ease, color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
   color: var(--lct-muted);
-  border-radius: var(--lct-radius);
 }
 #lct-export-bar button svg { width: 13px; height: 13px; }
-/* standalone position when the minimap is turned off */
-#lct-export-bar.lct-floating {
-  position: fixed;
-  right: calc(12px + var(--lct-rail-inset, 0px));
-  bottom: 44px;
-  z-index: 2147483000;
-  padding: 5px 3px;
-  border-radius: 8px;
-  background: rgba(127, 127, 127, 0.08);
-  backdrop-filter: blur(4px);
-}
 
 /* ===== Timestamp hover tag ===== */
 #lct-time-tag {
@@ -676,40 +665,6 @@
 /* ---------- first-run hint ----------
    Shown once, ever. Docked left of the minimap so it never lands on the resume
    chip or the note toast, both of which live in the bottom-centre lane. */
-#lct-hint {
-  position: fixed; right: 74px; bottom: 22px;
-  z-index: 2147483003;
-  width: 264px; padding: 13px 15px 12px;
-  border-radius: 13px;
-  /* The shared tokens, so the card follows the HOST page's theme like every
-     other newer surface — not the OS's, which is the mismatch people see. */
-  background: var(--lct-surface-strong);
-  border: 1px solid var(--lct-line);
-  box-shadow: var(--lct-shadow);
-  color: var(--lct-ink);
-  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  opacity: 0; transform: translateY(10px);
-  transition: opacity .22s ease, transform .22s ease;
-}
-#lct-hint.lct-hint-show { opacity: 1; transform: translateY(0); }
-#lct-hint .lct-hint-title { font-weight: 650; font-size: 12.5px; margin-bottom: 9px; color: var(--lct-accent); }
-#lct-hint .lct-hint-row { display: flex; align-items: center; gap: 9px; margin-top: 6px; font-size: 12px; color: var(--lct-muted); }
-#lct-hint kbd {
-  flex: none; min-width: 52px; padding: 4px 7px; text-align: center;
-  border: 1px solid var(--lct-line); border-bottom-width: 2px; border-radius: 6px;
-  background: var(--lct-accent-soft); color: var(--lct-ink);
-  font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-#lct-hint .lct-hint-where { color: var(--lct-accent); }
-#lct-hint .lct-hint-where kbd { min-width: 52px; }
-#lct-hint .lct-hint-ok {
-  margin-top: 11px; width: 100%; padding: 6px 0;
-  border: 1px solid var(--lct-line); border-radius: 8px;
-  background: transparent; color: var(--lct-ink); cursor: pointer;
-  font: 600 11.5px/1 inherit;
-}
-#lct-hint .lct-hint-ok:hover { background: var(--lct-accent-soft); }
-@media (max-width: 640px) { #lct-hint { right: 12px; left: 12px; width: auto; } }
 
 #lct-b-toast {
   position: fixed; left: 50%; bottom: 92px; transform: translateX(-50%) translateY(8px);
@@ -789,8 +744,7 @@
   --lct-mm-thumb-b: #e0396c;
 }
 
-#lct-minimap,
-#lct-export-bar.lct-floating {
+#lct-minimap {
   border: 1px solid var(--lct-line);
   border-radius: var(--lct-radius);
   background: var(--lct-field), var(--lct-surface);
@@ -800,7 +754,7 @@
 /* No hover-widen: the export buttons sit inside, and resizing under the
    pointer moves them out from under the click. */
 #lct-minimap:hover { opacity: 1; }
-#lct-export-bar button:hover { background: var(--lct-accent-soft); color: var(--lct-accent); transform: translateY(-1px); }
+#lct-export-bar button:hover { border-color: color-mix(in srgb, var(--lct-accent) 32%, transparent); background: var(--lct-accent-soft); color: var(--lct-accent); transform: translateY(-1px); }
 #lct-mm-tooltip,
 #lct-time-tag,
 #lct-note,
@@ -1245,14 +1199,10 @@
      draw grew it again. */
   min-height: 0;
   overflow: hidden;
-  border: 1px solid transparent;
-  border-radius: 15px;
-  background: var(--lct-field), var(--lct-surface-strong);
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, .04) inset,
-    0 12px 34px -14px rgba(14, 3, 10, .5),
-    0 2px 10px -6px rgba(14, 3, 10, .4);
-  backdrop-filter: blur(14px) saturate(1.1);
+  /* No panel of its own: each control below carries its own box, and a wrapper
+     surface behind them read as a box inside a box. */
+  border: 0;
+  background: none;
   opacity: .82;
   transition:
     opacity 260ms cubic-bezier(.16, 1, .3, 1),
@@ -1261,8 +1211,9 @@
 }
 /* Reading the map is a deliberate act — it comes forward when you go to it. */
 #lct-minimap:hover,
-#lct-minimap:focus-within {
-  opacity: 1;
+#lct-minimap:focus-within { opacity: 1; }
+#lct-minimap:hover #lct-mm-stage,
+#lct-minimap:focus-within #lct-mm-stage {
   border-color: color-mix(in srgb, var(--lct-accent) 22%, transparent);
 }
 #lct-minimap.lct-collapsed {
@@ -1270,7 +1221,11 @@
   height: 28px;
   min-height: 28px;
   bottom: auto;
+  border: 1px solid var(--lct-line);
   border-radius: 9px;
+  background: var(--lct-field), var(--lct-surface-strong);
+  box-shadow: 0 2px 10px -6px rgba(14, 3, 10, .4);
+  backdrop-filter: blur(14px) saturate(1.1);
 }
 #lct-minimap.lct-collapsed #lct-mm-stage,
 #lct-minimap.lct-collapsed #lct-mm-count,
@@ -1299,7 +1254,13 @@
 #lct-minimap.lct-mm-rest:not(.lct-collapsed) #lct-mm-toggle,
 #lct-minimap.lct-mm-rest:not(.lct-collapsed) #lct-mm-count,
 #lct-minimap.lct-mm-rest:not(.lct-collapsed) #lct-export-bar { visibility: hidden; }
-#lct-minimap.lct-mm-rest:not(.lct-collapsed) #lct-mm-stage { padding: 6px 0 7px; }
+#lct-minimap.lct-mm-rest:not(.lct-collapsed) #lct-mm-stage {
+  padding: 6px 0 7px;
+  border-color: transparent;
+  background: none;
+  box-shadow: none;
+  backdrop-filter: none;
+}
 
 /* Hairlines fade out before the edges — a full-width rule would box the panel
    into segments, which is the look this redesign is getting rid of. */
@@ -1320,6 +1281,15 @@
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 13px;
+  background: var(--lct-field), var(--lct-surface-strong);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, .04) inset,
+    0 12px 34px -14px rgba(14, 3, 10, .5),
+    0 2px 10px -6px rgba(14, 3, 10, .4);
+  backdrop-filter: blur(14px) saturate(1.1);
   /* Tight: every px here comes straight out of the waveform's resolution. */
   padding: 6px 5px 7px;
 }
@@ -1333,20 +1303,13 @@
   position: relative;
   width: 100%;
   flex: 0 0 auto;
-  gap: 2px;
+  gap: 6px;
   padding: 6px 0 6px;
 }
-#lct-minimap #lct-export-bar::before {
-  content: "";
-  position: absolute;
-  left: 7px; right: 7px; top: 0;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, var(--lct-line), transparent);
-}
 #lct-minimap #lct-export-bar button {
-  width: 23px;
-  height: 23px;
-  border-radius: 7px;
+  width: 26px;
+  height: 26px;
+  border-radius: 9px;
   color: var(--lct-muted);
   opacity: .62;
   transition:
@@ -1509,4 +1472,227 @@
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.22);
   pointer-events: none;
   user-select: none;
+}
+
+/* ---- hover labels ----
+   #lct-minimap is overflow:hidden and 13px wide at rest, so a tooltip drawn
+   inside it is clipped away. Fixed, on the root, positioned by JS. */
+#lct-tip {
+  position: fixed;
+  z-index: 2147483210;
+  max-width: 250px;
+  padding: 7px 10px;
+  border-radius: 9px;
+  background: var(--lct-surface-strong);
+  border: 1px solid var(--lct-line);
+  box-shadow: var(--lct-shadow);
+  color: var(--lct-ink);
+  font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(4px);
+  transition: opacity .12s ease, transform .12s ease;
+}
+#lct-tip.lct-tip-show { opacity: 1; transform: none; }
+#lct-tip b { display: block; font-weight: 650; font-size: 12px; }
+#lct-tip span { display: block; margin-top: 2px; color: var(--lct-muted); font-size: 11.5px; }
+
+/* ---- the guided tour ---- */
+#lct-tour { position: fixed; inset: 0; z-index: 2147483200; pointer-events: none; }
+
+/* The dim is this element's own shadow, so there is no second full-screen box
+   to swallow clicks: the page stays usable while the tour is up. */
+#lct-tour-ring {
+  position: fixed;
+  border-radius: 14px;
+  border: 2px solid var(--lct-accent);
+  box-shadow: 0 0 0 9999px rgba(10, 4, 8, .58);
+  pointer-events: none;
+}
+#lct-tour-ring.lct-tour-armed {
+  transition: left .2s ease, top .2s ease, width .2s ease, height .2s ease;
+}
+
+#lct-tour-card {
+  position: fixed;
+  width: 306px;
+  max-width: calc(100vw - 24px);
+  border-radius: 15px;
+  background: var(--lct-surface-strong);
+  border: 1px solid var(--lct-line);
+  box-shadow: var(--lct-shadow);
+  color: var(--lct-ink);
+  font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+}
+/* Scrolls one level in, because the beak below hangs outside the card's box
+   and overflow on the card itself would cut it off. */
+#lct-tour-card .lct-tour-pane {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 15px 16px 2px;
+  border-radius: 15px 15px 0 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* Outside the scroll, so it is reachable on a window too short to hold the
+   card. The shadow only reads once content is running under it. */
+#lct-tour-card .lct-tour-foot {
+  flex: none;
+  padding: 0 16px 13px;
+  border-radius: 0 0 15px 15px;
+  box-shadow: 0 -9px 12px -9px rgba(0, 0, 0, .6);
+}
+/* A window too narrow to hold a card beside anything: JS docks it across the
+   short edge, opposite the ring, and sets the width it measured. */
+#lct-tour-card.lct-tour-sheet { max-width: none; }
+/* the beak, aimed at whichever side the ring ended up on */
+#lct-tour-card::after {
+  content: "";
+  position: absolute;
+  top: var(--lct-arrow-y, 50%);
+  right: -6px;
+  width: 10px; height: 10px;
+  margin-top: -5px;
+  background: var(--lct-surface-strong);
+  border-right: 1px solid var(--lct-line);
+  border-bottom: 1px solid var(--lct-line);
+  transform: rotate(-45deg);
+}
+#lct-tour-card.lct-tour-flip::after {
+  right: auto; left: -6px;
+  transform: rotate(135deg);
+}
+#lct-tour-card.lct-tour-up::after {
+  top: -6px; right: 26px; left: auto; margin-top: 0;
+  transform: rotate(-135deg);
+}
+#lct-tour-card.lct-tour-none::after { display: none; }
+
+/* ---- the pin illustration ----
+   "The puzzle-piece menu" is a sentence nobody parses until they have seen the
+   shape it means, so the pin step draws it. */
+#lct-tour-card .lct-tour-art {
+  margin-top: 12px; padding: 9px;
+  border-radius: 11px;
+  background: var(--lct-accent-soft);
+}
+#lct-tour-card .lct-tour-art svg { display: block; width: 100%; height: auto; }
+#lct-tour-card .lct-art-face { fill: var(--lct-surface-strong); }
+#lct-tour-card .lct-art-dim { fill: var(--lct-muted); opacity: .38; }
+#lct-tour-card .lct-art-halo { fill: var(--lct-accent); opacity: .18; }
+#lct-tour-card .lct-art-ink { fill: var(--lct-accent); }
+#lct-tour-card .lct-art-lead {
+  fill: none; stroke: var(--lct-accent); stroke-width: 1.6;
+  stroke-dasharray: 3 3; opacity: .75;
+}
+#lct-tour-card .lct-art-head { fill: var(--lct-accent); }
+@media (prefers-reduced-motion: no-preference) {
+  #lct-tour-card .lct-pin-pulse { animation: lct-pin-pulse 1.7s ease-in-out infinite; }
+}
+@keyframes lct-pin-pulse { 0%, 100% { opacity: .12; } 50% { opacity: .34; } }
+
+/* ---- the close, on every card ---- */
+#lct-tour-card .lct-tour-close {
+  position: absolute; top: 9px; right: 9px;
+  width: 24px; height: 24px;
+  display: flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 7px;
+  background: transparent;
+  color: var(--lct-muted);
+  cursor: pointer;
+  font: 400 17px/1 inherit;
+}
+#lct-tour-card .lct-tour-close:hover { background: var(--lct-accent-soft); color: var(--lct-ink); }
+
+/* ---- the pin card ----
+   Not a step in a sequence to look at: one thing, one picture, one button
+   across the full width, and a way out under it. */
+#lct-tour-card.lct-tour-hero .lct-tour-meta { display: none; }
+#lct-tour-card .lct-tour-spark { display: block; width: 18px; height: 20px; fill: var(--lct-accent); }
+#lct-tour-card.lct-tour-hero .lct-tour-title {
+  margin-top: 12px; font-size: 17px; color: var(--lct-ink);
+}
+#lct-tour-card.lct-tour-hero .lct-tour-body { font-size: 12.5px; }
+#lct-tour-card.lct-tour-hero .lct-tour-note { margin-top: 9px; font-size: 11px; }
+#lct-tour-card.lct-tour-hero .lct-tour-actions { flex-direction: column; gap: 3px; margin-top: 13px; }
+#lct-tour-card.lct-tour-hero .lct-tour-spacer { display: none; }
+#lct-tour-card.lct-tour-hero .lct-tour-actions button {
+  width: 100%; padding: 10px 13px; font-size: 12.5px; border-radius: 9px;
+}
+#lct-tour-card.lct-tour-hero .lct-tour-next { order: 1; }
+#lct-tour-card.lct-tour-hero .lct-tour-actions button.lct-tour-skip {
+  order: 2; padding-left: 13px;
+}
+
+#lct-tour-card .lct-tour-meta {
+  font: 600 10.5px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: .06em;
+  color: var(--lct-muted);
+  text-transform: uppercase;
+}
+#lct-tour-card .lct-tour-title {
+  margin-top: 7px;
+  font-weight: 650;
+  font-size: 15px;
+  line-height: 1.3;
+  color: var(--lct-accent);
+}
+#lct-tour-card .lct-tour-body { margin: 7px 0 0; color: var(--lct-muted); font-size: 12.5px; }
+#lct-tour-card .lct-tour-note { margin: 10px 0 0; color: var(--lct-muted); font-size: 11.5px; }
+
+#lct-tour-card .lct-tour-legend { margin-top: 11px; display: flex; flex-direction: column; gap: 7px; }
+#lct-tour-card .lct-tour-leg { display: flex; align-items: flex-start; gap: 9px; }
+#lct-tour-card .lct-tour-leg-icon {
+  flex: none;
+  display: flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px;
+  border-radius: 7px;
+  background: var(--lct-accent-soft);
+  color: var(--lct-accent);
+}
+#lct-tour-card .lct-tour-leg-icon svg { width: 13px; height: 13px; }
+#lct-tour-card .lct-tour-leg b { display: block; font-weight: 620; font-size: 12px; }
+#lct-tour-card .lct-tour-leg span span { display: block; color: var(--lct-muted); font-size: 11.5px; line-height: 1.35; }
+
+#lct-tour-card .lct-tour-keys { margin-top: 11px; display: flex; flex-direction: column; gap: 7px; }
+#lct-tour-card .lct-tour-key { display: flex; align-items: center; gap: 9px; font-size: 12px; color: var(--lct-muted); }
+#lct-tour-card .lct-tour-key kbd {
+  flex: none; min-width: 58px; padding: 4px 7px; text-align: center;
+  border: 1px solid var(--lct-line); border-bottom-width: 2px; border-radius: 6px;
+  background: var(--lct-accent-soft); color: var(--lct-ink);
+  font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+#lct-tour-card .lct-tour-actions { display: flex; align-items: center; gap: 7px; margin-top: 14px; }
+#lct-tour-card .lct-tour-spacer { flex: 1; }
+#lct-tour-card .lct-tour-actions button {
+  padding: 6px 13px;
+  border: 1px solid var(--lct-line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--lct-muted);
+  cursor: pointer;
+  font: 600 11.5px/1 inherit;
+}
+#lct-tour-card .lct-tour-actions button:hover { background: var(--lct-accent-soft); color: var(--lct-ink); }
+#lct-tour-card .lct-tour-actions button.lct-tour-skip { border-color: transparent; padding-left: 0; }
+#lct-tour-card .lct-tour-actions button.lct-tour-skip:empty { display: none; }
+#lct-tour-card .lct-tour-actions button.lct-tour-next {
+  border-color: transparent;
+  background: var(--lct-accent);
+  color: #fff;
+}
+#lct-tour-card .lct-tour-actions button.lct-tour-next:hover { filter: brightness(1.08); }
+/* The browser's own focus ring is the wrong colour on a themed card, and the
+   first button is focused the moment a card is drawn. */
+#lct-tour-card button:focus-visible {
+  outline: 2px solid var(--lct-accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #lct-tour-ring.lct-tour-armed, #lct-tip { transition: none; }
 }

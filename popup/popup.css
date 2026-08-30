@@ -33,18 +33,30 @@
 [hidden] { display: none !important; }
 svg { display: block; }
 
+/* Chrome scrolls the popup viewport itself once content passes its 600px cap,
+   and its bar lands on the gradient. Same treatment as #recall-results. */
+html, body { scrollbar-width: none; }
+html::-webkit-scrollbar, body::-webkit-scrollbar { display: none; width: 0; height: 0; }
+
 html {
-  width: 380px;
+  width: 500px;
+  max-height: 600px;
   border-radius: 16px;
   overflow: hidden;
   background: var(--void);
 }
 
+/* Chrome caps a popup at 600px and sizes it to the document. The free state
+   runs past that, and `overflow: hidden` here made the tail unreachable rather
+   than scrollable — body is the scroller, with the bar hidden above. */
 body {
   position: relative;
-  width: 380px;
+  width: 500px;
+  max-height: 600px;
   border-radius: 16px;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   background: var(--void);
   color: var(--ink);
   font: 400 13px/1.4 var(--sans);
@@ -109,6 +121,63 @@ body {
 
 .shell { position: relative; z-index: 2; }
 
+/* ---------- popup tour ---------- */
+
+#popup-tour { position: fixed; inset: 0; z-index: 10; pointer-events: none; }
+#popup-tour-ring {
+  position: fixed;
+  border: 2px solid var(--ember);
+  border-radius: 10px;
+  box-shadow: 0 0 0 999px rgb(10 8 9 / .68);
+  transition: top .18s var(--ease), left .18s var(--ease), width .18s var(--ease), height .18s var(--ease);
+}
+.popup-tour-card {
+  position: fixed;
+  right: var(--gutter);
+  left: var(--gutter);
+  z-index: 1;
+  padding: 14px 14px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: #1a0e13;
+  box-shadow: 0 14px 32px rgb(0 0 0 / .42);
+  pointer-events: auto;
+}
+#popup-tour-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink-faint);
+  cursor: pointer;
+  font: 400 18px/1 var(--sans);
+}
+#popup-tour-close:hover { background: rgb(255 255 255 / .08); color: var(--ink); }
+#popup-tour-count { color: var(--ember); font-size: 9px; font-weight: 700; letter-spacing: .13em; text-transform: uppercase; }
+#popup-tour-title { max-width: 285px; margin-top: 4px; font-size: 15px; font-weight: 600; letter-spacing: -.02em; }
+#popup-tour-body { margin-top: 5px; color: var(--ink-dim); font-size: 11.5px; line-height: 1.4; }
+.popup-tour-actions { display: flex; align-items: center; gap: 7px; margin-top: 12px; }
+.popup-tour-actions span { flex: 1; }
+.popup-tour-actions button {
+  min-height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink-dim);
+  cursor: pointer;
+  font: 500 10.5px/1 var(--sans);
+}
+.popup-tour-actions #popup-tour-skip { border-color: transparent; padding-left: 0; }
+.popup-tour-actions #popup-tour-next { border-color: transparent; background: var(--ember); color: #2b1015; }
+.popup-tour-actions button:hover { color: var(--ink); background: rgb(255 255 255 / .08); }
+.popup-tour-actions #popup-tour-next:hover { background: #ffc29e; color: #2b1015; }
+.popup-tour-card button:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+
 /* ---------- header ---------- */
 
 /* The whole panel is tuned to one hard constraint: Chrome gives a popup a
@@ -129,18 +198,23 @@ header {
   height: 23px;
   flex: none;
   place-items: center;
+  overflow: hidden;
   border: 1px solid rgb(255 255 255 / .22);
   border-radius: 7px;
   background: rgb(255 255 255 / .08);
   color: var(--ink);
 }
 .mark svg { width: 13px; height: 13px; }
+.mark img { width: 100%; height: 100%; object-fit: cover; }
 .brand-text { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
 .brand-name { font-size: 12px; font-weight: 500; letter-spacing: -.015em; }
 .version { color: var(--ink-faint); font-size: 9px; }
 
 .badge {
   flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   padding: 3.5px 8px;
   border: 1px solid rgb(255 255 255 / .22);
   border-radius: 999px;
@@ -150,7 +224,17 @@ header {
   letter-spacing: .12em;
   text-transform: uppercase;
 }
-.badge.pro { border-color: transparent; background: var(--ink); color: #16090d; }
+.badge svg { width: 9px; height: 9px; display: block; margin-left: -1px; }
+
+/* PURCHASED. The only element on this surface that gets the brand fill, and
+   the only one carrying a verified mark — so "paid for" is legible without
+   reading the word, and a trial cannot be mistaken for it. */
+.badge.pro {
+  border-color: transparent;
+  background: linear-gradient(180deg, var(--ember), #f19a6b);
+  color: #2a0f06;
+  box-shadow: 0 1px 6px -1px rgb(255 177 133 / .5);
+}
 .badge.trial { border-color: rgb(255 255 255 / .5); color: var(--ink); }
 
 /* ---------- live pulse ----------
@@ -179,7 +263,7 @@ main { padding: 0 var(--gutter); }
 #usage-bars { flex-basis: 100%; }
 #usage-bars:not(:empty) { margin-top: 4px; margin-bottom: 0; }
 
-.usage-panel { display: flex; align-items: center; gap: 15px; }
+.usage-panel { display: flex; flex-wrap: wrap; align-items: center; gap: 15px; }
 
 .usage-dial {
   position: relative;
@@ -325,7 +409,18 @@ main { padding: 0 var(--gutter); }
 
 /* ---------- the row stack: one icon column, hairline separated ---------- */
 
-.rows { border-top: 1px solid var(--line); }
+.rows {
+  border-top: 1px solid var(--line);
+  /* Six toggles down one column is what made this panel tall. Paired, they
+     cost three rows, and the descriptions stay affordable. */
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  column-gap: 18px;
+}
+/* Live state needs the width: status sentences, the search box, the results. */
+.rows > .row-static,
+.rows > .row-panel,
+.rows > .row-button { grid-column: 1 / -1; }
 
 .row {
   display: grid;
@@ -359,14 +454,18 @@ main { padding: 0 var(--gutter); }
    between the title and its sub-line is what a row can give back without the
    icon column and the switch closing in on the text. */
 .row-text { display: grid; min-width: 0; gap: 1px; }
+.usage-rest { flex-basis: 100%; margin-top: 5px; color: var(--ink-faint); font-size: 9.5px; line-height: 1.3; }
 .row-title { font-size: 12.5px; font-weight: 500; letter-spacing: -.012em; line-height: 1.25; }
+/* Paired columns are half as wide, so a one-line clamp turned descriptions
+   into ellipses. Two lines is what the column can hold honestly. */
 .row-sub {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
   color: var(--ink-faint);
   font-size: 10.5px;
   line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 /* The allowance row carries two controls in its subtitle, and nothing had ever
    styled an anchor inside a row: they rendered in the browser's default link
@@ -492,6 +591,7 @@ main { padding: 0 var(--gutter); }
    being typed into must not move out from under the cursor. */
 body.searching .row-panel ~ *,
 body.searching main > .rows ~ *,
+body.searching #site-nudge,
 body.searching footer { display: none; }
 .recall-result {
   display: grid;
@@ -570,7 +670,7 @@ body.searching footer { display: none; }
   border-radius: 8px;
   background: transparent;
   color: var(--ember);
-  font: 600 10.5px/1 var(--sans);
+  font: 500 10.5px/1 var(--sans);
   cursor: pointer;
 }
 #buy-pro:hover { background: rgb(255 177 133 / .1); }
@@ -582,7 +682,7 @@ body.searching footer { display: none; }
 #buy-pro.primary:hover { opacity: .88; }
 #buy-note { margin-top: 5px; }
 
-.license-row input, .license-row button, #trial-start, .ghost {
+.license-row input, .license-row button, #trial-start, #identity-google, #identity-restore, .ghost {
   min-height: 26px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -606,7 +706,7 @@ body.searching footer { display: none; }
   color: #16090d;
   cursor: pointer;
 }
-#trial-start {
+#trial-start, #identity-google, #identity-restore {
   width: 100%;
   margin-top: 5px;
   border-color: transparent;
@@ -614,7 +714,8 @@ body.searching footer { display: none; }
   color: #16090d;
   cursor: pointer;
 }
-.license-row button:hover, #trial-start:hover { opacity: .88; }
+.license-row button:hover, #trial-start:hover,
+#identity-google:hover, #identity-restore:hover { opacity: .88; }
 
 #license-status { margin-top: 5px; font-size: 9.5px; }
 #license-status:empty { display: none; }
@@ -654,7 +755,7 @@ body.dm-open #pro-active, body.dm-open #trial-active { display: none !important;
 #device-manager-back { width: 100%; margin-top: 9px; }
 #license-retry-activate {
   width: 100%;
-  min-height: 28px;
+  min-height: 26px;
   margin-top: 6px;
   border: 1px solid transparent;
   border-radius: 8px;
@@ -720,3 +821,44 @@ button:disabled { cursor: default; }
    reminder, not a warning, and the tooltip says how long. */
 .badge.overdue::after { content: ""; display: inline-block; width: 5px; height: 5px;
   margin-left: 5px; border-radius: 50%; background: var(--ember); vertical-align: middle; }
+
+/* ---------- "you are not on a chat" ----------
+   Set in the counter's own slot, not added below it: a card here costs 118px
+   of a 600px pane and pushes the search panel past its floor. */
+.pulse-open { margin: 0; color: var(--ink-dim); font-size: 11px; line-height: 1.35; }
+.nudge-chips { display: inline; }
+.nudge-chip {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ember);
+  cursor: pointer;
+  font: 500 11px/1.35 var(--sans);
+}
+/* Trailing space in generated content collapses; the chips sit adjacent in the
+   markup on purpose, so the gap has to come from margin. */
+.nudge-chip:not(:last-child)::after { content: ","; margin-right: .32em; color: var(--ink-faint); }
+.nudge-chip:hover { text-decoration: underline; }
+.nudge-chips::before { content: " "; }
+
+
+/* ---------- identity ---------- */
+/* Sits above the trial button because it is the step before it: an unverified
+   week unlocks nothing, so asking for the address first is the honest order. */
+.identity { display: grid; gap: 8px; margin: 10px 0; }
+.identity[hidden] { display: none; }
+.identity-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  /* --muted is not defined on this surface; the fallback was a cold grey and
+     `font: inherit` gave 13px beside 10.5px controls. */
+  font: 400 10px/1.3 var(--sans);
+  color: var(--ink-faint);
+  text-decoration: underline;
+  cursor: pointer;
+  justify-self: start;
+}
+#identity-status:empty { display: none; }
+#identity-done { display: grid; gap: 6px; }
+#identity-done[hidden] { display: none; }

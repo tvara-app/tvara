@@ -19,6 +19,8 @@
   // it costs one hairline of screen and draws as a gradient rail; the waveform
   // is what you get when you actually go to it.
   let resting = true;
+  let held = false;        // the tour pins the strip open
+  let pin = null;          // set in build(), reaches the closure's setResting
   let raf = 0;
   let onResize = null;     // kept so destroy() can remove it
   let ro = null;           // ResizeObserver on the strip
@@ -98,6 +100,7 @@
     // Rest ⇄ open. CSS owns the width transition; JS only needs to know which
     // picture to paint, and to keep painting while the box is still moving.
     const setResting = (next) => {
+      if (held && next) return;          // the tour is pointing at it
       if (resting === next) return;
       resting = next;
       root.classList.toggle("lct-mm-rest", resting);
@@ -105,6 +108,11 @@
       scheduleDraw();
     };
     root.classList.add("lct-mm-rest");
+    pin = (on) => {
+      held = !!on;
+      if (held) setResting(false);
+      else if (!root.matches(":hover")) setResting(true);
+    };
     root.addEventListener("pointerenter", () => setResting(false));
     root.addEventListener("pointerleave", () => setResting(true));
     root.addEventListener("focusin", () => setResting(false));
@@ -495,7 +503,11 @@
     const dlg = document.querySelector('dialog[open], [aria-modal="true"]');
     const modalOpen = !!(dlg && dlg.getBoundingClientRect().width > 0);
     const roomy = innerWidth > 640 && innerHeight > 320;
-    root.style.display = !modalOpen && roomy && messages.length >= 4 ? "flex" : "none";
+    /* `held` is the tour pointing at this strip. Without it the four-message
+       floor hid the very thing the card was explaining, the anchor came back
+       null, and the card fell to the middle of the screen pointing at nothing
+       — which is what the tour looks like on a short chat. */
+    root.style.display = !modalOpen && roomy && (held || messages.length >= 4) ? "flex" : "none";
     scheduleDraw();
   }
 
@@ -836,6 +848,7 @@
     if (root) { root.remove(); root = null; canvas = null; ctx = null; }
     if (tooltip) { tooltip.remove(); tooltip = null; }
     messages = []; scroller = null; palette = null; hoverIdx = -1; resting = true;
+    pin = null; held = false;               // the closure it reached is gone
     clearCatalog();
   }
 
@@ -976,6 +989,8 @@
 
   self.LCTMinimap = {
     update, destroy, jumpToKey, seed, setStaleHandler,
+    /** Pin the strip open while something is explaining it. */
+    hold(on) { if (pin) pin(on); },
     get count() { return messages.length; }
   };
 })();
