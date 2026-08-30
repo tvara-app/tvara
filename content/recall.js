@@ -14,14 +14,6 @@
   const WRITE_EVERY = 3000;
   const SHOW_LIMIT = 40;
 
-  // Kept identical to recall-page.js / popup.js's own KNOWN_CHAT_HOSTS —
-  // this in-chat overlay is a third site that turns a stored record's host
-  // into a real navigation (go() below). Exact match only.
-  const KNOWN_CHAT_HOSTS = new Set([
-    "chatgpt.com", "chat.openai.com", "claude.ai",
-    "chat.deepseek.com", "grok.com", "www.perplexity.ai", "gemini.google.com"
-  ]);
-
   let adapter = null;
   let latest = null;
   let writeTimer = null;
@@ -459,10 +451,12 @@
       self.LCTSearch.open(q); // already here — drop into in-chat search
       return;
     }
-    // Refuse to navigate to an unrecognised host rather than drop the
-    // record — the click just does nothing. Same guard as recall-page.js
-    // and popup.js.
-    if (!KNOWN_CHAT_HOSTS.has(res.host)) return;
+    /* Refuse to navigate rather than drop the record — the click just does
+       nothing. chatUrl() resolves the path against the host and re-checks the
+       origin, so an allowlisted host cannot be turned into userinfo for
+       somebody else's. Same guard as recall-page.js and popup.js. */
+    const url = self.LCTProduct.chatUrl(res.host, res.path);
+    if (!url) return;
     // other chat (possibly other platform): stash the query, then navigate.
     // The destination tab's content script finds the stash and opens in-chat
     // search there — landing you on the exact text, not just the chat.
@@ -470,10 +464,10 @@
       chrome.storage.local.set({
         "recall-jump": { host: res.host, path: res.path, q, at: Date.now() }
       }, () => {
-        location.href = "https://" + res.host + res.path;
+        location.href = url;
       });
     } catch {
-      location.href = "https://" + res.host + res.path;
+      location.href = url;
     }
   }
 

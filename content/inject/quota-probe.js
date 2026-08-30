@@ -29,7 +29,10 @@
  *   4. FAILS SILENT AND FAILS OPEN. Every touch point is wrapped; a throw
  *      inside our code can never propagate into the host app. If the shape
  *      changes we find nothing and the popup says "not reported".
- *   5. KILLABLE. The page sets data-lct-quota="off" and the hooks self-remove.
+ *   5. KILLABLE — BY US, NOT BY THE PAGE. The off switch used to be an
+ *      attribute on <html>, which is page-writable: any site could turn a paid
+ *      feature off for that tab. It is now an event on the private channel
+ *      described in content/quota-boot.js, which the page cannot name.
  *
  * Response headers do most of the work: `anthropic-ratelimit-*` style headers
  * ride along on the send request itself, which is the instant the number
@@ -39,7 +42,8 @@
   "use strict";
 
   const EVENT = "lct-quota-observed";
-  const FLAG = "data-lct-quota";
+  const KEY = "lct-quota-key";
+  const CONTROL = "lct-quota-control";
   const MAX_BODY_BYTES = 262144;      // 256KB — a limits payload is a few hundred bytes
   const SEND_HINT = /\b(conversation|completion|chat|message|append|stream|ask|responses)\b/;
 
@@ -54,6 +58,12 @@
   const READY = "lct-quota-ready";
   const MAX_BUFFER = 24;
 
+  /* The secret event name. Everything this file says to the extension is said
+     on it, so a page that does not hold it cannot forge a reading or listen to
+     one. It is handed over at document_start — see content/quota-boot.js —
+     before any page script exists to overhear the handover. */
+  let channel = "";
+
   let disabled = false;
   /* This file runs at document_start so the app's own startup calls — which is
      where a bootstrap/limits payload usually appears — are not missed. The
@@ -64,31 +74,44 @@
   let buffer = [];
 
   function killed() {
-    if (disabled) return true;
-    try {
-      if (document.documentElement.getAttribute(FLAG) === "off") { disabled = true; return true; }
-    } catch (_) { /* document torn down */ }
-    return false;
+    return disabled;
   }
 
   /** Numbers out, nothing else. A plain JSON string crosses the world boundary
    *  safely in both Chrome and Firefox — same channel style as fiber-times. */
   function emit(payload) {
-    if (!ready) {
+    if (!ready || !channel) {
       // Bounded: a page that never loads our bridge cannot make this grow.
       if (buffer.length < MAX_BUFFER) buffer.push(payload);
       return;
     }
     try {
-      document.dispatchEvent(new CustomEvent(EVENT, { detail: JSON.stringify(payload) }));
+      document.dispatchEvent(new CustomEvent(EVENT + ":" + channel, { detail: JSON.stringify(payload) }));
     } catch (_) { /* boundary closed — drop it */ }
   }
 
-  document.addEventListener(READY, () => {
-    ready = true;
+  function drain() {
+    if (!ready || !channel) return;
     const held = buffer;
     buffer = [];
     for (const payload of held) emit(payload);
+  }
+
+  document.addEventListener(READY, () => { ready = true; drain(); }, false);
+
+  /* The handshake. This file is injected first and only listens: asking for the
+     token would mean the extension answers whoever asks, and a page script can
+     ask. See content/quota-boot.js. */
+  document.addEventListener(KEY, (event) => {
+    if (channel) return;
+    const token = typeof event.detail === "string" ? event.detail : "";
+    if (!/^[a-f0-9]{32}$/.test(token)) return;
+    channel = token;
+    document.addEventListener(CONTROL + ":" + channel, (e) => {
+      if (e.detail === "off") disabled = true;
+      else if (e.detail === "on") disabled = false;
+    }, false);
+    drain();
   }, false);
 
   /* ---------- extraction ----------

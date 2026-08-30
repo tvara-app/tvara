@@ -44,6 +44,7 @@
             <button id="trial-start" type="button">Start 7-day free trial</button>
             <button id="buy-pro" class="locked-buy" type="button" data-price="or get Pro · {price} once, forever"></button>
           </div>
+          <p id="trial-note" aria-live="polite"></p>
         </div>
 
         <div id="results"></div>
@@ -62,6 +63,10 @@
           <span id="restore-file-name" class="file-name" aria-live="polite">No backup selected</span>
           <label class="field-label" for="restore-passphrase">Backup passphrase</label>
           <input id="restore-passphrase" class="secure-input" type="password" autocomplete="current-password" />
+          <label class="auto-sync" for="restore-reveal">
+            <input type="checkbox" id="restore-reveal" />
+            <span>Show the passphrase while I type it.</span>
+          </label>
           <div class="actions">
             <button id="restore-run" type="button" disabled>Restore and check the gap</button>
             <button id="recovery-skip" class="secondary" type="button">Continue without restoring</button>
@@ -124,6 +129,10 @@
             <div id="backup-strength" class="strength" hidden><span class="strength-bar"><i></i></span><span class="strength-text"></span></div>
             <label class="field-label" for="backup-passphrase-confirm">Confirm passphrase</label>
             <input id="backup-passphrase-confirm" class="secure-input" type="password" autocomplete="new-password" spellcheck="false" />
+            <label class="auto-sync" for="backup-reveal">
+              <input type="checkbox" id="backup-reveal" />
+              <span>Show the passphrase while I type it &mdash; a long one is far easier to get right when you can see it.</span>
+            </label>
             <label class="auto-sync" for="backup-auto">
               <input type="checkbox" id="backup-auto" checked />
               <span>Also keep writing this backup automatically, so a reinstall never costs you an archive.</span>

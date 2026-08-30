@@ -8,6 +8,7 @@ import { readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { chromium } from "playwright";
+import { addDevHosts } from "./security-fixtures.mjs";
 
 const SRC = join(import.meta.dirname, "..");
 // Work dirs live under the OS temp dir — never committed (test/.gitignore).
@@ -26,7 +27,14 @@ const EXT = join(SCRATCH, "ext");
 rmSync(EXT, { recursive: true, force: true });
 mkdirSync(EXT, { recursive: true });
 const sync = spawnSync("rsync", [
-  "-a", "--exclude", ".git", "--exclude", "node_modules", "--exclude", "test/.work",
+  "-a", "--exclude", ".git", "--exclude", "node_modules",
+  /* Every scratch mirror, not just this file's: they nest, and a mirror that
+     copies the last run's mirror grows the tree by hundreds of megabytes a
+     run. tools/.keys is excluded because the dev signing key must never sit
+     inside a directory Chrome is asked to load — that is what puts "this
+     extension includes the key file" on the extensions page. */
+  "--exclude", "test/.work*", "--exclude", "dist", "--exclude", "store",
+  "--exclude", "tools/.keys", "--exclude", ".stryker-tmp",
   SRC + "/", EXT + "/"
 ]);
 if (sync.status !== 0) { console.error("FATAL: could not mirror the extension"); process.exit(1); }
@@ -41,6 +49,10 @@ if (!patched.includes(TEST_PUB)) {
   process.exit(1);
 }
 writeFileSync(licPath, patched);
+
+// The fixture pages are served from 127.0.0.1; the tree itself is not allowed
+// there. See addDevHosts() in security-fixtures.mjs.
+addDevHosts(EXT);
 
 // Same treatment for the entitlement verifier, plus a test issuer origin so
 // page.route can intercept it. Both must carry the SAME key: a token verifies
@@ -234,21 +246,74 @@ try {
     }));
 
   t("A1b buy button visible in free state", await pop.isVisible("#buy-pro"));
-  const buyUrl = await pop.evaluate(async () => {
+
+  /* Buying without a verified address is refused before the round trip. The
+     address is what makes the purchase findable again after a reinstall, so it
+     is part of buying rather than an extra step next to it — and the issuer
+     refuses an anonymous checkout anyway. */
+  const buyAnon = await pop.evaluate(async () => {
     let sent = null;
-    const real = chrome.tabs.create;
-    chrome.tabs.create = (opts) => { sent = opts.url; };
+    const realSend = chrome.runtime.sendMessage;
+    chrome.runtime.sendMessage = (msg, cb) => { sent = msg; if (cb) cb({}); };
+    document.getElementById("buy-pro").click();
+    await new Promise((r) => setTimeout(r, 60));
+    chrome.runtime.sendMessage = realSend;
+    return { sent, status: (document.getElementById("identity-status") || {}).textContent || "" };
+  });
+  t("A1b buying while signed out asks for a sign-in and sends nothing",
+    buyAnon.sent === null && /Sign in with Google|needs Chrome or Edge/.test(buyAnon.status),
+    JSON.stringify(buyAnon));
+
+  /* From here the popup believes an address is verified. The issuer is not
+     reachable from this harness, so the record verification would have written
+     is written directly — the token is opaque to the client, which only ever
+     carries it. */
+  await pop.evaluate(async () => {
+    const rec = { idt: "LCTID1.e2e.identity", at: Date.now() };
+    await chrome.storage.local.set({ "lct-identity-v1": rec });
+    await chrome.storage.sync.set({ "lct-identity-v1": rec });
+  });
+  await pop.reload();
+  await pop.waitForSelector("#identity-done:not([hidden])");
+
+  /* The button asks the BACKGROUND to open a checkout — it does not know a URL,
+     a product or a price, and it opens no tab of its own. That is the whole
+     point of the change: the payment link is not shipped in the extension and
+     is not on a web page, so it can move without a store review and cannot go
+     stale in a cached page. */
+  const buyMsg = await pop.evaluate(async () => {
+    let sent = null, opened = null;
+    const realSend = chrome.runtime.sendMessage;
+    const realCreate = chrome.tabs.create;
     const close = window.close;
+    chrome.runtime.sendMessage = (msg, cb) => { sent = msg; if (cb) cb({ ok: false, reason: "network" }); };
+    chrome.tabs.create = (opts) => { opened = opts.url; };
     window.close = () => {};
     document.getElementById("buy-pro").click();
-    chrome.tabs.create = real;
+    await new Promise((r) => setTimeout(r, 60));
+    chrome.runtime.sendMessage = realSend;
+    chrome.tabs.create = realCreate;
     window.close = close;
-    return sent;
+    return { sent, opened };
   });
-  t("A1b buy button opens our own pricing page (no hard-coded checkout)",
-    buyUrl === "https://tvara-app.github.io/#buy", String(buyUrl));
+  t("A1b buy button asks the issuer to open a checkout",
+    buyMsg.sent && buyMsg.sent.type === "checkout-start", JSON.stringify(buyMsg.sent));
+  t("A1b buy button navigates nowhere itself (no URL in the extension)",
+    buyMsg.opened === null, String(buyMsg.opened));
+  t("A1b no payment URL is shipped in the extension",
+    await pop.evaluate(() => !("BUY" in self.LCTProduct)));
   t("A1b every outward link comes from one place",
     await pop.evaluate(() => !!self.LCTProduct && Object.isFrozen(self.LCTProduct)));
+
+  /* Back to a signed-out install. A7 and A8 measure the free state, and A8's
+     first assertion is that the trial button asks for a sign-in — which it
+     cannot do while this identity record is still sitting in storage. */
+  await pop.evaluate(async () => {
+    await chrome.storage.local.remove("lct-identity-v1");
+    await chrome.storage.sync.remove("lct-identity-v1");
+  });
+  await pop.reload();
+  await pop.waitForSelector("#identity-done", { state: "hidden" });
 
   /* The price used to be typed into seventeen files. Every surface now renders
      the one constant, so changing it cannot leave a page quoting a number the
@@ -290,7 +355,15 @@ try {
     (await pop.evaluate(() => window.__firstPaint)).minimapChecked === false);
   await pop.click("#toggle-minimap"); // restore
 
-  // A3 — invalid key
+  /* A3 — invalid key. The paste box is folded away by default now: signing in
+     is the way in, and this is the recovery path for an LCT1 key or a Google
+     account that is not the address the licence was bought with. */
+  t("A3 the paste box is folded away until asked for",
+    await pop.evaluate(() => document.getElementById("license-row").hidden === true));
+  await pop.click("#license-toggle");
+  t("A3 ...and opens on the link, marked open for a screen reader",
+    await pop.evaluate(() => document.getElementById("license-row").hidden === false &&
+      document.getElementById("license-toggle").getAttribute("aria-expanded") === "true"));
   await pop.fill("#license-input", "LCT1.aGVsbG8.Zm9yZ2VyeQ");
   await pop.click("#license-activate");
   await pop.waitForSelector("#license-status.err");
@@ -423,8 +496,107 @@ try {
   const fpFree = await pop.evaluate(() => window.__firstPaint);
   t("A7 free state back AT FIRST PAINT after removal", fpFree && fpFree.upsellHidden === false);
 
-  // A8 — 7-day trial: start, badge flips, persists, correct at first paint
+  /* A8 — the 7-day trial.
+
+     The trial is anchored to a VERIFIED EMAIL now, not to this install, which
+     is what stops uninstalling and reinstalling minting a second week. The
+     issuer is not reachable from this harness, so an address cannot actually
+     be verified here. What IS reproduced exactly is the thing that decides:
+     the issuer's signed trial token, minted below with the same throwaway key
+     the mirrored extension trusts and bound to this install's real device
+     fingerprint. The `verified` flag beside it is deliberately along for the
+     ride and load-bearing for nothing. */
+  /* `locked` waits for the paint the verdict drives, not the one the cache
+     draws first. Reading #trial-active the instant a reload finishes races the
+     popup's own round trip to the worker, and a negative assertion that wins
+     that race proves nothing. */
+  const writeTrialRecord = async (rec, locked = false) => {
+    await pop.evaluate(async (r) => {
+      await chrome.storage.local.set({ "lct-trial-v2": r });
+      await chrome.storage.sync.set({ "lct-trial-v2": r });
+    }, rec);
+    await pop.reload();
+    if (locked) await pop.waitForSelector("#pro-upsell:not([hidden])");
+  };
+  /* The device the token must bind to: the fingerprint of the non-extractable
+     keypair this install holds, which the popup and the service worker share.
+     A token minted against anything else is a token for another machine. */
+  const trialDevFp = await pop.evaluate(() => self.LCTEntitlement.deviceFpFor(""));
+  /* Real base64, not a readable label. The issuer's `ks` is btoa() of an HMAC,
+     and the Recall page decodes it strictly before sealing a backup — a
+     readable mnemonic fails that decode and surfaces as "Creating a backup is
+     a Pro feature", which is a true sentence about the wrong thing. */
+  const TRIAL_KS = Buffer.alloc(32, 9).toString("base64");
+  const b64trial = (buf) => Buffer.from(buf).toString("base64")
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const mintTrialToken = (over = {}) => {
+    const startedAt = over.startedAt ?? Date.now();
+    const payload = Buffer.from(JSON.stringify({
+      v: 1, typ: "trial", idf: "e2e-identity", dev: trialDevFp,
+      sta: startedAt, iat: Date.now(), exp: startedAt + 7 * 864e5,
+      ks: TRIAL_KS, jti: "tt-e2e", ...over.claims
+    }));
+    let sig = sign("sha256", payload, { key: priv, dsaEncoding: "ieee-p1363" });
+    if (over.tamper) { sig = Buffer.from(sig); sig[0] ^= 0xff; }
+    return `LCTT1.${b64trial(payload)}.${b64trial(sig)}`;
+  };
+  const writeVerifiedTrial = (over = {}, locked = false) => {
+    const startedAt = over.startedAt ?? Date.now();
+    return writeTrialRecord({ startedAt, v: 2, verified: true, checkedAt: Date.now(),
+      ks: TRIAL_KS, tt: mintTrialToken({ ...over, startedAt }) }, locked);
+  };
+
+  // The button does not start an unverified week behind the user's back.
   await pop.click("#trial-start");
+  await pop.waitForFunction(() => {
+    const el = document.getElementById("identity-status");
+    return el && el.textContent.trim().length > 0;
+  });
+  t("A8 the trial button asks for a sign-in before starting a week",
+    /Sign in with Google|needs Chrome or Edge/.test(await pop.textContent("#identity-status")));
+  t("A8 ...and started nothing",
+    (await pop.evaluate(async () => (await chrome.storage.local.get("lct-trial-v2"))["lct-trial-v2"])) === undefined);
+
+  /* An unverified week runs its clock and unlocks NOTHING. Without this an
+     issuer outage — real or manufactured by blocking the domain — would be a
+     way to mint working weeks for free, which is the hole the whole identity
+     anchor exists to close. */
+  await writeTrialRecord({ startedAt: Date.now(), v: 2 }, true);
+  t("A8 an UNVERIFIED week unlocks nothing", !(await pop.isVisible("#trial-active")));
+
+  /* THE FORGE THIS CHANGE EXISTS TO STOP. `verified: true` next to a start date
+     is what a DevTools console can write in ten seconds, once a week, forever.
+     It has to be worth nothing on its own. */
+  await writeTrialRecord({ startedAt: Date.now(), v: 2, verified: true, checkedAt: Date.now(), ks: TRIAL_KS }, true);
+  t("A8 a hand-written verified:true flag unlocks nothing without a signature",
+    !(await pop.isVisible("#trial-active")));
+
+  // A signature that does not verify is not a signature.
+  await writeVerifiedTrial({ tamper: true }, true);
+  t("A8 a tampered trial token unlocks nothing", !(await pop.isVisible("#trial-active")));
+
+  /* Someone else's working token, copied across. The device binding is what
+     makes a leaked trial token worth exactly one machine. */
+  await writeVerifiedTrial({ claims: { dev: "0".repeat(32) } }, true);
+  t("A8 a trial token minted for another device unlocks nothing",
+    !(await pop.isVisible("#trial-active")));
+
+  /* Winding the record's own dates back does nothing: they are read out of the
+     signature, not out of the record. */
+  await writeTrialRecord({ startedAt: Date.now(), v: 2, verified: true, checkedAt: Date.now(),
+    tt: mintTrialToken({ startedAt: Date.now() - 30 * 864e5 }) }, true);
+  t("A8 an EXPIRED signed week unlocks nothing, whatever the record claims",
+    !(await pop.isVisible("#trial-active")));
+
+  /* The popup is a mirror. This is the thing that actually decides whether a
+     Pro handler answers, asked directly. */
+  const gateVerdict = await pop.evaluate(() => new Promise((res) =>
+    chrome.runtime.sendMessage({ type: "entitlement-state" }, res)));
+  t("A8 ...and the gate itself refuses, not just the popup",
+    gateVerdict && gateVerdict.entitled === false && gateVerdict.via === "none",
+    JSON.stringify(gateVerdict && { e: gateVerdict.entitled, via: gateVerdict.via }));
+
+  await writeVerifiedTrial();
   await pop.waitForSelector(".badge.trial");
   t("A8 badge flips to Trial", (await pop.textContent("#plan-badge")).trim() === "Trial");
   t("A8 trial note shows 7 days left", (await pop.textContent("#trial-note")).includes("7 days left"));
@@ -433,9 +605,11 @@ try {
     local: (await chrome.storage.local.get("lct-trial-v2"))["lct-trial-v2"],
     sync: (await chrome.storage.sync.get("lct-trial-v2"))["lct-trial-v2"]
   }));
-  t("A8 trial persisted to BOTH stores (sync survives a local wipe)",
+  t("A8 trial persisted to BOTH stores, carrying the issuer's signed grant",
     trialStore.local && typeof trialStore.local.startedAt === "number" &&
-    trialStore.sync && typeof trialStore.sync.startedAt === "number");
+    String(trialStore.local.tt || "").startsWith("LCTT1.") &&
+    trialStore.sync && typeof trialStore.sync.startedAt === "number" &&
+    String(trialStore.sync.tt || "").startsWith("LCTT1."));
   await pop.reload();
   await pop.waitForSelector(".badge.trial");
   const fpTrial = await pop.evaluate(() => window.__firstPaint);
@@ -521,6 +695,7 @@ try {
     await chrome.storage.sync.remove(["lct-seats-v1", "lct-device-id-v1", "lct-trial-v2"]);
   });
   const doActivate = async (key) => {
+    await pop.click("#license-toggle");           // folded away on every fresh paint
     await pop.fill("#license-input", key);
     await pop.click("#license-activate");
     await pop.waitForFunction(() => !document.getElementById("license-activate").disabled);
@@ -894,6 +1069,7 @@ try {
   await pop.reload();
   await pop.waitForSelector("#pro-upsell:not([hidden])");
   dodoReset();
+  await pop.click("#license-toggle");
   await pop.fill("#license-input", "hello");
   await pop.click("#license-activate");
   await pop.waitForSelector("#license-status.err");
@@ -905,11 +1081,15 @@ try {
   // running again (B11 asserts Total Recall is reachable under trial)
   await clearLicense();
   await pop.unroute("https://*.dodopayments.com/**");
-  await pop.evaluate(() => chrome.runtime.sendMessage({ type: "trial-start" }));
-  await pop.reload();
+  // Same reason as A8: no issuer here, so write what verification would write.
+  await writeVerifiedTrial();
   await pop.waitForSelector("#trial-active:not([hidden])");
 
   /* ============ B. CONTENT — 1,500-message torture page ============ */
+  // The tour is once-ever onboarding and it deliberately sits on top of the
+  // controls it names. Spend its flag here so every B section below drives a
+  // clean page; B14 clears it again and asserts the whole thing.
+  await pop.evaluate(() => chrome.storage.local.set({ "lct-tour-v1": Date.now() }));
   const page = await ctx.newPage();
   trackErrors(page);
   await page.goto("http://127.0.0.1:8917/test/synthetic.html");
@@ -1376,6 +1556,8 @@ try {
 
   t("B3 export bar with 6 SVG buttons (search + bridge + outline + carry + md + json)",
     (await page.locator("#lct-export-bar button svg").count()) === 6);
+  t("B3 action buttons are part of the minimap, never a separate panel",
+    await page.evaluate(() => document.getElementById("lct-export-bar")?.parentElement?.id === "lct-minimap"));
   /* Chrome drops a suggested shortcut when another extension already holds it.
      On the machine this was written on, ⌘⇧F was taken and in-chat search had
      no way in at all — no button, no menu, nothing. Every feature needs a path
@@ -1769,7 +1951,17 @@ try {
     /Everything is already backed up/.test(document.getElementById("sync-status")?.textContent || ""),
     null, { timeout: 5000 });
   t("B11 popup restores durable synchronized state without starting a sync", true);
+  /* Claude is seeded mid-flight on purpose: "the worker died while this
+     platform was still going" is the scenario, and it is the only state
+     normalizeRun() converts to paused — a platform whose last word was an error
+     keeps that error, which is what a signed-out account genuinely has after
+     the install pass has run. Leaving the key absent made the assertion depend
+     on no background pass ever having touched Claude. */
   await recall.evaluate((at) => chrome.storage.local.set({
+    "recall-sync-progress:claude": {
+      state: "syncing", phase: "syncing", done: 3, total: 10,
+      msg: "Capturing 3 of 10 new chats…", at: at + 3
+    },
     "lct-recall-sync-run-v1": {
       id: "interrupted-run", state: "running", workerId: "a-previous-worker",
       startedAt: at, heartbeatAt: at, platforms: ["chatgpt", "claude"]
@@ -2310,7 +2502,23 @@ try {
   await recall.uncheck("#backup-auto");
   const backupDownloadEvent = recall.waitForEvent("download");
   await recall.click("#create-backup");
-  const backupDownload = await backupDownloadEvent;
+  /* A bare "the download never came" names nothing. The page says why it did
+     not in #backup-status, so say that instead of the timeout. */
+  const backupDownload = await backupDownloadEvent.catch(async (err) => {
+    const why = await recall.textContent("#backup-status").catch(() => "(no status)");
+    const gate = await recall.evaluate(async () => {
+      const v = await new Promise((res) => chrome.runtime.sendMessage({ type: "entitlement-state" }, res));
+      const l = (await chrome.storage.local.get("lct-trial-v2"))["lct-trial-v2"] || null;
+      const y = (await chrome.storage.sync.get("lct-trial-v2"))["lct-trial-v2"] || null;
+      const fp = await self.LCTEntitlement.deviceFpFor("");
+      const g = l && l.tt ? await self.LCTEntitlement.trialGrant(l.tt, Date.now()) : null;
+      return { via: v && v.via, entitled: v && v.entitled, trial: v && v.trial, fp,
+        local: l && { sta: l.startedAt, tt: String(l.tt || "").slice(0, 12), verified: l.verified },
+        sync: y && { sta: y.startedAt, tt: String(y.tt || "").slice(0, 12), verified: y.verified },
+        grant: g };
+    }).catch((e) => ({ probeFailed: String(e) }));
+    throw new Error(`no download from #create-backup — #backup-status: ${why} :: gate ${JSON.stringify(gate)} :: ${err.message}`);
+  });
   const backupPath = join(SCRATCH, "reinstall-archive.lctbackup");
   await backupDownload.saveAs(backupPath);
   await recall.waitForSelector("#backup-status.ok", { timeout: 20000 });
@@ -2543,8 +2751,17 @@ try {
   // A locked page must offer both doors: the free week AND the way to pay.
   // Before this, "$9 from the extension popup" was the whole purchase path.
   t("B14 locked recall page offers a way to buy", await recall.isVisible("#buy-pro"));
-  t("B14 recall buy button points at the pricing page",
-    await recall.evaluate(() => self.LCTProduct.BUY.endsWith("#buy")));
+  t("B14 recall buy button asks the issuer for a checkout, and does not navigate",
+    await recall.evaluate(async () => {
+      let sent = null;
+      const before = location.href;
+      const real = chrome.runtime.sendMessage;
+      chrome.runtime.sendMessage = (msg, cb) => { sent = msg; if (cb) cb({ ok: false, reason: "network" }); };
+      document.getElementById("buy-pro").click();
+      await new Promise((r) => setTimeout(r, 60));
+      chrome.runtime.sendMessage = real;
+      return !!sent && sent.type === "checkout-start" && location.href === before;
+    }));
   // the file input itself is hidden by design — its label is the control
   t("B11 locked page still owns import + wipe (user's data)",
     (await recall.isVisible('label[for="import-file"]')) && (await recall.isVisible("#wipe")));
@@ -2706,8 +2923,13 @@ try {
     typeof probe.raw === "number");
 
   await recall2.close();
-  // B14 deliberately locked this install; hand the trial back for B12.
-  await pop.evaluate(() => chrome.runtime.sendMessage({ type: "trial-start" }));
+  /* B14 deliberately locked this install; hand the trial back for B12.
+     Pressing the button is not enough any more: a trial grants nothing without
+     the issuer's signed token, and the issuer is not reachable from here — so
+     the button would start an unverified week that unlocks nothing, and every
+     Bridge assertion below would fail on an empty search rather than on the
+     thing it means to test. */
+  await writeVerifiedTrial();
 
 
   /* ============ B12. Context Bridge (cross-platform prompt injection) ====== */
@@ -3235,117 +3457,193 @@ try {
     t("B21 …and says how many, and roughly how long",
       /\d/.test(row.title) && /min/.test(row.sub), JSON.stringify(row));
     t("B21 …and says why it matters",
-      /Recall can only search what is here/.test(row.sub), row.sub);
+      /Recall can only search what it has downloaded/.test(row.sub), row.sub);
   }
 
   /* ---- B14. First run ----
-     The extension's whole value is three keystrokes and a background archive,
-     and both are invisible until someone is told. These assert the telling
-     happens, says something TRUE about this browser's bindings, and happens
-     exactly once. */
-  const WELCOME = POPUP.replace("/popup/popup.html", "/welcome.html");
-  const wel = await ctx.newPage();
-  trackErrors(wel);
-  await wel.goto(WELCOME);
-  await wel.waitForSelector("#key-list li .k:not(:empty)", { timeout: 5000 });
+     The install tab owns browser-chrome pinning. This tour owns the controls
+     inside a chat, where it can anchor every explanation to a real element. */
 
-  t("B14 welcome page renders", (await wel.textContent("h1")).includes("set up"));
-  t("B14 welcome page teaches three shortcuts",
-    (await wel.locator("#key-list li").count()) === 3);
-  t("B14 welcome page never shows the placeholder",
-    !(await wel.evaluate(() => document.getElementById("key-list").textContent.includes("…"))));
-
-  // The keys printed must be the ones the BROWSER bound, not the ones the
-  // manifest asked for — Chrome silently drops a suggested key another
-  // extension already holds, and teaching a dead keystroke is worse than
-  // teaching none.
-  const keyTruth = await wel.evaluate(async () => {
-    const bound = new Map((await chrome.commands.getAll()).map((c) => [c.name, c.shortcut]));
-    return [...document.querySelectorAll("#key-list li")].map((li) => ({
-      cmd: li.dataset.cmd,
-      shown: li.querySelector(".k").textContent.trim(),
-      unset: li.querySelector(".k").classList.contains("unset"),
-      bound: bound.get(li.dataset.cmd) || ""
-    }));
+  /* Every tool has a label that is not a native `title`: the strip is
+     overflow:hidden, so a browser tooltip inside it is clipped, and a second
+     one on top of ours would double every hint. */
+  const tips = await page.evaluate(() => {
+    const bar = document.getElementById("lct-export-bar");
+    if (!bar) return null;
+    const btns = [...bar.querySelectorAll("button")];
+    return {
+      total: btns.length,
+      tipped: btns.filter((b) => (b.getAttribute("data-tip") || "").includes("|")).length,
+      titled: btns.filter((b) => b.hasAttribute("title")).length,
+      labelled: btns.filter((b) => b.hasAttribute("aria-label")).length
+    };
   });
-  t("B14 every printed key matches what the browser actually bound",
-    keyTruth.every((r) => r.bound ? !r.unset : r.shown === "not assigned"),
-    JSON.stringify(keyTruth));
-  t("B14 a key is shown in the platform's own spelling",
-    keyTruth.every((r) => !r.bound || !/Command|Shift$/.test(r.shown)),
-    JSON.stringify(keyTruth.map((r) => r.shown)));
+  t("B14 every tool on the strip carries a label", tips && tips.total > 0 && tips.tipped === tips.total,
+    JSON.stringify(tips));
+  t("B14 …and no native tooltip doubles it", tips && tips.titled === 0, JSON.stringify(tips));
+  t("B14 …and a screen reader still gets a name", tips && tips.labelled === tips.total,
+    JSON.stringify(tips));
 
-  const welTrial = await wel.evaluate(() =>
-    new Promise((r) => chrome.runtime.sendMessage({ type: "trial-state" }, r)));
-  t("B14 welcome page agrees with the worker about the trial",
-    welTrial.active
-      ? (await wel.evaluate(() => document.getElementById("trial-start").disabled))
-      : true);
-  /* A new install has an archive of nothing, so the paid feature finds nothing
-     and the user concludes it does not work. The first useful thing this page
-     can offer is fetching their own history. */
-  t("B14 the welcome page offers to fetch their history",
-    await wel.isVisible("#fetch-history"));
-  t("B14 …and an import path for people who have an export file",
-    await wel.isVisible("#import-export"));
-  /* The load-bearing idea, not the sentence that carried it: search reaches
-     only what this browser has a copy of. Pinning the exact wording made a
-     copy edit look like a regression. */
-  t("B14 …and says why it matters before asking",
-    /this browser has a copy of/i.test(await wel.textContent("#start-copy")),
-    await wel.textContent("#start-copy"));
-  t("B14 the fetch button says how much there is to fetch",
-    /Fetch/i.test(await wel.textContent("#fetch-history")),
-    await wel.textContent("#fetch-history"));
-
-  t("B14 welcome page offers a way to buy",
-    (await wel.isVisible("#buy-pro")) &&
-    (await wel.evaluate(() => self.LCTProduct.BUY.endsWith("#buy"))));
-  await wel.close();
-
-  /* first-run hint: once, ever, and only about keys that exist */
-  const expectedRows = await pop.evaluate(async () => {
-    const bound = await chrome.commands.getAll();
-    return bound.filter((c) => ["in-chat-search", "open-recall"].includes(c.name) && c.shortcut).length;
+  const tipShown = await page.evaluate(async () => {
+    const btn = document.querySelector('#lct-export-bar button[data-act="search"]');
+    if (!btn) return null;
+    btn.dispatchEvent(new PointerEvent("pointerenter", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 200));
+    const el = document.getElementById("lct-tip");
+    return el && el.classList.contains("lct-tip-show") ? el.textContent : null;
   });
+  t("B14 hovering a tool says what it does, immediately",
+    /Search this chat/.test(tipShown || ""), String(tipShown));
+
+  /* the tour: once, ever, anchored to the real controls */
   // Storage is reached from the EXTENSION page: page.evaluate runs in the
   // synthetic page's main world, where chrome.* deliberately does not exist.
-  await pop.evaluate(() => chrome.storage.local.remove("lct-hint-v1"));
+  await pop.evaluate(() => chrome.storage.local.remove("lct-tour-v1"));
   await page.reload();
   await page.waitForFunction(() => !!document.getElementById("lct-minimap"), null, { timeout: 8000 });
-  await page.waitForTimeout(600);
-  const hint = await page.evaluate(() => {
-    const el = document.getElementById("lct-hint");
-    // The pointer row is not a key row — count what the hint TEACHES.
-    return el ? { rows: el.querySelectorAll(".lct-hint-row:not(.lct-hint-where)").length,
-                  text: el.textContent } : null;
-  });
-  t("B14 first visit gets the hint, with only the keys that exist",
-    expectedRows ? (hint && hint.rows === expectedRows) : hint === null,
-    JSON.stringify(hint));
-  t("B14 the hint points at the strip, not only at the keyboard",
-    !expectedRows || /hover the strip/.test(hint.text), JSON.stringify(hint && hint.text));
-  t("B14 …and the strip shows itself while it is being pointed at",
-    !expectedRows || await page.evaluate(() =>
-      !document.getElementById("lct-minimap")?.classList.contains("lct-mm-rest")),
-    "navigator open");
-  t("B14 the hint says what the tool is",
-    !expectedRows || /Tvara is on/.test(hint.text));
-  t("B14 the hint can be dismissed",
-    !expectedRows || await page.evaluate(() => {
-      document.querySelector("#lct-hint .lct-hint-ok").click();
-      return !document.getElementById("lct-hint");
-    }));
+  await page.waitForSelector("#lct-tour-card", { timeout: 15000 });
 
-  // Second visit: silence. The flag is written BEFORE the card is drawn, so
+  // The pin ask is the first card, and it is skipped outright once the icon is
+  // already on the toolbar — so what is asserted is the rule, either way.
+  const pinState = await pop.evaluate(() => new Promise((r) =>
+    chrome.runtime.sendMessage({ type: "toolbar-pinned" }, r)));
+  t("B14 the worker can say whether the icon is pinned",
+    !!pinState && typeof pinState.pinned === "boolean", JSON.stringify(pinState));
+
+  const first = await page.evaluate(() => {
+    const c = document.getElementById("lct-tour-card");
+    return {
+      step: c.dataset.step,
+      meta: c.querySelector(".lct-tour-meta").textContent,
+      text: c.textContent,
+      art: !!c.querySelector(".lct-tour-art svg"),
+      okay: c.querySelector(".lct-tour-next").textContent
+    };
+  });
+  t("B14 the first conversation gets the tour", /1 of \d/.test(first.meta), first.meta);
+  t("B14 …with at least four things to say", /of ([4-9]|\d\d)/.test(first.meta), first.meta);
+  t("B14 …and one plain button dismisses each card", first.okay === "Okay", first.okay);
+  t("B14 an unpinned install is asked to pin first, and shown a picture of it",
+    pinState.pinned ? first.step !== "pin" : (first.step === "pin" && first.art),
+    JSON.stringify(first));
+  t("B14 …in words that name the menu it is talking about",
+    first.step !== "pin" || /puzzle/i.test(first.text), first.text.slice(0, 120));
+
+  const step1 = await page.evaluate(async () => {
+    const card = () => document.getElementById("lct-tour-card");
+    if (card().dataset.step === "pin") {
+      card().querySelector(".lct-tour-next").click();
+      await new Promise((r) => setTimeout(r, 90));
+    }
+    const c = card();
+    const ring = document.getElementById("lct-tour-ring");
+    const mm = document.getElementById("lct-minimap");
+    const r = ring.getBoundingClientRect(), m = mm.getBoundingClientRect();
+    return {
+      step: c.dataset.step,
+      text: c.textContent,
+      resting: mm.classList.contains("lct-mm-rest"),
+      // the ring sits ON the strip, not somewhere else on the page
+      onStrip: Math.abs(r.left - m.left) < 20 && Math.abs(r.top - m.top) < 20
+    };
+  });
+  t("B14 …pointing at the strip itself", step1.onStrip, JSON.stringify(step1));
+  t("B14 …which is held open while it is being pointed at", !step1.resting);
+  t("B14 …and names the thing before explaining it", /strip/i.test(step1.text));
+
+  // Walk to the tools step. Its legend is built FROM the real toolbar, so a
+  // button the adapter removed can never be explained here.
+  const legend = await page.evaluate(async () => {
+    const next = () => document.querySelector("#lct-tour-card .lct-tour-next");
+    for (let i = 0; i < 8; i++) {
+      if (document.querySelector("#lct-tour-card .lct-tour-legend")) break;
+      const b = next();
+      if (!b) break;
+      b.click();
+      await new Promise((r) => setTimeout(r, 60));
+    }
+    const rows = [...document.querySelectorAll("#lct-tour-card .lct-tour-leg")];
+    const bar = document.getElementById("lct-export-bar");
+    return {
+      rows: rows.length,
+      buttons: bar ? bar.querySelectorAll("button").length : -1,
+      icons: rows.filter((r) => r.querySelector("svg")).length,
+      text: rows.map((r) => r.textContent).join(" | ")
+    };
+  });
+  t("B14 the tour explains every tool on the strip, and only those",
+    legend.rows > 0 && legend.rows === legend.buttons, JSON.stringify(legend));
+  t("B14 …each next to the icon it is talking about", legend.icons === legend.rows,
+    JSON.stringify(legend));
+  t("B14 …in words, not feature names", /Reaches messages/.test(legend.text), legend.text);
+
+  /* Every shape a browser window can be — narrow portrait, short landscape,
+     and back. The tallest card is the one on screen right now. */
+  const fits = [];
+  for (const [w, h] of [[420, 900], [360, 640], [740, 360], [1280, 900]]) {
+    await page.setViewportSize({ width: w, height: h });
+    await page.waitForTimeout(400);
+    fits.push(await page.evaluate(([vw, vh]) => {
+      const c = document.getElementById("lct-tour-card");
+      if (!c) return { vw, vh, ok: false, why: "gone" };
+      const r = c.getBoundingClientRect();
+      return {
+        vw, vh,
+        ok: r.width > 100 && r.left >= -1 && r.top >= -1 && r.right <= vw + 1 && r.bottom <= vh + 1,
+        box: [r.left, r.top, r.right, r.bottom].map(Math.round)
+      };
+    }, [w, h]));
+  }
+  t("B14 the tour fits every window shape, portrait and landscape",
+    fits.every((f) => f.ok), JSON.stringify(fits));
+
+  const closed = await page.evaluate(async () => {
+    for (let i = 0; i < 8; i++) {
+      const b = document.querySelector("#lct-tour-card .lct-tour-next");
+      if (!b) break;
+      b.click();
+      await new Promise((r) => setTimeout(r, 60));
+    }
+    return {
+      gone: !document.getElementById("lct-tour"),
+      // released, not left pinned open on top of the reader's chat
+      resting: document.getElementById("lct-minimap")?.classList.contains("lct-mm-rest")
+    };
+  });
+  t("B14 the tour can be finished", closed.gone, JSON.stringify(closed));
+  t("B14 …and gives the strip back when it is", closed.resting !== false, JSON.stringify(closed));
+
+  // Second visit: silence. The flag is written BEFORE anything is drawn, so
   // two tabs racing cannot both decide they are the first.
   await page.reload();
   await page.waitForFunction(() => !!document.getElementById("lct-minimap"), null, { timeout: 8000 });
-  await page.waitForTimeout(600);
-  t("B14 the hint never comes back",
-    await page.evaluate(() => !document.getElementById("lct-hint")));
+  await page.waitForTimeout(900);
+  t("B14 the tour never comes back",
+    await page.evaluate(() => !document.getElementById("lct-tour")));
   t("B14 the once-ever flag is what stops it",
-    await pop.evaluate(async () => !!(await chrome.storage.local.get("lct-hint-v1"))["lct-hint-v1"]));
+    await pop.evaluate(async () => !!(await chrome.storage.local.get("lct-tour-v1"))["lct-tour-v1"]));
+  t("B14 …but it can be asked for again from the popup",
+    await pop.isVisible("#tour-link"));
+
+  const popupTour = await pop.evaluate(async () => {
+    document.getElementById("tour-link").click();
+    await new Promise((r) => setTimeout(r, 50));
+    const tour = document.getElementById("popup-tour");
+    const next = document.getElementById("popup-tour-next");
+    const seen = [];
+    for (let i = 0; i < 5; i++) {
+      seen.push({ step: tour.dataset.step, text: tour.textContent });
+      if (i < 4) next.click();
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    document.getElementById("popup-tour-close").click();
+    return { hidden: tour.hidden, seen };
+  });
+  t("B14 the popup walkthrough covers the extension options",
+    popupTour.hidden && popupTour.seen.some((s) => s.step === "settings" && /Speed engine/.test(s.text)) &&
+      popupTour.seen.some((s) => s.step === "history" && /temporary chats/.test(s.text)) &&
+      popupTour.seen.some((s) => s.step === "archive" && /Total Recall/.test(s.text)),
+    JSON.stringify(popupTour));
 
   /* ---- B15. The health check ----
      This is the instrument that is supposed to notice a platform redesign

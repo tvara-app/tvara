@@ -14,15 +14,21 @@
    `recall-import` (bulk/backup) still accept and STORE any host, with no
    entitlement required.
 
-   The allowlist instead lives at EVERY point of use — there are exactly two
-   in the whole extension, both gated by an identical `KNOWN_CHAT_HOSTS` set
-   (7 host entries — chatgpt.com AND chat.openai.com are both real, distinct
-   entries for the one ChatGPT product):
-     recall-page.js  — window.open("https://" + res.host + res.path, ...)
-     popup/popup.js  — chrome.tabs.create({ url: "https://" + res.host + res.path })
-   A non-matching host makes the click a no-op instead of a navigation.
-   Exact match, not suffix: "evil-claude.ai" and "claude.ai@evil.com" both
-   fail it. Point-of-use enforcement is a real, permanent burden, not a
+   The allowlist lives at EVERY point of use — three of them now:
+     recall-page.js  — window.open(url, "_blank", "noopener")
+     popup/popup.js  — chrome.tabs.create({ url })
+     content/recall.js — location.href = url
+   and all three get `url` from one place, LCTProduct.chatUrl(host, path).
+
+   Checking the host and then CONCATENATING the two halves — which is what
+   they all did — is not enough, and that is a second, distinct finding this
+   file now locks. A path is a length clamp too, so a page can archive itself
+   with a path of "@evil.example/", and "https://claude.ai" + "@evil.example/"
+   is a link to evil.example with claude.ai as its userinfo: the allowlist
+   passes and the navigation still leaves. chatUrl() resolves the path AGAINST
+   the host and re-checks the resulting origin, so the allowlist means what it
+   says. Exact host match, not suffix: "evil-claude.ai" and "claude.ai@evil.com"
+   both fail it. Point-of-use enforcement is a real, permanent burden, not a
    one-time fix — see navigationSitesAreGuarded() below, which enumerates
    every navigation call in the extension rather than trusting this comment
    to stay accurate. That's what catches the NEXT surface, not this one.
@@ -146,6 +152,22 @@ try {
       `window.open was called with: ${JSON.stringify(confusableClick.opened)}`);
   }
 
+  /* ---------- the same trick, moved into the PATH ----------
+     The host allowlist passes here: the host IS claude.ai. Concatenation is
+     what leaked — "https://claude.ai" + "@evil.example/" resolves to
+     evil.example. Whatever this click does, it must not leave claude.ai. */
+  const pathHijack = mkChat("XSSNAV-PATHINFO-" + Math.random().toString(36).slice(2, 8),
+    { host: "claude.ai", path: "@evil.example/" });
+  await sendFromExtensionPage(ctx, id, { type: "recall-upsert", chat: pathHijack });
+  const pathClick = await clickAndCapture(pathHijack.title);
+  if (pathClick.rowCount > 0) {
+    let origin = "";
+    try { origin = new URL(pathClick.opened[0] || "").origin; } catch { /* nothing opened */ }
+    t("an allowlisted host with a userinfo-shaped PATH never leaves that origin",
+      pathClick.opened.length === 0 || origin === "https://claude.ai",
+      `window.open was called with: ${JSON.stringify(pathClick.opened)}`);
+  }
+
   /* ---------- positive control: a REAL host must still work ---------- */
   const realChat = mkChat("XSSNAV-REALHOST-" + Math.random().toString(36).slice(2, 8), { host: "claude.ai" });
   await sendFromExtensionPage(ctx, id, { type: "recall-upsert", chat: realChat });
@@ -166,8 +188,8 @@ try {
    pass. This enumerates every real navigation call in the shipped extension
    (window.open, location.href/assign/replace, chrome.tabs.create/update) across
    every .js/.html file, and for each one that concatenates a `.host`-shaped
-   value into a URL, requires a `KNOWN_CHAT_HOSTS.has(...)` guard within the
-   preceding few lines. A future surface that lists chats and forgets the
+   value into a URL, requires a `KNOWN_CHAT_HOSTS.has(...)` or
+   `LCTProduct.chatUrl(...)` guard within the preceding few lines. A future surface that lists chats and forgets the
    guard fails this test, not just a manual audit. */
 function walkFiles(dir, exts, out = []) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -183,7 +205,11 @@ function navigationSitesAreGuarded() {
   const files = walkFiles(ROOT, [".js", ".html"]);
   const NAV_PATTERN = /window\.open\(|location\.(href\s*=|assign\(|replace\()|chrome\.tabs\.(create|update)\(/;
   const HOST_PATTERN = /\.host\b/;
-  const GUARD_PATTERN = /KNOWN_CHAT_HOSTS\.has\(/;
+  /* Either guard counts. chatUrl() is the stronger one — it checks the host
+     AND the origin the path resolves to — and is what the three known sites
+     use; the bare host set is still a legitimate guard for a call that does
+     not concatenate a path onto it. */
+  const GUARD_PATTERN = /KNOWN_CHAT_HOSTS\.has\(|LCTProduct\.chatUrl\(/;
   const findings = [];
   for (const file of files) {
     const lines = readFileSync(file, "utf8").split("\n");
@@ -213,10 +239,40 @@ function navigationSitesAreGuarded() {
   return findings;
 }
 
+/* ---------- the guard itself, in isolation ----------
+   The structural check proves every site CALLS it. This proves the thing they
+   all call actually refuses what it is supposed to refuse. */
+{
+  const scope = {};
+  new Function("self", readFileSync(join(ROOT, "lib", "product.js"), "utf8"))(scope);
+  const LP = scope.LCTProduct;
+  const shows = (host, path) => String(LP.chatUrl(host, path));
+  t("chatUrl: an ordinary record resolves to the provider's own origin",
+    LP.chatUrl("claude.ai", "/chat/abc") === "https://claude.ai/chat/abc", shows("claude.ai", "/chat/abc"));
+  t("chatUrl: a userinfo-shaped path stays ON the provider's origin",
+    LP.chatUrl("claude.ai", "@evil.example/") === "https://claude.ai/@evil.example/",
+    shows("claude.ai", "@evil.example/"));
+  t("chatUrl: query and fragment survive intact",
+    LP.chatUrl("chatgpt.com", "/c/1?q=2#f") === "https://chatgpt.com/c/1?q=2#f",
+    shows("chatgpt.com", "/c/1?q=2#f"));
+  for (const [host, path] of [
+    ["claude.ai", "//evil.example/x"],
+    ["claude.ai", "https://evil.example/"],
+    ["claude.ai", "javascript:alert(1)"],
+    ["claude.ai", "\\\\evil.example"],
+    ["chatgpt.com@evil.com", "/x"],
+    ["evil-claude.ai", "/x"],
+    ["evil.example", "/x"]
+  ]) {
+    t(`chatUrl: refuses host=${JSON.stringify(host)} path=${JSON.stringify(path)}`,
+      LP.chatUrl(host, path) === null, shows(host, path));
+  }
+}
+
 {
   const findings = navigationSitesAreGuarded();
-  t("at least the 2 known navigation-of-stored-host sites were found by the enumeration",
-    findings.length >= 2, `found ${findings.length}: ${JSON.stringify(findings.map((f) => `${f.file}:${f.line}`))}`);
+  t("at least the 3 known navigation-of-stored-host sites were found by the enumeration",
+    findings.length >= 3, `found ${findings.length}: ${JSON.stringify(findings.map((f) => `${f.file}:${f.line}`))}`);
   const unguarded = findings.filter((f) => !f.guarded);
   t("every navigation site that consumes a stored .host is guarded by KNOWN_CHAT_HOSTS — no third unguarded site exists",
     unguarded.length === 0,
