@@ -68,7 +68,7 @@
           </span>
           <span class="row-text">
             <span class="row-title">Load full history on open</span>
-            <span class="row-sub">Mounts every older message — in the background, never while you are reading</span>
+            <span class="row-sub">Renders every older message from your own copy — nothing is scrolled</span>
           </span>
           <input type="checkbox" id="toggle-history" />
         </label>
@@ -205,6 +205,17 @@
         </div>
         <p class="pro-note" id="device-manager-note"></p>
         <div id="device-list"></div>
+        <div id="device-actions" hidden>
+          <button id="device-signout" class="ghost" disabled>Sign out</button>
+          <button id="device-signout-all" class="ghost">Sign out of all devices</button>
+        </div>
+        <div id="device-confirm" hidden>
+          <p class="pro-note" id="device-confirm-text"></p>
+          <div class="dm-confirm-row">
+            <button id="device-confirm-yes">Sign out</button>
+            <button id="device-confirm-no" class="ghost">Cancel</button>
+          </div>
+        </div>
         <button id="license-retry-activate" hidden>Try activating again</button>
         <p class="pro-note"><a id="device-help-link" href="https://tvara-app.github.io/#devices" target="_blank" rel="noopener">Slots held by a device you no longer have?</a></p>
         <button id="device-manager-back" class="ghost">Back</button>

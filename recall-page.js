@@ -528,10 +528,31 @@
    *  It also gates the button: being told the passphrase is too weak AFTER
    *  pressing Create, with the archive already read, is how someone ends up
    *  typing something shorter. */
+  /* Two independent choices, and the second only exists inside the first:
+     whether the file gets a password at all, and — if it does — how long this
+     browser holds on to it. Neither is guessed for the user. */
+  const protectionMode = () => ($("protect-none").checked ? "none" : "password");
+  const rememberScope = () => ($("remember-session").checked ? "session" : "device");
+
+  function paintProtection() {
+    const plain = protectionMode() === "none";
+    $("backup-secret").hidden = plain;
+    $("protect-warning").hidden = !plain;
+    $("create-backup").textContent = plain ? "Download unprotected backup" : "Create reinstall backup";
+    $("backup-remember").hidden = plain || !$("backup-auto").checked;
+    paintStrength();
+  }
+
   function paintStrength() {
     const value = $("backup-passphrase").value;
     const confirmation = $("backup-passphrase-confirm").value;
     const meter = $("backup-strength");
+    // No password means nothing to rate and nothing to gate on.
+    if (protectionMode() === "none") {
+      meter.hidden = true;
+      $("create-backup").disabled = !canBackup;
+      return;
+    }
     const rated = value ? crypt.ratePassphrase(value) : { ok: false, score: 0, reason: "" };
     meter.hidden = !value;
     if (value) {
@@ -546,6 +567,25 @@
   }
   $("backup-passphrase").addEventListener("input", paintStrength);
   $("backup-passphrase-confirm").addEventListener("input", paintStrength);
+  for (const id of ["protect-password", "protect-none"]) $(id).addEventListener("change", paintProtection);
+  $("backup-auto").addEventListener("change", paintProtection);
+
+  /* A password the user did not invent is the strongest one they will ever
+     use here: 125 bits, uniform, and no reuse of anything they type elsewhere.
+     Revealed on purpose — a generated secret nobody can read is a secret
+     nobody keeps. */
+  $("backup-generate").addEventListener("click", () => {
+    const value = crypt.generatePassphrase();
+    $("backup-passphrase").value = value;
+    $("backup-passphrase-confirm").value = value;
+    $("backup-reveal").checked = true;
+    $("backup-passphrase").type = "text";
+    $("backup-passphrase-confirm").type = "text";
+    const note = $("backup-generated");
+    note.hidden = false;
+    note.textContent = "Write this down now. It is not stored anywhere you can read it back, and without it the file is gone for good.";
+    paintStrength();
+  });
 
   /* A passphrase nobody can read back is a passphrase people keep short. This
      only flips the input's own type — nothing is stored, sent or logged either
@@ -562,7 +602,7 @@
   }
   wireReveal("backup-reveal", "backup-passphrase", "backup-passphrase-confirm");
   wireReveal("restore-reveal", "restore-passphrase");
-  paintStrength();
+  paintProtection();
 
   async function collectSnapshot() {
     const state = await send({ type: "recall-sync-status" });
@@ -591,35 +631,69 @@
   }
 
   async function createReinstallBackup() {
-    const passphrase = $("backup-passphrase").value;
-    const confirmation = $("backup-passphrase-confirm").value;
-    const rated = crypt.ratePassphrase(passphrase);
-    if (!rated.ok) throw new Error(rated.reason);
-    if (passphrase !== confirmation) throw new Error("The passphrases do not match");
+    const plain = protectionMode() === "none";
+    let passphrase = "";
+    if (!plain) {
+      passphrase = $("backup-passphrase").value;
+      const confirmation = $("backup-passphrase-confirm").value;
+      const rated = crypt.ratePassphrase(passphrase);
+      if (!rated.ok) throw new Error(rated.reason);
+      if (passphrase !== confirmation) throw new Error("The passphrases do not match");
+    }
 
     const payload = await collectSnapshot();
     const { stampKey, stampSub } = await stampCreds();
-    const sealed = await crypt.seal(payload, { passphrase, stampKey, stampSub });
     const stamp = new Date().toISOString().slice(0, 10);
+
+    /* The user's own call, taken at their word and named in the filename so the
+       file says what it is wherever it ends up. Still signed, so a restore
+       refuses an edited copy — what is given up here is secrecy, not
+       provenance. */
+    if (plain) {
+      const sealed = await crypt.sealPlain(payload, { stampKey, stampSub });
+      const filename = `tvara-${stamp}-unprotected.lctbackup`;
+      download(new Blob([sealed.json], { type: "application/json" }), filename);
+      await send({ type: "recall-backup-mark", meta: { chats: payload.chats.length, filename } });
+      setStatus("backup-status",
+        `${payload.chats.length.toLocaleString()} chats written to ${filename}. It is not encrypted: anyone who opens it can read every message.`, "err");
+      return;
+    }
+
+    /* Rounds are measured on the device doing the work rather than fixed: the
+       floor is what the slowest phone can still manage, and a faster machine
+       spends its speed on rounds an attacker must also pay for. */
+    const iterations = await crypt.calibrateIterations();
+    const sealed = await crypt.seal(payload, { passphrase, stampKey, stampSub, iterations });
     const filename = `tvara-${stamp}.lctbackup`;
     download(new Blob([sealed.json], { type: "application/octet-stream" }), filename);
     await send({ type: "recall-backup-mark", meta: { chats: payload.chats.length, filename } });
 
-    // Setting automatic backup up from the same passphrase costs one extra key
-    // derivation and removes the only reason a reinstall ever loses anything:
-    // needing to remember to press this button before uninstalling.
+    /* Remembering costs one extra key derivation and removes the only reason a
+       reinstall ever loses anything: needing to remember to press this button
+       before uninstalling. What is remembered is a key wrapped under the
+       passphrase, never the passphrase — and for how long is the user's call.
+       Declining it clears any older saved key, so the answer here is always the
+       current one. */
     let automatic = "";
     if ($("backup-auto").checked) {
+      const scope = rememberScope();
       try {
         const keyring = await crypt.mintKeyring(passphrase);
-        const result = await send({ type: "recall-autobackup-enable", config: { keyring, everyHours: 24 } });
-        automatic = result && result.ok ? " Automatic backups are on." : " Automatic backup could not be enabled.";
-      } catch { automatic = " Automatic backup could not be enabled."; }
+        const result = await send({ type: "recall-autobackup-enable", config: { keyring, everyHours: 24, scope } });
+        automatic = !result || !result.ok
+          ? " The password could not be remembered."
+          : scope === "session"
+            ? " It is held until you close the browser, and automatic backups run until then."
+            : " It is remembered on this device, and automatic backups keep running.";
+      } catch { automatic = " The password could not be remembered."; }
+    } else {
+      try { await send({ type: "recall-backup-forget-key" }); } catch { /* nothing was saved */ }
     }
 
     $("backup-passphrase").value = "";
     $("backup-passphrase-confirm").value = "";
     $("backup-strength").hidden = true;
+    $("backup-generated").hidden = true;
     paintStrength();
     setStatus("backup-status", `${payload.chats.length.toLocaleString()} chats encrypted in ${filename}.${automatic}`, "ok");
     await paintAutoBackup();
@@ -664,6 +738,16 @@
     const state = await send({ type: "recall-autobackup-state" });
     if (!state || state.err) return;
     $("autobackup-actions").hidden = !state.enabled;
+    $("backup-forget").hidden = !(state.enabled || state.awaitingKey);
+    /* The temporary case, said out loud. The schedule is still configured and
+       the browser has taken the key back, so this is the one screen that can
+       ask for it again — reporting a plain "off" here is how a user finds out
+       months later that nothing was being written. */
+    if (state.awaitingKey) {
+      setStatus("autobackup-status",
+        "Your backup password was only remembered until you closed the browser, so automatic backups are paused. Enter it above to start them again.", "err");
+      return;
+    }
     if (!state.enabled) {
       setStatus("autobackup-status", "Automatic backup is off. The archive only leaves this browser when you press the button.", "");
       return;
@@ -672,8 +756,11 @@
     if (state.lastError) {
       setStatus("autobackup-status", `Automatic backup is on, but the last attempt failed: ${state.lastError}`, "err");
     } else if (state.lastAt) {
+      const held = state.scope === "session"
+        ? "The password is held until you close the browser."
+        : "The password is remembered on this device.";
       setStatus("autobackup-status",
-        `Automatic backup is on. ${state.lastChats.toLocaleString()} chats written ${timeAgo(state.lastAt)} to ${where}. Same passphrase, same encryption.`, "ok");
+        `Automatic backup is on. ${state.lastChats.toLocaleString()} chats written ${timeAgo(state.lastAt)} to ${where}. ${held}`, "ok");
     } else {
       setStatus("autobackup-status", `Automatic backup is on. The first file will be written to ${where}.`, "");
     }
@@ -694,13 +781,32 @@
     await paintAutoBackup();
   });
 
+  $("backup-forget").addEventListener("click", async () => {
+    await send({ type: "recall-backup-forget-key" });
+    setStatus("backup-status", "The saved password is gone from this browser. Files already written still open with it; automatic backups are off until you enter it again.", "");
+    await paintAutoBackup();
+  });
+
   paintAutoBackup();
 
-  $("restore-file").addEventListener("change", (event) => {
+  /* A hint, not a decision: open() is what actually enforces which kind of file
+     this is. Reading the head of the file is enough to stop asking for a
+     passphrase that does not exist. */
+  async function looksUnprotected(file) {
+    try { return /"protection"\s*:\s*"none"/.test(await file.slice(0, 4096).text()); }
+    catch { return false; }
+  }
+
+  $("restore-file").addEventListener("change", async (event) => {
     restoreFile = event.target.files && event.target.files[0];
     $("restore-file-name").textContent = restoreFile ? restoreFile.name : "No backup selected";
     $("restore-run").disabled = !restoreFile || !canRestore;
     setStatus("restore-status", canRestore ? "" : LOCK_COPY);
+    const plain = !!restoreFile && await looksUnprotected(restoreFile);
+    $("restore-unprotected").hidden = !plain;
+    $("restore-passphrase").hidden = plain;
+    $("restore-passphrase-label").hidden = plain;
+    $("restore-reveal").closest("label").hidden = plain;
   });
 
   function waitLabel(ms) {
@@ -720,12 +826,15 @@
     }
     if (restoreFile.size > crypt.MAX_FILE_BYTES) throw new Error("This file is too large to be a backup");
     const passphrase = $("restore-passphrase").value;
-    if (!passphrase) throw new Error("Enter the backup passphrase");
 
     const text = await restoreFile.text();
     // Envelope shape is checked before any key work, so a malformed file fails
-    // fast and never counts against the attempt budget.
-    crypt.inspect(text);
+    // fast and never counts against the attempt budget. It also settles whether
+    // a passphrase is wanted at all, rather than the UI guessing.
+    const info = crypt.inspect(text);
+    if (info.protection !== crypt.PROTECTION_NONE && !passphrase) {
+      throw new Error("Enter the backup passphrase");
+    }
 
     let snapshot;
     try {

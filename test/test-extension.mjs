@@ -15,7 +15,6 @@ const SRC = join(import.meta.dirname, "..");
 const SCRATCH = join(SRC, "test", ".work");
 const PROFILE = join(SCRATCH, "chrome-profile");
 const SHOTS = join(SCRATCH, "shots");
-rmSync(PROFILE, { recursive: true, force: true });
 mkdirSync(SHOTS, { recursive: true });
 
 /* Chromium loads a mirror of the repo, not the repo itself: activation can
@@ -122,17 +121,71 @@ const t = (name, cond, extra = "") => {
 const DOWNLOADS = join(SCRATCH, "downloads");
 rmSync(DOWNLOADS, { recursive: true, force: true });
 mkdirSync(DOWNLOADS, { recursive: true });
-const ctx = await chromium.launchPersistentContext(PROFILE, {
-  channel: process.env.PW_CHANNEL || "chromium", // extensions require the chromium channel's new headless
-  headless: true,
-  args: [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`,
-         `--download-directory=${DOWNLOADS}`],
-  viewport: { width: 900, height: 800 }
-});
+/* A launch is only useful if the extension is actually in it, so the service
+   worker — whose URL is the authoritative extension id — is the proof. Branded
+   Chrome stopped honouring --load-extension in M136 and the feature switch
+   below no longer brings it back either (checked on 152), so a
+   PW_CHANNEL=chrome run has to fall back rather than report a suite that never
+   ran. The switch stays: it is a no-op on Chromium and it costs nothing the day
+   a branded build allows this again. */
+async function launchCtx(channel) {
+  rmSync(PROFILE, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
+  /* Chrome 137+ will install an unpacked extension and then refuse to run it
+     unless the profile has developer mode on — the pages come back
+     ERR_BLOCKED_BY_CLIENT, which reads exactly like "not installed". Seeding
+     the pref before first launch is the only way in on a fresh profile. */
+  mkdirSync(join(PROFILE, "Default"), { recursive: true });
+  writeFileSync(join(PROFILE, "Default", "Preferences"),
+    JSON.stringify({ extensions: { ui: { developer_mode: true } } }));
+  const c = await chromium.launchPersistentContext(PROFILE, {
+    channel,
+    /* Headless Chrome reports every tab as visible — bringToFront() does not
+       move document.visibilityState and neither does any CDP override still in
+       the protocol. The background-tab assertions below check for that and say
+       so rather than failing. LCT_HEADFUL=1 runs them for real. */
+    headless: !process.env.LCT_HEADFUL,
+    args: [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`,
+           "--disable-features=DisableLoadExtensionCommandLineSwitch",
+           /* Chrome 137+ gates the CDP Extensions domain behind this. It is
+              what makes the loadUnpacked fallback below possible at all. */
+           "--enable-unsafe-extension-debugging",
+           `--download-directory=${DOWNLOADS}`],
+    viewport: { width: 900, height: 800 }
+  }).catch((e) => { console.log(`note: ${channel} could not start here (${String(e.message || e).split("\n")[0]})`); return null; });
+  if (!c) return null;
+  const settle = () => c.serviceWorkers()[0] ||
+    c.waitForEvent("serviceworker", { timeout: 20000 }).catch(() => null);
+  let worker = await settle();
+  if (!worker) {
+    /* Branded Chrome ignored --load-extension (M136+, still true on 152).
+       Extensions.loadUnpacked is the replacement Chrome shipped for it, and it
+       returns the id directly — which is better than deriving one, so keep it.
+       The service worker is a lazy MV3 worker and may not have spun up yet;
+       loadUnpacked returning an id is itself the proof the extension is in. */
+    const id = await c.browser()?.newBrowserCDPSession()
+      .then((s) => s.send("Extensions.loadUnpacked", { path: EXT }))
+      .then((r) => r && r.id)
+      .catch(() => null);
+    if (id) { loadedId = id; await settle(); return c; }
+  }
+  if (worker) return c;
+  await c.close();
+  return null;
+}
+let loadedId = "";
+const WANT = process.env.PW_CHANNEL || "chromium";
+let ctx = await launchCtx(WANT);
+if (!ctx && WANT !== "chromium") {
+  console.log(`note: ${WANT} would not load an unpacked extension here (M136+ builds ` +
+    "refuse --load-extension); falling back to the bundled Chromium — same engine, " +
+    "same extension APIs.");
+  ctx = await launchCtx("chromium");
+}
+if (!ctx) { console.error("FATAL: no browser here would load the extension"); process.exit(1); }
 await new Promise((r) => setTimeout(r, 1500)); // let Chrome register the extension
 // Context Bridge's clipboard fallback is asserted deterministically
 try { await ctx.grantPermissions(["clipboard-read", "clipboard-write"], { origin: "http://127.0.0.1:8917" }); } catch {}
-const POPUP = `chrome-extension://${idFromProfile() || computedId}/popup/popup.html`;
+const POPUP = `chrome-extension://${loadedId || idFromProfile() || computedId}/popup/popup.html`;
 
 const pageErrors = [];
 const trackErrors = (p) => {
@@ -1462,17 +1515,27 @@ try {
   t("B2c1 full-history loading on does not move a chat you have just opened",
     !armedStill.moved && !armedStill.paged && armedStill.state === "(never started)",
     JSON.stringify(armedStill));
-  // The reader goes back through the conversation themselves. The top is now
-  // where the page already is, so the walk takes nothing from them.
+  /* The reader goes back through the conversation themselves. Being near the
+     top is NOT permission — that was the whole bug: someone reading old turns
+     is still reading, and the walk answered it by taking the scroller for the
+     next sixty round trips, on screen, at about a screenful a second. */
   await armed.evaluate(() => { document.getElementById("virtual-scroller").scrollTop = 0; });
-  let armedRan = true;
-  try {
-    await armed.waitForFunction(() =>
-      /running|complete/.test(document.documentElement.dataset.lctHistoryState || ""),
-    null, { timeout: 10000 });
-  } catch { armedRan = false; }
-  t("B2c1 …and it starts once the reader is at the top of what is mounted", armedRan,
-    await armed.evaluate(() => document.documentElement.dataset.lctHistoryState || "(never started)"));
+  await armed.waitForTimeout(3000);
+  /* The host paging once because the reader themselves arrived at the top is
+     the host doing its own job — what must not happen is US taking over and
+     driving it there sixty more times. So the assertion is on our own state,
+     not on the fixture's load count. */
+  const atTop = await armed.evaluate(() => ({
+    state: document.documentElement.dataset.lctHistoryState || "(never started)",
+    loads: window.__virtualHistory.loads
+  }));
+  t("B2c1 …and scrolling up to read older turns is still not permission to walk",
+    atTop.state === "(never started)" && atTop.loads <= 1, JSON.stringify(atTop));
+
+  /* There is no automatic walk left to check for: settings.history renders the
+     older turns from the archive instead of scrolling for them, so the page is
+     never taken at all — background tab or not. The ⤒ walk, below, is the only
+     thing that still moves a scroller, and only when asked. */
   await armed.close();
 
   const virtual = await ctx.newPage();

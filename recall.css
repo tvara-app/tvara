@@ -364,6 +364,13 @@ button:disabled { cursor: default; opacity: .4; }
 .status-copy.err { color: var(--danger); }
 .status-copy.dim { color: var(--ink-faint); opacity: .85; }
 
+/* Sub-choices that only apply while their parent switch is on: indented and
+   ruled so the dependency is visible without reading the labels. */
+.form-grid.inset {
+  margin: 2px 0 0 22px; padding-left: 12px; gap: 7px;
+  border-left: 1px solid var(--line);
+}
+
 /* ---------- passphrase strength ---------- */
 
 .strength { display: flex; align-items: center; gap: 9px; }

@@ -83,6 +83,10 @@ async function signedBody(over = {}, { route = "entitlement", dev = DEVICE } = {
   const nonce = over.nonce || freshNonce();
 
   const fields = route === "entitlement" ? [licenseKey]
+    : route === "session" ? [licenseKey]
+    : route === "sessions" ? []
+    : route === "sessions-terminate" ? [over.op_id, (over.targets || []).join(",")]
+    : route === "sessions-terminate-all" ? [over.op_id]
     : route === "devices" ? [licenseKey]
     : route === "devices-revoke" ? [licenseKey, over.target]
     : route === "checkout-claim" ? [over.ref]
@@ -93,7 +97,12 @@ async function signedBody(over = {}, { route = "entitlement", dev = DEVICE } = {
 
   const body = { v: 3, device_pub: dev.pub, nonce, sig };
   if (route !== "trial" && !route.startsWith("checkout") && !route.startsWith("identity")
-      && route !== "restore") body.license_key = licenseKey;
+      && route !== "restore" && !route.startsWith("sessions")) body.license_key = licenseKey;
+  if (route.startsWith("sessions-")) body.op_id = over.op_id;
+  if (route === "sessions-terminate") body.targets = over.targets;
+  if ("if_version" in over) body.if_version = over.if_version;
+  if ("keep_self" in over) body.keep_self = over.keep_self;
+  if ("intent" in over) body.intent = over.intent;
   if (route === "identity-start" || route === "identity-verify") body.email = over.email;
   if (route === "identity-verify") body.code = over.code;
   if (route === "identity-google") body.id_token = over.id_token;
@@ -102,6 +111,9 @@ async function signedBody(over = {}, { route = "entitlement", dev = DEVICE } = {
   if (route === "checkout-claim") body.ref = over.ref;
   if (route === "entitlement") body.instance_id = "inst_1";
   if (route === "devices-revoke") body.target = over.target;
+  // Unsigned, like the client sends them: the row is keyed on a proven device.
+  if ("plat" in over) body.plat = over.plat;
+  if ("label" in over) body.label = over.label;
   if (hasTs) body.ts = ts;
   for (const k of ["device_pub", "v", "sig", "nonce"]) if (k in over) body[k] = over[k];
   return body;
@@ -119,6 +131,7 @@ function kv({ broken = false } = {}) {
       return v === undefined ? null : (type === "json" ? JSON.parse(v) : v);
     },
     async put(k, v) { if (broken) boom(); map.set(k, v); },
+    async delete(k) { if (broken) boom(); map.delete(k); },
   };
 }
 
@@ -1204,6 +1217,385 @@ const claim = async (e, ref, dev = DEVICE) =>
   const body = await res.json();
   t("claim: a PAID order older than a day still reports paid, never expired",
     res.status === 200 && body.state === "paid", JSON.stringify(body));
+}
+
+/* ---------- sessions: the heartbeat that makes termination mean something ----
+ *
+ * The bug under test is the one that made the device screen theatre: releasing
+ * a seat freed a slot and the released machine kept working for the rest of its
+ * 30-day token, because nothing made it ask. Every assertion below is either
+ * "it now finds out" or "it must not find out from an outage".
+ */
+
+const heartbeat = async (e, over = {}, opts = {}) =>
+  post(await signedBody(over, { route: "session", ...opts }), { e, path: "/session" });
+
+{
+  const e = env();
+  stubDodo({ status: 200, body: { valid: true } });
+  const keyFp = await keyFpOf(KEY);
+
+  t("session: an unseated device is not signed in",
+    (await (await heartbeat(e)).json()).live === false);
+
+  await post(await signedBody(), { e });      // claim the seat
+
+  const alive = await heartbeat(e);
+  t("session: a seated device is live", (await alive.json()).live === true, String(alive.status));
+
+  const row = e.DB.sqlite.prepare("SELECT * FROM sessions WHERE dev_fp = ?").get(DEVICE.fp);
+  t("session: activating writes the row the device screen reads", !!row);
+  t("session: the session names the licence it is standing on", row && row.key_fp === keyFp);
+
+  // The headline: release the seat, and the released machine finds out.
+  e.RL.map.clear();                          // the mirror is a 60s cache, not the answer
+  await post(await signedBody({ target: DEVICE.fp }, { route: "devices-revoke" }),
+    { e, path: "/devices/revoke" });
+  const after = await heartbeat(e);
+  const body = await after.json();
+  t("session: a released seat signs the device out", body.live === false, JSON.stringify(body));
+  t("session: releasing takes the session row with it",
+    !e.DB.sqlite.prepare("SELECT 1 FROM sessions WHERE dev_fp = ?").get(DEVICE.fp));
+  t("session: the reason is one the popup can print", body.reason === "terminated");
+
+  // ... and can be activated again. A termination is not a ban.
+  const back = await post(await signedBody(), { e });
+  t("session: the same device may be activated again", back.status === 200);
+  t("session: and is live once more", (await (await heartbeat(e)).json()).live === true);
+}
+
+/* An outage is not a verdict. This is the assertion the whole design hangs on:
+   a ledger we cannot read must never be able to sign a paying customer out. */
+{
+  const e = env();
+  stubDodo({ status: 200, body: { valid: true } });
+  await post(await signedBody(), { e });
+  e.RL.map.clear();
+  e.DB = d1({ broken: true });
+  const res = await heartbeat(e);
+  t("session: a broken ledger answers 503", res.status === 503, String(res.status));
+  t("session: and never says live:false", (await res.json()).live === undefined);
+}
+
+{
+  const e = env({ DB: null });
+  stubDodo({ status: 200, body: { valid: true } });
+  const res = await heartbeat(e);
+  t("session: no database at all degrades open", (await res.json()).live === true, String(res.status));
+}
+
+/* A device whose seat predates this table must not read as signed out on the
+   day the feature ships. */
+{
+  const e = env();
+  stubDodo({ status: 200, body: { valid: true } });
+  const keyFp = await keyFpOf(KEY);
+  const old = Date.now() - 40 * 864e5;
+  e.DB.sqlite.prepare("INSERT INTO seats (key_fp, dev_fp, last_seen) VALUES (?, ?, ?)")
+    .run(keyFp, DEVICE.fp, old);
+
+  t("session: a seat with no session row is adopted, not evicted",
+    (await (await heartbeat(e)).json()).live === true);
+  const row = e.DB.sqlite.prepare("SELECT claimed_at FROM sessions WHERE dev_fp = ?").get(DEVICE.fp);
+  t("session: the adopted row inherits the seat's age, not today's date",
+    row && Number(row.claimed_at) === old, row && String(row.claimed_at));
+}
+
+/* The two account-scoped kills the device screen will write. Enforced now so
+   that route is a pure addition rather than a second place to get this wrong. */
+{
+  const e = env();
+  stubDodo({ status: 200, body: { valid: true } });
+  const keyFp = await keyFpOf(KEY);
+  await post(await signedBody(), { e });
+  e.RL.map.clear();
+
+  e.DB.sqlite.prepare("INSERT INTO session_kills (scope, dev_fp, at, by) VALUES (?, ?, ?, ?)")
+    .run(keyFp, DEVICE.fp, Date.now() + 1000, "owner");
+  t("session: a kill newer than the claim signs the device out",
+    (await (await heartbeat(e)).json()).live === false);
+
+  // Deliberately re-activated afterwards: a newer claim outranks the old kill,
+  // with no tombstone to clean up.
+  e.DB.sqlite.prepare("UPDATE sessions SET claimed_at = ? WHERE dev_fp = ?")
+    .run(Date.now() + 5000, DEVICE.fp);
+  e.RL.map.clear();
+  t("session: re-activating after a kill is live again",
+    (await (await heartbeat(e)).json()).live === true);
+}
+
+{
+  const e = env();
+  stubDodo({ status: 200, body: { valid: true, customer: { email: "buyer@example.com" } } });
+  await post(await signedBody(), { e });
+  const emailFp = "f".repeat(32);
+  e.DB.sqlite.prepare("UPDATE sessions SET email_fp = ? WHERE dev_fp = ?").run(emailFp, DEVICE.fp);
+  e.DB.sqlite.prepare("INSERT INTO account_state (email_fp, epoch, version, updated_at) VALUES (?, ?, 1, ?)")
+    .run(emailFp, Date.now() + 1000, Date.now());
+  e.RL.map.clear();
+  const body = await (await heartbeat(e)).json();
+  t("session: sign-out-everywhere reaches a device by epoch alone", body.live === false);
+  t("session: and says which of the two happened", body.reason === "signed-out");
+}
+
+{
+  const e = env();
+  stubDodo({ status: 200, body: { valid: true } });
+  await post(await signedBody(), { e });
+  e.DB.sqlite.prepare("INSERT INTO revocations (key_fp, reason, at) VALUES (?, ?, ?)")
+    .run(await keyFpOf(KEY), "refunded", Date.now());
+  e.RL.map.clear();
+  const body = await (await heartbeat(e)).json();
+  t("session: a refunded licence answers the heartbeat rather than erroring",
+    body.live === false && body.reason === "revoked", JSON.stringify(body));
+}
+
+{
+  const e = env();
+  stubDodo({ status: 200, body: { valid: true } });
+  const res = await heartbeat(e, { sig: "A".repeat(86) });
+  t("session: an unsigned heartbeat is refused like every other route", res.status === 401);
+}
+
+/* Heartbeats are frequent by design. Sharing RL_MAX would let five devices
+   exhaust a licence's hourly budget and then be refused the very call that
+   tells them they are still signed in. */
+{
+  const e = env();
+  stubDodo({ status: 200, body: { valid: true } });
+  await post(await signedBody(), { e });
+  let worst = 200;
+  for (let i = 0; i < 25; i++) {
+    e.RL.map.delete(`live:${await keyFpOf(KEY)}:${DEVICE.fp}`);
+    worst = Math.max(worst, (await heartbeat(e)).status);
+  }
+  t("session: 25 heartbeats do not exhaust the per-key entitlement budget", worst === 200, String(worst));
+}
+
+/* What the device screen will show. `label` is the one field a person picks,
+   so it is also the one that must not sit in the ledger in the clear. */
+{
+  const e = env();
+  stubDodo({ status: 200, body: { valid: true } });
+  await post(await signedBody({ plat: "macOS · Chrome", label: "Work laptop" }), { e });
+  const row = e.DB.sqlite.prepare("SELECT plat, label_enc FROM sessions WHERE dev_fp = ?").get(DEVICE.fp);
+  t("session: the platform string is kept for the device screen", row && row.plat === "macOS · Chrome");
+  t("session: the label is sealed, not stored in the clear",
+    row && row.label_enc && !String(row.label_enc).includes("Work laptop"));
+}
+
+{
+  const e = env();
+  stubDodo({ status: 200, body: { valid: true } });
+  await post(await signedBody({ plat: "<img src=x onerror=alert(1)>" }), { e });
+  const row = e.DB.sqlite.prepare("SELECT plat FROM sessions WHERE dev_fp = ?").get(DEVICE.fp);
+  t("session: a markup platform string is stripped before it is stored",
+    row && !/[<>]/.test(String(row.plat)), row && String(row.plat));
+}
+
+/* ---------- the device screen ----------
+ *
+ * Account-scoped, multi-target, and transactional. The failure this is written
+ * against is the one a device manager makes look easy: three devices selected,
+ * two signed out, one left running because the third request never landed.
+ */
+
+/* The existing idtFor() folds an ADDRESS; these tests need a chosen efp and a
+   chosen age, because "sign out everything" turns on how old the token is. */
+const idtRaw = (emailFp, iat = Date.now()) => {
+  const payload = Buffer.from(JSON.stringify({
+    v: 1, efp: emailFp, iat, exp: Date.now() + 400 * 864e5
+  }));
+  const mac = createHmac("sha256", createHash("sha256")
+    .update("lct-identity-mac-v1:" + SIGNING_KEY).digest())
+    .update(payload).digest();
+  return `LCTID1.${b64u(payload)}.${b64u(mac)}`;
+};
+
+const ACCOUNT = "a".repeat(32);
+/** Three devices on one licence, all owned by ACCOUNT. */
+async function seededAccount() {
+  const e = env();
+  stubDodo({ status: 200, body: { valid: true } });
+  const keyFp = await keyFpOf(KEY);
+  const devs = [DEVICE, await makeDevice(), await makeDevice()];
+  for (const d of devs) await post(await signedBody({}, { dev: d }), { e });
+  e.DB.sqlite.prepare(
+    "INSERT INTO owners (key_fp, email_fp, lic_enc, bound_at) VALUES (?, ?, NULL, ?)"
+  ).run(keyFp, ACCOUNT, Date.now());
+  return { e, keyFp, devs };
+}
+
+{
+  const { e, devs } = await seededAccount();
+  const res = await post(await signedBody({ idt: idtRaw(ACCOUNT) }, { route: "sessions" }),
+    { e, path: "/sessions" });
+  const body = await res.json();
+  t("screen: the list is the account's, not one licence's",
+    res.status === 200 && body.devices.length === 3, JSON.stringify(body).slice(0, 160));
+  t("screen: the caller's own device is marked",
+    body.devices.filter((d) => d.self).length === 1);
+  t("screen: a device activated from a pasted key is attached to the account",
+    body.devices.every((d) => d.pro === true));
+  t("screen: the list carries a version to terminate against",
+    typeof body.version === "number");
+  t("screen: no licence key is ever handed back",
+    !JSON.stringify(body).includes(KEY));
+
+  const anon = await post(await signedBody({}, { route: "sessions" }), { e, path: "/sessions" });
+  t("screen: without an identity there is no list", anon.status === 401);
+  void devs;
+}
+
+/* Multi-select is the feature. One call, one transaction, or two devices are
+   signed out and the third is still running. */
+{
+  const { e, keyFp, devs } = await seededAccount();
+  const targets = [devs[1].fp, devs[2].fp];
+  const res = await post(await signedBody(
+    { idt: idtRaw(ACCOUNT), op_id: "1".repeat(32), targets }, { route: "sessions-terminate" }),
+    { e, path: "/sessions/terminate" });
+  const body = await res.json();
+  t("screen: two devices are signed out in one call",
+    res.status === 200 && body.terminated.length === 2, JSON.stringify(body).slice(0, 160));
+  t("screen: their seats are released with them",
+    Number(e.DB.sqlite.prepare("SELECT COUNT(*) AS n FROM seats WHERE key_fp = ?").get(keyFp).n) === 1);
+  t("screen: the version moves so a stale screen cannot act on it", body.version === 1);
+  t("screen: the device doing the terminating is untouched",
+    body.devices.length === 1 && body.devices[0].self === true);
+
+  // Each terminated device now finds out, which is the whole point.
+  e.RL.map.clear();
+  const hb = await post(await signedBody({}, { route: "session", dev: devs[1] }),
+    { e, path: "/session" });
+  t("screen: a signed-out device learns it at its next heartbeat",
+    (await hb.json()).live === false);
+
+  // ...and cannot quietly take the seat back on its next renewal.
+  const sneak = await post(await signedBody({}, { dev: devs[1] }), { e });
+  t("screen: a silent renewal does not undo the sign-out", sneak.status === 403,
+    String(sneak.status));
+  t("screen: and says so distinctly from a device-limit refusal",
+    (await sneak.json()).error === "signed out");
+
+  // An explicit Activate does, because a termination is not a ban.
+  const back = await post(await signedBody({ intent: "activate" }, { dev: devs[1] }), { e });
+  t("screen: an explicit re-activation is allowed back in", back.status === 200,
+    String(back.status));
+}
+
+/* A retry of a call that landed and then lost its connection must not sign out
+   a second device. */
+{
+  const { e, devs } = await seededAccount();
+  const op = "2".repeat(32);
+  const first = await post(await signedBody(
+    { idt: idtRaw(ACCOUNT), op_id: op, targets: [devs[1].fp] }, { route: "sessions-terminate" }),
+    { e, path: "/sessions/terminate" });
+  const again = await post(await signedBody(
+    { idt: idtRaw(ACCOUNT), op_id: op, targets: [devs[2].fp] }, { route: "sessions-terminate" }),
+    { e, path: "/sessions/terminate" });
+  const a = await first.json(), b = await again.json();
+  t("screen: a repeated op_id replays its own answer",
+    b.replayed === true && JSON.stringify(b.terminated) === JSON.stringify(a.terminated));
+  t("screen: and signs out nothing the second time",
+    b.devices.length === 2, JSON.stringify(b.devices.map((d) => d.device)));
+}
+
+{
+  const { e, devs } = await seededAccount();
+  const res = await post(await signedBody(
+    { idt: idtRaw(ACCOUNT), op_id: "3".repeat(32), targets: [devs[1].fp], if_version: 7 },
+    { route: "sessions-terminate" }), { e, path: "/sessions/terminate" });
+  const body = await res.json();
+  t("screen: a stale screen is refused, not obeyed", res.status === 412);
+  t("screen: and is handed the list it should have been looking at",
+    body.version === 0 && body.devices.length === 3);
+}
+
+{
+  const { e, devs } = await seededAccount();
+  const res = await post(await signedBody(
+    { idt: idtRaw(ACCOUNT), op_id: "4".repeat(32), targets: ["b".repeat(32)] },
+    { route: "sessions-terminate" }), { e, path: "/sessions/terminate" });
+  const body = await res.json();
+  t("screen: a device on somebody else's account is a no-op, not an error",
+    res.status === 200 && body.terminated.length === 0);
+  t("screen: and nothing on this account moved", body.devices.length === 3);
+  void devs;
+}
+
+/* Sign out of all devices. The irreversible button, so it wants a person at
+   the keyboard rather than a 400-day token found in a copied profile. */
+{
+  const { e } = await seededAccount();
+  const stale = await post(await signedBody(
+    { idt: idtRaw(ACCOUNT, Date.now() - 60 * 60e3), op_id: "5".repeat(32) },
+    { route: "sessions-terminate-all" }), { e, path: "/sessions/terminate-all" });
+  t("screen: an hour-old identity cannot sign out every device", stale.status === 401);
+  t("screen: and is told to verify again rather than that it failed",
+    (await stale.json()).error === "reauth");
+
+  const res = await post(await signedBody({ idt: idtRaw(ACCOUNT), op_id: "6".repeat(32) },
+    { route: "sessions-terminate-all" }), { e, path: "/sessions/terminate-all" });
+  const body = await res.json();
+  t("screen: a fresh identity signs out everything but this device",
+    res.status === 200 && body.terminated.length === 2, JSON.stringify(body).slice(0, 140));
+  t("screen: the device doing it keeps working", body.devices.length === 1);
+  const epoch = e.DB.sqlite.prepare("SELECT epoch FROM account_state WHERE email_fp = ?").get(ACCOUNT);
+  t("screen: and the account epoch moves with it", Number(epoch.epoch) > 0);
+
+  /* The epoch says "anything claimed before now is signed out", and the device
+     that pressed the button was claimed long before now — so keeping yourself
+     signed in has to survive your own sweep. It did not: the five-device run
+     against wrangler dev signed the pressing device out of its own account. */
+  e.RL.map.clear();
+  const mine = await post(await signedBody({}, { route: "session" }), { e, path: "/session" });
+  t("screen: signing out every OTHER device does not sign out this one",
+    (await mine.json()).live === true, "the survivor's claim must be re-stamped past the new epoch");
+  const kept = e.DB.sqlite.prepare("SELECT claimed_at FROM sessions WHERE dev_fp = ?").get(DEVICE.fp);
+  t("screen: the surviving device is re-stamped, not just spared",
+    Number(kept.claimed_at) >= Number(epoch.epoch));
+}
+
+{
+  const { e } = await seededAccount();
+  const res = await post(await signedBody(
+    { idt: idtRaw(ACCOUNT), op_id: "7".repeat(32), keep_self: false },
+    { route: "sessions-terminate-all" }), { e, path: "/sessions/terminate-all" });
+  const body = await res.json();
+  t("screen: keep_self:false signs this device out too", body.terminated.length === 3);
+  t("screen: leaving nothing on the account", body.devices.length === 0);
+}
+
+/* The ledger is the answer; an outage is not. */
+{
+  const { e } = await seededAccount();
+  e.DB = d1({ broken: true });
+  const res = await post(await signedBody({ idt: idtRaw(ACCOUNT) }, { route: "sessions" }),
+    { e, path: "/sessions" });
+  t("screen: a broken ledger answers 503 rather than an empty device list",
+    res.status === 503, String(res.status));
+}
+
+{
+  const { e, devs } = await seededAccount();
+  const res = await post(await signedBody(
+    { idt: idtRaw(ACCOUNT), op_id: "not-hex", targets: [devs[1].fp] },
+    { route: "sessions-terminate" }), { e, path: "/sessions/terminate" });
+  t("screen: a malformed op id is refused before anything is deleted",
+    res.status === 400 && Number(
+      e.DB.sqlite.prepare("SELECT COUNT(*) AS n FROM sessions").get().n) === 3);
+}
+
+{
+  const { e, devs } = await seededAccount();
+  const many = Array.from({ length: 21 }, (_, i) => String(i).padStart(32, "0"));
+  const res = await post(await signedBody(
+    { idt: idtRaw(ACCOUNT), op_id: "8".repeat(32), targets: many },
+    { route: "sessions-terminate" }), { e, path: "/sessions/terminate" });
+  t("screen: an oversized target list is refused", res.status === 400);
+  void devs;
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

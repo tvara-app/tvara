@@ -605,7 +605,7 @@
       state.enabled = settings.enabled !== false;
       state.minimap = settings.minimap !== false;
       state.time = settings.time !== false;
-      state.history = settings.history === true;   // opt-in: it moves the page
+      state.history = settings.history === true;   // opt-in; auto-walk is hidden-tab only
       state.tempArchive = settings.tempArchive === true;
     }
     // The worker holds the signed entitlement; content scripts only ask.

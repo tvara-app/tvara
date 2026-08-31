@@ -195,3 +195,81 @@ CREATE INDEX IF NOT EXISTS identities_by_seen ON identities (first_seen);
 CREATE INDEX IF NOT EXISTS orders_by_created  ON orders (created_at);
 CREATE INDEX IF NOT EXISTS orders_by_updated  ON orders (updated_at);
 CREATE INDEX IF NOT EXISTS identity_emails_by_seen ON identity_emails (updated_at);
+
+-- ─────────────────────────────────────────────────────────────────────────────
+--  Sessions. The device list a person actually recognises.
+--
+--  `seats` is a CAP: (licence, device) pairs, five of them, and it answers
+--  "may this device have Pro". It cannot answer "which devices am I signed in
+--  on" — it has no room for a name, it cannot see a trial device, and it is
+--  keyed on a licence rather than on the person holding it. Those are the
+--  three things a device manager is made of, so they live here.
+--
+--  PRIMARY KEY is dev_fp: one physical device, one session, whichever licence
+--  or identity it currently carries. The limit of that choice, stated so it is
+--  a decision and not an accident: one device holding TWO purchases has one
+--  row, and the row names the licence it last activated. The extension stores
+--  a single `license` record, so that is the shape it already has.
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS sessions (
+  dev_fp     TEXT    PRIMARY KEY,
+  email_fp   TEXT,                     -- null until an identity is verified
+  key_fp     TEXT,                     -- null on a trial device
+  created_at INTEGER NOT NULL,
+  claimed_at INTEGER NOT NULL,         -- reset on an intentful (re-)activation
+  last_seen  INTEGER NOT NULL,
+  label_enc  TEXT,                     -- AES-GCM, same sealing as identity_emails
+  plat       TEXT,                     -- coarse: "macOS · Chrome". Never a full UA.
+  geo        TEXT                      -- two-letter country, server-derived
+);
+CREATE INDEX IF NOT EXISTS sessions_by_email ON sessions (email_fp, last_seen);
+CREATE INDEX IF NOT EXISTS sessions_by_key   ON sessions (key_fp);
+CREATE INDEX IF NOT EXISTS sessions_by_seen  ON sessions (last_seen);
+
+-- Terminations.
+--
+-- Deleting the seat frees a slot; it does not keep the device out, because the
+-- device's next check-in silently claims it back. This row is what makes a
+-- termination a STATE. `scope` is a key_fp or an email_fp so a licence-scoped
+-- and an account-scoped kill share one table and one lookup.
+--
+-- Compared against sessions.claimed_at, never used as a boolean: a device that
+-- is deliberately re-activated afterwards carries a newer claimed_at and is
+-- live again, with no row to clean up and no resurrection race.
+CREATE TABLE IF NOT EXISTS session_kills (
+  scope  TEXT    NOT NULL,
+  dev_fp TEXT    NOT NULL,
+  at     INTEGER NOT NULL,
+  by     TEXT    NOT NULL,             -- 'self' | 'owner' | 'refund' | 'sweep'
+  PRIMARY KEY (scope, dev_fp)
+);
+CREATE INDEX IF NOT EXISTS session_kills_by_at ON session_kills (at);
+
+-- Per-account watermark and concurrency counter.
+--
+-- epoch   — "sign out of all devices", as one write instead of five. Anything
+--           claimed before it is signed out.
+-- version — bumped on every mutation. The device screen sends back the version
+--           it was showing, so a stale list cannot terminate a row that has
+--           stopped being what the person was looking at.
+CREATE TABLE IF NOT EXISTS account_state (
+  email_fp   TEXT    PRIMARY KEY,
+  epoch      INTEGER NOT NULL DEFAULT 0,
+  version    INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL
+);
+
+-- Idempotency and audit in one table.
+--
+-- A terminate that times out gets retried, and without this the retry kills a
+-- second device. The client mints op_id per user action; the row is written in
+-- the same transaction as the kill, and a repeat replays `result` verbatim.
+CREATE TABLE IF NOT EXISTS session_ops (
+  op_id    TEXT    PRIMARY KEY,
+  email_fp TEXT    NOT NULL,
+  kind     TEXT    NOT NULL,           -- 'terminate' | 'terminate-all'
+  targets  TEXT    NOT NULL,           -- JSON array of dev_fp
+  at       INTEGER NOT NULL,
+  result   TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS session_ops_by_at ON session_ops (at);

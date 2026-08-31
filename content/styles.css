@@ -1735,3 +1735,15 @@
 @media (prefers-reduced-motion: reduce) {
   #lct-tour-ring.lct-tour-armed, #lct-tip { transition: none; }
 }
+
+/* Older turns, rendered from the archive rather than scrolled for. Deliberately
+   plain: these are a find-on-page target and a reading fallback, not an attempt
+   to impersonate the host's own bubbles. */
+#lct-old-turns { max-width: 48rem; margin: 0 auto; padding: 8px 16px 24px; }
+#lct-old-turns .lct-old { margin: 0 0 20px; font: inherit; }
+#lct-old-turns .lct-old-who {
+  font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+  opacity: .55; margin-bottom: 4px;
+}
+#lct-old-turns .lct-old-text { white-space: pre-wrap; line-height: 1.6; }
+#lct-old-turns .lct-old[data-lct-old="user"] .lct-old-text { opacity: .85; }

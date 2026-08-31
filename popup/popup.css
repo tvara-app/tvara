@@ -751,6 +751,11 @@ body.dm-open #pro-active, body.dm-open #trial-active { display: none !important;
 .device-meta { display: block; color: var(--ink-faint); font-size: 9px; }
 .device-row.is-self .device-name { color: var(--ember); }
 .device-row button { flex: none; min-height: 24px; padding: 0 9px; font-size: 9.5px; }
+#device-actions, #device-confirm { display: grid; gap: 6px; margin-top: 9px; }
+#device-actions button, #device-confirm button { width: 100%; min-height: 26px; }
+.dm-confirm-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.device-pick { flex: none; accent-color: var(--ember); margin: 0; }
+.device-row.picked { border-color: var(--ember); }
 #device-manager-back { width: 100%; margin-top: 9px; }
 #license-retry-activate {
   width: 100%;

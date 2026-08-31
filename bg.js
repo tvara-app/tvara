@@ -785,6 +785,10 @@ const BG_SWEEP_MS = 24 * 60 * 60 * 1000;
 // archive key has no business leaving the device.
 const BG_AUTOBACKUP = "lct-recall-autobackup-v1";
 const BG_AUTOBACKUP_STATE = "lct-recall-autobackup-state-v1";
+// Where a passphrase remembered "until I close the browser" lives. Session
+// storage is memory-backed and trusted-contexts-only, so it never reaches disk
+// and no content script can read it.
+const BG_BACKUP_KEY = "lct-recall-backup-key-v1";
 const BG_RESTORE_GUARD = "lct-recall-restore-guard-v1";
 const BG_SCHEME_RETRY_MS = 7 * 24 * 60 * 60 * 1000;   // re-probe "none" weekly
 
@@ -1375,11 +1379,19 @@ function policyFor(host) {
 }
 
 // Serializes request starts per host so minIntervalMs holds across all workers.
-function hostSlot(host) {
+/* `foreground` is one request for the conversation somebody has open, and it
+   must not queue behind the circuit breaker. That cooldown is fifteen minutes
+   long and it exists to stop the BULK sync hammering a provider — charging a
+   reader's own chat for the background pass's sins is how "load the older
+   messages" turned into a quarter of an hour of nothing. The polite minimum
+   interval still applies, so this is a jump in the queue, not a free pass. */
+function hostSlot(host, opts) {
   const s = hostEntry(host);
   const policy = policyFor(host);
+  const foreground = !!(opts && opts.foreground);
   const work = async () => {
-    const wait = Math.max(s.cooldownUntil - Date.now(), s.nextAt - Date.now(), 0);
+    const floor = foreground ? 0 : s.cooldownUntil - Date.now();
+    const wait = Math.max(floor, s.nextAt - Date.now(), 0);
     if (wait > 0) await sleep(wait);
     s.nextAt = Date.now() + policy.minIntervalMs;
   };
@@ -1483,7 +1495,7 @@ async function bgFetch(url, opts = {}) {
 
   let lastRate = null;
   for (let attempt = 0; attempt < attempts; attempt++) {
-    await hostSlot(host);
+    await hostSlot(host, opts);
     let r;
     const timeoutCtl = new AbortController();
     const timeoutTimer = setTimeout(() => timeoutCtl.abort(), timeoutMs);
@@ -1934,9 +1946,10 @@ const BG_ADAPTERS = [
         plan: String(j.user?.plan || j.account?.plan_type || "")
       };
     },
-    async get(ctx, path) {
+    async get(ctx, path, opts) {
       const r = await bgFetch(this.base + path, {
-        headers: { Authorization: "Bearer " + ctx.tok }
+        headers: { Authorization: "Bearer " + ctx.tok },
+        ...(opts || {})
       });
       return bgJson(r);
     },
@@ -1973,8 +1986,8 @@ const BG_ADAPTERS = [
     },
     // One request returns the whole conversation. detailFull keeps the title and
     // revision too, so a single-chat index fetch can archive what it read.
-    async detailFull(ctx, id) {
-      const conv = await this.get(ctx, "/backend-api/conversation/" + id);
+    async detailFull(ctx, id, opts) {
+      const conv = await this.get(ctx, "/backend-api/conversation/" + id, opts);
       return {
         msgs: chatgptMsgs(conv),
         title: String(conv.title || ""),
@@ -3675,7 +3688,7 @@ async function chatIndex(host, path, opts = {}) {
   const run = (async () => {
     try {
       const ctx = await idxPrepare(adapter);
-      const full = await adapter.detailFull(ctx, convId);
+      const full = await adapter.detailFull(ctx, convId, opts.foreground ? { foreground: true } : undefined);
       idxFetchedAt.set(recordId, Date.now());
       if (full.msgs.length >= 2) {
         // importBatch, not upsert: it already refuses to overwrite a newer
@@ -3697,7 +3710,10 @@ async function chatIndex(host, path, opts = {}) {
         await noteVanished(recordId, { platform: adapter.id, host: adapter.host, path: adapter.prefix + convId }, "opened");
       }
       if (kind === "auth") idxCtx.delete(adapter.host);
-      return { status: kind };
+      // Pass the provider's own Retry-After through. A caller that has to guess
+      // how long a 429 lasts either gives up too early or hammers it.
+      const retryAfterMs = Number(error && error.retryAfterMs) || 0;
+      return retryAfterMs ? { status: kind, retryAfterMs } : { status: kind };
     } finally {
       idxInflight.delete(recordId);
     }
@@ -4384,8 +4400,15 @@ async function fillState() {
       const n = Array.isArray(list) ? list.length : 0;
       if (n) { remaining[platform] = n; total += n; }
     }
-    return { running: fillRunning, remaining, total, ...(st && typeof st === "object" ? st : {}) };
-  } catch { return { running: fillRunning, remaining: {}, total: 0 }; }
+    const extra = st && typeof st === "object" ? st : {};
+    /* fillRunning lives only in this worker's memory, and MV3 reclaims workers
+       mid-run: the queue is left non-empty with nothing on screen saying so.
+       The watchdog alarm picks it back up; this is what to show until it does.
+       Spread first — a stale persisted key must not overwrite what was just
+       counted. */
+    const resuming = !fillRunning && extra.state === "running" && total > 0;
+    return { ...extra, running: fillRunning, resuming, remaining, total };
+  } catch { return { running: fillRunning, resuming: false, remaining: {}, total: 0 }; }
 }
 
 async function writeFill(patch) {
@@ -4419,7 +4442,14 @@ async function fillStart() {
   let budgetHit = false;
   const stubs = await readStubs();
   const planned = Object.values(stubs).reduce((n, l) => n + (Array.isArray(l) ? l.length : 0), 0);
-  await writeFill({ state: "running", startedAt: started, done: 0, failed: 0, planned });
+  // note cleared: "ChatGPT: signed out" from a previous pass otherwise outlives
+  // the sign-in that fixed it and paints this run as stalled from the start.
+  await writeFill({ state: "running", startedAt: started, done: 0, failed: 0, planned, note: "" });
+  /* Booked before the first fetch and repeating, so a reclaim that is not a
+     budget stop still comes back. The stub list is the resume point, so the
+     alarm only has to call fillStart() again. Cleared when the run ends. */
+  try { await chrome.alarms.create(BG_FILL_ALARM, { delayInMinutes: 1, periodInMinutes: 1 }); }
+  catch { /* no alarms: the popup button still restarts it */ }
 
   try {
     for (const adapter of BG_ADAPTERS) {
@@ -4495,6 +4525,8 @@ async function fillStart() {
       return { status: "paused", done, failed, left: (await fillState()).total };
     }
     const left = (await fillState()).total;
+    // Ended on its own terms: no watchdog until the next start.
+    try { await chrome.alarms.clear(BG_FILL_ALARM); } catch { /* no alarms */ }
     await writeFill({ state: fillCancel ? "stopped" : (left ? "partial" : "done"),
       done, failed, finishedAt: Date.now() });
     return { status: "ok", done, failed, left };
@@ -4698,14 +4730,67 @@ const BG_AUTOBACKUP_MAX_HOURS = 24 * 30;
 const BG_AUTOBACKUP_MAX_BYTES = 96 * 1024 * 1024;
 const BG_AUTOBACKUP_FOLDER = "Tvara";
 
-async function readAutoBackup() {
+/* ---------- how long the password is remembered ----------
+   Two answers, both the user's to give. "Always on this device" persists the
+   wrapped key in local storage, which is what unattended backups have always
+   needed. "Until I close the browser" keeps it in session storage instead:
+   memory-backed, wiped by the browser itself on exit, so forgetting it does not
+   depend on any code of ours running at the right moment — including after a
+   crash. Neither ever stores the passphrase. Both leave the FILE openable only
+   with it.
+
+   The in-memory copy is a fallback for engines without chrome.storage.session.
+   It dies with the service worker, which is a shorter life than promised, never
+   a longer one — the failure mode is being asked to type it again. */
+let sessionKeyring = null;
+
+function sessionArea() {
+  try { return (chrome.storage && chrome.storage.session) || null; } catch { return null; }
+}
+
+async function writeSessionKeyring(keyring) {
+  sessionKeyring = keyring || null;
+  const area = sessionArea();
+  if (!area) return;
+  try {
+    if (keyring) await area.set({ [BG_BACKUP_KEY]: { version: 1, keyring, at: Date.now() } });
+    else await area.remove(BG_BACKUP_KEY);
+  } catch { /* the memory copy stands in for this session */ }
+}
+
+async function readSessionKeyring() {
+  const area = sessionArea();
+  if (area) {
+    try {
+      const got = await area.get(BG_BACKUP_KEY);
+      const raw = got && got[BG_BACKUP_KEY];
+      if (raw && raw.keyring) { sessionKeyring = raw.keyring; return raw.keyring; }
+    } catch { /* fall through to the memory copy */ }
+  }
+  return sessionKeyring;
+}
+
+/** The schedule as configured, with no key attached and no judgement on it. */
+async function readAutoBackupRecord() {
   try {
     const { [BG_AUTOBACKUP]: raw } = await chrome.storage.local.get(BG_AUTOBACKUP);
-    if (!raw || raw.enabled !== true) return null;
-    if (!self.LCTBackupCrypto || !self.LCTBackupCrypto.validKeyring(raw.keyring)) return null;
+    return raw && raw.enabled === true ? raw : null;
+  } catch { return null; }
+}
+
+/** The schedule AND a usable key, or nothing. A session-scoped key that the
+    browser has since wiped lands here as null, which is the point. */
+async function readAutoBackup() {
+  try {
+    const raw = await readAutoBackupRecord();
+    if (!raw) return null;
+    const scope = raw.scope === "session" ? "session" : "device";
+    const keyring = scope === "session" ? await readSessionKeyring() : raw.keyring;
+    if (!self.LCTBackupCrypto || !self.LCTBackupCrypto.validKeyring(keyring)) return null;
     return {
       enabled: true,
-      keyring: raw.keyring,
+      scope,
+      keyring,
       everyHours: Math.min(BG_AUTOBACKUP_MAX_HOURS, Math.max(BG_AUTOBACKUP_MIN_HOURS,
         Math.floor(Number(raw.everyHours) || 24))),
       filename: String(raw.filename || "tvara-auto.lctbackup").slice(0, 120)
@@ -4722,10 +4807,16 @@ async function readAutoBackupRun() {
 
 /** Everything the UI is allowed to know. The keyring never crosses this line. */
 async function autoBackupState() {
+  const record = await readAutoBackupRecord();
   const config = await readAutoBackup();
   const run = await readAutoBackupRun();
+  const scope = record ? (record.scope === "session" ? "session" : "device") : "";
   return {
     enabled: !!config,
+    scope,
+    // Configured, but the key it ran on was the temporary kind and the browser
+    // has since taken it back. Says so instead of reporting a silent "off".
+    awaitingKey: !!record && !config,
     everyHours: config ? config.everyHours : 24,
     filename: config ? config.filename : "",
     folder: BG_AUTOBACKUP_FOLDER,
@@ -4743,10 +4834,14 @@ async function autoBackupConfigure(config) {
   }
   const everyHours = Math.min(BG_AUTOBACKUP_MAX_HOURS, Math.max(BG_AUTOBACKUP_MIN_HOURS,
     Math.floor(Number(config.everyHours) || 24)));
-  await chrome.storage.local.set({
-    [BG_AUTOBACKUP]: { version: 1, enabled: true, keyring: config.keyring, everyHours,
-      filename: "tvara-auto.lctbackup", setUpAt: Date.now() }
-  });
+  const scope = config.scope === "session" ? "session" : "device";
+  const record = { version: 1, enabled: true, scope, everyHours,
+    filename: "tvara-auto.lctbackup", setUpAt: Date.now() };
+  // Written whole, so switching from "always" to "until I close the browser"
+  // drops the persisted key rather than leaving it behind on disk.
+  if (scope === "device") record.keyring = config.keyring;
+  await chrome.storage.local.set({ [BG_AUTOBACKUP]: record });
+  await writeSessionKeyring(scope === "session" ? config.keyring : null);
   await chrome.storage.local.set({ [BG_AUTOBACKUP_STATE]: { lastAt: 0, lastChats: 0, lastError: "" } });
   await ensureAutoBackupAlarm(true);
   const first = await runAutoBackup("setup");
@@ -4754,6 +4849,7 @@ async function autoBackupConfigure(config) {
 }
 
 async function autoBackupDisable() {
+  await writeSessionKeyring(null);
   await chrome.storage.local.remove([BG_AUTOBACKUP, BG_AUTOBACKUP_STATE]);
   try { await chrome.alarms.clear(BG_AUTOBACKUP_ALARM); } catch { /* alarms unavailable */ }
   return { ok: true, state: await autoBackupState() };
@@ -4779,7 +4875,20 @@ let autoBackupRunning = false;
 
 async function runAutoBackup(reason) {
   const config = await readAutoBackup();
-  if (!config) return { status: "disabled" };
+  if (!config) {
+    /* A schedule whose key was only ever remembered for the session. Not a
+       failure to hide: the user has to type the passphrase again, and the only
+       place that can tell them is this status line. */
+    if (await readAutoBackupRecord()) {
+      const run = await readAutoBackupRun();
+      try {
+        await chrome.storage.local.set({ [BG_AUTOBACKUP_STATE]: { ...run, lastCheckedAt: Date.now(),
+          lastError: "Your backup password was only remembered until you closed the browser. Enter it again to resume automatic backups." } });
+      } catch { /* dead context */ }
+      return { status: "needs-password" };
+    }
+    return { status: "disabled" };
+  }
   if (autoBackupRunning) return { status: "already-running" };
   // A snapshot taken mid-pass would be a torn read of a moving archive, and the
   // next scheduled one is minutes away.
@@ -5007,6 +5116,60 @@ async function entitlementTick() {
   } catch { /* offline, dead context, or no device key — backoff owns the retry */ }
 }
 
+/* ---------- session heartbeat ----------
+   A separate clock from renewal, and deliberately faster. Renewal asks "may I
+   have a new token" and only bothers with ten days of the old one left;
+   this asks "am I still signed in", which is the question a device screen's
+   Sign out button depends on. Hourly: fast enough that terminating a device is
+   a real event, slow enough that five devices cost the issuer 120 calls a day.
+
+   Only an ANSWER can end anything here — see heartbeat() in lib/entitlement.js.
+   An unreachable issuer leaves this install exactly as entitled as it was. */
+const BG_SESSION_ALARM = "lct-session";
+const BG_SESSION_PERIOD_MIN = 60;
+
+async function sessionTick() {
+  lastHeartbeatAt = Date.now();
+  try {
+    const got = await chrome.storage.local.get("license");
+    const lic = got && got.license;
+    if (!lic || !lic.key) return;
+    await self.LCTEntitlement.heartbeat(lic);
+  } catch { /* offline, dead context, or no device key — the next tick retries */ }
+}
+
+/* The hourly alarm is the floor, not the ceiling.
+ *
+ * The design called for a Durable Object holding a WebSocket so a sign-out
+ * lands in about a second. In an MV3 extension that is the wrong shape: the
+ * service worker dies after 30 seconds idle, so holding the socket means
+ * pinging it awake forever — a permanently resident worker, on every install,
+ * to shorten one licensing event. See docs/SESSIONS.md.
+ *
+ * This gets most of the way for nothing. The worker already wakes for content
+ * script traffic whenever somebody is actually using an AI chat, which is
+ * exactly when being signed out matters, so a check-in rides along on a
+ * five-minute floor.
+ */
+const SESSION_ACTIVE_MS = 5 * 60e3;
+let lastHeartbeatAt = 0;
+
+function maybeSessionTick() {
+  const now = Date.now();
+  if (now - lastHeartbeatAt < SESSION_ACTIVE_MS) return;
+  lastHeartbeatAt = now;      // set BEFORE the await: two messages in the same
+  sessionTick();              // tick must not both start a request
+}
+
+async function ensureSessionAlarm() {
+  try {
+    const existing = await chrome.alarms.get(BG_SESSION_ALARM);
+    if (existing && existing.periodInMinutes === BG_SESSION_PERIOD_MIN) return;
+    await chrome.alarms.create(BG_SESSION_ALARM,
+      { delayInMinutes: 2, periodInMinutes: BG_SESSION_PERIOD_MIN });
+  } catch { /* alarms unavailable */ }
+}
+
 async function ensureEntitlementAlarm() {
   try {
     const existing = await chrome.alarms.get(BG_ENT_ALARM);
@@ -5065,12 +5228,18 @@ try {
     else if (alarm.name === BG_AUTO_ALARM || alarm.name === BG_RESUME_ALARM) autoSyncTick();
     else if (alarm.name === BG_AUTOBACKUP_ALARM) maybeAutoBackup("alarm");
     else if (alarm.name === BG_ENT_ALARM) entitlementTick();
+    else if (alarm.name === BG_SESSION_ALARM) sessionTick();
     else if (alarm.name === BG_ORDER_ALARM) claimPendingOrder().catch(() => {});
   });
   const wake = () => {
     ensureAutoSyncAlarm();
     ensureAutoBackupAlarm();
     ensureEntitlementAlarm();
+    ensureSessionAlarm();
+    /* Browser start is the one moment a device that was terminated while it was
+       switched off can find out before it is used. The alarm's own delay is two
+       minutes; this does not wait for it. */
+    sessionTick();
     // A purchase started before the last shutdown is still owed a licence.
     ensureOrderAlarm().catch(() => {});
     firstRunBootstrap("wake").catch(() => {});   // no-op once it has run
@@ -5141,6 +5310,7 @@ const PAID = Object.freeze({
   "recall-autobackup-state": "archive.backup",
   "recall-autobackup-enable": "archive.backup",
   "recall-autobackup-disable": "archive.backup",
+  "recall-backup-forget-key": "archive.backup",
   "recall-autobackup-run": "archive.backup",
   "recall-snapshot": "archive.backup",
   /* The same archive, reached from the page instead of the Recall tab. Export
@@ -5576,7 +5746,10 @@ async function activateLicenseKey(key) {
     "lct-license-state-v1": { lastValidatedAt: now, lastAttemptAt: now, strikes: [] }
   });
 
-  const ent = await self.LCTEntitlement.refresh(record, res.deviceId, { force: true });
+  /* Activation, and only activation, may clear a sign-out this device was
+     given from somewhere else. The 12-hourly tick must not. */
+  const ent = await self.LCTEntitlement.refresh(record, res.deviceId,
+    { force: true, activate: true });
   if (!ent.ok) {
     /* `branch` is carried out rather than collapsed into "entitlement". The
        seat is already claimed at this point, so every one of these is a person
@@ -5923,6 +6096,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!_senderAllowed(sender)) return false;
 
   const run = async () => {
+    /* Somebody is using the extension, so this is a cheap moment to find out
+       whether this device is still signed in. Fire and forget: nothing below
+       waits on it, and a failure changes nothing. */
+    maybeSessionTick();
+
     // Rate-limit entitlement probes
     if ((msg && msg.type) === "entitlement-state" && _queryThrottle()) {
       await new Promise((r) => setTimeout(r, 2000)); // throttle, not block
@@ -5937,12 +6115,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     switch (msg && msg.type) {
       case "entitlement-state": return entitlementVerdict();
+      /* Opening the popup is the other moment a terminated device can find
+         out promptly, and it costs one request. Handled here rather than in
+         the popup so every network call in the licensing path stays in one
+         place, with one backoff. */
+      case "session-heartbeat": {
+        const got = await chrome.storage.local.get("license");
+        const lic = got && got.license;
+        if (!lic || !lic.key) return { skipped: "none" };
+        return self.LCTEntitlement.heartbeat(lic);
+      }
       case "entitlement-refresh": {
         const got = await chrome.storage.local.get("license");
         const lic = got && got.license;
         if (!lic || !lic.key) return { ok: false, branch: "none" };
         const deviceId = await self.LCTDodo.ensureDeviceId();
-        return self.LCTEntitlement.refresh(lic, deviceId, { force: !!(msg && msg.force) });
+        return self.LCTEntitlement.refresh(lic, deviceId, {
+          force: !!(msg && msg.force), activate: !!(msg && msg.activate)
+        });
       }
       /* Activation, driven from the post-purchase page instead of the popup.
          The three steps are the popup's, in the popup's order, because doing
@@ -6024,10 +6214,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case "archive-fill-stop":  return fillStop();
       case "recall-auto-tick":   return autoSyncTick();
       case "recall-visit-sync":  return visitSync(msg.platform);
-      case "chat-index":         return chatIndex(msg.host, msg.path, { force: msg.force });
+      case "chat-index":         return chatIndex(msg.host, msg.path, { force: msg.force, foreground: !!msg.foreground });
       case "chat-message":       return chatMessage(msg.host, msg.path, msg.id);
       case "chat-search":        return chatSearch(msg.host, msg.path, msg.q);
       case "chat-archive":       return chatArchive(msg.host, msg.path);
+      /* Deliberately NOT in PAID, and narrower than chat-archive on purpose.
+         It returns ONE conversation: the one the asking tab is looking at. That
+         is not the archive product — search, other chats and export stay gated —
+         it is the text the page itself would hold if the reader sat there
+         scrolling to the top, which is exactly what this replaces. Gating it
+         would mean the free half of "put the older messages back" is an
+         instruction to go and scroll. */
+      case "chat-mount": {
+        const want = String(msg.host || "") + String(msg.path || "");
+        let from;
+        try { const u = new URL(sender && sender.url || ""); from = u.host + u.pathname; }
+        catch { return { status: "forbidden" }; }
+        if (!want || from !== want) return { status: "forbidden" };
+        return chatArchive(msg.host, msg.path);
+      }
       // "the page found this chat gone", not "delete this". Nothing outside
       // resolveDeletions() gets to remove archived text on request.
       case "chat-drop":          return noteVanished(msg.id, {}, "opened");
@@ -6068,6 +6273,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case "recall-deletions":        return deletionsList();
       case "recall-deletions-resolve": return resolveDeletions(msg.ids, msg.action);
       case "recall-autobackup-state": return autoBackupState();
+      // Forgetting the key stops the schedule too: a scheduled backup with no
+      // key is a promise that cannot be kept, and silently not kept is worse.
+      case "recall-backup-forget-key": return autoBackupDisable();
       case "recall-autobackup-enable": return autoBackupConfigure(msg.config);
       case "recall-autobackup-disable": return autoBackupDisable();
       case "recall-autobackup-run":   return runAutoBackup("manual");

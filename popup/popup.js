@@ -903,6 +903,10 @@
       // it sets revokedAt, which evaluate() treats as an immediate hard stop,
       // and it still lands a refund or chargeback if the issuer is unreachable.
       send({ type: "entitlement-refresh" });
+      /* "Am I still signed in on this device?" — the question the 30-day token
+         does not ask on its own. Opening the popup is the moment a person is
+         most likely to be looking when the answer is no. */
+      send({ type: "session-heartbeat" });
       self.LCTDodo.maybeRevalidate(license);
 
       // One cause, one explanation. "Invalid" is never the word — the licence
@@ -923,6 +927,23 @@
           note: "Paste your key again. The seat is already yours, nothing was lost."
         }
       };
+      /* A device signed out from somewhere else has no token, so the verdict
+         reads "no-token" — the same reason a half-finished activation gives.
+         Same symptom, opposite instruction: one says paste your key again, the
+         other says you were signed out on purpose. The marker is what tells
+         them apart, and without it this popup blames the user for something
+         they did deliberately from another machine. */
+      const signedOut = await self.LCTEntitlement.readSignOut();
+      if (!pro && signedOut) {
+        DEAD["no-token"] = DEAD.revoked = DEAD["device-mismatch"] = DEAD["key-mismatch"] = {
+          text: signedOut.reason === "revoked"
+            ? "This licence was deactivated on your account."
+            : "You signed this device out.",
+          note: signedOut.reason === "revoked"
+            ? "If that's a surprise, reply to your purchase email and we'll sort it out."
+            : "Activate again below to use Pro here. Your archive never left this device."
+        };
+      }
       const dead = !pro && verdict && DEAD[verdict.reason];
       if (dead) {
         paintLicenseState({
@@ -976,16 +997,24 @@
     const title = $("fill-title");
     const sub = $("fill-sub");
     if (!row) return;
-    const left = (state && state.total) || 0;
-    const running = !!(state && state.running);
+    /* No answer is not "nothing left to download". The worker is MV3: it gets
+       reclaimed, and archive-fill-state can walk a 25MB archive before it
+       replies, so sendMessage resolves undefined. Painting that as zero hid
+       this row for the life of the popup — start a download, close the popup,
+       reopen, and the button was gone. Leave the row as it was and retry. */
+    if (!state) return;
+    const left = state.total || 0;
+    const running = !!(state.running || state.resuming);
 
     if (!left && !running) { row.hidden = true; return; }
     row.hidden = false;
 
     if (running) {
-      const done = (state && state.done) || 0;
+      const done = state.done || 0;
       title.textContent = "Downloading your chats' text…";
-      sub.textContent = `${done.toLocaleString()} done, ${left.toLocaleString()} to go. Tap to stop.`;
+      sub.textContent = state.running
+        ? `${done.toLocaleString()} done, ${left.toLocaleString()} to go. Tap to stop.`
+        : `${done.toLocaleString()} done, ${left.toLocaleString()} to go. The browser paused it; picking up again.`;
       row.classList.add("busy");
       return;
     }
@@ -1021,14 +1050,23 @@
      while the download was in fact running. */
   let fillExpected = 0;
 
+  let fillTries = 0;
+
   async function refreshFill() {
     const state = await send({ type: "archive-fill-state" });
     paintFill(state);
     clearTimeout(fillTimer);
+    /* A cold worker's first reply is the one that gets dropped. Ask again,
+       backing off, instead of leaving the row on nothing. */
+    if (!state) {
+      if (fillTries++ < 6) fillTimer = setTimeout(refreshFill, 600 * fillTries);
+      return;
+    }
+    fillTries = 0;
     const waitingToStart = fillExpected && Date.now() < fillExpected;
-    if (state && state.running) fillExpected = 0;
+    if (state.running) fillExpected = 0;
     // Poll only while it is working, or while we are waiting for it to admit it.
-    if ((state && state.running) || waitingToStart) fillTimer = setTimeout(refreshFill, 1200);
+    if (state.running || state.resuming || waitingToStart) fillTimer = setTimeout(refreshFill, 1200);
   }
 
   /* The row is not a button element, so nothing disabled it: two clicks 150ms
@@ -1044,7 +1082,8 @@
     $("fill-archive").classList.add("pending");
     try {
       const state = await send({ type: "archive-fill-state" });
-      const stopping = !!(state && state.running);
+      // Stopping a reclaimed run means clearing its watchdog, not just its loop.
+      const stopping = !!(state && (state.running || state.resuming));
       await send({ type: stopping ? "archive-fill-stop" : "archive-fill-start" });
       // Give the worker a window to admit it started before we stop polling.
       fillExpected = stopping ? 0 : Date.now() + 30000;
@@ -1306,7 +1345,8 @@
       // paid features. Awaited, not fired off: without a token the user paid
       // and got nothing, and they need to see why while the popup is still open.
       btn.textContent = "Finishing…";
-      const ent = await self.LCTEntitlement.refresh(record, res.deviceId, { force: true });
+      const ent = await self.LCTEntitlement.refresh(record, res.deviceId,
+        { force: true, activate: true });
       // The token is settled now, either way. Any load() still waiting on a
       // verdict fetched before this point is stale — see the guard in load().
       planGen++;
@@ -1411,18 +1451,190 @@
     $("license-retry-activate").hidden = mode !== "limit";
   }
 
+  /* ---------- the account's devices ----------
+     The list above is this browser's own registry, kept in chrome.storage.sync
+     and therefore blind to a device signed into another profile. This one is
+     the issuer's, which is the copy that decides — so it can show a machine
+     this browser has never heard of, and sign it out. */
+
+  let dmVersion = 0;
+  let dmDevices = [];
+  let dmPicked = new Set();
+  let dmOpId = "";
+  let dmPending = "";
+
+  /* One key per user action, reused across retries of THAT action. A retry
+     that mints a fresh one is a second sign-out, which is the bug the issuer's
+     op ledger exists to make impossible. */
+  const newOpId = () => [...crypto.getRandomValues(new Uint8Array(16))]
+    .map((b) => b.toString(16).padStart(2, "0")).join("");
+
+  function seenWhen(ms) {
+    if (!ms) return "never used";
+    const age = Date.now() - ms;
+    if (age < 6 * 60e3) return "active now";
+    if (age < 36e5) return Math.round(age / 60e3) + " min ago";
+    if (age < 864e5) return Math.round(age / 36e5) + "h ago";
+    return "last active " + new Date(ms).toLocaleDateString();
+  }
+
+  function sessionRow(d) {
+    const row = document.createElement("div");
+    row.className = "device-row" + (d.self ? " is-self" : "") +
+      (dmPicked.has(d.device) ? " picked" : "");
+    const pick = document.createElement("input");
+    pick.type = "checkbox";
+    pick.className = "device-pick";
+    pick.checked = dmPicked.has(d.device);
+    pick.setAttribute("aria-label", "Select " + (d.label || d.plat || "device"));
+    /* Only this row and the buttons. Re-rendering the whole list on a tick
+       throws away the checkbox the person is still on — it detaches the very
+       element they clicked, which loses focus and breaks a keyboard pass down
+       the list. */
+    pick.addEventListener("change", () => {
+      if (pick.checked) dmPicked.add(d.device); else dmPicked.delete(d.device);
+      row.classList.toggle("picked", pick.checked);
+      syncActions();
+    });
+    const text = document.createElement("span");
+    text.className = "device-text";
+    const name = document.createElement("span");
+    name.className = "device-name";
+    // textContent only: a label is written by another device — untrusted input.
+    name.textContent = (d.label || d.plat || "Unknown device") + (d.self ? " (this device)" : "");
+    const meta = document.createElement("span");
+    meta.className = "device-meta";
+    meta.textContent = [d.label && d.plat ? d.plat : "", d.geo, seenWhen(d.lastSeen)]
+      .filter(Boolean).join(" \u00b7 ");
+    text.append(name, meta);
+    row.append(pick, text);
+    return row;
+  }
+
+  function syncActions() {
+    $("device-signout").disabled = !dmPicked.size;
+    $("device-signout").textContent = dmPicked.size ? `Sign out (${dmPicked.size})` : "Sign out";
+    $("device-signout-all").hidden = dmDevices.length < 2;
+  }
+
+  function renderSessions(note) {
+    $("device-list").replaceChildren(...dmDevices.map(sessionRow));
+    $("device-count").textContent = `${dmDevices.length} of ${self.LCTDodo.SEAT_LIMIT}`;
+    $("device-manager-title").textContent = "Your devices";
+    $("device-manager-note").textContent = note ||
+      "Every device signed in to your account. Pick any, then sign them out.";
+    $("device-actions").hidden = false;
+    $("device-confirm").hidden = true;
+    syncActions();
+  }
+
+  /* Click one. The second is the Confirm button below — signing a machine out
+     is not something to do on a mis-tap, and it is not undoable from here. */
+  function armConfirm(kind) {
+    dmPending = kind;
+    dmOpId = newOpId();
+    const others = dmDevices.filter((d) => !d.self).length;
+    const n = kind === "all" ? others : dmPicked.size;
+    const self1 = kind !== "all" && dmPicked.has((dmDevices.find((d) => d.self) || {}).device);
+    $("device-confirm-text").textContent =
+      `Sign out ${n} device${n === 1 ? "" : "s"}? ` +
+      (self1 ? "That includes this one, so Pro stops here too."
+             : "They lose Pro until they are activated again. Their archives stay where they are.");
+    $("device-confirm").hidden = false;
+    $("device-actions").hidden = true;
+  }
+
+  async function runTerminate() {
+    const yes = $("device-confirm-yes");
+    yes.disabled = true;
+    yes.textContent = "Signing out\u2026";
+    const opts = { opId: dmOpId, ifVersion: dmVersion };
+    const picked = [...dmPicked];
+    const res = dmPending === "all"
+      ? await self.LCTEntitlement.terminateAllSessions(opts)
+      : await self.LCTEntitlement.terminateSessions(picked, opts);
+    yes.disabled = false;
+    yes.textContent = "Sign out";
+
+    /* The list moved while they were deciding — another device signed one out,
+       or this popup was open a long time. Show what is actually there rather
+       than acting on what was. */
+    if (res.branch === "stale" && res.data) {
+      dmVersion = Number(res.data.version) || 0;
+      dmDevices = Array.isArray(res.data.devices) ? res.data.devices : dmDevices;
+      const live = new Set(dmDevices.map((d) => d.device));
+      dmPicked = new Set([...dmPicked].filter((id) => live.has(id)));
+      renderSessions("This list changed on another device. Here it is again — check it and sign out.");
+      return;
+    }
+    if (res.branch === "reauth") {
+      renderSessions("Sign in again first. Signing out every device asks for a fresh sign-in, so a token left in an old profile cannot do it.");
+      return;
+    }
+    if (res.branch === "unverified") {
+      renderSessions("Sign in to manage the devices on your account.");
+      return;
+    }
+    if (res.branch !== "ok" || !res.data) {
+      renderSessions("Couldn't reach the licence server. Nothing changed, so try again when you're back online.");
+      return;
+    }
+
+    const gone = Array.isArray(res.data.terminated) ? res.data.terminated : [];
+    dmVersion = Number(res.data.version) || dmVersion;
+    dmDevices = Array.isArray(res.data.devices) ? res.data.devices : [];
+    dmPicked = new Set();
+
+    /* Signing out the device you are standing on gives up Pro here, exactly
+       like the per-device Release does. */
+    const selfFp = await self.LCTEntitlement.deviceFpFor(await self.LCTDodo.ensureDeviceId());
+    if (gone.includes(selfFp)) {
+      await chrome.storage.local.remove(["license", "lct-license-state-v1"]);
+      paintPlan(false, null, (cache && cache.trialUntil) || 0);
+      saveCache({ pro: false, masked: null, licenseKind: null, seatCount: 0 });
+    }
+    renderSessions(gone.length
+      ? `Signed out ${gone.length} device${gone.length === 1 ? "" : "s"}.`
+      : "Nothing to sign out.");
+    saveCache({ seatCount: dmDevices.length });
+  }
+
   async function openDeviceManager(mode, unknownDevices) {
+    document.body.classList.add("dm-open");
+    $("device-manager").hidden = false;
+    $("device-confirm").hidden = true;
+
+    const res = await self.LCTEntitlement.listSessions();
+    if (res && res.branch === "ok" && res.data && Array.isArray(res.data.devices)) {
+      dmVersion = Number(res.data.version) || 0;
+      dmDevices = res.data.devices;
+      dmPicked = new Set();
+      renderSessions(mode === "limit"
+        ? "All slots are in use. Sign one out here to finish activating on this device." : "");
+      $("license-retry-activate").hidden = mode !== "limit";
+      return;
+    }
+
+    /* No verified identity, or the issuer is unreachable. Fall back to the
+       registry screen: it only knows devices from this browser, and it says so
+       rather than presenting a short list as if it were the whole account. */
     const [reg, selfId] = await Promise.all([
       self.LCTDodo.readSeats(), self.LCTDodo.ensureDeviceId()
     ]);
+    $("device-actions").hidden = true;
     renderDevices(reg, selfId, mode, unknownDevices);
-    document.body.classList.add("dm-open");
-    $("device-manager").hidden = false;
+    if (res && res.branch === "unverified") {
+      $("device-manager-note").textContent =
+        "Sign in to see every device on your account. This list is only the ones this browser knows about.";
+    }
   }
 
   function closeDeviceManager() {
     document.body.classList.remove("dm-open");
     $("device-manager").hidden = true;
+    $("device-confirm").hidden = true;
+    dmPicked = new Set();
+    dmPending = "";
   }
 
   async function terminate(targetId, btn, selfId, mode) {
@@ -1685,7 +1897,7 @@
       id: "history",
       anchor: () => $("toggle-history")?.closest(".row"),
       title: "Load full history on open",
-      body: "Asks the site to put every older message back on the page, which is what the site's own Ctrl+F needs. It waits for a moment that costs you nothing — the tab in the background, or you already scrolled to the top — because loading them moves the page, and it will not do that while you are reading. Off is fine: the map is complete either way."
+      body: "Puts every older message back on the page, which is what the site's own Ctrl+F needs. It reads them from the copy already on this machine — the same one the archive and the map come from — and renders them above the conversation. Nothing is scrolled and the page never moves. Off is fine: the map is complete either way."
     },
     {
       id: "temp",
@@ -2020,6 +2232,10 @@
 
   $("license-devices").addEventListener("click", () => openDeviceManager("manage"));
   $("device-manager-back").addEventListener("click", closeDeviceManager);
+  $("device-signout").addEventListener("click", () => { if (dmPicked.size) armConfirm("picked"); });
+  $("device-signout-all").addEventListener("click", () => armConfirm("all"));
+  $("device-confirm-yes").addEventListener("click", () => { runTerminate(); });
+  $("device-confirm-no").addEventListener("click", () => renderSessions());
   $("license-retry-activate").addEventListener("click", async () => {
     closeDeviceManager();
     const key = await currentKey();
@@ -2175,7 +2391,14 @@
       // is open — from a send in another tab, or the refresh we asked for on
       // open — repaints the dial instead of waiting for the next open.
       if (area === "local" && Object.keys(changes).some((k) =>
-        k.startsWith("stats:") || k.startsWith("quota:") || k === "settings" || k === "license" || k === "trial")) {
+        k.startsWith("stats:") || k.startsWith("quota:") || k === "settings" || k === "license" || k === "trial"
+        /* A heartbeat landing while the popup is open must repaint it, or the
+           screen keeps showing Pro on a device that was just signed out. The
+           marker only — NOT the token key. load() calls maybeRevalidate(), and
+           a routine 12-hourly renewal writes that token, so watching it turns
+           one revalidation round into two upstream calls. A sign-out writes
+           both keys, so this still repaints at the moment that matters. */
+        || k === "lct-signed-out-v1")) {
         load();
       }
       if ((area === "local" && PLAT_IDS.some((id) => changes[syncProgKey(id)])) ||

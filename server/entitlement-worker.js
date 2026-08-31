@@ -584,23 +584,24 @@ async function identityMacKey(env) {
  * identity, and treating it as one would make the whole anchor optional for
  * anyone who can type a JSON body.
  */
-async function readIdentityToken(env, token) {
+async function readIdentityClaims(env, token) {
   const parts = String(token || "").split(".");
-  if (parts.length !== 3 || parts[0] !== "LCTID1") return "";
+  if (parts.length !== 3 || parts[0] !== "LCTID1") return null;
   const key = await identityMacKey(env);
-  if (!key) return "";
+  if (!key) return null;
   let payload, mac;
-  try { payload = b64urlToBytes(parts[1]); mac = b64urlToBytes(parts[2]); } catch { return ""; }
+  try { payload = b64urlToBytes(parts[1]); mac = b64urlToBytes(parts[2]); } catch { return null; }
   let ok;
-  try { ok = await crypto.subtle.verify("HMAC", key, mac, payload); } catch { return ""; }
-  if (!ok) return "";
+  try { ok = await crypto.subtle.verify("HMAC", key, mac, payload); } catch { return null; }
+  if (!ok) return null;
   let claims;
-  try { claims = JSON.parse(new TextDecoder().decode(payload)); } catch { return ""; }
-  if (!claims || claims.v !== 1) return "";
-  if (!/^[a-f0-9]{32}$/.test(String(claims.efp || ""))) return "";
-  if (!(Number(claims.exp) > Date.now())) return "";
-  return String(claims.efp);
+  try { claims = JSON.parse(new TextDecoder().decode(payload)); } catch { return null; }
+  if (!claims || claims.v !== 1) return null;
+  if (!/^[a-f0-9]{32}$/.test(String(claims.efp || ""))) return null;
+  if (!(Number(claims.exp) > Date.now())) return null;
+  return { efp: String(claims.efp), iat: Number(claims.iat) || 0 };
 }
+
 
 /* ---------- OTP ---------- */
 
@@ -1592,14 +1593,32 @@ async function claimOrder(env, devFp, ref) {
  * Server-side device count. lib/dodo.js keeps a client registry for UX; this is
  * the copy that decides. Clearing extension storage does not reset it.
  */
-async function claimSeat(env, keyFp, devFp) {
+async function claimSeat(env, keyFp, devFp, opts) {
+  const emailFp = (opts && opts.emailFp) || "";
+  /* Declared by the client, unsigned, and that is honest rather than lax: this
+     request already PROVED which device it is, so the only party who can set
+     the flag for a device is that device. A patched client could always set it
+     — and a patched client could always skip the whole gate, which is the
+     trade the ladder at the top of this file already names. Signing it instead
+     would 426 every installed client for no attacker we do not already have. */
+  const intent = !!(opts && opts.activate);
   const db = d1(env);
   if (db) {
     try {
+      /* Signed out from the device screen. A silent 12-hourly check-in must not
+         take the seat back; an explicit Activate may, and clears the tombstone
+         on its way through. */
+      const kill = await killedAt(db, devFp, [keyFp, emailFp]);
+      if (kill) {
+        if (!intent) return { ok: false, reason: "signed-out", seats: 0 };
+        await db.prepare("DELETE FROM session_kills WHERE dev_fp = ?1 AND scope IN (?2, ?3)")
+          .bind(devFp, keyFp, emailFp || keyFp).run();
+      }
       const rows = await seatRows(db, env, keyFp);
       const now = Date.now();
       const held = rows.some((r) => r.dev_fp === devFp);
       const writes = [];
+      let evicted = "";
 
       if (!held && rows.length >= SEAT_LIMIT) {
         // Evict only genuinely idle seats; an active fleet must hit the wall.
@@ -1607,8 +1626,11 @@ async function claimSeat(env, keyFp, devFp) {
           .filter((r) => now - Number(r.last_seen) > SEAT_IDLE_MS)
           .sort((a, b) => Number(a.last_seen) - Number(b.last_seen));
         if (!stale.length) return { ok: false, seats: rows.length };
+        evicted = stale[0].dev_fp;
         writes.push(db.prepare("DELETE FROM seats WHERE key_fp = ?1 AND dev_fp = ?2")
-          .bind(keyFp, stale[0].dev_fp));
+          .bind(keyFp, evicted));
+        writes.push(db.prepare("DELETE FROM sessions WHERE dev_fp = ?1 AND key_fp = ?2")
+          .bind(evicted, keyFp));
       }
 
       writes.push(db.prepare(
@@ -1619,6 +1641,7 @@ async function claimSeat(env, keyFp, devFp) {
       // One transaction: the eviction and the claim that depends on it cannot
       // half-apply and leave the licence a seat short.
       await db.batch(writes);
+      if (evicted) await dropMirror(env, keyFp, evicted);
       return { ok: true, seats: await seatCount(db, keyFp) };
     } catch {
       return { ok: true, seats: 0 };  // a DB outage must not lock a paying user out
@@ -1724,7 +1747,14 @@ async function releaseSeat(env, keyFp, targetFp) {
       // Import first: releasing a seat the ledger has not carried over yet
       // would report success and free nothing.
       await seatRows(db, env, keyFp);
-      await db.prepare("DELETE FROM seats WHERE key_fp = ?1 AND dev_fp = ?2").bind(keyFp, targetFp).run();
+      /* One transaction. A released seat whose session row survives still
+         reads as signed in at /session, which is the exact bug this route
+         exists to stop. */
+      await db.batch([
+        db.prepare("DELETE FROM seats WHERE key_fp = ?1 AND dev_fp = ?2").bind(keyFp, targetFp),
+        db.prepare("DELETE FROM sessions WHERE dev_fp = ?1 AND key_fp = ?2").bind(targetFp, keyFp)
+      ]);
+      await dropMirror(env, keyFp, targetFp);
       return { ok: true, seats: await seatCount(db, keyFp) };
     } catch { return { ok: false, reason: "unavailable" }; }
   }
@@ -1760,10 +1790,401 @@ async function evictOldestSeat(env, keyFp) {
     const row = await db.prepare(
       "SELECT dev_fp FROM seats WHERE key_fp = ?1 ORDER BY last_seen ASC LIMIT 1").bind(keyFp).first();
     if (!row) return false;
-    await db.prepare("DELETE FROM seats WHERE key_fp = ?1 AND dev_fp = ?2")
-      .bind(keyFp, String(row.dev_fp)).run();
+    const gone = String(row.dev_fp);
+    await db.batch([
+      db.prepare("DELETE FROM seats WHERE key_fp = ?1 AND dev_fp = ?2").bind(keyFp, gone),
+      db.prepare("DELETE FROM sessions WHERE dev_fp = ?1 AND key_fp = ?2").bind(gone, keyFp)
+    ]);
+    await dropMirror(env, keyFp, gone);
     return true;
   } catch { return false; }
+}
+
+/* ---------- sessions ----------
+ *
+ * `seats` answers "may this device have Pro". It cannot answer "which devices
+ * am I signed in on": it has no room for a name, it cannot see a trial device,
+ * and it is keyed on a licence rather than on the person holding it. This is
+ * the table the device screen reads, and /session is the route that makes a
+ * termination mean something on the machine being terminated.
+ *
+ * Until now, releasing a seat freed a slot and nothing else. The released
+ * device kept a valid 30-day token, and nothing made it ask — needsRefresh()
+ * only calls home with 10 days of token life left. So "Terminate" cost the
+ * target roughly nothing for weeks. /session is the cheap frequent question
+ * the long token deliberately does not ask.
+ */
+
+/* How stale "last active" may get. A heartbeat inside this window writes
+   nothing: the alternative is a D1 write per device per hour to move a column
+   the owner reads once a month. */
+const SESSION_SEEN_MS = 30 * 60e3;
+
+/* Mirror life, and the entire risk budget of caching this. 60s is KV's floor.
+   A stale mirror can only DELAY a kill by that long — it cannot invent one and
+   it cannot undo one, because the verdict compares timestamps rather than
+   reading a flag. */
+const SESSION_MIRROR_TTL_S = 60;
+
+/* Heartbeats are frequent by design, so they cannot share RL_MAX (20/hour):
+   five devices would exhaust a licence's whole hourly budget before lunch and
+   then start refusing the calls that decide whether they are still signed in.
+   Its own bucket, sized for five devices checking in every few minutes. */
+const RL_SESSION_MAX = 200;
+
+const mirrorKey = (keyFp, devFp) => `live:${keyFp}:${devFp}`;
+
+async function sessionRateLimited(env, keyFp, ip) {
+  if (!env.RL) return false;
+  const slot = Math.floor(Date.now() / (RL_WINDOW_S * 1000));
+  try {
+    const ipBucket = `rlip:${await sha256Hex(ip || "unknown", 16)}:${slot}`;
+    const ipSeen = Number(await env.RL.get(ipBucket)) || 0;
+    if (ipSeen >= RL_IP_MAX) return true;
+    await env.RL.put(ipBucket, String(ipSeen + 1), { expirationTtl: RL_WINDOW_S * 2 });
+
+    const bucket = `rlses:${keyFp}:${slot}`;
+    const seen = Number(await env.RL.get(bucket)) || 0;
+    if (seen >= RL_SESSION_MAX) return true;
+    await env.RL.put(bucket, String(seen + 1), { expirationTtl: RL_WINDOW_S * 2 });
+    return false;
+  } catch { return false; }   // an outage is not a verdict
+}
+
+/** Coarse platform string, capped. Client-supplied and unsigned on purpose:
+ *  the row is keyed on a PROVEN dev_fp, so a device can only ever label
+ *  itself, and adding fields to the signed input would 426 every installed
+ *  client for a cosmetic string. */
+function sessionPlat(v) {
+  return str(v).replace(/[^\w .·–—-]/g, "").slice(0, 40);
+}
+
+/** Two-letter country, derived by Cloudflare rather than declared by the
+ *  caller — the one piece of location data a client cannot lie about, and the
+ *  coarsest one worth showing. No IP is stored anywhere. */
+function sessionGeo(request) {
+  const cc = String((request && request.cf && request.cf.country) || "");
+  return /^[A-Z]{2}$/.test(cc) ? cc : "";
+}
+
+/**
+ * Record that this device is alive, with whatever we now know about it.
+ *
+ * claimed_at moves only when the row is new or the licence changed. It is the
+ * watermark every kill is compared against, so a routine check-in must not
+ * advance it — otherwise a device outlives its own termination by heartbeating.
+ */
+async function touchSession(env, { devFp, keyFp, emailFp, plat, geo, label }) {
+  const db = d1(env);
+  if (!db) return;
+  const now = Date.now();
+  let labelEnc = null;
+  if (label) {
+    try {
+      const key = await aesKeyFor(env, "session-label");
+      labelEnc = key ? await aesSeal(key, String(label).slice(0, 40)) : null;
+    } catch { labelEnc = null; }
+  }
+  try {
+    await db.prepare(
+      "INSERT INTO sessions (dev_fp, email_fp, key_fp, created_at, claimed_at, last_seen, label_enc, plat, geo) " +
+      "VALUES (?1, ?2, ?3, ?4, ?4, ?4, ?5, ?6, ?7) " +
+      "ON CONFLICT(dev_fp) DO UPDATE SET " +
+      "  email_fp   = COALESCE(excluded.email_fp, sessions.email_fp), " +
+      "  key_fp     = COALESCE(excluded.key_fp, sessions.key_fp), " +
+      "  last_seen  = excluded.last_seen, " +
+      "  label_enc  = COALESCE(excluded.label_enc, sessions.label_enc), " +
+      "  plat       = COALESCE(NULLIF(excluded.plat, ''), sessions.plat), " +
+      "  geo        = COALESCE(NULLIF(excluded.geo, ''), sessions.geo), " +
+      /* The licence changed under this device: a different purchase is a
+         different session, so the watermark restarts with it. */
+      "  claimed_at = CASE WHEN sessions.key_fp IS NOT ?3 THEN excluded.claimed_at ELSE sessions.claimed_at END"
+    ).bind(devFp, emailFp || null, keyFp || null, now, labelEnc, plat || "", geo || "").run();
+  } catch { /* a session row must never cost somebody their token */ }
+}
+
+/** The session row, adopting a pre-sessions seat the first time we find none.
+ *  Without the adoption every device that predates this table reads as signed
+ *  out the moment the feature ships. */
+async function sessionRow(db, devFp, { keyFp, emailFp, seatSeen }) {
+  const read = () => db.prepare(
+    "SELECT dev_fp, email_fp, key_fp, claimed_at, last_seen FROM sessions WHERE dev_fp = ?1"
+  ).bind(devFp).first();
+
+  const row = await read();
+  if (row) return row;
+  if (!seatSeen) return null;
+
+  /* claimed_at is the seat's own age, not now(): adopting must not hand a
+     device a fresher watermark than the seat it is standing on. */
+  await db.prepare(
+    "INSERT INTO sessions (dev_fp, email_fp, key_fp, created_at, claimed_at, last_seen) " +
+    "VALUES (?1, ?2, ?3, ?4, ?4, ?4) ON CONFLICT(dev_fp) DO NOTHING"
+  ).bind(devFp, emailFp || null, keyFp || null, seatSeen).run();
+  return await read();
+}
+
+/** The newest termination that could apply to this device, across both scopes
+ *  a kill can be written under. */
+async function killedAt(db, devFp, scopes) {
+  const live = scopes.filter(Boolean);
+  if (!live.length) return 0;
+  const marks = live.map((_, i) => `?${i + 2}`).join(", ");
+  const row = await db.prepare(
+    `SELECT MAX(at) AS at FROM session_kills WHERE dev_fp = ?1 AND scope IN (${marks})`
+  ).bind(devFp, ...live).first();
+  return Number(row && row.at) || 0;
+}
+
+async function accountEpoch(db, emailFp) {
+  if (!emailFp) return 0;
+  const row = await db.prepare("SELECT epoch FROM account_state WHERE email_fp = ?1").bind(emailFp).first();
+  return Number(row && row.epoch) || 0;
+}
+
+/**
+ * Is this device still signed in?
+ *
+ * Throws on a ledger failure, deliberately: the caller turns that into a 503
+ * and the client keeps working. The ONLY thing that may end an entitlement is
+ * a successful read that says so — a database having a bad afternoon is not an
+ * answer, and this is the function where that rule would be easiest to lose.
+ */
+async function sessionVerdict(env, { devFp, keyFp, emailFp }) {
+  const db = d1(env);
+  if (!db) return { live: true, reason: "no-ledger" };
+
+  /* The seat IS the entitlement. Releasing one from the device screen deletes
+     this row, which is what finally makes that button do something on the
+     machine it is aimed at. seatRows() first, so a licence still living in the
+     pre-D1 KV ledger is carried over rather than read as terminated. */
+  const rows = await seatRows(db, env, keyFp);
+  const seat = rows.find((r) => r.dev_fp === devFp);
+  if (!seat) return { live: false, reason: "terminated" };
+
+  const seatSeen = Number(seat.last_seen) || Date.now();
+  const row = await sessionRow(db, devFp, { keyFp, emailFp, seatSeen });
+  const claimedAt = Number(row && row.claimed_at) || seatSeen;
+  const account = (row && row.email_fp) || emailFp || "";
+
+  if (await killedAt(db, devFp, [keyFp, account]) > claimedAt) {
+    return { live: false, reason: "terminated" };
+  }
+  if (await accountEpoch(db, account) > claimedAt) {
+    return { live: false, reason: "signed-out" };
+  }
+  return { live: true, reason: "", claimedAt, lastSeen: Number(row && row.last_seen) || 0 };
+}
+
+/** Move `last_seen` at most once per SESSION_SEEN_MS. The WHERE clause is the
+ *  throttle, so two heartbeats racing cannot both write. */
+async function noteSessionSeen(env, devFp, now) {
+  const db = d1(env);
+  if (!db) return;
+  try {
+    await db.prepare("UPDATE sessions SET last_seen = ?2 WHERE dev_fp = ?1 AND last_seen < ?3")
+      .bind(devFp, now, now - SESSION_SEEN_MS).run();
+  } catch { /* a timestamp is not worth failing a heartbeat over */ }
+}
+
+async function readMirror(env, keyFp, devFp) {
+  if (!env.RL) return null;
+  try {
+    const raw = await env.RL.get(mirrorKey(keyFp, devFp), "json");
+    return (raw && typeof raw === "object") ? raw : null;
+  } catch { return null; }
+}
+
+async function writeMirror(env, keyFp, devFp, value) {
+  if (!env.RL) return;
+  try {
+    await env.RL.put(mirrorKey(keyFp, devFp), JSON.stringify(value),
+      { expirationTtl: SESSION_MIRROR_TTL_S });
+  } catch { /* the mirror is an optimisation; D1 is the answer */ }
+}
+
+/** Drop a cached "live". Called wherever a seat stops existing, so the mirror
+ *  cannot keep answering for a device that was just signed out. */
+async function dropMirror(env, keyFp, devFp) {
+  if (!env.RL || !env.RL.delete) return;
+  try { await env.RL.delete(mirrorKey(keyFp, devFp)); } catch { /* TTL is the backstop */ }
+}
+
+/* ---------- the device screen ----------
+ *
+ * Account-scoped, not licence-scoped, and that is the whole design. A licence
+ * key is not an account: it cannot see a trial device, it is shared by whoever
+ * holds it, and "your devices" is a sentence about a person. So these three
+ * routes authenticate with an IDENTITY token — the same bar a streaming site
+ * sets by asking for the password before it shows you the list.
+ *
+ * /devices and /devices/revoke stay exactly as they were, for a device that
+ * has never verified an identity and for the extension already in the store.
+ * A device may always sign ITSELF out with a device proof alone; signing out
+ * somebody else is what needs the account.
+ */
+
+const SESSION_LIST_MAX = 50;
+const TERMINATE_MAX = 20;
+const OP_ID_RE = /^[a-f0-9]{32}$/;
+const DEV_FP_RE = /^[a-f0-9]{32}$/;
+
+/* "Sign out of ALL devices" is the one irreversible button on the screen, and
+   an identity token is good for 400 days — long enough that finding one in a
+   copied profile would otherwise be a fleet-wide kill switch. Fifteen minutes
+   means the person is at the keyboard now. */
+const IDENTITY_FRESH_MS = 15 * 60e3;
+
+/** The account's counters, created on demand. `version` is what makes a stale
+ *  device screen unable to terminate a row that has stopped being what it was
+ *  showing; `epoch` is sign-out-everywhere as one write instead of five. */
+async function accountState(db, emailFp) {
+  await db.prepare(
+    "INSERT INTO account_state (email_fp, epoch, version, updated_at) VALUES (?1, 0, 0, ?2) " +
+    "ON CONFLICT(email_fp) DO NOTHING"
+  ).bind(emailFp, Date.now()).run();
+  const row = await db.prepare(
+    "SELECT epoch, version FROM account_state WHERE email_fp = ?1").bind(emailFp).first();
+  return { epoch: Number(row && row.epoch) || 0, version: Number(row && row.version) || 0 };
+}
+
+/**
+ * Pull every seat under this account's licences into the session table.
+ *
+ * Two jobs in one statement. A device that predates `sessions` gets a row, and
+ * a device that has one but has never verified an identity gets attached to
+ * the account that owns the licence it is sitting on. Without the second, a
+ * machine activated from a pasted key would be invisible on the screen that
+ * exists to show every machine.
+ *
+ * COALESCE, not overwrite: a session already attached to an identity keeps it.
+ */
+async function attachOwnedSeats(db, emailFp) {
+  const res = await db.prepare(
+    "SELECT key_fp FROM owners WHERE email_fp = ?1 ORDER BY bound_at DESC LIMIT 8"
+  ).bind(emailFp).all();
+  const keys = ((res && res.results) || []).map((r) => String(r.key_fp)).filter(Boolean);
+  if (!keys.length) return;
+  const marks = keys.map((_, i) => `?${i + 2}`).join(", ");
+  await db.prepare(
+    "INSERT INTO sessions (dev_fp, email_fp, key_fp, created_at, claimed_at, last_seen) " +
+    `SELECT dev_fp, ?1, key_fp, last_seen, last_seen, last_seen FROM seats WHERE key_fp IN (${marks}) ` +
+    "ON CONFLICT(dev_fp) DO UPDATE SET " +
+    "  email_fp = COALESCE(sessions.email_fp, excluded.email_fp), " +
+    "  key_fp   = COALESCE(sessions.key_fp, excluded.key_fp)"
+  ).bind(emailFp, ...keys).run();
+}
+
+/**
+ * The list, as the ledger holds it.
+ *
+ * `label` comes back decrypted because the caller has just proved they own the
+ * account; it is sealed at rest so that a dump of the table is not a device
+ * inventory. `geo` is a country and nothing finer, and no IP is stored to
+ * derive it from — see sessionGeo().
+ */
+async function listSessions(env, emailFp, selfDev) {
+  const db = d1(env);
+  if (!db) return null;
+  await attachOwnedSeats(db, emailFp);
+  const res = await db.prepare(
+    "SELECT dev_fp, key_fp, created_at, last_seen, label_enc, plat, geo FROM sessions " +
+    "WHERE email_fp = ?1 ORDER BY last_seen DESC LIMIT ?2"
+  ).bind(emailFp, SESSION_LIST_MAX).all();
+
+  const rows = (res && res.results) || [];
+  const labelKey = rows.some((r) => r.label_enc) ? await aesKeyFor(env, "session-label") : null;
+  const out = [];
+  for (const r of rows) {
+    out.push({
+      device: String(r.dev_fp),
+      label: r.label_enc ? await aesOpen(labelKey, String(r.label_enc)) : "",
+      plat: String(r.plat || ""),
+      geo: String(r.geo || ""),
+      lastSeen: Number(r.last_seen) || 0,
+      createdAt: Number(r.created_at) || 0,
+      pro: !!r.key_fp,
+      self: String(r.dev_fp) === selfDev
+    });
+  }
+  return out;
+}
+
+/**
+ * Sign devices out. One transaction, however many were selected.
+ *
+ * Terminating three devices with three requests is how two end up signed out
+ * and one does not, so the array is the unit of work: the seats, the sessions,
+ * the tombstones, the version bump and the audit row either all land or none
+ * of them do.
+ *
+ * A kill is written under BOTH scopes — the account and the licence — because
+ * a device can come back presenting only a licence key, with no identity token
+ * on it, and that request must be refused too.
+ */
+async function killTargets(env, { emailFp, rows, by, setEpoch, opId, kind, version }) {
+  const db = d1(env);
+  const now = Date.now();
+  const nextVersion = version + 1;
+  const terminated = rows.map((r) => String(r.dev_fp));
+  const result = { ok: true, version: nextVersion, terminated };
+
+  const kill = (scope, devFp) => db.prepare(
+    "INSERT INTO session_kills (scope, dev_fp, at, by) VALUES (?1, ?2, ?3, ?4) " +
+    "ON CONFLICT(scope, dev_fp) DO UPDATE SET at = excluded.at, by = excluded.by"
+  ).bind(scope, devFp, now, by);
+
+  const writes = [];
+  for (const r of rows) {
+    const devFp = String(r.dev_fp);
+    const keyFp = r.key_fp ? String(r.key_fp) : "";
+    if (keyFp) {
+      writes.push(db.prepare("DELETE FROM seats WHERE key_fp = ?1 AND dev_fp = ?2").bind(keyFp, devFp));
+      writes.push(kill(keyFp, devFp));
+    }
+    writes.push(db.prepare("DELETE FROM sessions WHERE dev_fp = ?1 AND email_fp = ?2").bind(devFp, emailFp));
+    writes.push(kill(emailFp, devFp));
+  }
+
+  /* The survivors have to be re-stamped BEFORE the epoch moves past them.
+     `epoch` says "anything claimed before now is signed out", and the device
+     that pressed Sign out of all devices was claimed long before now — so
+     without this, keeping yourself signed in signs you out. The deletes above
+     have already gone, so what is left under this account is exactly the set
+     that was kept. Found by the five-device run against wrangler dev; the D1
+     fake never caught it because no test kept a device with an old claim. */
+  if (setEpoch) {
+    writes.push(db.prepare("UPDATE sessions SET claimed_at = ?2 WHERE email_fp = ?1")
+      .bind(emailFp, now));
+  }
+
+  writes.push(db.prepare(
+    "UPDATE account_state SET version = version + 1, updated_at = ?2" +
+    (setEpoch ? ", epoch = ?2" : "") + " WHERE email_fp = ?1"
+  ).bind(emailFp, now));
+
+  /* The idempotency row rides INSIDE the transaction. Written afterwards it
+     would be missing exactly when it is needed — the retry of a call that
+     landed and then lost its connection. */
+  writes.push(db.prepare(
+    "INSERT INTO session_ops (op_id, email_fp, kind, targets, at, result) " +
+    "VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT(op_id) DO NOTHING"
+  ).bind(opId, emailFp, kind, JSON.stringify(terminated), now, JSON.stringify(result)));
+
+  await db.batch(writes);
+
+  // Outside the transaction on purpose: a cache we cannot clear is a 60-second
+  // delay, and rolling back a completed sign-out to fix that would be worse.
+  for (const r of rows) if (r.key_fp) await dropMirror(env, String(r.key_fp), String(r.dev_fp));
+  return result;
+}
+
+/** A previous answer to this exact op_id, or null. */
+async function replayOp(db, opId, emailFp) {
+  const row = await db.prepare(
+    "SELECT result FROM session_ops WHERE op_id = ?1 AND email_fp = ?2").bind(opId, emailFp).first();
+  if (!row) return null;
+  try { return JSON.parse(String(row.result)); } catch { return null; }
 }
 
 /* ---------- archive stamp secret ---------- */
@@ -2118,6 +2539,9 @@ const SEAT_RETAIN_MS = 400 * 864e5;
 /* A settled order is the receipt behind a support mail. ORDER_TTL_MS is how
    long an UNPAID order is worth keeping (a day); it is not a refund window. */
 const SETTLED_RETAIN_MS = 180 * 864e5;
+/* Long enough that a support question about "who signed my laptop out" can
+   still be answered, short enough that it is not a permanent record. */
+const SESSION_OPS_RETAIN_MS = 90 * 864e5;
 
 async function sweepLedgers(env) {
   const db = d1(env);
@@ -2132,6 +2556,11 @@ async function sweepLedgers(env) {
       now - SETTLED_RETAIN_MS],
     ["pending_keys", "DELETE FROM pending_keys WHERE at < ?1", now - SETTLED_RETAIN_MS],
     ["seats", "DELETE FROM seats WHERE last_seen < ?1", now - SEAT_RETAIN_MS],
+    ["sessions", "DELETE FROM sessions WHERE last_seen < ?1", now - SEAT_RETAIN_MS],
+    /* A kill must outlive every token it was written against, or a device
+       comes back from the dead when its tombstone is swept. */
+    ["session_kills", "DELETE FROM session_kills WHERE at < ?1", now - SEAT_RETAIN_MS],
+    ["session_ops", "DELETE FROM session_ops WHERE at < ?1", now - SESSION_OPS_RETAIN_MS],
     ["trials", "DELETE FROM trials WHERE started_at < ?1", now - RETAIN_MS],
     ["trials_id", "DELETE FROM trials_id WHERE started_at < ?1", now - RETAIN_MS],
     /* An identity that still owns a licence is kept whatever its age — it is
@@ -2241,13 +2670,17 @@ async function route(request, env) {
 
   const url = new URL(request.url);
   const route = url.pathname;
-  const ROUTES = ["/entitlement", "/trial", "/devices", "/devices/revoke",
+  const ROUTES = ["/entitlement", "/trial", "/devices", "/devices/revoke", "/session",
+    "/sessions", "/sessions/terminate", "/sessions/terminate-all",
     "/checkout", "/checkout/claim",
     "/identity/start", "/identity/verify", "/identity/google", "/restore"];
   if (!ROUTES.includes(route)) return json({ error: "not found" }, 404, origin);
   /* Which routes are scoped to a licence. Checkout is the route you take
      BECAUSE you have no licence, so requiring one would close the circle. */
+  /* The device screen is keyed on the ACCOUNT, so it carries no licence key —
+     it has to show a trial device and a second purchase in the same list. */
   const NO_LICENCE = ["/trial", "/checkout", "/checkout/claim",
+    "/sessions", "/sessions/terminate", "/sessions/terminate-all",
     "/identity/start", "/identity/verify", "/identity/google", "/restore"];
   const needsLicence = !NO_LICENCE.includes(route);
 
@@ -2303,6 +2736,25 @@ async function route(request, env) {
   if (route === "/devices/revoke" && !/^[a-f0-9]{32}$/.test(target)) {
     return json({ error: "bad target" }, 400, origin);
   }
+  /* Which devices are being signed out, and the key that makes a retry free.
+     Fingerprints only — the screen never sends a licence key to sign somebody
+     out, and never learns one it did not already hold. */
+  const terminating = route === "/sessions/terminate" || route === "/sessions/terminate-all";
+  const targets = route === "/sessions/terminate" && Array.isArray(body.targets)
+    ? body.targets.filter((v) => typeof v === "string") : [];
+  if (route === "/sessions/terminate") {
+    if (!targets.length || targets.length > TERMINATE_MAX) {
+      return json({ error: "bad targets" }, 400, origin);
+    }
+    if (!targets.every((v) => DEV_FP_RE.test(v))) return json({ error: "bad targets" }, 400, origin);
+  }
+  const opId = terminating ? str(body.op_id) : "";
+  if (terminating && !OP_ID_RE.test(opId)) return json({ error: "bad op id" }, 400, origin);
+  /* Optional. A caller that sends no version is saying "I am not looking at a
+     list", which is true of a script and of nothing the popup does. */
+  const ifVersion = typeof body.if_version === "number" && Number.isFinite(body.if_version)
+    ? body.if_version : null;
+
   /* The order being claimed. Opaque, ours, and worthless without the device
      key that opened it — which is why it is safe for the client to keep one
      in plain storage and safe for us to accept it as an identifier. */
@@ -2333,7 +2785,8 @@ async function route(request, env) {
   /* The identity token rides along on EVERY route that can use one. It is
      optional everywhere: an unverified caller still gets the old behaviour,
      just without the parts that need an identity to be true. */
-  const identityFp = await readIdentityToken(env, str(body.idt));
+  const identityClaims = await readIdentityClaims(env, str(body.idt));
+  const identityFp = identityClaims ? identityClaims.efp : "";
 
   /* ---------- step 4: device proof ----------
      Before the nonce is spent and before Dodo is called: an unsigned request
@@ -2346,6 +2799,12 @@ async function route(request, env) {
     "/trial":          ["trial",          []],
     "/devices":        ["devices",        [licenseKey]],
     "/devices/revoke": ["devices-revoke", [licenseKey, target]],
+    "/session":        ["session",        [licenseKey]],
+    /* The target list is inside the signature: which devices get signed out is
+       not a field anything between here and the popup gets to edit. */
+    "/sessions":                 ["sessions",             []],
+    "/sessions/terminate":       ["sessions-terminate",   [opId, targets.join(",")]],
+    "/sessions/terminate-all":   ["sessions-terminate-all", [opId]],
     "/checkout":       ["checkout",       []],
     "/checkout/claim": ["checkout-claim", [ref]],
     /* The canonical address, not what was typed. See the note above. */
@@ -2467,14 +2926,18 @@ async function route(request, env) {
       const check = await dodoValidate(env, lic.key, "");
       if (check.branch !== "ok") continue;
 
-      let seat = await claimSeat(env, lic.keyFp, devFp);
+      let seat = await claimSeat(env, lic.keyFp, devFp, { emailFp: identityFp, activate: true });
       /* Full, and the caller owns it: this is a reinstall holding a new
          device key. Make room rather than refusing the buyer their own
          licence. See evictOldestSeat(). */
       if (!seat.ok && await evictOldestSeat(env, lic.keyFp)) {
-        seat = await claimSeat(env, lic.keyFp, devFp);
+        seat = await claimSeat(env, lic.keyFp, devFp, { emailFp: identityFp, activate: true });
       }
       if (!seat.ok) return json({ error: "device limit reached", seats: seat.seats }, 422, origin);
+      await touchSession(env, {
+        devFp, keyFp: lic.keyFp, emailFp: identityFp,
+        plat: sessionPlat(body.plat), geo: sessionGeo(request), label: str(body.label)
+      });
 
       const now = Date.now();
       const token = await mintToken(env, {
@@ -2572,6 +3035,105 @@ async function route(request, env) {
     return json(claimed, 200, origin);
   }
 
+  /* ---------- the device screen ----------
+     Every route here needs an identity, and says so with 401 rather than
+     pretending the account has no devices. Listing somebody's machines and
+     signing them out are account powers, and the account is the verified
+     email — not the licence key, which is a bearer secret anyone downstream
+     of a forum post might be holding. */
+  if (route === "/sessions" || terminating) {
+    if (!identityFp) return json({ error: "unverified" }, 401, origin);
+    const db = d1(env);
+    if (!db) return json({ error: "unavailable" }, 503, origin);
+
+    /* Per-account, not per-key: these routes carry no licence key, so the key
+       bucket cannot see them. Twenty mutations an hour is far more than a
+       person clicks and far less than a script needs. */
+    if (await rateLimited(env, "acct:" + identityFp, ip)) {
+      return json({ error: "slow down" }, 429, origin, retryAfter(RL_WINDOW_S * 1000));
+    }
+
+    let state, devices;
+    try {
+      state = await accountState(db, identityFp);
+      devices = await listSessions(env, identityFp, devFp);
+    } catch { return json({ error: "unavailable" }, 503, origin); }
+    if (!devices) return json({ error: "unavailable" }, 503, origin);
+
+    if (route === "/sessions") {
+      return json({ version: state.version, limit: SEAT_LIMIT, devices }, 200, origin);
+    }
+
+    /* A retry of a call that landed and then lost its connection. Answering it
+       again from the ledger is the difference between "sign out one device"
+       and "sign out two", and the client cannot tell the two cases apart from
+       its side — only this row can. */
+    let prior;
+    try { prior = await replayOp(db, opId, identityFp); }
+    catch { return json({ error: "unavailable" }, 503, origin); }
+    if (prior) return json({ ...prior, devices, replayed: true }, 200, origin);
+
+    /* The screen has moved under them. Answer with the list they should have
+       been looking at rather than terminating a row that is no longer there. */
+    if (ifVersion !== null && ifVersion !== state.version) {
+      return json({ error: "stale", version: state.version, devices }, 412, origin);
+    }
+
+    let rows;
+    if (route === "/sessions/terminate") {
+      const marks = targets.map((_, i) => `?${i + 2}`).join(", ");
+      try {
+        const res = await db.prepare(
+          `SELECT dev_fp, key_fp FROM sessions WHERE email_fp = ?1 AND dev_fp IN (${marks})`
+        ).bind(identityFp, ...targets).all();
+        rows = (res && res.results) || [];
+      } catch { return json({ error: "unavailable" }, 503, origin); }
+      /* A target that is not on this account is dropped, not refused: it is
+         either already gone — which is the outcome being asked for — or it
+         belongs to somebody else, and confirming which would turn this route
+         into a way to test whether a fingerprint is a stranger's device. */
+      if (!rows.length) {
+        return json({ ok: true, version: state.version, terminated: [], devices }, 200, origin);
+      }
+    } else {
+      /* Sign out of all devices. The one irreversible button on the screen, so
+         it wants a person at the keyboard rather than a token found in a
+         copied profile — see IDENTITY_FRESH_MS. */
+      const fresh = identityClaims && (Date.now() - identityClaims.iat) < IDENTITY_FRESH_MS;
+      if (!fresh) return json({ error: "reauth" }, 401, origin);
+      /* Keeping the device you are standing on is the default, because the
+         alternative is a person signing themselves out of the screen they are
+         using to do it. `keep_self: false` is the deliberate opposite. */
+      const keepSelf = body.keep_self !== false;
+      const cut = new Set(devices.filter((d) => !(keepSelf && d.self)).map((d) => d.device));
+      /* listSessions() does not hand back key_fp — it is not the popup's
+         business — so the seats being cut are read here instead. */
+      try {
+        const res = await db.prepare(
+          "SELECT dev_fp, key_fp FROM sessions WHERE email_fp = ?1").bind(identityFp).all();
+        rows = ((res && res.results) || [])
+          .filter((r) => cut.has(String(r.dev_fp)))
+          .map((r) => ({ dev_fp: String(r.dev_fp), key_fp: r.key_fp ? String(r.key_fp) : "" }));
+      } catch { return json({ error: "unavailable" }, 503, origin); }
+      if (!rows.length) {
+        return json({ ok: true, version: state.version, terminated: [], devices }, 200, origin);
+      }
+    }
+
+    let result;
+    try {
+      result = await killTargets(env, {
+        emailFp: identityFp, rows, by: "owner", opId, version: state.version,
+        kind: route === "/sessions/terminate" ? "terminate" : "terminate-all",
+        setEpoch: route === "/sessions/terminate-all"
+      });
+    } catch { return json({ error: "unavailable" }, 503, origin); }
+
+    let after;
+    try { after = await listSessions(env, identityFp, devFp); } catch { after = null; }
+    return json({ ...result, devices: after || [] }, 200, origin);
+  }
+
   /* ---------- licence-scoped routes ---------- */
   const keyFp = await sha256Hex(licenseKey);
 
@@ -2582,6 +3144,49 @@ async function route(request, env) {
      the whole point — it is what makes revocation take minutes instead of
      the token's remaining life. */
   const killed = await revoked(env, keyFp);
+
+  /* ---------- /session ----------
+     The cheap, frequent question the 30-day token deliberately does not ask.
+
+     Everything else here is about ISSUING an entitlement; this is the only
+     route that can take one away, and it is the reason a device screen is not
+     theatre. It answers exactly three ways:
+
+       live: true    keep working
+       live: false   an ANSWER — the seat is gone, the account signed you out.
+                     The client clears its token on this and nothing else.
+       503           we do not know. Keep working. An outage is not a verdict,
+                     and this is the function where that rule is easiest to
+                     lose: every failure below returns 503, never live:false.
+
+     No identity is required. A device may always ask about itself, and the
+     device proof already says which device is asking. */
+  if (route === "/session") {
+    if (await sessionRateLimited(env, keyFp, ip)) {
+      return json({ error: "slow down" }, 429, origin, retryAfter(RL_WINDOW_S * 1000));
+    }
+    if (killed) return json({ live: false, reason: "revoked" }, 200, origin);
+
+    /* A cached "live" is worth at most SESSION_MIRROR_TTL_S, and every path
+       that removes a seat drops this key, so the usual case is instant. */
+    if (await readMirror(env, keyFp, devFp)) {
+      return json({ live: true, reason: "", cached: true }, 200, origin);
+    }
+
+    let verdict;
+    try { verdict = await sessionVerdict(env, { devFp, keyFp, emailFp: identityFp }); }
+    catch { return json({ error: "unavailable" }, 503, origin); }
+
+    if (!verdict.live) {
+      await dropMirror(env, keyFp, devFp);
+      return json({ live: false, reason: verdict.reason }, 200, origin);
+    }
+    const seen = Date.now();
+    await noteSessionSeen(env, devFp, seen);
+    await writeMirror(env, keyFp, devFp, { c: verdict.claimedAt || 0, s: seen });
+    return json({ live: true, reason: "" }, 200, origin);
+  }
+
   if (killed) return json({ error: "licence revoked", reason: killed }, 403, origin);
 
   /* ---------- /devices and /devices/revoke ----------
@@ -2637,14 +3242,18 @@ async function route(request, env) {
   await observeSharing(env, keyFp);
 
   /* ---------- step 6: seat ---------- */
-  let seat = await claimSeat(env, keyFp, devFp);
+  const activating = body.intent === "activate";
+  let seat = await claimSeat(env, keyFp, devFp, { emailFp: identityFp, activate: activating });
   /* Full, and this caller has an identity the ledger already knows owns the
      licence: a reinstall carrying a new device key. Evict the stalest seat
      instead of refusing a buyer their own purchase. An unverified caller
      never reaches this — the seat cap has to stay a cap. */
-  if (!seat.ok && identityFp && await ownsLicence(env, keyFp, identityFp)
-      && await evictOldestSeat(env, keyFp)) {
-    seat = await claimSeat(env, keyFp, devFp);
+  if (!seat.ok && seat.reason !== "signed-out" && identityFp
+      && await ownsLicence(env, keyFp, identityFp) && await evictOldestSeat(env, keyFp)) {
+    seat = await claimSeat(env, keyFp, devFp, { emailFp: identityFp, activate: activating });
+  }
+  if (!seat.ok && seat.reason === "signed-out") {
+    return json({ error: "signed out" }, 403, origin);
   }
   if (!seat.ok) return json({ error: "device limit reached", seats: seat.seats }, 422, origin);
 
@@ -2652,6 +3261,15 @@ async function route(request, env) {
      on every successful check rather than only at activation, so buyers who
      verify an identity months after paying are bound too. */
   if (identityFp) await bindOwner(env, keyFp, identityFp, licenseKey);
+
+  /* The row the device screen shows for this machine. `plat` and `label` are
+     unsigned body fields on purpose: the row is keyed on a PROVEN dev_fp, so a
+     device can only ever label itself, and adding fields to the signed input
+     would 426 every installed client over a cosmetic string. */
+  await touchSession(env, {
+    devFp, keyFp, emailFp: identityFp,
+    plat: sessionPlat(body.plat), geo: sessionGeo(request), label: str(body.label)
+  });
 
   /* ---------- step 8: token ---------- */
   const now = Date.now();
