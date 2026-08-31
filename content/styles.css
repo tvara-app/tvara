@@ -506,27 +506,66 @@
   position: fixed;
   z-index: 2147483647;
   display: none;
-  max-width: 280px;
-  padding: 10px 12px;
-  border: 1px solid rgba(255, 255, 255, 0.09);
-  font: 400 12.5px/1.5 -apple-system, "Segoe UI", sans-serif;
+  width: 264px;
+  padding: 14px 16px 12px;
+  font: 400 12.5px/1.5 -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
   pointer-events: none; /* never trap the cursor on the way to the link */
-  border-color: var(--lct-line);
-  border-radius: var(--lct-radius);
+  border: 1px solid var(--lct-line);
+  border-radius: 16px;
   background: var(--lct-field), var(--lct-surface-strong);
   color: var(--lct-ink);
   box-shadow: var(--lct-shadow);
-  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
 }
-#lct-chatcard .lct-cc-title { font-weight: 600; font-size: 13px; margin-bottom: 3px; }
-#lct-chatcard .lct-cc-dim { color: var(--lct-muted); }
-#lct-chatcard .lct-cc-star { color: #e7bc58; }
-#lct-chatcard .lct-cc-badge {
-  margin-top: 5px;
-  padding-top: 5px;
-  border-top: 1px solid rgba(255, 255, 255, 0.09);
+#lct-chatcard .lct-cc-name {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  margin-bottom: 9px;
+  font-size: 15px;
   font-weight: 600;
-  border-color: var(--lct-line);
+  line-height: 1.3;
+}
+#lct-chatcard .lct-cc-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 2.5px 0;
+}
+#lct-chatcard .lct-cc-k {
+  flex: 0 0 auto;
+  font: 500 10.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+  color: var(--lct-muted);
+}
+#lct-chatcard .lct-cc-v {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#lct-chatcard .lct-cc-v-empty { color: var(--lct-muted); }
+#lct-chatcard .lct-cc-v-star  { color: #e7bc58; }
+#lct-chatcard .lct-cc-foot,
+#lct-chatcard .lct-cc-row + .lct-cc-badge {
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px solid var(--lct-line);
+}
+#lct-chatcard .lct-cc-foot {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--lct-muted);
+}
+#lct-chatcard .lct-cc-badge {
+  margin-top: 7px;
+  font-size: 11.5px;
+  font-weight: 600;
   color: var(--lct-accent);
 }
 

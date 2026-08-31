@@ -1813,12 +1813,16 @@ try {
   // hover the sidebar link for THIS chat → card with real numbers
   await page.locator("#t-conv-this").dispatchEvent("mouseover");
   await page.waitForSelector("#lct-chatcard", { state: "visible", timeout: 5000 });
+  // the starred row is filled by an async storage read — wait for it
+  await page.waitForFunction(() =>
+    /Starred\s*[1-9]/.test(document.getElementById("lct-chatcard")?.textContent || ""),
+    null, { timeout: 5000 });
   const cardText = await page.textContent("#lct-chatcard");
-  t("B10 card shows message count", /1,?5\d\d messages/.test(cardText), cardText.slice(0, 60));
-  t("B10 card shows questions asked", /questions asked/.test(cardText));
+  t("B10 card shows message count", /Messages\s*1,?5\d\d/.test(cardText), cardText.slice(0, 80));
+  t("B10 card shows questions asked", /You asked\s*\d/.test(cardText));
   t("B10 card is honest about time source",
     /First seen .+ this device/.test(cardText) && !/Created/.test(cardText));
-  t("B10 card shows starred count from B8", /\d starred message/.test(cardText));
+  t("B10 card shows starred count from B8", /Starred\s*[1-9]/.test(cardText));
   t("B10 no longest badge with a single record", !/longest/i.test(cardText));
 
   // untracked chat → honest "not tracked" card

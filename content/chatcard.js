@@ -83,11 +83,19 @@
 
   /* ---------- the card ---------- */
 
-  function fmt(ms) {
+  const DASH = "\u2014"; // stands in for every value we genuinely do not have
+
+  // Glanceable date for the value column: "today", "yesterday", "3 Aug",
+  // "3 Aug 2025". The column is narrow — a clock time would not fit.
+  function shortDate(ms) {
     const d = new Date(ms);
-    const opts = { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" };
-    if (d.getFullYear() !== new Date().getFullYear()) opts.year = "numeric";
-    return d.toLocaleString(undefined, opts);
+    const now = new Date();
+    const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    if (ms >= midnight) return "today";
+    if (ms >= midnight - 864e5) return "yesterday";
+    const opts = { day: "numeric", month: "short" };
+    if (d.getFullYear() !== now.getFullYear()) opts.year = "numeric";
+    return d.toLocaleDateString(undefined, opts);
   }
 
   function ensureCard() {
@@ -102,6 +110,19 @@
     if (cls) div.className = cls;
     div.textContent = text; // records are data, never markup
     return div;
+  }
+
+  function row(label, value, empty) {
+    const r = document.createElement("div");
+    r.className = "lct-cc-row";
+    const k = document.createElement("div");
+    k.className = "lct-cc-k";
+    k.textContent = label;
+    const v = document.createElement("div");
+    v.className = "lct-cc-v" + (empty ? " lct-cc-v-empty" : "");
+    v.textContent = value; // records are data, never markup
+    r.append(k, v);
+    return r;
   }
 
   function hideCard() {
@@ -141,44 +162,55 @@
     return sized.every((p) => records[p].c <= mine);
   }
 
-  function renderCard(path, anchorRect) {
+  function renderCard(path, anchorRect, name) {
     ensureCard();
     card.replaceChildren();
     const rec = records[path];
 
+    card.appendChild(line((rec && rec.ti) || name || "This chat", "lct-cc-name"));
+
     if (!rec) {
-      card.appendChild(line("Not tracked yet", "lct-cc-title"));
-      card.appendChild(line("Open this chat once and Tvara will remember its size and dates.", "lct-cc-dim"));
-    } else {
-      if (rec.c == null) {
-        // synced meta record: real dates from the platform, size not yet known
-        card.appendChild(line(rec.ti || "Synced chat", "lct-cc-title"));
-        if (rec.e) card.appendChild(line("Created " + fmt(rec.e * 1000)));
-        card.appendChild(line("Last active " + fmt(rec.o), "lct-cc-dim"));
-        card.appendChild(line("Synced from your history. Open once for message counts.", "lct-cc-dim"));
-      } else {
+      // Nothing known. Every field says so rather than inventing a number.
+      card.appendChild(row("Messages", DASH, true));
+      card.appendChild(row("You asked", DASH, true));
+      card.appendChild(row("Starred", DASH, true));
+      card.appendChild(row("Created", DASH, true));
+      card.appendChild(row("Last opened", "not tracked yet", true));
       card.appendChild(line(
-        `${rec.c.toLocaleString()} messages · ${rec.u.toLocaleString()} questions asked`,
-        "lct-cc-title"
+        "Not tracked yet. Open this chat once and Tvara will remember its size and dates.",
+        "lct-cc-foot"
       ));
-      if (rec.e) card.appendChild(line("Created " + fmt(rec.e * 1000)));
-      else card.appendChild(line("First seen " + fmt(rec.f) + " · this device", "lct-cc-dim"));
-      card.appendChild(line("Last opened " + fmt(rec.o), "lct-cc-dim"));
-      if (isLongest(path)) {
+    } else {
+      const synced = rec.c == null; // history-sync meta: real dates, size unknown
+      card.appendChild(row("Messages", synced ? DASH : rec.c.toLocaleString(), synced));
+      card.appendChild(row("You asked", synced ? DASH : rec.u.toLocaleString(), synced));
+
+      // stars live under their own per-conversation key — the row is placed
+      // now (so nothing below it jumps) and filled when the read lands
+      const starRow = row("Starred", DASH, true);
+      card.appendChild(starRow);
+      const starKey = "stars:" + location.hostname + path;
+      store.get(starKey).then((res) => {
+        const stars = res[starKey];
+        const n = stars ? Object.keys(stars).length : 0;
+        if (shownFor !== path || !starRow.isConnected) return;
+        const v = starRow.lastChild;
+        v.textContent = n ? n.toLocaleString() : "0";
+        v.className = "lct-cc-v" + (n ? " lct-cc-v-star" : " lct-cc-v-empty");
+      });
+
+      if (rec.e) card.appendChild(row("Created", shortDate(rec.e * 1000)));
+      else card.appendChild(row("First seen", shortDate(rec.f)));
+      card.appendChild(row("Last opened", shortDate(rec.o)));
+
+      if (synced) {
+        card.appendChild(line("Synced from your history. Open once for message counts.", "lct-cc-foot"));
+      } else if (!rec.e) {
+        card.appendChild(line("First seen is when this device met the chat, not when you started it.", "lct-cc-foot"));
+      }
+      if (!synced && isLongest(path)) {
         card.appendChild(line("Your longest visited chat on " + adapter.label, "lct-cc-badge"));
       }
-      }
-      // stars live under their own per-conversation key — fetch and append
-      store.get("stars:" + location.hostname + path).then((res) => {
-        const stars = res["stars:" + location.hostname + path];
-        const n = stars ? Object.keys(stars).length : 0;
-        if (n && shownFor === path) {
-          card.insertBefore(
-            line(`${n} starred message${n === 1 ? "" : "s"}`, "lct-cc-star"),
-            card.children[1] || null
-          );
-        }
-      });
     }
 
     // position beside the link, clamped to the viewport
@@ -224,9 +256,12 @@
     const anchor = e.target.closest("a[href]");
     suppressTitle(anchor);
     const rect = anchor.getBoundingClientRect();
+    // prefer the native title (untruncated) over the visibly clipped label
+    const name = (savedTitle != null && titleAnchor === anchor ? savedTitle : anchor.textContent || "")
+      .replace(/\s+/g, " ").trim().slice(0, 80);
     hoverTimer = setTimeout(async () => {
       if (!recordsLoaded) await loadRecords();
-      renderCard(path, rect);
+      renderCard(path, rect, name);
     }, SHOW_DELAY);
   }
 
