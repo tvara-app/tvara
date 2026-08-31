@@ -5093,8 +5093,14 @@ try {
 try {
   chrome.runtime.onInstalled.addListener(async (details) => {
     if (!details || details.reason !== "install") return;
-    try { await chrome.storage.local.remove(["lct-welcomed-v1", "lct-tour-v1"]); }
-    catch (_) { /* storage unavailable — the onboarding has its own fallback */ }
+    try {
+      await chrome.storage.local.remove(["lct-welcomed-v1", "lct-tour-v1"]);
+      /* Armed, not started: the tour lives in the page and there is no page yet.
+         The flag lets the first supported chat run it immediately instead of
+         waiting for a conversation long enough to draw a map — a new install is
+         usually opened on an empty one, where that wait never ends. */
+      await chrome.storage.local.set({ "lct-tour-armed-v1": Date.now() });
+    } catch (_) { /* storage unavailable — the onboarding has its own fallback */ }
     // Create before awaiting any provider. This is the install prompt, not a
     // reward for a network request completing.
     try {

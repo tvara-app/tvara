@@ -16,7 +16,15 @@ import { mintLct2Token, mintTrialToken, b64url, setStorage, deviceFingerprint } 
  */
 export async function setEntitlement(ctx, extId, state, { priv, deviceId = "matrix-device-0001", licenseKey = "MATRIX-TEST-KEY-0001" } = {}) {
   const now = Date.now();
-  await setStorage(ctx, extId, "local", { license: null, "lct-entitlement-v2": null, "lct-trial-v2": null });
+  /* The tour is marked done for every row. It is install onboarding, it opens
+     over whatever surface the row is about, and since the install listener
+     arms it on every fresh profile it turned a 104-second smoke slice into 49
+     minutes — past the CI job's own timeout. The tour has its own coverage in
+     test-extension.mjs; here it is noise on top of the thing under test. */
+  await setStorage(ctx, extId, "local", {
+    license: null, "lct-entitlement-v2": null, "lct-trial-v2": null,
+    "lct-tour-v1": now, "lct-tour-armed-v1": null
+  });
   await setStorage(ctx, extId, "sync", { "lct-device-id-v1": { id: deviceId, mintedAt: now } });
 
   switch (state) {

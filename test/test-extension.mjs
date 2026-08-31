@@ -3555,7 +3555,10 @@ try {
   // button the adapter removed can never be explained here.
   const legend = await page.evaluate(async () => {
     const next = () => document.querySelector("#lct-tour-card .lct-tour-next");
+    const seen = [];
     for (let i = 0; i < 8; i++) {
+      const card = document.getElementById("lct-tour-card");
+      if (card && card.dataset.step) seen.push(card.dataset.step);
       if (document.querySelector("#lct-tour-card .lct-tour-legend")) break;
       const b = next();
       if (!b) break;
@@ -3568,9 +3571,11 @@ try {
       rows: rows.length,
       buttons: bar ? bar.querySelectorAll("button").length : -1,
       icons: rows.filter((r) => r.querySelector("svg")).length,
-      text: rows.map((r) => r.textContent).join(" | ")
+      text: rows.map((r) => r.textContent).join(" | "),
+      seen
     };
   });
+  const legendWalk = legend.seen || [];
   t("B14 the tour explains every tool on the strip, and only those",
     legend.rows > 0 && legend.rows === legend.buttons, JSON.stringify(legend));
   t("B14 …each next to the icon it is talking about", legend.icons === legend.rows,
@@ -3597,20 +3602,42 @@ try {
   t("B14 the tour fits every window shape, portrait and landscape",
     fits.every((f) => f.ok), JSON.stringify(fits));
 
+  /* Walk the rest of it, collecting what each card is about. The cap is a
+     runaway guard, not the step count: the tour grew from seven cards to
+     twenty and a loop calibrated to the old number reported "cannot be
+     finished" for a tour that finishes perfectly well. */
   const closed = await page.evaluate(async () => {
-    for (let i = 0; i < 8; i++) {
-      const b = document.querySelector("#lct-tour-card .lct-tour-next");
+    const seen = [];
+    for (let i = 0; i < 40; i++) {
+      const card = document.getElementById("lct-tour-card");
+      if (!card) break;
+      if (card.dataset.step) seen.push(card.dataset.step);
+      const b = card.querySelector(".lct-tour-next");
       if (!b) break;
       b.click();
       await new Promise((r) => setTimeout(r, 60));
     }
     return {
+      seen,
       gone: !document.getElementById("lct-tour"),
       // released, not left pinned open on top of the reader's chat
       resting: document.getElementById("lct-minimap")?.classList.contains("lct-mm-rest")
     };
   });
   t("B14 the tour can be finished", closed.gone, JSON.stringify(closed));
+
+  /* The tour is the ONLY place the extension explains itself in the page, so
+     "it mentioned the strip" is not enough — a feature with no card is a
+     feature nobody is told about. These are the ones with no control on the
+     toolbar to point at, which is exactly why they were missing before. */
+  const explained = [...new Set([...legendWalk, ...closed.seen])];
+  for (const id of ["strip", "map", "preview", "tools", "stars", "outline", "search", "backup",
+                    "recall", "times", "card", "resume", "allowance", "archive", "temp", "plan",
+                    "settings", "keys"]) {
+    t(`B14 the tour explains "${id}"`, explained.includes(id), explained.join(","));
+  }
+  t("B14 …and is one continuous walkthrough, not a handful of cards",
+    explained.length >= 18, String(explained.length));
   t("B14 …and gives the strip back when it is", closed.resting !== false, JSON.stringify(closed));
 
   // Second visit: silence. The flag is written BEFORE anything is drawn, so
@@ -3624,6 +3651,26 @@ try {
     await pop.evaluate(async () => !!(await chrome.storage.local.get("lct-tour-v1"))["lct-tour-v1"]));
   t("B14 …but it can be asked for again from the popup",
     await pop.isVisible("#tour-link"));
+
+  /* Armed by the install listener. A fresh install is normally opened on an
+     EMPTY chat, where the map hides itself because there is nothing to map —
+     so the tour that new user was promised waited for a conversation that had
+     not been had yet, and was never shown. Armed, the toolbar alone is enough
+     to start, and the flag is spent once. */
+  await pop.evaluate(() => chrome.storage.local.set(
+    { "lct-tour-armed-v1": Date.now(), "lct-tour-v1": null }));
+  await page.reload();
+  await page.waitForSelector("#lct-tour-card", { timeout: 15000 });
+  t("B14 a fresh install gets the tour without waiting for a long chat", true);
+  t("B14 …and the arming flag is spent, not left to fire on every page",
+    await pop.evaluate(async () =>
+      !(await chrome.storage.local.get("lct-tour-armed-v1"))["lct-tour-armed-v1"]));
+  await page.evaluate(async () => {
+    for (let i = 0; i < 40 && document.getElementById("lct-tour-card"); i++) {
+      document.querySelector("#lct-tour-card .lct-tour-next")?.click();
+      await new Promise((r) => setTimeout(r, 40));
+    }
+  });
 
   const popupTour = await pop.evaluate(async () => {
     document.getElementById("tour-link").click();

@@ -75,6 +75,13 @@
 
   $("check-pin").addEventListener("click", checkPin);
   $("continue").addEventListener("click", () => window.close());
+  /* The walkthrough is a content script, so it needs a chat page to run in.
+     The install listener has already armed it; this is the shortest path from
+     "installed" to seeing it, for a user who has no chat open yet. */
+  $("tour-now").addEventListener("click", () => {
+    try { window.open("https://chatgpt.com/", "_blank", "noopener"); } catch { /* popup blocked */ }
+    window.close();
+  });
   refreshStats();
   refreshQuota();
   // The install listener already started this. Calling again joins that run if

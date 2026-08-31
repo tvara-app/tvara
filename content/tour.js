@@ -11,6 +11,11 @@
   "use strict";
 
   const DONE_KEY = "lct-tour-v1";
+  /* Set by the install listener. Its only job is to relax the wait below: a
+     fresh install is usually opened on a NEW chat, where the map hides itself
+     because there is nothing yet to map, and waiting for it meant the tour a
+     new user was promised never appeared. */
+  const ARM_KEY = "lct-tour-armed-v1";
   const store = self.LCTStore;
 
   let root = null, card = null, ring = null, pane = null, foot = null;
@@ -104,6 +109,10 @@
   };
 
   const el = (id) => document.getElementById(id);
+  /* A control on the strip's toolbar. Some are absent by design — `history` is
+     removed on sites that mount their own older messages — so every caller
+     falls back rather than pointing at nothing. */
+  const tool = (act) => document.querySelector('#lct-export-bar [data-act="' + act + '"]');
 
   /* ---------- the pin illustration ----------
      Drawn, not described: "the puzzle-piece menu" is a sentence nobody parses
@@ -266,6 +275,13 @@
         anchor: () => el("lct-mm-stage") || el("lct-mm-canvas") || el("lct-minimap"),
         title: "The whole conversation, at a glance",
         body: "One bar per message — yours and the AI's in different shades, starred ones lit. Click anywhere on it to jump straight there, however far back it is."
+      },
+      {
+        id: "preview",
+        anchor: () => el("lct-mm-stage") || el("lct-minimap"),
+        title: "Even the part the page has thrown away",
+        body: "Click a message the site has unloaded and it opens immediately in a small preview, because your own copy answers first. The site is asked to load its way back to it meanwhile, and when it arrives the preview steps aside and you land on the real one.",
+        foot: "A pill at the bottom says how far along that is, with a Stop button. Nothing here moves the page without telling you."
       }
     );
     // Only shown when the engine actually has messages asleep — otherwise this
@@ -279,18 +295,125 @@
       });
     }
     list.push({
-      id: "settings",
-      anchor: () => null,
-      title: "Your extension window has the defaults",
-      body: "Open the Tvara icon in your browser toolbar to switch the speed engine, minimap, timestamps, full-history loading, temporary-chat archiving and allowance tracking on or off.",
-      foot: "It also holds Total Recall, Archive core, low-allowance warnings and this walkthrough whenever you need it."
-    });
-    list.push({
       id: "tools",
       anchor: () => el("lct-export-bar") || el("lct-minimap"),
       title: "The tools, top to bottom",
       body: "Each of these is one click, and each has a label when you hover it.",
       extra: toolLegend
+    });
+    list.push(
+      {
+        id: "stars",
+        anchor: () => el("lct-minimap"),
+        title: "Star the parts worth keeping",
+        body: "Hover any message and a small star appears at its top right. Starred messages get a gold edge and stay one click away in a 500-message chat.",
+        foot: "Stars are saved per conversation and survive reloads. The most recent 60 follow your browser profile to your other signed-in browsers."
+      },
+      {
+        id: "outline",
+        anchor: () => tool("outline") || el("lct-export-bar"),
+        title: "Every topic, as a list",
+        body: "This builds a table of contents from every prompt you sent and every heading in the answers. Click an entry to land on it — a heading takes you to that heading, not to the top of the answer holding it.",
+        foot: "Two tabs: Outline for everything, Starred for what you marked. Star straight from any row."
+      },
+      {
+        id: "search",
+        anchor: () => tool("search") || el("lct-export-bar"),
+        title: "Search inside this conversation",
+        body: "Full text, including the messages the page has put to sleep — it searches a cache rather than the rendered page, so speed costs you nothing here. Enter jumps to the next match, Shift+Enter to the previous."
+      }
+    );
+    // Pro tools are absent from the bar on a free install, and a card pointing
+    // at a control that is not there teaches nothing.
+    if (tool("bridge")) list.push({
+      id: "bridge",
+      anchor: () => tool("bridge"),
+      title: "Bring your own past answers here",
+      body: "You worked something out with another AI and this one knows none of it. This searches your whole archive, shows you the passages, and puts the ones you tick into the prompt you are writing.",
+      foot: "Nothing is sent anywhere and no key is needed — it feeds the model you are already signed into. You always pick before anything is inserted."
+    });
+    if (tool("carry")) list.push({
+      id: "carry",
+      anchor: () => tool("carry"),
+      title: "When this chat gets too long",
+      body: "Opens a fresh conversation with the context already in the prompt box: what you originally asked, what you starred, and the turns where something was actually decided — not just the tail of the thread, which is usually \"yes, that worked\".",
+      foot: "Quoted, never summarised, and never sent for you. You read it and press send."
+    });
+    if (tool("history")) list.push({
+      id: "history",
+      anchor: () => tool("history"),
+      title: "Put the older messages back",
+      body: "Mounts every earlier message into the page itself, which is what the site's own Ctrl+F and a full backup need. It says how far along it is and stops the moment you touch the page.",
+      foot: "Nothing else here ever scrolls the page on its own."
+    });
+    list.push({
+      id: "backup",
+      anchor: () => document.querySelector('#lct-export-bar [data-fmt]') || el("lct-export-bar"),
+      title: "Take the conversation with you",
+      body: "Markdown keeps the headings, lists, code fences and times and drops into Obsidian or Notion. JSON is one record per message for your own scripts.",
+      foot: "Exporting never needs a licence. Your own chats are never held behind a plan."
+    });
+    list.push({
+      id: "recall",
+      anchor: () => null,
+      title: "One search box for every chat you own",
+      body: "Total Recall searches every archived conversation on every platform at once. Click a result and you land in that chat with the search already open on your words.",
+      foot: "It runs on your machine. There is no server holding your conversations to search."
+    });
+    list.push({
+      id: "times",
+      anchor: () => null,
+      title: "When was this actually said?",
+      body: "Hover any message for its time. On ChatGPT that is the real send time, read from the app's own state. Elsewhere browsers were never told, so it says first seen on this device — and messages older than the install say so instead of guessing.",
+      foot: "Turn it off in the extension window if you would rather not see them."
+    });
+    list.push({
+      id: "card",
+      anchor: () => null,
+      title: "Know a chat before you open it",
+      body: "Hover a conversation in the site's own sidebar and a card shows its size, how many questions you asked, what you starred, and when you last opened it.",
+      foot: "Only chats you have opened at least once. Anything else says not tracked yet rather than inventing a number."
+    });
+    list.push({
+      id: "resume",
+      anchor: () => null,
+      title: "It remembers where you stopped reading",
+      body: "Reopen a long chat and a chip offers to take you back to the exact message you were on — anchored to the message, so it survives reloads. Scroll away on purpose and the chip leaves."
+    });
+    list.push({
+      id: "allowance",
+      anchor: () => null,
+      title: "Told before the wall, not after it",
+      body: "These apps warn you about your limit by cutting you off. This reads the figure their own responses already carry and warns at 20%, then at 10%, on whichever model is running down.",
+      foot: "It never alters, blocks or delays a request, and a provider that publishes no figure is reported as such rather than estimated."
+    });
+    list.push({
+      id: "archive",
+      anchor: () => null,
+      title: "Your archive, and what guards it",
+      body: "Chats are archived to this machine so Recall has something to search. If one is deleted at the provider, you are told and you decide — a deletion there is never a deletion here.",
+      foot: "Encrypted backups are written with a passphrase you choose and that nobody can recover for you."
+    });
+    list.push({
+      id: "temp",
+      anchor: () => null,
+      title: "Temporary chats stay out unless you say otherwise",
+      body: "A temporary or incognito chat is you telling that platform not to keep it, so Tvara does not keep it either. Switch it on and those chats are archived here too — labelled as temporary, with a badge on the page the whole time one is being archived.",
+      foot: "Never a silent recording, and they cannot be reopened on the platform: the original was never saved there."
+    });
+    list.push({
+      id: "plan",
+      anchor: () => null,
+      title: "What is free, and what is not",
+      body: "Everything you have just seen in the page is free and stays free. The archive search, the bridge and carrying a chat forward are Pro — a 7-day trial with no card, then a one-time purchase that covers five devices and every future update.",
+      foot: "If a licence ever ends, your archive stays on this machine and stays exportable. Your own conversations are never held behind a plan."
+    });
+    list.push({
+      id: "settings",
+      anchor: () => null,
+      title: "Your extension window has the defaults",
+      body: "Open the Tvara icon in your browser toolbar to switch the speed engine, minimap, timestamps, full-history loading, temporary-chat archiving and allowance tracking on or off.",
+      foot: "It also holds Total Recall, your archive, your plan, the adapter health report, and this walkthrough whenever you want it again."
     });
     list.push({
       id: "keys",
@@ -543,31 +666,39 @@
   }
 
   async function armTour() {
-    const got = await store.get([DONE_KEY]);
+    const got = await store.get([DONE_KEY, ARM_KEY]);
     // An orphaned content script reads {} from a dead context, which looks
     // exactly like a first run.
     if (!store.alive || (got && got[DONE_KEY])) return;
+    const justInstalled = !!(got && got[ARM_KEY]);
     // The flag is spent only once there is something to point at. Claiming it
     // up front burns the one tour someone gets on a two-message conversation,
     // where the strip hides itself and every anchor is missing.
-    const strip = await waitForStrip();
+    const strip = await waitForStrip(justInstalled);
     if (!strip) return;
     const again = await store.get([DONE_KEY]);
     if (!store.alive || (again && again[DONE_KEY])) return;   // another tab got there
     // Written before anything is drawn, so two tabs finishing the wait together
     // cannot both decide they are the first.
     await store.set({ [DONE_KEY]: Date.now() });
+    // Cleared the way every other flag here is: LCTStore has no remove().
+    if (justInstalled) await store.set({ [ARM_KEY]: null });
     if (!store.alive) return;
     start(...await askWorker());
   }
 
-  function waitForStrip() {
+  function waitForStrip(loose) {
     return new Promise((res) => {
       let waited = 0;
       const look = () => {
         const mm = el("lct-minimap");
+        const bar = el("lct-export-bar");
         // display:none is the minimap's own "this chat is too short to map".
-        if (mm && mm.style.display !== "none" && el("lct-export-bar")) return res(mm);
+        // Right after an install the bar alone is enough: every card that wants
+        // the map already falls back to the bar, and a first-run tour that
+        // waits for a long conversation is a tour nobody is shown.
+        if (loose && bar) return res(bar);
+        if (mm && mm.style.display !== "none" && bar) return res(mm);
         if ((waited += 400) > 20000) return res(null);
         setTimeout(look, 400);
       };
