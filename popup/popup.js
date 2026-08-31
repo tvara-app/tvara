@@ -1685,7 +1685,7 @@
       id: "history",
       anchor: () => $("toggle-history")?.closest(".row"),
       title: "Load full history on open",
-      body: "Off by default, and deliberately. It completes the map up front by asking the site to mount every older message, which means the page scrolls while it works. Leave it off and the map still fills in as you read."
+      body: "Asks the site to put every older message back on the page, which is what the site's own Ctrl+F needs. It waits for a moment that costs you nothing — the tab in the background, or you already scrolled to the top — because loading them moves the page, and it will not do that while you are reading. Off is fine: the map is complete either way."
     },
     {
       id: "temp",

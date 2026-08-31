@@ -5,13 +5,14 @@
  * native scroller to the oldest available turn so every turn the host exposes
  * is mounted, then returns to the reader's exact anchor.
  *
- * It does NOT run on its own any more. Paging a 1,500-turn conversation is
+ * It never starts in front of a reader. Paging a 1,500-turn conversation is
  * sixty round trips of the host yanking its own scroller to the top, and doing
  * that unannounced while someone is reading is indistinguishable from the page
- * being broken — which is exactly how it read. Full-text history now comes
- * from the background sync, which never touches the page; this walk is a
- * deliberate act (the ⤒ button on the minimap, or settings.history) for people
- * who want the in-page map complete right now.
+ * being broken — which is exactly how it read. Full-text history comes from
+ * the background sync and the map from the provider index, neither of which
+ * touches the page, so this walk is only ever for putting the messages
+ * THEMSELVES back: the ⤒ button, or settings.history, and the automatic one
+ * waits for a quiet moment — see readerParked() below.
  */
 (() => {
   "use strict";
@@ -296,6 +297,7 @@
       const t = e && e.target;
       if (t && t.closest && t.closest('[id^="lct-"]')) return;
       task.cancelled = true;
+      task.cancelledBy = "input";     // they chose a position; keep it
     };
     task.cancel = cancel;
     // Capture phase catches a wheel/touch on the host scroller before React
@@ -360,6 +362,13 @@
     task.anchor = captureAnchor(adapter, messages, scroller);
     setStatus("running");
 
+    // Show the pill BEFORE the first page, and with a cancel — the only
+    // showPill in this path used to come from onStep, which passes no handler,
+    // so the Stop button sat there attached to nothing.
+    showPill(walkLabel(adapter), () => {
+      task.cancelled = true;
+      task.cancelledBy = "stop";
+    });
     const outcome = await pageUp(adapter, task, scroller, {
       onStep: () => showPill(walkLabel(adapter))
     });
@@ -378,8 +387,12 @@
         finish(task, "complete");
       }
     } else {
-      // A human chose the next scroll position. Never snap them back — but the
-      // backfill is still unfinished, so try again once they settle.
+      // A human chose the next scroll position. Never snap them back — unless
+      // we are the reason the walk stopped (Stop, or the tab coming back into
+      // view), in which case their old place is exactly what to hand back.
+      if (task.cancelledBy && task.cancelledBy !== "input" && task.route === location.href) {
+        await restoreAnchor(adapter, scroller, task.anchor, { cancelled: false });
+      }
       finish(task, "cancelled");
       scheduleResume(adapter, route);
     }
@@ -407,7 +420,11 @@
     function go() {
       detach();
       if (active || completedRoutes.has(route) || location.href !== route) return;
-      const task = { route, cancelled: false, detach: null, timer: null, probes: 0 };
+      // The resume is the same page-yank as the first attempt, so it waits for
+      // the same quiet moment. Without this, scrolling away from a walk bought
+      // 2.5s of reading before the page snapped back to the top — five times.
+      if (!readerParked(adapter)) return armPending(adapter, route);
+      const task = { route, cancelled: false, cancelledBy: "", auto: true, detach: null, timer: null, probes: 0 };
       active = task;
       attachCancellation(task);
       run(adapter, route);
@@ -425,7 +442,7 @@
     setStatus(status);
   }
 
-  function begin(adapter, delay) {
+  function begin(adapter, delay, auto) {
     const route = location.href;
     if (active && active.route === route) return false;
     if (active) {
@@ -433,7 +450,7 @@
       finish(active, "cancelled");
     }
     startedRoutes.add(route);
-    const task = { route, cancelled: false, detach: null, timer: null, probes: 0 };
+    const task = { route, cancelled: false, cancelledBy: "", auto: !!auto, detach: null, timer: null, probes: 0 };
     active = task;
     // Start listening immediately. If the reader touches the page during the
     // settling delay, respect that choice instead of starting a late crawl.
@@ -444,12 +461,77 @@
     return true;
   }
 
+  /* ---------- never move a page somebody is reading ----------
+     A host hands over older turns only when its own scroller is genuinely at
+     the top, and the browser paints that: there is no invisible version of
+     this walk. So the automatic one waits for a moment when the top costs the
+     reader nothing — the tab is in the background, or they are already up at
+     the oldest mounted turn, on their way further back anyway.
+
+     Opening a long chat therefore leaves the page exactly where the site put
+     it. Nothing is lost by waiting: the map is seeded from the provider's own
+     index and the full text comes from the background sync, and neither of
+     those touches the page at all. The ⤒ button is unchanged — that one was
+     asked for, out loud, by someone watching. */
+  let pending = null;               // { adapter, route } waiting for a quiet moment
+
+  function readerParked(adapter) {
+    if (document.hidden) return true;
+    let messages;
+    try { messages = adapter.messages(); } catch (_) { return false; }
+    if (!messages || !messages.length) return false;
+    const scroller = self.LCTAdapters.findScroller(messages[0]);
+    if (!scroller) return false;
+    // A quarter-screen from the oldest mounted turn: they are reading
+    // backwards already, and the host is about to page on its own.
+    return scrollTopOf(scroller) <= Math.max(TOP_EPSILON, scroller.clientHeight * 0.25);
+  }
+
+  function clearPending() {
+    if (!pending) return;
+    pending = null;
+    window.removeEventListener("scroll", tryPending, true);
+  }
+
+  function armPending(adapter, route) {
+    if (pending && pending.route === route) return;
+    clearPending();
+    pending = { adapter, route };
+    // Capture phase: the host scroller is not the window, and this has to see
+    // the scroll that lands them at the top.
+    window.addEventListener("scroll", tryPending, { capture: true, passive: true });
+  }
+
+  function tryPending() {
+    if (!pending || active) return;
+    if (location.href !== pending.route || completedRoutes.has(pending.route)) return clearPending();
+    if (!readerParked(pending.adapter)) return;
+    const adapter = pending.adapter;
+    clearPending();
+    begin(adapter, document.hidden ? 0 : 400, true);
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) { tryPending(); return; }
+    const task = active;
+    if (!task || !task.auto || task.cancelled) return;
+    /* Back in front of somebody. Put the page where they left it HERE — a
+       visibilitychange handler runs before the frame is painted, so the top
+       the walk was parked on is never a thing they see. run() follows with the
+       precise restore a moment later. */
+    task.cancelled = true;
+    task.cancelledBy = "visible";
+    hidePill();
+    if (task.scroller && task.anchor) moveTo(task.scroller, task.anchor.fallbackTop);
+  });
+
   /** Auto path. Off unless settings.history says otherwise — see the header. */
   function maybeStart(adapter, messages) {
     if (!autoAllowed) return;
     const route = location.href;
     if (!supported(adapter) || !messages || messages.length < 2 || startedRoutes.has(route)) return;
-    begin(adapter, 700);
+    if (!readerParked(adapter)) return armPending(adapter, route);
+    begin(adapter, 700, true);
   }
 
   /** The reader asked for it. Redo even a route we already walked. */
@@ -458,7 +540,8 @@
     const route = location.href;
     completedRoutes.delete(route);
     resumeCounts.delete(route);
-    return begin(adapter, 0);
+    clearPending();
+    return begin(adapter, 0, false);
   }
 
   function setAuto(on) { autoAllowed = !!on; }
@@ -479,7 +562,7 @@
     if (active) { active.cancelled = true; finish(active, "cancelled"); }
 
     const route = location.href;
-    const task = { route, cancelled: false, detach: null, timer: null, probes: 0 };
+    const task = { route, cancelled: false, cancelledBy: "", auto: false, detach: null, timer: null, probes: 0 };
     active = task;
     attachCancellation(task);
     setSeekStatus("running");
@@ -511,7 +594,7 @@
       const scroller = messages.length ? self.LCTAdapters.findScroller(messages[0]) : null;
       if (!scroller) { finish(task, "idle"); setSeekStatus("done"); return; }
 
-      showPill(label(), () => { task.cancelled = true; });
+      showPill(label(), () => { task.cancelled = true; task.cancelledBy = "stop"; });
       const outcome = await pageUp(adapter, task, scroller, {
         until: () => !!found(),
         onStep: () => showPill(label())
@@ -530,6 +613,7 @@
   }
 
   function stop() {
+    clearPending();
     if (!active) return;
     active.cancelled = true;
     clearTimeout(active.timer);

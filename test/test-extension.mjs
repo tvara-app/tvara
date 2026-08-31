@@ -1440,9 +1440,50 @@ try {
   await pop.evaluate(() => chrome.storage.local.set({
     settings: { enabled: true, minimap: true, time: true, history: true }
   }));
+  /* B2c1 — the setting is ON and a long chat has just opened. This is the one
+     the report was about: the page must not be taken from under the reader.
+     The walk waits for a moment when the top costs them nothing, which the
+     next case supplies. */
+  const armed = await ctx.newPage();
+  trackErrors(armed);
+  await armed.goto("http://127.0.0.1:8917/test/virtual-history.html");
+  await armed.waitForSelector("#lct-minimap", { timeout: 20000 });
+  const armedStill = await armed.evaluate(async () => {
+    const s = document.getElementById("virtual-scroller");
+    const top = s.scrollTop;
+    const loads = window.__virtualHistory.loads;
+    await new Promise((r) => setTimeout(r, 3000));
+    return {
+      moved: s.scrollTop !== top,
+      paged: window.__virtualHistory.loads !== loads,
+      state: document.documentElement.dataset.lctHistoryState || "(never started)"
+    };
+  });
+  t("B2c1 full-history loading on does not move a chat you have just opened",
+    !armedStill.moved && !armedStill.paged && armedStill.state === "(never started)",
+    JSON.stringify(armedStill));
+  // The reader goes back through the conversation themselves. The top is now
+  // where the page already is, so the walk takes nothing from them.
+  await armed.evaluate(() => { document.getElementById("virtual-scroller").scrollTop = 0; });
+  let armedRan = true;
+  try {
+    await armed.waitForFunction(() =>
+      /running|complete/.test(document.documentElement.dataset.lctHistoryState || ""),
+    null, { timeout: 10000 });
+  } catch { armedRan = false; }
+  t("B2c1 …and it starts once the reader is at the top of what is mounted", armedRan,
+    await armed.evaluate(() => document.documentElement.dataset.lctHistoryState || "(never started)"));
+  await armed.close();
+
   const virtual = await ctx.newPage();
   trackErrors(virtual);
   await virtual.goto("http://127.0.0.1:8917/test/virtual-history.html");
+  // The strip rests with its toolbar visibility:hidden until it is hovered, so
+  // this waits for the button to EXIST, and clicks it in the page.
+  await virtual.waitForSelector('#lct-export-bar [data-act="history"]', { state: "attached", timeout: 20000 });
+  // Asked for, out loud, by someone watching: the ⤒ button. The page moving is
+  // the answer to a question they just asked, not a thing that happened to them.
+  await virtual.evaluate(() => document.querySelector('#lct-export-bar [data-act="history"]').click());
   await virtual.waitForFunction(() => document.documentElement.dataset.lctHistoryState === "complete", null, { timeout: 20000 });
   const historyState = await virtual.evaluate(async () => {
     const scroller = document.getElementById("virtual-scroller");
@@ -1495,6 +1536,8 @@ try {
   const bare = await ctx.newPage();
   trackErrors(bare);
   await bare.goto("http://127.0.0.1:8917/test/virtual-history.html?bare=1&stream=1&total=120&page=20");
+  await bare.waitForSelector('#lct-export-bar [data-act="history"]', { state: "attached", timeout: 20000 });
+  await bare.evaluate(() => document.querySelector('#lct-export-bar [data-act="history"]').click());
   // 20s against a crawl that takes ~3s once the tail is ignored, and against a
   // streamed prefix that keeps moving for ~40s if it is not. Neither side of
   // that is close to the line.
@@ -1531,6 +1574,8 @@ try {
   const resumed = await ctx.newPage();
   trackErrors(resumed);
   await resumed.goto("http://127.0.0.1:8917/test/virtual-history.html");
+  await resumed.waitForSelector('#lct-export-bar [data-act="history"]', { state: "attached", timeout: 20000 });
+  await resumed.evaluate(() => document.querySelector('#lct-export-bar [data-act="history"]').click());
   // Interrupt as soon as the crawl is genuinely under way.
   await resumed.waitForFunction(() => document.documentElement.dataset.lctHistoryState === "running", null, { timeout: 15000 });
   await resumed.evaluate(() => {
@@ -1553,6 +1598,26 @@ try {
   await pop.evaluate(() => chrome.storage.local.set({
     settings: { enabled: true, minimap: true, time: true, history: false }
   }));
+
+  /* B2f — the strip is not allowed to just not be there. Everything we draw
+     comes off the engine's tick, and the tick comes off the host mutating its
+     own DOM. A host that re-renders our node away and then goes quiet used to
+     leave nothing at all to bring it back — which is what "sometimes it
+     appears and sometimes it does not" was. Nothing here touches the page
+     afterwards: the recovery has to come from us. */
+  await page.evaluate(() => document.getElementById("lct-minimap").remove());
+  let stripBack = true;
+  try {
+    await page.waitForFunction(() => {
+      const el = document.getElementById("lct-minimap");
+      return !!(el && el.isConnected && el.style.display !== "none");
+    }, null, { timeout: 12000 });
+  } catch { stripBack = false; }
+  t("B2f a strip the host tore out comes back on a page that never moves again",
+    stripBack);
+  t("B2f …and its toolbar comes back with it",
+    await page.evaluate(() =>
+      document.getElementById("lct-export-bar")?.parentElement?.id === "lct-minimap"));
 
   t("B3 export bar with 6 SVG buttons (search + bridge + outline + carry + md + json)",
     (await page.locator("#lct-export-bar button svg").count()) === 6);
@@ -3758,7 +3823,7 @@ try {
   for (const [id, wants] of [
     ["plan", /Free, Trial or Pro/], ["pulse", /asleep/], ["settings", /Speed engine|off-screen/],
     ["minimap", /one bar per message|Minimap|thin strip/i], ["times", /send time/],
-    ["history", /scrolls while it works|mount every older message/], ["temp", /temporary/i],
+    ["history", /older message back on the page|while you are reading/], ["temp", /temporary/i],
     ["quota", /20%/], ["archive", /Total Recall/], ["core", /Archive core|checks for new chats/],
     ["account", /Pro is one payment|trial/i], ["footer", /Health|Shortcuts/],
     ["chat", /open it for you|continues there/i]

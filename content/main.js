@@ -17,7 +17,7 @@
     time: true,
     tempArchive: false,  // opt-in: the host was told not to keep these
 
-    history: false,    // walk the host's scroller on open — off, it moves the page
+    history: false,    // mount older turns in the page — see history-loader.js
     pro: false,
     trialUntil: 0      // ms epoch; 0 = no trial started
   };
@@ -35,6 +35,7 @@
     state.time && toolsUnlocked() ? (el) => self.LCTTimeline.info(el) : null;
 
   let lastMessages = [];
+  let lastTickAt = 0;          // the watchdog's proof that anything is running
   // The CONVERSATION, not location.href: these hosts rewrite their own query
   // string and hash while you sit still, and treating that as a chat switch
   // reset every per-chat cache several times a minute.
@@ -173,6 +174,7 @@
   // gate here made the minimap vanish on some chats — never again.)
   function onEngineUpdate(messages, windowedCount) {
     if (!contextAlive()) { showStaleNotice(); return; }
+    lastTickAt = Date.now();
     lastMessages = messages;
     syncTheme(); // hosts flip theme without reloading
     syncRail();  // the host's rail shows up once the chat gets long (throttled)
@@ -591,8 +593,14 @@
 
   /* ---------- settings / license ---------- */
 
+  /* Did the worker actually answer, or did we give up on it? "No answer"
+     reads as free, and on Claude and Gemini free means no strip at all — so
+     the difference has to be visible to the retry below. */
+  let entitlementAnswered = false;
+
   async function loadState() {
-    const { settings } = await store.get(["settings"]);
+    let settings = null;
+    try { ({ settings } = await store.get(["settings"])); } catch (_) { /* defaults */ }
     if (settings) {
       state.enabled = settings.enabled !== false;
       state.minimap = settings.minimap !== false;
@@ -602,8 +610,24 @@
     }
     // The worker holds the signed entitlement; content scripts only ask.
     // A hostile page shares this DOM but not this message channel.
-    const verdict = await new Promise((res) =>
-      chrome.runtime.sendMessage({ type: "entitlement-state" }, res));
+    /* A worker that is starting, updating or wedged can leave this message
+       unanswered forever, and nothing below is worth holding the whole
+       extension for — an unanswered round trip used to mean no engine, no
+       strip and no explanation on that tab until it was reloaded. Ask, wait a
+       moment, then carry on as free. */
+    const verdict = await new Promise((res) => {
+      let settled = false;
+      const done = (v) => { if (!settled) { settled = true; res(v); } };
+      setTimeout(() => done(null), 2500);
+      try {
+        chrome.runtime.sendMessage({ type: "entitlement-state" }, (v) => {
+          // "Could not establish connection" is what a worker that is still
+          // starting says. It is not a verdict, and it must not be filed as one.
+          if (!chrome.runtime.lastError && v) entitlementAnswered = true;
+          done(v);
+        });
+      } catch (_) { done(null); }
+    });
     state.pro = !!(verdict && verdict.entitled && verdict.via !== "trial");
     /* grants, not until: an unverified week runs its clock and unlocks
        nothing. Reading `until` alone let a reinstall farm Pro in-chat. */
@@ -922,10 +946,26 @@
   } catch (_) { /* extension context gone */ }
 
 
-  loadState().then(() => {
+  // Defaults are a working extension, so whatever went wrong reading them,
+  // the engine still starts.
+  /* A worker that was asleep, starting or updating answers nothing, and a page
+     that took that for an answer sat on the free surface until it was
+     reloaded. Ask again, a few times, widening the gap. */
+  let licenceTries = 0;
+  function refreshLicence() {
+    loadState().catch(() => {}).then(() => {
+      applyState();
+      seedFromProvider();
+      if (entitlementAnswered || ++licenceTries >= 3) return;
+      setTimeout(refreshLicence, 2000 * licenceTries);
+    });
+  }
+
+  loadState().catch(() => {}).then(() => {
     applyState();
     seedFromProvider();
     if (state.enabled) kickVisitSync();
+    if (!entitlementAnswered) setTimeout(refreshLicence, 2000);
     self.LCTTour.maybeStart();
     // A handover staged by "Continue in a new chat" is waiting on the other
     // side of window.open. Only ever into an empty conversation, and only for
@@ -933,8 +973,26 @@
     if (state.enabled && toolsUnlocked()) self.LCTCarry.deliver();
   });
 
-  // The onEngineUpdate check above only runs when the host mutates the page —
-  // a tab left open on a chat nobody is typing in can sit invalidated for a
-  // long time with no tick to catch it. This runs regardless of page activity.
-  setInterval(() => { if (!contextAlive()) showStaleNotice(); }, 4000);
+  /* ---------- the strip is not allowed to just not be there ----------
+     Everything we draw comes off the engine's tick, and the tick comes off the
+     host mutating. A host that re-renders our node away and then goes quiet —
+     a chat switch that mounts nothing new, a page that finished settling —
+     leaves nothing to bring it back, which is the "sometimes it appears and
+     sometimes it doesn't" report. So: if a tick has not happened in five
+     seconds and the strip is gone or hidden, ask for one. A rescan that
+     succeeds updates lastTickAt, so this costs one rescan per stall, not one
+     per interval.
+
+     The onEngineUpdate check also only runs on a mutation, and a tab left open
+     on a chat nobody is typing in can sit invalidated for a long time with no
+     tick to catch it. Same timer, same reason. */
+  setInterval(() => {
+    if (!contextAlive()) { showStaleNotice(); return; }
+    if (!state.enabled) return;
+    if (!self.LCTEngine.enabled) { applyState(); return; }
+    if (!state.minimap || !toolsUnlocked()) return;
+    const strip = document.getElementById("lct-minimap");
+    const gone = !strip || !strip.isConnected || strip.style.display === "none";
+    if (gone && Date.now() - lastTickAt > 5000) self.LCTEngine.rescan();
+  }, 2000);
 })();
