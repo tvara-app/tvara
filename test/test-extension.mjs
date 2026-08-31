@@ -3549,7 +3549,8 @@ try {
   });
   t("B14 …pointing at the strip itself", step1.onStrip, JSON.stringify(step1));
   t("B14 …which is held open while it is being pointed at", !step1.resting);
-  t("B14 …and names the thing before explaining it", /strip/i.test(step1.text));
+  t("B14 …and names the thing before explaining it",
+    /\bbar\b|edge/i.test(step1.text), step1.text.slice(0, 90));
 
   // Walk to the tools step. Its legend is built FROM the real toolbar, so a
   // button the adapter removed can never be explained here.
@@ -3608,10 +3609,18 @@ try {
      finished" for a tour that finishes perfectly well. */
   const closed = await page.evaluate(async () => {
     const seen = [];
+    const panels = [];
     for (let i = 0; i < 40; i++) {
       const card = document.getElementById("lct-tour-card");
       if (!card) break;
-      if (card.dataset.step) seen.push(card.dataset.step);
+      if (card.dataset.step) {
+        seen.push(card.dataset.step);
+        panels.push({
+          step: card.dataset.step,
+          outline: !!document.querySelector("#lct-outline.lct-o-open"),
+          search: !!document.querySelector("#lct-search.lct-s-open")
+        });
+      }
       const b = card.querySelector(".lct-tour-next");
       if (!b) break;
       b.click();
@@ -3619,6 +3628,11 @@ try {
     }
     return {
       seen,
+      panels,
+      leftOpen: {
+        outline: !!document.querySelector("#lct-outline.lct-o-open"),
+        search: !!document.querySelector("#lct-search.lct-s-open")
+      },
       gone: !document.getElementById("lct-tour"),
       // released, not left pinned open on top of the reader's chat
       resting: document.getElementById("lct-minimap")?.classList.contains("lct-mm-rest")
@@ -3636,6 +3650,50 @@ try {
                     "settings", "keys"]) {
     t(`B14 the tour explains "${id}"`, explained.includes(id), explained.join(","));
   }
+  /* The two cards that DEMONSTRATE rather than describe. A walkthrough that
+     says "this builds a table of contents" and shows nothing is a manual with
+     a Next button — the panel has to be open while its own card is on screen,
+     and shut again before the next card points somewhere else. */
+  const onCard = (id) => (closed.panels || []).find((p) => p.step === id) || {};
+  t("B14 the outline card opens the outline in front of the reader",
+    onCard("outline").outline === true, JSON.stringify(onCard("outline")));
+  t("B14 the search card opens the search box, and the outline is put back",
+    onCard("search").search === true && onCard("search").outline === false,
+    JSON.stringify(onCard("search")));
+  t("B14 …and the tour leaves nothing of its own open behind it",
+    closed.leftOpen && !closed.leftOpen.outline && !closed.leftOpen.search,
+    JSON.stringify(closed.leftOpen));
+
+  /* The handover. The last popup card opens a chat site rather than telling
+     the reader to go and find one, and arms the in-chat tour BEFORE the tab
+     exists — a flag written afterwards is one the loading page never saw. */
+  const handover = await pop.evaluate(async () => {
+    await chrome.storage.local.remove(["lct-tour-armed-v1", "lct-tour-v1"]);
+    const opened = [];
+    const realCreate = chrome.tabs.create;
+    const realClose = window.close;
+    chrome.tabs.create = (o) => { opened.push(o.url); return Promise.resolve({ id: -1 }); };
+    window.close = () => {};
+    document.getElementById("tour-link").click();
+    await new Promise((r) => setTimeout(r, 40));
+    const chips = [...document.querySelectorAll("#popup-tour-chips .tour-chip")].map((c) => c.dataset.url);
+    document.querySelector("#popup-tour-chips .tour-chip").click();
+    await new Promise((r) => setTimeout(r, 120));
+    const armed = (await chrome.storage.local.get("lct-tour-armed-v1"))["lct-tour-armed-v1"];
+    chrome.tabs.create = realCreate;
+    window.close = realClose;
+    await chrome.storage.local.remove("lct-tour-armed-v1");
+    await chrome.storage.local.set({ "lct-tour-v1": Date.now() });
+    return { chips, opened, armed: !!armed };
+  });
+  t("B14 the popup tutorial ends by offering to open a chat, not by naming one",
+    handover.chips.length === 6 && handover.chips.every((u) => /^https:\/\//.test(u)),
+    JSON.stringify(handover.chips));
+  t("B14 …picking one opens that site", handover.opened.length === 1,
+    JSON.stringify(handover.opened));
+  t("B14 …and arms the in-chat walkthrough before the tab is created",
+    handover.armed, JSON.stringify(handover));
+
   t("B14 …and is one continuous walkthrough, not a handful of cards",
     explained.length >= 18, String(explained.length));
   t("B14 …and gives the strip back when it is", closed.resting !== false, JSON.stringify(closed));
@@ -3678,19 +3736,39 @@ try {
     const tour = document.getElementById("popup-tour");
     const next = document.getElementById("popup-tour-next");
     const seen = [];
-    for (let i = 0; i < 5; i++) {
+    const counts = [];
+    // Walk to the end rather than a fixed number of clicks: the card count is
+    // whatever is actually on screen, since rows that are not there — no
+    // deletions to review, nothing left to fetch — are skipped.
+    for (let i = 0; i < 30; i++) {
       seen.push({ step: tour.dataset.step, text: tour.textContent });
-      if (i < 4) next.click();
+      counts.push(document.getElementById("popup-tour-count").textContent);
+      if (next.textContent === "Show in chat") break;
+      next.click();
       await new Promise((r) => setTimeout(r, 25));
     }
     document.getElementById("popup-tour-close").click();
-    return { hidden: tour.hidden, seen };
+    return { hidden: tour.hidden, seen, counts };
   });
-  t("B14 the popup walkthrough covers the extension options",
-    popupTour.hidden && popupTour.seen.some((s) => s.step === "settings" && /Speed engine/.test(s.text)) &&
-      popupTour.seen.some((s) => s.step === "history" && /temporary chats/.test(s.text)) &&
-      popupTour.seen.some((s) => s.step === "archive" && /Total Recall/.test(s.text)),
-    JSON.stringify(popupTour));
+  const popupSteps = popupTour.seen.map((s) => s.step);
+  /* Every switch in this window gets its own card. They used to be described
+     three at a time in a sentence about something else, which is how "Archive
+     core" and "Load full history on open" ended up with no explanation at all
+     while appearing to be covered. */
+  for (const [id, wants] of [
+    ["plan", /Free, Trial or Pro/], ["pulse", /asleep/], ["settings", /Speed engine|off-screen/],
+    ["minimap", /one bar per message|Minimap|thin strip/i], ["times", /send time/],
+    ["history", /scrolls while it works|mount every older message/], ["temp", /temporary/i],
+    ["quota", /20%/], ["archive", /Total Recall/], ["core", /Archive core|checks for new chats/],
+    ["account", /Pro is one payment|trial/i], ["footer", /Health|Shortcuts/],
+    ["chat", /open it for you|continues there/i]
+  ]) {
+    const card = popupTour.seen.find((s) => s.step === id);
+    t(`B14 the popup walkthrough explains "${id}"`, !!card && wants.test(card.text),
+      card ? card.text.slice(0, 90) : popupSteps.join(","));
+  }
+  t("B14 …and closes on the last card, which hands over to the in-chat tour",
+    popupTour.hidden && /1 of \d+/.test(popupTour.counts[0] || ""), JSON.stringify(popupTour.counts));
 
   /* ---- B15. The health check ----
      This is the instrument that is supposed to notice a platform redesign

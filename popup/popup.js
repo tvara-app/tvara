@@ -515,9 +515,7 @@
     }
     if (archive && archive.chats > 0) {
       num.textContent = (archive.msgs || archive.chats).toLocaleString();
-      label.textContent = archive.msgs
-        ? `messages archived, across ${archive.chats.toLocaleString()} chats`
-        : "chats archived";
+      label.textContent = archive.msgs ? "messages" : "chats archived";
       return;
     }
     /* A giant "0" is the first thing in the panel on a fresh install, and zero
@@ -1639,54 +1637,120 @@
     } catch { return null; }
   };
 
-  activeChatTab().then((tab) => {
-    if (tab) return;
-    showNudge();
-  });
-
-  // The live counter reads "0 messages asleep right now" on a tab the engine
-  // does not run on, which looks like a broken extension rather than the wrong
-  // tab. One or the other, never both.
-  function showNudge() {
-    $("site-nudge").hidden = false;
-    $("stat-windowed").hidden = true;
-    $("stat-label").hidden = true;
-  }
 
   /* ---------- popup tour ---------- */
 
-  const popupTourSteps = [
+  /* One card per control, not one per group. The rows ARE the settings — a
+     card covering three switches at once is how "Archive core" and "Load full
+     history on open" went unexplained: named in a sentence about something
+     else, anchored to a neighbour. */
+  const ALL_POPUP_STEPS = [
     {
-      id: "allowance",
+      id: "plan",
+      anchor: () => $("plan-badge"),
+      title: "Your plan, always visible",
+      body: "Free, Trial or Pro. Everything in a chat page is free; the archive search and the tools built on it are Pro, after a 7-day trial that needs no card."
+    },
+    {
+      id: "pulse",
       anchor: () => document.querySelector(".pulse"),
-      title: "Your live reading",
-      body: "The top of this window shows messages asleep in the current chat and, when providers publish it, the allowance left on each account. Allowance tracking can be switched off below."
+      title: "Proof the engine is working",
+      body: "The number is how many messages are asleep in the chat you have open right now. They are not deleted and not removed from your archive — they wake the moment you scroll back to them."
+    },
+    {
+      id: "usage",
+      anchor: () => $("usage-bars"),
+      title: "What each account has left",
+      body: "One reading per platform you are signed into, taken from the figure that platform's own responses carry. A provider that publishes nothing is shown as not reported rather than estimated."
     },
     {
       id: "settings",
-      anchor: () => document.querySelector(".rows > .row"),
-      title: "Choose what runs in chats",
-      body: "These switches are your defaults: Speed engine keeps long chats quick; Minimap adds the in-chat map; Timestamps show on hover. Changes apply to every supported chat."
+      anchor: () => $("toggle-enabled")?.closest(".row"),
+      title: "Speed engine",
+      body: "Puts off-screen messages to sleep so the browser stops paying for what you cannot see, keeping huge chats fast. A screen and a half either side of your view stays awake, so scrolling never shows a blank. Off means the page behaves exactly as the site built it."
+    },
+    {
+      id: "minimap",
+      anchor: () => $("toggle-minimap")?.closest(".row"),
+      title: "Minimap",
+      body: "The thin strip on the right edge of a chat: one bar per message, hover for a preview, click to jump anywhere in the conversation. Its toolbar is where the outline, search, backups and the Pro tools live, so turning this off takes those with it."
+    },
+    {
+      id: "times",
+      anchor: () => $("toggle-time")?.closest(".row"),
+      title: "Timestamps",
+      body: "Hover a message to see when it was said. On ChatGPT that is the real send time. Everywhere else a browser was never told, so it says first seen on this device — and a first-seen time is never presented as a send time."
     },
     {
       id: "history",
       anchor: () => $("toggle-history")?.closest(".row"),
-      title: "History and private chats",
-      body: "Load full history on open builds a complete map sooner, but may scroll the page while it does. Archive temporary chats is off by default; turn it on only when you want those chats kept in your local archive."
+      title: "Load full history on open",
+      body: "Off by default, and deliberately. It completes the map up front by asking the site to mount every older message, which means the page scrolls while it works. Leave it off and the map still fills in as you read."
+    },
+    {
+      id: "temp",
+      anchor: () => $("toggle-temp")?.closest(".row"),
+      title: "Archive temporary chats",
+      body: "A temporary or signed-out chat is you telling that platform not to keep it, so this is off by default. On, those chats are archived here too, labelled temporary, with a badge on the page the whole time one is being archived — never silently."
+    },
+    {
+      id: "quota",
+      anchor: () => $("toggle-quota")?.closest(".row"),
+      title: "Allowance tracking",
+      body: "Warns you at 20% and again at 10% instead of letting the site cut you off. Warn at 20% changes that threshold; accuracy shows what the last reading was taken from. Switched off, the reader disables itself entirely."
     },
     {
       id: "archive",
       anchor: () => $("open-recall")?.closest(".row"),
-      title: "Find and maintain your archive",
-      body: "Total Recall searches your saved chats across platforms. Archive core keeps that local archive current, while the allowance row lets you set low-allowance warnings or check a reading against the provider."
+      title: "Total Recall",
+      body: "One search box across every chat you have archived, on every platform. Type here for the quick answer, or open the full page for the archive itself — deletions, encrypted backups and what has been downloaded so far."
+    },
+    {
+      id: "deletions",
+      anchor: () => $("deletion-alert"),
+      title: "Chats deleted on the site",
+      body: "Deleted there is not deleted here. When a chat you had archived disappears from the provider, this appears and you decide what to keep. Nothing is removed without your answer."
+    },
+    {
+      id: "fill",
+      anchor: () => $("fill-archive"),
+      title: "Download your chats' text",
+      body: "A listing gives up every title in one request; the text costs one request per chat. This fetches the text Recall cannot search until it has it, and says how far along it is."
+    },
+    {
+      id: "core",
+      anchor: () => $("sync-history")?.closest(".row"),
+      title: "Archive core",
+      body: "The archive keeping itself current: it checks for new chats roughly every three hours and when you open a chat site, and writes only what is missing. The line under it is what has been saved, what is left, and how far the current pass has got — it resumes by itself after a browser restart."
+    },
+    {
+      id: "account",
+      anchor: () => [$("pro-upsell"), $("trial-active"), $("pro-active")].find((el) => el && !el.hidden),
+      title: "Your trial, and Pro",
+      body: "Signing in is what lets a trial or a purchase follow you through a reinstall or onto another browser, rather than being stuck to this one. Pro is one payment, five devices, every future update — and if it ever ends, your archive stays here and stays exportable."
+    },
+    {
+      id: "footer",
+      anchor: () => $("shortcuts-link")?.closest("span") || $("shortcuts-link"),
+      title: "The row along the bottom",
+      body: "Shortcuts opens your browser's own key bindings, where every Tvara shortcut can be changed or reassigned. Health reports whether each site's adapter is running normally or degraded — that is what tells you a platform redesign broke something, rather than you finding out later."
     },
     {
       id: "chat",
       anchor: () => $("tour-link"),
-      title: "See the controls in a chat",
-      body: "The in-chat tour covers the minimap, its toolbar and keyboard shortcuts. You can return to this popup tour any time from Show me around."
+      title: "Now let's see it working",
+      body: "The rest of Tvara lives inside your chats, so the tour continues there — it will point at the real map, the buttons and the search as you go. Pick where you chat and we will open it for you.",
+      chips: true
     }
   ];
+
+  /* A card pointing at a row that is not on screen — no deletions to review,
+     no archive left to fetch — teaches nothing and cannot be positioned. */
+  const popupStepVisible = (step) => {
+    const el = step.anchor();
+    return !!(el && el.isConnected && !el.hidden && el.getClientRects().length);
+  };
+  let popupTourSteps = ALL_POPUP_STEPS;
   let popupTourAt = 0;
 
   function closePopupTour() {
@@ -1723,7 +1787,8 @@
     $("popup-tour-title").textContent = step.title;
     $("popup-tour-body").textContent = step.body;
     $("popup-tour-back").hidden = popupTourAt === 0;
-    $("popup-tour-next").textContent = popupTourAt === popupTourSteps.length - 1 ? "Show in chat" : "Next";
+    $("popup-tour-chips").hidden = !step.chips;
+    $("popup-tour-next").textContent = popupTourAt === popupTourSteps.length - 1 ? "Continue in a chat" : "Next";
     positionPopupTour();
     requestAnimationFrame(positionPopupTour);
   }
@@ -1731,14 +1796,40 @@
   async function showChatTour() {
     try { await chrome.storage.local.remove("lct-tour-v1"); } catch { /* full or gone */ }
     const tab = await activeChatTab();
-    if (!tab) { closePopupTour(); showNudge(); return; }
+    if (!tab) return noChatYet();
     try {
       await chrome.tabs.sendMessage(tab.id, { type: "lct-tour" });
       window.close();
     } catch {
-      closePopupTour();
-      showNudge();
+      noChatYet();
     }
+  }
+
+  /* The walkthrough runs inside a chat page, so there has to be one. Said on
+     the card that offered it — an instruction written into the statistics
+     header above is an instruction nobody is looking at. */
+  /* Arming before the tab opens, not after: the content script asks for this
+     flag as it loads, and a write that lands afterwards is a write the page
+     that needed it never saw. */
+  async function openChatAndContinue(url) {
+    try {
+      await chrome.storage.local.remove("lct-tour-v1");
+      await chrome.storage.local.set({ "lct-tour-armed-v1": Date.now() });
+    } catch { /* storage full or gone — the tour is still reachable by hand */ }
+    try { await chrome.tabs.create({ url }); } catch { /* managed browser */ }
+    window.close();
+  }
+
+  for (const chip of document.querySelectorAll(".tour-chip")) {
+    chip.addEventListener("click", () => openChatAndContinue(chip.dataset.url));
+  }
+
+  function noChatYet() {
+    $("popup-tour-title").textContent = "Pick one and we will open it";
+    $("popup-tour-body").textContent =
+      "The rest of the tour runs inside a chat page, and there is not one open right now. Choose where you chat — the walkthrough starts by itself when the page loads.";
+    $("popup-tour-chips").hidden = false;
+    $("popup-tour-next").hidden = true;
   }
 
   $("popup-tour-close").addEventListener("click", closePopupTour);
@@ -1754,17 +1845,13 @@
   });
   window.addEventListener("resize", positionPopupTour, { passive: true });
 
-  for (const chip of document.querySelectorAll(".nudge-chip")) {
-    chip.addEventListener("click", () => {
-      chrome.tabs.create({ url: chip.dataset.url });
-      window.close();
-    });
-  }
-
   // Starts in the window that owns the settings, then offers the in-chat tour
   // as its last step.
   $("tour-link").addEventListener("click", (e) => {
+    popupTourSteps = ALL_POPUP_STEPS.filter(popupStepVisible);
     e.preventDefault();
+    $("popup-tour-next").hidden = false;
+    $("popup-tour-chips").hidden = true;
     popupTourAt = 0;
     renderPopupTour();
   });

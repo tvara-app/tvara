@@ -591,7 +591,6 @@ main { padding: 0 var(--gutter); }
    being typed into must not move out from under the cursor. */
 body.searching .row-panel ~ *,
 body.searching main > .rows ~ *,
-body.searching #site-nudge,
 body.searching footer { display: none; }
 .recall-result {
   display: grid;
@@ -825,21 +824,6 @@ button:disabled { cursor: default; }
 /* ---------- "you are not on a chat" ----------
    Set in the counter's own slot, not added below it: a card here costs 118px
    of a 600px pane and pushes the search panel past its floor. */
-.pulse-open { margin: 0; color: var(--ink-dim); font-size: 11px; line-height: 1.35; }
-.nudge-chips { display: inline; }
-.nudge-chip {
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--ember);
-  cursor: pointer;
-  font: 500 11px/1.35 var(--sans);
-}
-/* Trailing space in generated content collapses; the chips sit adjacent in the
-   markup on purpose, so the gap has to come from margin. */
-.nudge-chip:not(:last-child)::after { content: ","; margin-right: .32em; color: var(--ink-faint); }
-.nudge-chip:hover { text-decoration: underline; }
-.nudge-chips::before { content: " "; }
 
 
 /* ---------- identity ---------- */
@@ -862,3 +846,18 @@ button:disabled { cursor: default; }
 #identity-status:empty { display: none; }
 #identity-done { display: grid; gap: 6px; }
 #identity-done[hidden] { display: none; }
+
+/* The last card's "open one of these" row. Chips, not a paragraph of links:
+   the reader is being asked to pick one, and picking is easier than reading. */
+.popup-tour-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 4px; }
+.tour-chip {
+  padding: 6px 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgb(255 255 255 / .04);
+  color: var(--ink);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.tour-chip:hover { background: rgb(255 255 255 / .1); border-color: var(--line-strong); }

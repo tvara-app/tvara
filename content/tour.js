@@ -20,6 +20,10 @@
 
   let root = null, card = null, ring = null, pane = null, foot = null;
   let steps = [], at = 0, tick = null, onDone = null;
+  /* Which step's demo is currently running. A card that opens a panel has to
+     put it back before the next card points somewhere else, and finishing the
+     tour has to put it back too. */
+  let demoing = null;
 
   /* ---------- geometry ----------
      visualViewport, not innerWidth: a pinch-zoomed or address-bar-shrunk page
@@ -267,21 +271,22 @@
            the middle of the screen and points at nothing, which is worse than
            pointing at the next thing along the same edge. */
         anchor: () => el("lct-minimap") || el("lct-export-bar"),
-        title: "This strip is the whole extension",
-        body: "Tvara adds one thin strip to the right edge. Hover it and it opens; move away and it goes back to a hairline. The page itself is untouched."
+        title: "Everything lives on this one bar",
+        body: "Tvara adds a slim bar down the right-hand edge of the page, and nothing else. Move your mouse onto it and it opens; move away and it shrinks back to a line. Your chat is not changed in any way.",
+        foot: "This takes about a minute. You can stop at any point and pick it up later."
       },
       {
         id: "map",
         anchor: () => el("lct-mm-stage") || el("lct-mm-canvas") || el("lct-minimap"),
-        title: "The whole conversation, at a glance",
-        body: "One bar per message — yours and the AI's in different shades, starred ones lit. Click anywhere on it to jump straight there, however far back it is."
+        title: "A map of the whole conversation",
+        body: "Each little line is one message — yours and the AI's in different shades. Point at one to read it without moving, or click to jump straight there, even if it was hundreds of messages ago."
       },
       {
         id: "preview",
         anchor: () => el("lct-mm-stage") || el("lct-minimap"),
-        title: "Even the part the page has thrown away",
-        body: "Click a message the site has unloaded and it opens immediately in a small preview, because your own copy answers first. The site is asked to load its way back to it meanwhile, and when it arrives the preview steps aside and you land on the real one.",
-        foot: "A pill at the bottom says how far along that is, with a Stop button. Nothing here moves the page without telling you."
+        title: "Even the old messages the page forgot",
+        body: "Chat sites quietly drop older messages to stay fast, which is why scrolling back is so slow. Tvara keeps its own copy, so clicking one opens it instantly while the site catches up in the background.",
+        foot: "A small bar at the bottom shows how far along that is, and you can stop it whenever you like."
       }
     );
     // Only shown when the engine actually has messages asleep — otherwise this
@@ -290,8 +295,8 @@
       list.push({
         id: "count",
         anchor: () => el("lct-mm-count") || el("lct-minimap"),
-        title: "This is why the chat is fast",
-        body: "That number is how many messages are asleep right now. They are not deleted and not unloaded from your archive — they wake the instant you scroll back to them."
+        title: "This is why the page feels quick",
+        body: "That number is how many messages are resting. Nothing is deleted — they wake up the moment you scroll back to them. It is the same trick your eyes use: stop paying attention to what you are not looking at."
       });
     }
     list.push({
@@ -305,22 +310,28 @@
       {
         id: "stars",
         anchor: () => el("lct-minimap"),
-        title: "Star the parts worth keeping",
-        body: "Hover any message and a small star appears at its top right. Starred messages get a gold edge and stay one click away in a 500-message chat.",
-        foot: "Stars are saved per conversation and survive reloads. The most recent 60 follow your browser profile to your other signed-in browsers."
+        title: "Star the bits worth keeping",
+        body: "Point at any message and a small star appears in its corner. Click it, and that message gets a gold edge and stays one click away — the answer that finally worked, in a chat with five hundred of them.",
+        foot: "Your stars are remembered, and follow you to your other signed-in browsers."
       },
       {
         id: "outline",
-        anchor: () => tool("outline") || el("lct-export-bar"),
-        title: "Every topic, as a list",
-        body: "This builds a table of contents from every prompt you sent and every heading in the answers. Click an entry to land on it — a heading takes you to that heading, not to the top of the answer holding it.",
-        foot: "Two tabs: Outline for everything, Starred for what you marked. Star straight from any row."
+        /* Opened for the reader rather than described to them. Nobody reads
+           "it builds a table of contents" and pictures their own chat. */
+        show: () => { if (self.LCTOutline && !self.LCTOutline.isOpen) self.LCTOutline.open(); },
+        hide: () => { if (self.LCTOutline && self.LCTOutline.isOpen) self.LCTOutline.close(); },
+        anchor: () => el("lct-outline") || tool("outline") || el("lct-export-bar"),
+        title: "Here is your chat as a contents page",
+        body: "This just opened for you. It is a list of everything you asked and every heading the AI wrote back — click any line to go straight to it. The Starred tab shows only what you marked.",
+        foot: "Closing again when you press Next. The button that opened it is the one being pointed at."
       },
       {
         id: "search",
-        anchor: () => tool("search") || el("lct-export-bar"),
-        title: "Search inside this conversation",
-        body: "Full text, including the messages the page has put to sleep — it searches a cache rather than the rendered page, so speed costs you nothing here. Enter jumps to the next match, Shift+Enter to the previous."
+        show: () => { if (self.LCTSearch && !self.LCTSearch.isOpen) self.LCTSearch.open(); },
+        hide: () => { if (self.LCTSearch && self.LCTSearch.isOpen) self.LCTSearch.close(); },
+        anchor: () => el("lct-search") || tool("search") || el("lct-export-bar"),
+        title: "And this is how you find a word in it",
+        body: "This box just opened too. Type and it counts the matches as you go, jumping between them with Enter — including through the older messages the page itself has dropped, which its own search cannot reach."
       }
     );
     // Pro tools are absent from the bar on a free install, and a card pointing
@@ -328,23 +339,23 @@
     if (tool("bridge")) list.push({
       id: "bridge",
       anchor: () => tool("bridge"),
-      title: "Bring your own past answers here",
-      body: "You worked something out with another AI and this one knows none of it. This searches your whole archive, shows you the passages, and puts the ones you tick into the prompt you are writing.",
-      foot: "Nothing is sent anywhere and no key is needed — it feeds the model you are already signed into. You always pick before anything is inserted."
+      title: "Bring an answer over from another AI",
+      body: "You worked something out with ChatGPT, and now Claude knows nothing about it. Press this while you are writing: Tvara finds the relevant bits of your old chats, shows them to you, and drops the ones you tick into what you are typing.",
+      foot: "You always choose first — nothing is added behind your back, and nothing is sent anywhere."
     });
     if (tool("carry")) list.push({
       id: "carry",
       anchor: () => tool("carry"),
-      title: "When this chat gets too long",
+      title: "When a chat gets too long to carry on",
       body: "Opens a fresh conversation with the context already in the prompt box: what you originally asked, what you starred, and the turns where something was actually decided — not just the tail of the thread, which is usually \"yes, that worked\".",
       foot: "Quoted, never summarised, and never sent for you. You read it and press send."
     });
     if (tool("history")) list.push({
       id: "history",
       anchor: () => tool("history"),
-      title: "Put the older messages back",
-      body: "Mounts every earlier message into the page itself, which is what the site's own Ctrl+F and a full backup need. It says how far along it is and stops the moment you touch the page.",
-      foot: "Nothing else here ever scrolls the page on its own."
+      title: "Put every old message back on the page",
+      body: "Some things need the messages really there — the site's own find-on-page, or saving the whole conversation. This walks back and loads them, tells you how far it has got, and stops the second you touch the page.",
+      foot: "It is the only thing here that ever scrolls for you, and only when you ask it to."
     });
     list.push({
       id: "backup",
@@ -356,16 +367,16 @@
     list.push({
       id: "recall",
       anchor: () => null,
-      title: "One search box for every chat you own",
-      body: "Total Recall searches every archived conversation on every platform at once. Click a result and you land in that chat with the search already open on your words.",
-      foot: "It runs on your machine. There is no server holding your conversations to search."
+      title: "\"I solved this before — but where?\"",
+      body: "Total Recall searches every chat you have had, across all of these sites, from one box. Click a result and it opens that conversation with your words already highlighted.",
+      foot: "The searching happens on your own computer. Your conversations are not kept anywhere else."
     });
     list.push({
       id: "times",
       anchor: () => null,
       title: "When was this actually said?",
-      body: "Hover any message for its time. On ChatGPT that is the real send time, read from the app's own state. Elsewhere browsers were never told, so it says first seen on this device — and messages older than the install say so instead of guessing.",
-      foot: "Turn it off in the extension window if you would rather not see them."
+      body: "Chat sites never tell you. Point at a message and Tvara does. On ChatGPT that is the real time it was sent; elsewhere the browser was simply never told, so it says when Tvara first saw it rather than inventing something.",
+      foot: "You can switch times off from the Tvara icon if you would rather not see them."
     });
     list.push({
       id: "card",
@@ -423,6 +434,14 @@
       body: "Everything above also works without going near the strip.",
       extra: () => keyRows(commands),
       foot: "The Tvara icon in your browser's toolbar holds the settings, your archive and your plan."
+    });
+    list.push({
+      id: "done",
+      anchor: () => null,
+      title: "That is the whole thing",
+      body: "Nothing here needs setting up. Keep chatting and the map, the times and your archive fill in behind you.",
+      foot: "Everything you have just seen is behind the Tvara icon in your toolbar — including this walkthrough, under Show me around, whenever you want it again.",
+      skipText: ""
     });
     return list;
   }
@@ -539,8 +558,20 @@
       clamp(r.top + r.height / 2 - top, 18, Math.max(18, h - 18)) + "px");
   }
 
+  /* Run this card's demonstration and undo the previous one. Both are wrapped:
+     a panel that refuses to open is a card that reads a little thin, never a
+     tour that stops halfway through with an error nobody can dismiss. */
+  function runDemo(step) {
+    if (demoing === step) return;
+    try { if (demoing && demoing.hide) demoing.hide(); } catch { /* already gone */ }
+    demoing = null;
+    if (!step || !step.show) return;
+    try { step.show(); demoing = step; } catch { /* the panel declined */ }
+  }
+
   function render() {
     const step = steps[at];
+    runDemo(step);
     card.dataset.step = step.id || String(at + 1);
     pane.replaceChildren();
     foot.replaceChildren();
@@ -606,6 +637,7 @@
   }
 
   function finish() {
+    runDemo(null);
     clearInterval(tick);
     document.removeEventListener("keydown", onKey, true);
     window.removeEventListener("resize", position);

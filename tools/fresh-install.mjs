@@ -71,8 +71,16 @@ try {
   const wel = await ctx.newPage();
   await wel.goto(`chrome-extension://${id}/popup/popup.html`);
   await wel.waitForSelector("#plan-badge", { timeout: 15000 });
-  t("first run: with no chat open, the popup says where to open one",
-    await wel.isVisible("#site-nudge .nudge-chip"));
+  /* The "Open a chat: <six chips>" line is gone. On a fresh install the
+     counter has nothing true to count, so the sentence beside it carries the
+     line instead of a giant zero or a row of links nobody asked for. */
+  t("first run: with nothing to count, the panel says so rather than showing a zero",
+    await wel.evaluate(() => {
+      const num = document.getElementById("stat-windowed");
+      const label = document.getElementById("stat-label");
+      return !!label && label.textContent.trim().length > 0 &&
+        (num.hidden || num.textContent.trim() !== "0");
+    }));
   const planFresh = await wel.evaluate(() => new Promise((r) =>
     chrome.runtime.sendMessage({ type: "entitlement-state" }, r)));
   t("first run: a fresh install is not entitled",
