@@ -23,8 +23,8 @@ const dist = join(root, "dist");
 const withFirefox = process.argv.includes("--firefox");
 
 const SHIP = ["manifest.json", "lib", "content", "popup", "diag",
-              "bg.js", "recall.html", "recall.css", "recall-page.js",
-              "welcome.html", "welcome.css", "welcome.js"];
+              "bg.js", "onboarding.html", "onboarding.css", "onboarding.js",
+              "recall.html", "recall.css", "recall-page.js"];
 
 /* ---------- integrity ---------- */
 
@@ -67,7 +67,7 @@ function referencedPaths(staging, mf) {
       for (const m of html.matchAll(/<img[^>]+src="([^"]+)"/g)) add(resolve(m[1]), rel);
     } else if (rel.endsWith(".js")) {
       const js = readFileSync(file, "utf8");
-      // getURL("welcome.html") — the runtime reference the manifest never sees.
+      // getURL("recall.html") — the runtime reference the manifest never sees.
       for (const m of js.matchAll(/getURL\(\s*["'`]([^"'`]+)["'`]/g)) add(m[1], rel);
     }
   }
@@ -122,8 +122,8 @@ function build({ name, tweak, label }) {
      drift when an icon is added or renamed. */
   const wanted = new Set([...Object.values(mf.icons || {}),
                           ...Object.values(mf.action?.default_icon || {})]);
-  // The welcome page shows the icon too, so ship whatever any page asks for.
-  for (const html of ["welcome.html", "recall.html", "popup/popup.html"]) {
+  // The pages show the icon too, so ship whatever any of them asks for.
+  for (const html of ["recall.html", "popup/popup.html"]) {
     const p = join(staging, html);
     if (!existsSync(p)) continue;
     for (const m of readFileSync(p, "utf8").matchAll(/(?:src|href)="((?:\.\.\/)?icons\/[^"]+)"/g)) {

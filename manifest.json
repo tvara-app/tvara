@@ -6,6 +6,7 @@
   "description": "Fix slow AI chats. Speed, minimap, search & backup for ChatGPT, Claude, Gemini, Perplexity, DeepSeek, Grok. Chats stay local.",
   "permissions": [
     "alarms",
+    "identity",
     "storage",
     "unlimitedStorage",
     "downloads",
@@ -22,9 +23,7 @@
     "https://grok.com/*",
     "https://www.perplexity.ai/*",
     "https://gemini.google.com/*",
-    "https://tvara-app.github.io/*",
-    "http://localhost/*",
-    "http://127.0.0.1/*"
+    "https://tvara-app.github.io/*"
   ],
   "background": {
     "service_worker": "bg.js"
@@ -64,9 +63,7 @@
         "https://gemini.google.com/*",
         "https://www.perplexity.ai/*",
         "https://chat.deepseek.com/*",
-        "https://grok.com/*",
-        "http://localhost/*",
-        "http://127.0.0.1/*"
+        "https://grok.com/*"
       ],
       "js": [
         "lib/store.js",
@@ -89,6 +86,7 @@
         "content/bridge.js",
         "content/distil.js",
         "content/carry.js",
+        "content/tour.js",
         "content/main.js"
       ],
       "css": [
@@ -121,6 +119,21 @@
         "content/inject/quota-probe.js"
       ],
       "world": "MAIN",
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://claude.ai/*",
+        "https://gemini.google.com/*",
+        "https://www.perplexity.ai/*",
+        "https://chat.deepseek.com/*",
+        "https://grok.com/*"
+      ],
+      "js": [
+        "content/quota-boot.js"
+      ],
       "run_at": "document_start"
     },
     {

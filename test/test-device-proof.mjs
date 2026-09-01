@@ -39,6 +39,8 @@ t("client exposes the device-proof surface",
    edit made to the file — the helpers under test are the shipped ones. */
 const workerSrc = readFileSync(join(ROOT, "server", "entitlement-worker.js"), "utf8")
   .replace("export default {", "globalThis.__handler = {")
+  // Named exports are no more runnable in a vm script than `export default`.
+  .replace(/^export \{[^}]*\};?[ \t]*$/gm, "")
   + "\n;globalThis.__probe = { verifyDeviceProof, signingInput, sha256Hex, PROTOCOL };\n";
 const workerBox = { crypto: globalThis.crypto, TextEncoder, TextDecoder, btoa, atob, console, URL, AbortSignal, fetch: async () => { throw new Error("no upstream"); } };
 workerBox.globalThis = workerBox;
@@ -113,7 +115,10 @@ const workerRoutes = (readFileSync(join(ROOT, "server", "entitlement-worker.js")
   .match(/const ROUTES = \[([^\]]+)\]/) || [])[1] || "";
 const declared = workerRoutes.split(",").map((x) => x.trim().replace(/["']/g, "")).filter(Boolean);
 const recipes = (readFileSync(join(ROOT, "server", "entitlement-worker.js"), "utf8")
-  .match(/const SIGN_FIELDS = \{([\s\S]*?)\n {4}\};/) || [])[1] || "";
+  /* Indentation-agnostic. Pinning the closing brace to four spaces made this
+     check silently stop matching the day the handler was re-indented, and a
+     coverage test that quietly matches nothing is worse than no test. */
+  .match(/const SIGN_FIELDS = \{([\s\S]*?)\n\s*\};/) || [])[1] || "";
 t("every accepted route has a signing recipe",
   declared.length > 0 && declared.every((r) => recipes.includes(`"${r}"`)));
 

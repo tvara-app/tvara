@@ -112,6 +112,27 @@ const SURFACE_CHECKS = {
   }
 };
 
+/* The install listener arms the tour, and it opens over whatever control a
+   surface check is about — so a click waits for an actionable element that a
+   coach mark is covering. Clearing the flag in the fixture is not enough: the
+   worker's install listener can arm it AFTER that write lands, which is a race
+   the fixture cannot win. Dismissing what is actually on screen can only be
+   raced by the tour appearing later, and it is fast when there is none.
+
+   One minimap row spent 17 minutes on a single click before this. */
+async function dismissTour(page) {
+  for (let i = 0; i < 40; i++) {
+    const gone = await page.evaluate(() => {
+      const card = document.getElementById("lct-tour-card");
+      if (!card) return true;
+      (card.querySelector(".lct-tour-close") || card.querySelector(".lct-tour-next"))?.click();
+      return false;
+    });
+    if (gone) return;
+    await page.waitForTimeout(50);
+  }
+}
+
 async function runRow(row, group) {
   const { ctx } = group;
   const page = await ctx.newPage();
@@ -120,6 +141,7 @@ async function runRow(row, group) {
     page.on("pageerror", (e) => trackedErrors.push(e.message));
 
     await page.goto(`http://127.0.0.1:${group.port}/synthetic.html`, { waitUntil: "load" });
+    await dismissTour(page);
     await applyRenderCondition(page, row.render);
     await page.waitForTimeout(150);
 

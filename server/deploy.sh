@@ -117,6 +117,9 @@ fi
 
 # ---------- 3. secrets ----------
 EXISTING="$(wrangler secret list 2>/dev/null || echo '[]')"
+# MAIL_API_KEY is deliberately absent: verification is Google-only and no code
+# is mailed. Set it by hand alongside OTP_ENABLED=1 if the email route is ever
+# switched back on.
 for NAME in DODO_API_KEY SIGNING_KEY ARCHIVE_SECRET DODO_WEBHOOK_SECRET; do
   if printf '%s' "$EXISTING" | grep -q "\"$NAME\""; then
     echo "  ✓ secret $NAME already set"
@@ -195,6 +198,17 @@ fi
 command -v node >/dev/null || { echo "✋ node not found — needed for the smoke test"; exit 1; }
 if ! node ./smoke.mjs "$URL" "$ORIGIN"; then
   echo "❌ deployed, but NOT safe to sell against yet — fix the ✗ above first."
+  exit 1
+fi
+
+# smoke.mjs covers /trial, /entitlement and /checkout. The session routes are
+# the ones where a mistake is SILENT — a /sessions that lost its identity gate
+# answers 200 to anybody and no happy path notices — so they get their own
+# adversarial pass, using the same $URL and $ORIGIN this script already refused
+# to guess. Every check asserts a refusal, so it needs no licence and no
+# identity and is safe to run against production.
+if ! node ./session-smoke.mjs "$URL" "$ORIGIN"; then
+  echo "❌ deployed, but the session monitoring routes are not answering safely."
   exit 1
 fi
 

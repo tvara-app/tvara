@@ -19,9 +19,8 @@
 (() => {
   "use strict";
 
-  const EVENT = "lct-quota-observed";
   const READY = "lct-quota-ready";
-  const FLAG = "data-lct-quota";
+  const CONTROL = "lct-quota-control";
   const OBSERVE_MS = 1200;
   const REFRESH_MS = 8000;
   // The send response's own headers are the freshest possible reading, so a
@@ -39,11 +38,14 @@
   let lastRefreshAt = 0;
 
   /** Turning the observer off has to reach the page's world, where the hooks
-   *  live. The attribute is the whole kill switch: the probe checks it before
-   *  every emit and goes quiet permanently once it sees "off". */
+   *  live. Sent on the private channel rather than written to an attribute on
+   *  <html>: an attribute is page-writable, which made the off switch for a
+   *  paid feature something any site could throw. */
   function applyFlag() {
+    const channel = self.__lctQuotaChannel;
+    if (!channel) return;
     try {
-      document.documentElement.setAttribute(FLAG, enabled ? "on" : "off");
+      document.dispatchEvent(new CustomEvent(CONTROL + ":" + channel, { detail: enabled ? "on" : "off" }));
     } catch (_) { /* document gone */ }
   }
 
@@ -97,10 +99,13 @@
     }, wait);
   }
 
-  document.addEventListener(EVENT, (event) => {
+  /* Provenance. content/quota-boot.js owns the listener — it is installed at
+     document_start, on an event name no page script can guess — and hands
+     readings here. Nothing on this path is reachable from the page. */
+  function onObserved(detail) {
     if (!enabled || dead) return;
     let payload;
-    try { payload = JSON.parse(event.detail); } catch (_) { return; }
+    try { payload = JSON.parse(detail); } catch (_) { return; }
     if (!payload || typeof payload !== "object") return;
 
     if (payload.sent) requestRefresh();
@@ -115,7 +120,14 @@
     // Bound the batch: a pathological page cannot make us hold megabytes.
     if (pending.length < 24) pending.push(payload);
     if (!observeTimer) observeTimer = setTimeout(flush, OBSERVE_MS);
-  }, false);
+  }
+
+  self.__lctQuotaSink = onObserved;
+  // Everything the boot script held while this one was still loading.
+  try {
+    const backlog = self.__lctQuotaHeld;
+    if (Array.isArray(backlog)) for (const detail of backlog.splice(0, backlog.length)) onObserved(detail);
+  } catch (_) { /* nothing held */ }
 
   /* ---------- settings ---------- */
 

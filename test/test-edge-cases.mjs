@@ -12,6 +12,7 @@
  * adversary's best case — no server to correct a forged record — so every
  * assertion below holds with nothing to appeal to.
  */
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { readFileSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -27,16 +28,30 @@ mkdirSync(EXT, { recursive: true });
 const sync = spawnSync("rsync", [
   "-a", "--exclude", ".git", "--exclude", "node_modules",
   "--exclude", "test/.work*", "--exclude", ".stryker-tmp",
+  "--exclude", "dist", "--exclude", "store", "--exclude", "tools/.keys",
   SRC + "/", EXT + "/"
 ]);
 if (sync.status !== 0) { console.error("FATAL: could not mirror the extension"); process.exit(1); }
 
-/* No issuer. Fail-open must not mean fail-generous. */
+/* No issuer. Fail-open must not mean fail-generous.
+
+   The mirror also trusts a throwaway keypair instead of the production one, so
+   this file can mint the ONE thing a trial now turns on — the issuer's signed
+   grant — without the real private key, which is deliberately on no dev
+   machine. Everything else the mirror sees is the shipping code. */
+const { publicKey, privateKey: priv } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+const TEST_PUB = publicKey.export({ type: "spki", format: "der" }).toString("base64");
+const TEST_INTEGRITY = [...createHash("sha256").update(TEST_PUB).digest().subarray(0, 16)]
+  .map((b) => b.toString(16).padStart(2, "0")).join("");
+
 const entPath = join(EXT, "lib", "entitlement.js");
 const patched = readFileSync(entPath, "utf8")
-  .replace(/const ISSUER = "[^"]*";/, 'const ISSUER = "https://issuer.unreachable.invalid";');
-if (!patched.includes("issuer.unreachable.invalid")) {
-  console.error("FATAL: could not point the issuer at nowhere"); process.exit(1);
+  .replace(/const ISSUER = "[^"]*";/, 'const ISSUER = "https://issuer.unreachable.invalid";')
+  .replace(/const PUBLIC_KEY_B64 = "[^"]*";/, `const PUBLIC_KEY_B64 = "${TEST_PUB}";`)
+  .replace(/const _KEY_INTEGRITY = "[^"]*";/, `const _KEY_INTEGRITY = "${TEST_INTEGRITY}";`);
+if (!patched.includes("issuer.unreachable.invalid") || !patched.includes(TEST_PUB) ||
+    !patched.includes(TEST_INTEGRITY)) {
+  console.error("FATAL: could not patch the mirrored entitlement lib"); process.exit(1);
 }
 writeFileSync(entPath, patched);
 
@@ -63,6 +78,28 @@ const page = await ctx.newPage();
 await page.goto(`chrome-extension://${EXT_ID}/popup/popup.html`);
 
 const DAY = 864e5;
+
+/* The issuer's signed grant, minted here because the issuer is unreachable by
+   design. Bound to THIS install's device fingerprint — the popup and the
+   service worker share the keypair, so what the page reports is what the gate
+   will check against. */
+const b64u = (buf) => Buffer.from(buf).toString("base64")
+  .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const DEV_FP = await page.evaluate(() => self.LCTEntitlement.deviceFpFor(""));
+function signedTrial(startedAt, over = {}) {
+  const payload = Buffer.from(JSON.stringify({
+    v: 1, typ: "trial", idf: "edge-identity", dev: DEV_FP,
+    sta: startedAt, iat: Date.now(), exp: startedAt + 7 * DAY, ks: "edge-stamp",
+    jti: "tt-edge", ...over
+  }));
+  const sig = sign("sha256", payload, { key: priv, dsaEncoding: "ieee-p1363" });
+  return `LCTT1.${b64u(payload)}.${b64u(sig)}`;
+}
+/** A trial record as the issuer would have left it. */
+const grantedTrial = (startedAt, over = {}) => ({
+  startedAt, v: 2, verified: true, checkedAt: Date.now(), ks: "edge-stamp",
+  tt: signedTrial(startedAt, over)
+});
 
 /** Put the profile into an exact state, then ask the gate what it thinks. */
 async function verdictWith(state) {
@@ -110,6 +147,37 @@ async function verdictWith(state) {
     again.s && again.s.startedAt <= Date.now() + 36e5, JSON.stringify(again.s));
 }
 
+/* ---------- a record with no signature on it ----------
+
+   The forge this whole change exists to stop. A start date and verified:true
+   are two fields a DevTools console writes in ten seconds, and until the grant
+   became a signature they were the entire trial gate. */
+
+{
+  const plausible = Date.now() - 2 * DAY;
+  const r = await verdictWith({ trial: { startedAt: plausible, verified: true, v: 2, checkedAt: Date.now() } });
+  t("a hand-written verified:true grants nothing without a signature",
+    r.verdict && r.verdict.entitled === false, JSON.stringify(r.verdict && r.verdict.via));
+
+  // A signature that does not verify is not a signature.
+  const tampered = grantedTrial(plausible);
+  tampered.tt = tampered.tt.slice(0, -4) + (tampered.tt.slice(-4) === "AAAA" ? "BBBB" : "AAAA");
+  t("a tampered grant unlocks nothing",
+    (await verdictWith({ trial: tampered })).verdict.entitled === false);
+
+  // Someone else's working grant, copied across.
+  t("a grant minted for another device unlocks nothing",
+    (await verdictWith({ trial: grantedTrial(plausible, { dev: "0".repeat(32) }) }))
+      .verdict.entitled === false);
+
+  /* The dates are read out of the signature, so editing the record's own copy
+     moves nothing. Here the record claims today and the signature says the week
+     ended three weeks ago. */
+  t("a fresh date beside an expired signature is still an expired trial",
+    (await verdictWith({ trial: { ...grantedTrial(Date.now() - 30 * DAY), startedAt: Date.now() } }))
+      .verdict.entitled === false);
+}
+
 /* ---------- shapes that were never meant to be there ---------- */
 
 for (const [label, trial] of [
@@ -131,13 +199,13 @@ for (const [label, trial] of [
 /* ---------- the boundary ---------- */
 
 {
-  const justInside = await verdictWith({ trial: { startedAt: Date.now() - 7 * DAY + 60000, verified: true, v: 2 } });
+  const justInside = await verdictWith({ trial: grantedTrial(Date.now() - 7 * DAY + 60000) });
   t("a trial with a minute left is still active",
     justInside.verdict && justInside.verdict.entitled === true, JSON.stringify(justInside.verdict));
   t("…and reports itself as a trial",
     justInside.verdict && justInside.verdict.via === "trial", JSON.stringify(justInside.verdict));
 
-  const justOutside = await verdictWith({ trial: { startedAt: Date.now() - 7 * DAY - 60000, verified: true, v: 2 } });
+  const justOutside = await verdictWith({ trial: grantedTrial(Date.now() - 7 * DAY - 60000) });
   t("a trial a minute past seven days is spent",
     justOutside.verdict && justOutside.verdict.entitled === false, JSON.stringify(justOutside.verdict));
   t("…and says so rather than saying 'never started'",
@@ -150,7 +218,7 @@ for (const [label, trial] of [
 {
   const started = Date.now() - 30 * DAY;
   const r = await verdictWith({
-    trial: { startedAt: started, verified: true, v: 2 },
+    trial: grantedTrial(started),
     hwm: Date.now()            // this profile has already seen today
   });
   t("a spent trial stays spent (the high-water clock holds)",
@@ -176,7 +244,7 @@ for (const [label, license] of [
 {
   const r = await verdictWith({
     license: { key: "LCT-REFUNDED", revokedAt: Date.now() },
-    trial: { startedAt: Date.now() - 2 * DAY, verified: true, v: 2 }
+    trial: grantedTrial(Date.now() - 2 * DAY)
   });
   t("a refunded licence still leaves an unspent trial usable",
     r.verdict && r.verdict.entitled === true && r.verdict.via === "trial",

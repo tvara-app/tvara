@@ -17,6 +17,32 @@ export const b64url = (buf) =>
 
 export const sha16Hex = (v) => createHash("sha256").update(String(v)).digest("hex").slice(0, 32);
 
+/**
+ * The localhost matches a browser test needs and the product must not carry.
+ *
+ * Every content-script test drives fixture pages served from 127.0.0.1, so the
+ * extension has to be allowed there. Keeping the matches in manifest.json paid
+ * for that with a permanent hole in the DEV build: an unpacked copy handed the
+ * whole content-script bundle, and a live message channel, to every dev server
+ * on the machine. tools/pack.mjs stripped them from the zip, which protected
+ * everyone except the people running the repo. They live here now and are
+ * added to the scratch mirror the tests load, so the tree never carries them.
+ */
+export const DEV_HOSTS = ["http://localhost/*", "http://127.0.0.1/*"];
+
+/** Grant the mirror — never the tree — access to the local fixture server. */
+export function addDevHosts(extDir) {
+  const path = join(extDir, "manifest.json");
+  const mf = JSON.parse(readFileSync(path, "utf8"));
+  mf.host_permissions = [...(mf.host_permissions || []), ...DEV_HOSTS];
+  // The provider bundle only. The MAIN-world hooks stay off local pages, which
+  // is what they did before this moved and what the packed build asserts.
+  for (const cs of mf.content_scripts || []) {
+    if ((cs.js || []).includes("content/main.js")) cs.matches = [...(cs.matches || []), ...DEV_HOSTS];
+  }
+  writeFileSync(path, JSON.stringify(mf, null, 2) + "\n");
+}
+
 /** PASS/FAIL helper matching the rest of the suite's hand-rolled style. */
 export function reporter() {
   let pass = 0, fail = 0;
@@ -48,6 +74,7 @@ export function mirrorExtension(name) {
   mkdirSync(EXT, { recursive: true });
   const sync = spawnSync("rsync", [
     "-a", "--exclude", ".git", "--exclude", "node_modules", "--exclude", "test/.work*", "--exclude", "dist",
+    "--exclude", "store", "--exclude", "tools/.keys", "--exclude", ".stryker-tmp",
     ROOT + "/", EXT + "/"
   ]);
   if (sync.status !== 0) throw new Error("could not mirror the extension for " + name);
@@ -73,6 +100,7 @@ export function mirrorExtension(name) {
     throw new Error("could not patch lib/entitlement.js for tests");
   }
   writeFileSync(entPath, entPatched);
+  addDevHosts(EXT);
 
   return { EXT, priv: privateKey, pub: publicKey, TEST_PUB, TEST_ISSUER, testKeyIntegrity };
 }
@@ -128,6 +156,23 @@ export function mintLct2Token(priv, { licenseKey, deviceId, dev, ks = "", exp, i
   }));
   const sig = sign("sha256", payload, { key: priv, dsaEncoding: "ieee-p1363" });
   return `LCT2.${b64url(payload)}.${b64url(sig)}`;
+}
+
+/**
+ * LCTT1.<payload>.<sig> — the trial's grant, matching verifyTrialToken()/
+ * trialGrant() in lib/entitlement.js.
+ *
+ * Separate prefix and a `typ` inside the signed bytes, so a trial token is not
+ * a licence token with a different label. `dev` is the fingerprint of the
+ * keypair the install actually holds — see deviceFingerprint().
+ */
+export function mintTrialToken(priv, { dev, startedAt = Date.now(), ks = "", idf = "fixture-identity", claims = {} } = {}) {
+  const payload = Buffer.from(JSON.stringify({
+    v: 1, typ: "trial", idf, dev, sta: startedAt, iat: Date.now(),
+    exp: startedAt + 7 * 864e5, ...(ks ? { ks } : {}), jti: "tt-fixture", ...claims
+  }));
+  const sig = sign("sha256", payload, { key: priv, dsaEncoding: "ieee-p1363" });
+  return `LCTT1.${b64url(payload)}.${b64url(sig)}`;
 }
 
 /** Flip one bit in the signature segment of an otherwise well-formed token —

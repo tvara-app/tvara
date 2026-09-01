@@ -6,7 +6,7 @@
    built to be called ONCE per shared State value and reused across every row
    in that group — a naive per-row reseed would blow the time budget on the
    two archive-scale states alone. */
-import { mintLct2Token, b64url, setStorage, deviceFingerprint } from "./security-fixtures.mjs";
+import { mintLct2Token, mintTrialToken, b64url, setStorage, deviceFingerprint } from "./security-fixtures.mjs";
 
 /**
  * Configure chrome.storage to represent one of the 8 State values. `priv` is
@@ -16,7 +16,15 @@ import { mintLct2Token, b64url, setStorage, deviceFingerprint } from "./security
  */
 export async function setEntitlement(ctx, extId, state, { priv, deviceId = "matrix-device-0001", licenseKey = "MATRIX-TEST-KEY-0001" } = {}) {
   const now = Date.now();
-  await setStorage(ctx, extId, "local", { license: null, "lct-entitlement-v2": null, "lct-trial-v2": null });
+  /* The tour is marked done for every row. It is install onboarding, it opens
+     over whatever surface the row is about, and since the install listener
+     arms it on every fresh profile it turned a 104-second smoke slice into 49
+     minutes — past the CI job's own timeout. The tour has its own coverage in
+     test-extension.mjs; here it is noise on top of the thing under test. */
+  await setStorage(ctx, extId, "local", {
+    license: null, "lct-entitlement-v2": null, "lct-trial-v2": null,
+    "lct-tour-v1": now, "lct-tour-armed-v1": null
+  });
   await setStorage(ctx, extId, "sync", { "lct-device-id-v1": { id: deviceId, mintedAt: now } });
 
   switch (state) {
@@ -27,12 +35,24 @@ export async function setEntitlement(ctx, extId, state, { priv, deviceId = "matr
       // size, not entitlement; free is the simpler, cheaper state to pair
       // them with unless a row's own combination says otherwise.
       break;
+    /* A trial is a SIGNED grant now, not a start date in storage — the gate
+       reads the dates out of the signature and ignores the record's own copy.
+       An unsigned fixture is therefore a "free" row wearing a trial label, and
+       every trial row would have been testing the wrong state. */
     case "trial":
-      await setStorage(ctx, extId, "local", { "lct-trial-v2": { startedAt: now - 2 * 864e5, v: 2 } });
+    case "trial-expired": {
+      if (!priv) throw new Error(`setEntitlement("${state}") requires the mirrored extension's test private key`);
+      const startedAt = now - (state === "trial" ? 2 : 9) * 864e5;
+      const dev = await deviceFingerprint(ctx, extId, deviceId);
+      await setStorage(ctx, extId, "local", {
+        "lct-trial-v2": {
+          startedAt, v: 2, verified: true, checkedAt: now,
+          ks: b64url(Buffer.from("matrix-trial-stamp")),
+          tt: mintTrialToken(priv, { dev, startedAt, ks: b64url(Buffer.from("matrix-trial-stamp")) })
+        }
+      });
       break;
-    case "trial-expired":
-      await setStorage(ctx, extId, "local", { "lct-trial-v2": { startedAt: now - 9 * 864e5, v: 2 } });
-      break;
+    }
     case "pro": {
       if (!priv) throw new Error('setEntitlement("pro") requires the mirrored extension\'s test private key');
       await setStorage(ctx, extId, "local", {

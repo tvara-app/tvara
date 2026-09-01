@@ -58,7 +58,13 @@
     for (let i = 0; i < n; i++) heights[i] = pending[i].offsetHeight;   // read pass
     for (let i = 0; i < n; i++) {                                       // write pass
       const el = pending[i];
-      if (heights[i] > 0) el.style.containIntrinsicSize = "auto " + heights[i] + "px";
+      // A zero height is the host mid-render, not a message worth nothing.
+      // Sleeping it anyway swaps a real height for the stylesheet's 320px
+      // guess, and every such swap ABOVE the reader shoves the page under
+      // them — which is what "it scrolled by itself while the chat loaded"
+      // was. Leave it live; the next tick measures it.
+      if (heights[i] <= 0) continue;
+      el.style.containIntrinsicSize = "auto " + heights[i] + "px";
       el.classList.add(CLASS);
     }
     pending.length = 0;

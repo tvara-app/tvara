@@ -44,6 +44,7 @@
             <button id="trial-start" type="button">Start 7-day free trial</button>
             <button id="buy-pro" class="locked-buy" type="button" data-price="or get Pro · {price} once, forever"></button>
           </div>
+          <p id="trial-note" aria-live="polite"></p>
         </div>
 
         <div id="results"></div>
@@ -60,8 +61,13 @@
           <label class="file-control" for="restore-file">Choose encrypted backup</label>
           <input id="restore-file" type="file" accept=".lctbackup,application/json" hidden />
           <span id="restore-file-name" class="file-name" aria-live="polite">No backup selected</span>
-          <label class="field-label" for="restore-passphrase">Backup passphrase</label>
+          <p id="restore-unprotected" class="status-copy" hidden>This file has no password on it. Its signature is still checked before anything is imported.</p>
+          <label class="field-label" for="restore-passphrase" id="restore-passphrase-label">Backup passphrase</label>
           <input id="restore-passphrase" class="secure-input" type="password" autocomplete="current-password" />
+          <label class="auto-sync" for="restore-reveal">
+            <input type="checkbox" id="restore-reveal" />
+            <span>Show the passphrase while I type it.</span>
+          </label>
           <div class="actions">
             <button id="restore-run" type="button" disabled>Restore and check the gap</button>
             <button id="recovery-skip" class="secondary" type="button">Continue without restoring</button>
@@ -117,19 +123,53 @@
         <section class="panel" id="backup-panel" aria-labelledby="backup-title">
           <div class="kicker">Reinstall backup</div>
           <h2 id="backup-title">Carry this archive to a new install</h2>
-          <p class="dim">An encrypted snapshot you can restore into any browser. AES-256-GCM under a key stretched from your passphrase, which is never stored, never synced, and not recoverable. Lose it and the file is unreadable, by us or anyone.</p>
+          <p class="dim">A snapshot you can restore into any browser. With a password it is AES-256-GCM under a key stretched from that password, which is never stored, never synced, and not recoverable. Lose it and the file is unreadable, by us or anyone.</p>
           <div class="form-grid">
+            <span class="field-label">Password on this backup</span>
+            <label class="auto-sync" for="protect-password">
+              <input type="radio" name="backup-protect" id="protect-password" value="password" checked />
+              <span>Lock it with a password &mdash; nobody opens the file without it. Recommended.</span>
+            </label>
+            <label class="auto-sync" for="protect-none">
+              <input type="radio" name="backup-protect" id="protect-none" value="none" />
+              <span>No password. The file is readable JSON you can open in any text editor &mdash; and so can anyone else who finds it.</span>
+            </label>
+            <p id="protect-warning" class="status-copy err" hidden>This file will <strong>not be encrypted</strong>. Every message in your archive will be readable by anyone who opens it. It is still signed, so a restore will refuse it if it has been edited.</p>
+          </div>
+          <div class="form-grid" id="backup-secret">
             <label class="field-label" for="backup-passphrase">New backup passphrase</label>
             <input id="backup-passphrase" class="secure-input" type="password" autocomplete="new-password" spellcheck="false" />
             <div id="backup-strength" class="strength" hidden><span class="strength-bar"><i></i></span><span class="strength-text"></span></div>
             <label class="field-label" for="backup-passphrase-confirm">Confirm passphrase</label>
             <input id="backup-passphrase-confirm" class="secure-input" type="password" autocomplete="new-password" spellcheck="false" />
-            <label class="auto-sync" for="backup-auto">
-              <input type="checkbox" id="backup-auto" checked />
-              <span>Also keep writing this backup automatically, so a reinstall never costs you an archive.</span>
+            <label class="auto-sync" for="backup-reveal">
+              <input type="checkbox" id="backup-reveal" />
+              <span>Show the passphrase while I type it &mdash; a long one is far easier to get right when you can see it.</span>
             </label>
             <div class="actions">
+              <button id="backup-generate" class="secondary" type="button">Generate a strong password</button>
+            </div>
+            <p id="backup-generated" class="status-copy" hidden></p>
+            <label class="auto-sync" for="backup-auto">
+              <input type="checkbox" id="backup-auto" checked />
+              <span>Remember this password, so backups keep writing themselves and a reinstall never costs you an archive.</span>
+            </label>
+            <div id="backup-remember" class="form-grid inset">
+              <label class="auto-sync" for="remember-device">
+                <input type="radio" name="backup-remember" id="remember-device" value="device" checked />
+                <span><strong>Permanent</strong> &mdash; remember it on this device until I clear it. Automatic backups keep running after a restart.</span>
+              </label>
+              <label class="auto-sync" for="remember-session">
+                <input type="radio" name="backup-remember" id="remember-session" value="session" />
+                <span><strong>Temporary</strong> &mdash; forget it when I close the browser. Nothing is written to disk; you type it again next time.</span>
+              </label>
+              <p class="status-copy dim">Either way the password itself is never stored. What is kept is a key wrapped under it, and the file still opens only with the password you typed.</p>
+            </div>
+          </div>
+          <div class="form-grid">
+            <div class="actions">
               <button id="create-backup" type="button">Create reinstall backup</button>
+              <button id="backup-forget" class="secondary" type="button" hidden>Forget the saved password</button>
             </div>
           </div>
           <p id="backup-status" class="status-copy" role="status"></p>

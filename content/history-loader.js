@@ -5,13 +5,20 @@
  * native scroller to the oldest available turn so every turn the host exposes
  * is mounted, then returns to the reader's exact anchor.
  *
- * It does NOT run on its own any more. Paging a 1,500-turn conversation is
+ * It never starts in front of a reader. Paging a 1,500-turn conversation is
  * sixty round trips of the host yanking its own scroller to the top, and doing
  * that unannounced while someone is reading is indistinguishable from the page
- * being broken — which is exactly how it read. Full-text history now comes
- * from the background sync, which never touches the page; this walk is a
- * deliberate act (the ⤒ button on the minimap, or settings.history) for people
- * who want the in-page map complete right now.
+ * being broken — which is exactly how it read. Full-text history comes from
+ * the background sync and the map from the provider index, neither of which
+ * touches the page, so this walk is only ever for putting the messages
+ * THEMSELVES back: the ⤒ button, or settings.history.
+ *
+ * The automatic path does both, and neither is something a reader watches.
+ * mountArchive() renders the older turns straight from the copy already on this
+ * machine, so nothing is scrolled at all. The walk is the fallback for a chat
+ * the archive does not have, and it runs behind makeFreeze(): a still clone of
+ * the scroller covers it, so the host is parked at the top while the reader
+ * keeps seeing the exact pixels they were looking at. Any input stands it down.
  */
 (() => {
   "use strict";
@@ -30,7 +37,13 @@
      1,500 turns at ~25/page is 60 round trips, which outruns any short cap. */
   const CEILING_MS = 240000;
   const IDLE_RESUME_MS = 2500;
-  const MAX_RESUMES = 5;
+  /* Let the host's own route/open auto-scroll land before walking on top of it.
+     The arm path went straight to 0 and raced it. */
+  const SETTLE_MS = 700;
+  /* A background-only walk is chopped into tab-away stints, so a long
+     conversation legitimately needs many. Only a reader interrupting spends
+     one — the tab coming forward is the design working, not a fight. */
+  const MAX_RESUMES = 40;
   const INPUT_EVENTS = ["wheel", "touchstart", "pointerdown", "keydown"];
 
   let active = null;
@@ -109,6 +122,69 @@
     return messages.length + "|" + messageKey(adapter, messages[0]) + "|" + tail;
   }
 
+  function makeFreeze(scroller) {
+    /* A transform that cancels the scroll out is the tidier idea and it does
+       not survive contact with these hosts: parked at the top, ChatGPT
+       UNMOUNTS the turns the reader was looking at, so there is nothing left
+       to hold still. Measured on a real conversation, the anchor drifted 48,810
+       pixels because for most of the walk it did not exist.
+
+       So keep a copy instead. A still clone of the scroller sits exactly where
+       the scroller is, the scroller itself goes visibility:hidden — still laid
+       out, still scrollable, still measurable, just not painted — and the walk
+       runs underneath it. The reader's screen is not merely stable, it is the
+       same pixels. It is inert for the duration, which is why any input at all
+       stands the walk down and hands the live page straight back. */
+    if (!scroller || !scroller.getBoundingClientRect) return null;
+    const box = scroller.getBoundingClientRect();
+    if (box.width < 1 || box.height < 1) return null;
+    let ghost;
+    try { ghost = scroller.cloneNode(true); } catch (_) { return null; }
+    const shell = document.createElement("div");
+    const style = getComputedStyle(scroller);
+    const ground = style.backgroundColor && style.backgroundColor !== "rgba(0, 0, 0, 0)"
+      ? style.backgroundColor
+      : getComputedStyle(document.body).backgroundColor || "";
+    shell.id = "lct-freeze";
+    shell.setAttribute("aria-hidden", "true");
+    shell.style.cssText = "position:fixed;overflow:hidden;pointer-events:none;" +
+      "z-index:2147483000;contain:strict;" +
+      "left:" + box.left + "px;top:" + box.top + "px;" +
+      "width:" + box.width + "px;height:" + box.height + "px;" +
+      (ground ? "background:" + ground + ";" : "");
+    ghost.removeAttribute("id");
+    ghost.style.width = box.width + "px";
+    ghost.style.height = box.height + "px";
+    ghost.style.margin = "0";
+    ghost.style.boxSizing = "border-box";
+    /* Do NOT force overflow:hidden here. The clone keeps the original's classes
+       so it keeps its overflow, and that matters: taking the scrollbar away
+       hands the content ~15px more width, a centred message column reflows into
+       it, and the freeze announces itself as a flash of re-wrapped text at both
+       ends. The gutter has to be there for the copy to be a copy. */
+    ghost.style.overflowX = "hidden";
+    ghost.style.scrollbarGutter = getComputedStyle(scroller).scrollbarGutter || "";
+    shell.appendChild(ghost);
+    document.documentElement.appendChild(shell);
+    // After insertion: a detached node has no scrollable extent to set.
+    ghost.scrollTop = scrollTopOf(scroller);
+    const previous = scroller.style.visibility;
+    scroller.style.visibility = "hidden";
+    let live = true;
+    const release = () => {
+      if (!live) return;
+      live = false;
+      clearTimeout(deadman);
+      scroller.style.visibility = previous;
+      shell.remove();
+    };
+    /* A scroller left visibility:hidden is a blank page, so nothing may be able
+       to reach release() and fail to call it: not a thrown error, not a route
+       change, not a walk that runs long. */
+    const deadman = setTimeout(release, CEILING_MS + 15000);
+    return { correct() {}, release };
+  }
+
   function captureAnchor(adapter, messages, scroller) {
     const top = viewportTop(scroller);
     const bottom = rootScroller(scroller) ? innerHeight : scroller.getBoundingClientRect().bottom;
@@ -147,7 +223,7 @@
    * the correction lands before that frame is laid out instead of being
    * discovered on the next iteration as a full-viewport yank.
    */
-  function waitForHistoryChange(adapter, before, task, scroller, budget) {
+  function waitForHistoryChange(adapter, before, task, scroller, budget, lock) {
     return new Promise((resolve) => {
       let finished = false;
       const finish = (changed) => {
@@ -160,6 +236,7 @@
       const observer = new MutationObserver(() => {
         if (task.cancelled || task.route !== location.href) return finish(false);
         if (scroller && scrollTopOf(scroller) > TOP_EPSILON) moveTo(scroller, 0);
+        if (lock) lock.correct();
         let next = before;
         try { next = signature(adapter, adapter.messages()); } catch (_) {}
         if (next !== before) finish(true);
@@ -211,9 +288,10 @@
         moveTo(scroller, 1);
       }
       moveTo(scroller, 0);
+      if (opts.lock) opts.lock.correct();
 
       const startedAt = Date.now();
-      const changed = await waitForHistoryChange(adapter, previous, task, scroller, stepBudget(samples));
+      const changed = await waitForHistoryChange(adapter, previous, task, scroller, stepBudget(samples), opts.lock);
       if (task.cancelled || task.route !== location.href) return "cancelled";
 
       let next;
@@ -296,6 +374,7 @@
       const t = e && e.target;
       if (t && t.closest && t.closest('[id^="lct-"]')) return;
       task.cancelled = true;
+      task.cancelledBy = "input";     // they chose a position; keep it
     };
     task.cancel = cancel;
     // Capture phase catches a wheel/touch on the host scroller before React
@@ -360,28 +439,63 @@
     task.anchor = captureAnchor(adapter, messages, scroller);
     setStatus("running");
 
+    /* Locked while anyone can see it. The walk itself is unchanged — the host
+       still goes to the top sixty times — but the reader's screen holds still
+       through all of it, so there is nothing to wait for a background tab for.
+       A hidden tab needs no lock and pays no transform for one. */
+    const lock = document.hidden ? null : makeFreeze(scroller);
+    task.lock = lock;
+
+    // Show the pill BEFORE the first page, and with a cancel — the only
+    // showPill in this path used to come from onStep, which passes no handler,
+    // so the Stop button sat there attached to nothing. The automatic walk gets
+    // none: it does not move the page, so there is nothing to explain and
+    // nothing for a Stop button to save them from.
+    const announce = !task.auto;
+    if (announce) {
+      showPill(walkLabel(adapter), () => {
+        task.cancelled = true;
+        task.cancelledBy = "stop";
+      });
+    }
     const outcome = await pageUp(adapter, task, scroller, {
-      onStep: () => showPill(walkLabel(adapter))
+      onStep: () => { if (announce) showPill(walkLabel(adapter)); },
+      lock
     });
     const exhausted = outcome === "ceiling";
     hidePill();
+    /* Put them back BEFORE the copy comes down: every one of those attempts
+       happens behind the freeze, so the only frame anyone sees is the last
+       one, already correct. */
+    if (lock) await restoreAnchor(adapter, scroller, task.anchor, { cancelled: false });
+    if (lock) lock.release();
+    task.lock = null;
+    const held = !!lock;
 
     if (!task.cancelled && task.route === location.href) {
-      await restoreAnchor(adapter, scroller, task.anchor, task);
+      if (!held) await restoreAnchor(adapter, scroller, task.anchor, task);
       // Only a stall at the top proves we reached the first turn. Hitting the
       // ceiling means there is more history up there — leave the door open.
       if (exhausted) {
         finish(task, "partial");
-        scheduleResume(adapter, route);
+        scheduleResume(adapter, route, { auto: task.auto });
       } else {
         completedRoutes.add(route);
         finish(task, "complete");
       }
     } else {
-      // A human chose the next scroll position. Never snap them back — but the
-      // backfill is still unfinished, so try again once they settle.
+      // A human chose the next scroll position. Never snap them back — unless
+      // we are the reason the walk stopped (Stop, or the tab coming back into
+      // view), in which case their old place is exactly what to hand back.
+      if (!held && task.cancelledBy && task.cancelledBy !== "input" && task.route === location.href) {
+        await restoreAnchor(adapter, scroller, task.anchor, { cancelled: false });
+      }
       finish(task, "cancelled");
-      scheduleResume(adapter, route);
+      // Coming back to the tab is not the reader fighting the walk, so it must
+      // not spend one of their resumes — a long conversation is walked across
+      // however many tab-away stints it takes.
+      scheduleResume(adapter, route,
+        { auto: task.auto, charge: task.cancelledBy !== "visible" });
     }
   }
 
@@ -390,10 +504,12 @@
    * and that conversation never backfilled again. Wait for the reader to go
    * quiet, then pick up from wherever the host is now.
    */
-  function scheduleResume(adapter, route) {
+  function scheduleResume(adapter, route, opts) {
+    const auto = !opts || opts.auto !== false;
+    const charge = !opts || opts.charge !== false;
     const used = resumeCounts.get(route) || 0;
     if (used >= MAX_RESUMES || completedRoutes.has(route)) return;
-    resumeCounts.set(route, used + 1);
+    if (charge) resumeCounts.set(route, used + 1);
 
     let timer = null;
     const detach = () => {
@@ -407,7 +523,19 @@
     function go() {
       detach();
       if (active || completedRoutes.has(route) || location.href !== route) return;
-      const task = { route, cancelled: false, detach: null, timer: null, probes: 0 };
+      // The resume is the same page-yank as the first attempt, so it waits for
+      // the same quiet moment. Without this, scrolling away from a walk bought
+      // 2.5s of reading before the page snapped back to the top — five times.
+      /* Only the automatic walk owes anyone a hidden tab. A resume of the ⤒
+         walk is finishing a job somebody asked for out loud, with the pill and
+         its Stop button still on screen — making that one wait for a
+         background tab abandons it silently instead. */
+      /* `&& !canFreeze()` used to guard this and could never be true — it
+         tested for ParentNode.append, which predates the oldest browser this
+         extension loads on. So the auto resume walked a page somebody was
+         looking at, with announce=false meaning no pill and no Stop. */
+      if (auto && !backgrounded()) return armPending(adapter, route);
+      const task = { route, cancelled: false, cancelledBy: "", auto, detach: null, timer: null, probes: 0 };
       active = task;
       attachCancellation(task);
       run(adapter, route);
@@ -423,9 +551,17 @@
     if (task.detach) task.detach();
     if (active === task) active = null;
     setStatus(status);
+    /* visibilitychange is the only other thing that calls tryPending, and it has
+       already fired by the time a task ends. A seek that started visible and
+       finished hidden therefore left its arm with nothing to wake it, and a tab
+       parked in the background — the whole point of a background-only walk —
+       waited on it forever. Deferred a turn because begin() finishes the
+       outgoing task BEFORE claiming `active`, and a synchronous call here would
+       re-enter begin() underneath it. */
+    if (!active) setTimeout(tryPending, 0);
   }
 
-  function begin(adapter, delay) {
+  function begin(adapter, delay, auto) {
     const route = location.href;
     if (active && active.route === route) return false;
     if (active) {
@@ -433,7 +569,7 @@
       finish(active, "cancelled");
     }
     startedRoutes.add(route);
-    const task = { route, cancelled: false, detach: null, timer: null, probes: 0 };
+    const task = { route, cancelled: false, cancelledBy: "", auto: !!auto, detach: null, timer: null, probes: 0 };
     active = task;
     // Start listening immediately. If the reader touches the page during the
     // settling delay, respect that choice instead of starting a late crawl.
@@ -444,12 +580,301 @@
     return true;
   }
 
+  /* ---------- never move a page somebody is looking at ----------
+     A host hands over older turns only when its own scroller is genuinely at
+     the top, and the browser paints that: there is no invisible version of
+     this walk while the tab is on screen. So the automatic one runs only while
+     the tab is hidden, and gives the page back inside the visibilitychange
+     handler the moment it is not.
+
+     "Already scrolled near the top" was the other half of this test and it was
+     wrong: reading backwards through old turns is still reading, and the walk
+     answered that by taking the scroller for sixty round trips.
+
+     Opening a long chat therefore leaves the page where the site put it, and
+     keeps it there for as long as anyone is watching. Nothing is lost by
+     waiting: the map is seeded from the provider's own index and the full text
+     comes from the background sync, and neither of those touches the page at
+     all. The ⤒ button is unchanged — that one was asked for, out loud, by
+     someone watching. */
+  /* One arm per route, not one arm in total. A single slot survived only while
+     every arm was consumed immediately: open chat A, then chat B, and B's arm
+     overwrote A's — while maybeStart had already stamped A into startedRoutes on
+     the way past, so nothing could ever arm it again. Going back to A then found
+     a route marked handled, waiting on an arm that no longer existed, and the
+     next tab-hide dropped B's too. Both chats stranded, permanently. */
+  const pending = new Map();        // route -> adapter, waiting for the tab to go away
+
+  function backgrounded() {
+    return document.hidden;
+  }
+
+  /* Deliberately observable, on its own key rather than lctHistoryState — the
+     arm is not a walk state, and B2c1 asserts that lctHistoryState never moves.
+     Without this the arm is invisible from outside: a walk that correctly
+     declined to run and a walk whose arm was silently dropped look identical,
+     which is exactly how two regressions got past a suite that only ever
+     asserted the refusal. */
+  function noteArmed() {
+    document.documentElement.dataset.lctHistoryArmed = String(pending.size);
+  }
+
+  function clearPending(route) {
+    if (route === undefined) pending.clear();
+    else pending.delete(route);
+    noteArmed();
+  }
+
+  function armPending(adapter, route) {
+    // Nothing to subscribe to: visibilitychange is the only event that can make
+    // a pending route eligible, and it is already wired below.
+    pending.set(route, adapter);
+    noteArmed();
+  }
+
+  function tryPending() {
+    if (active) return;
+    const route = location.href;
+    const adapter = pending.get(route);
+    if (!adapter) return;
+    /* Re-checked here, not just at arm time: an arm can outlive the setting that
+       made it. applyState re-runs on an entitlement change as well as a settings
+       one, and both land as setAuto(false) without touching this map. */
+    if (!autoAllowed || completedRoutes.has(route)) return clearPending(route);
+    if (!backgrounded()) return;
+    clearPending(route);
+    begin(adapter, SETTLE_MS, true);
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) { tryPending(); return; }
+    const task = active;
+    if (!task || !task.auto || task.cancelled) return;
+    /* Back in front of somebody. Put the page where they left it HERE — a
+       visibilitychange handler runs before the frame is painted, so the top
+       the walk was parked on is never a thing they see. run() follows with the
+       precise restore a moment later. */
+    task.cancelled = true;
+    task.cancelledBy = "visible";
+    hidePill();
+    // A walk that was running hidden has no lock, so the page really is at the
+    // top and this is the only thing standing between them and seeing it.
+    if (task.scroller && task.anchor) moveTo(task.scroller, task.anchor.fallbackTop);
+    if (task.lock) { task.lock.release(); task.lock = null; }
+  });
+
+  /* ---------- putting the older turns back WITHOUT moving anything ----------
+     The walk exists because the host mounts only its recent tail. But the whole
+     conversation is already on this machine and was never scrolled for: bg.js
+     pulls it from the provider's own /backend-api/conversation endpoint and the
+     archive keeps it. So the older turns can simply be RENDERED — our own nodes,
+     above the host's list, inserted with the scroll paid for in the same task so
+     the reader's view does not shift by a pixel.
+
+     This is what settings.history does now. No scroller is touched, so there is
+     no movement to hide, no freeze, and no waiting for a background tab. The
+     walk stays for the ⤒ button alone, where somebody asked for it. */
+  const MOUNT_ID = "lct-old-turns";
+  const mountedRoutes = new Set();
+
+  /* Ids AND text, because the archive does not always have ids. Records written
+     by the page-side path store an empty `i` for every message, and a cut that
+     trusted ids alone read a 55-message conversation as having nothing older
+     than the seven turns on screen. Text is the fallback the rest of this file
+     already uses (see messageKey) and it is a good key here: these are settled
+     messages, not one streaming in. */
+  const textKey = (s) => String(s || "").trim().slice(0, 160);
+
+  function mountedKeys(adapter, messages) {
+    const ids = new Set(), texts = new Set();
+    for (const el of messages) {
+      let key = "";
+      try { key = adapter.stableKey(el) || ""; } catch (_) { /* selector drift */ }
+      if (key) ids.add(key);
+      const t = textKey(el.textContent);
+      if (t) texts.add(t);
+    }
+    return {
+      has(m) {
+        if (m.i && ids.has(m.i)) return true;
+        const t = textKey(m.t);
+        return !!t && texts.has(t);
+      }
+    };
+  }
+
+  /* Same contract as lctHistoryState: one attribute saying what happened, so a
+     failure is legible from outside without a debugger attached. */
+  function setMountStatus(status, route) {
+    const tries = route ? mountTries.get(route) || 0 : 0;
+    document.documentElement.dataset.lctMountState = tries ? status + "#" + tries : status;
+  }
+
+  const MOUNT_RETRIES = 6;
+  const MOUNT_RETRY_MS = 5000;
+  const mountTries = new Map();
+
+  function retryMount(adapter, route, afterMs) {
+    const used = mountTries.get(route) || 0;
+    if (used >= MOUNT_RETRIES) return;
+    mountTries.set(route, used + 1);
+    // The provider's own Retry-After wins over our backoff when it says longer:
+    // retrying inside a 429's window just spends the next one.
+    const wait = Math.max(MOUNT_RETRY_MS * (used + 1), Number(afterMs) || 0);
+    const again = () => {
+      if (location.href !== route) return;
+      mountedRoutes.delete(route);
+      mountArchive(adapter);
+    };
+    setTimeout(again, Math.min(wait, 120000));
+  }
+
+  async function mountArchive(adapter) {
+    const route = location.href;
+    setMountStatus("working");
+    const stale = document.getElementById(MOUNT_ID);
+    if (stale && stale.dataset.lctRoute !== route) stale.remove();
+    if (mountedRoutes.has(route)) return false;
+
+    let messages;
+    try { messages = adapter.messages(); } catch (_) { return setMountStatus("no-messages"), false; }
+    if (!messages || !messages.length) return setMountStatus("no-messages"), false;
+    const scroller = self.LCTAdapters.findScroller(messages[0]);
+    if (!scroller) return setMountStatus("no-scroller"), false;
+
+    /* The archive first, because it costs nothing and is usually already there.
+       A conversation nobody has synced yet is NOT a dead end: chat-index fetches
+       it from the provider's own endpoint and imports it, so asking twice with
+       an index call in between turns "not archived" into "archived a moment
+       ago". Neither call touches the page. */
+    /* Bounded. A host in its rate-limit cooldown does not refuse the request,
+       it PARKS it — bg.js sleeps the whole host until the window expires, which
+       is up to fifteen minutes of a status that says "working" and a reader with
+       no idea anything is wrong. Time it out, say so, and come back later. */
+    const ASK_TIMEOUT_MS = 12000;
+    const once = (type, extra) => Promise.race([
+      chrome.runtime.sendMessage(
+        Object.assign({ type, host: location.host, path: location.pathname }, extra)
+      ).catch(() => null),
+      new Promise((resolve) => setTimeout(() => resolve({ status: "slow" }), ASK_TIMEOUT_MS))
+    ]);
+    /* An MV3 worker is torn down between messages and a request that arrives
+       mid-teardown rejects rather than waking it. One immediate retry is the
+       difference between "no archive" and the archive that was there all along. */
+    const ask = async (type, extra) => {
+      const first = await once(type, extra);
+      if (first) return first;
+      await new Promise((r) => setTimeout(r, 400));
+      return once(type, extra);
+    };
+
+    let reply = await ask("chat-mount");
+    if (!reply || reply.status !== "ok" || !Array.isArray(reply.msgs) || !reply.msgs.length) {
+      // foreground: this is the chat in front of them, not the bulk sync.
+      const idx = await ask("chat-index", { force: false, foreground: true });
+      if (!idx || (idx.status !== "ok" && idx.status !== "fresh")) {
+        /* "rate" and the network kinds are the provider saying not now, not
+           saying no. Giving up for the whole route on one of those is how a
+           conversation ends up permanently missing its older turns over a
+           refusal that expired seconds later. */
+        setMountStatus("index:" + ((idx && idx.status) || "none"), route);
+        retryMount(adapter, route, idx && idx.retryAfterMs);
+        return false;
+      }
+      if (location.href !== route) return setMountStatus("route-changed"), false;
+      reply = await ask("chat-mount");
+    }
+    if (!reply || reply.status !== "ok" || !Array.isArray(reply.msgs)) {
+      setMountStatus("mount:" + ((reply && reply.status) || "none"), route);
+      retryMount(adapter, route);
+      return false;
+    }
+    if (location.href !== route || document.getElementById(MOUNT_ID)) {
+      return setMountStatus("superseded"), false;
+    }
+
+    // Re-read after the await: the host may have mounted more in the meantime.
+    try { messages = adapter.messages(); } catch (_) { return setMountStatus("no-messages"), false; }
+    if (!messages.length) return setMountStatus("no-messages"), false;
+    /* Everything before the EARLIEST turn the host currently holds. Breaking at
+       the first mounted id looked equivalent and is not: the host does not
+       always mount a clean tail, and one id landing early made the whole thing
+       decide there was nothing older. Find where its window starts, take what
+       is above it. */
+    const have = mountedKeys(adapter, messages);
+    let cut = reply.msgs.length;
+    for (let n = 0; n < reply.msgs.length; n++) {
+      if (reply.msgs[n] && have.has(reply.msgs[n])) { cut = n; break; }
+    }
+    const older = reply.msgs.slice(0, cut).filter((m) => m && (m.t || m.i) && !have.has(m));
+    if (!older.length) { mountedRoutes.add(route); return setMountStatus("nothing-older"), false; }
+
+    const block = document.createElement("div");
+    block.id = MOUNT_ID;
+    block.dataset.lctRoute = route;
+    for (const m of older) {
+      const row = document.createElement("article");
+      row.className = "lct-old";
+      row.dataset.lctOld = m.r === "user" ? "user" : "assistant";
+      /* NOT data-message-id: every adapter selects on that, and claiming these
+         are the host's own turns would have the minimap, the outline and the
+         engine all counting rows the host has never heard of. */
+      if (m.i) row.dataset.lctTurnId = m.i;
+      const who = document.createElement("div");
+      who.className = "lct-old-who";
+      who.textContent = m.r === "user" ? "You" : "Assistant";
+      const body = document.createElement("div");
+      body.className = "lct-old-text";
+      body.textContent = m.t || "";      // archived text is data, never markup
+      row.append(who, body);
+      block.appendChild(row);
+    }
+
+    /* Inserted as a child of the SCROLLER, not of the host's list: React
+       reconciles its own container's children and has been known to throw on a
+       foreign node inside it. And inserting above the reader is itself a page
+       move unless it is paid for in the same task — the browser keeps scrollTop,
+       so everything they were reading would drop by the height we just added. */
+    const before = scrollTopOf(scroller);
+    scroller.insertBefore(block, scroller.firstChild);
+    const added = Math.round(block.getBoundingClientRect().height);
+    if (added > 0) moveTo(scroller, before + added);
+    mountedRoutes.add(route);
+    setMountStatus("mounted:" + older.length);
+    return true;
+  }
+
   /** Auto path. Off unless settings.history says otherwise — see the header. */
   function maybeStart(adapter, messages) {
     if (!autoAllowed) return;
     const route = location.href;
     if (!supported(adapter) || !messages || messages.length < 2 || startedRoutes.has(route)) return;
-    begin(adapter, 700);
+    startedRoutes.add(route);
+    /* Two ways up, both automatic, tried together.
+
+       The archive: the whole conversation is already on this machine and was
+       never scrolled for, so the older turns are rendered above the host's
+       list. Nothing moves at all.
+
+       And the walk, because the archive is not always there — a chat nobody has
+       synced, a provider with no endpoint — and "sometimes" is not the feature.
+       The walk parks the host's scroller at the top, which is the only way it
+       hands over older turns, and there is no invisible version of that while
+       the tab is on screen. So it is ARMED here, not started: it runs when the
+       tab goes away, per "never move a page somebody is looking at" above.
+       Calling begin() here instead took the scroller 700ms after a chat opened,
+       which is the exact report that comment was written for. */
+    const arm = () => {
+      armPending(adapter, route);
+      // A chat opened in a tab that is already hidden has no visibilitychange
+      // coming to start it, and would otherwise wait for one forever.
+      tryPending();
+    };
+    // Only a mount that actually rendered older turns makes the walk redundant;
+    // every other outcome is the "sometimes" above and still needs the fallback.
+    // Also the only .catch this call has ever had — an insertBefore that throws
+    // was an unhandled rejection that took the arm down with it.
+    mountArchive(adapter).then((mounted) => { if (!mounted) arm(); }, arm);
   }
 
   /** The reader asked for it. Redo even a route we already walked. */
@@ -458,10 +883,18 @@
     const route = location.href;
     completedRoutes.delete(route);
     resumeCounts.delete(route);
-    return begin(adapter, 0);
+    clearPending();
+    return begin(adapter, 0, false);
   }
 
-  function setAuto(on) { autoAllowed = !!on; }
+  function setAuto(on) {
+    autoAllowed = !!on;
+    /* Assignment alone stranded live arms. applyState calls setAuto(false) when
+       History is unticked or the entitlement lapses, but stop() — the only other
+       thing that clears an arm — runs only when the WHOLE extension is switched
+       off, so a switched-off feature still walked on the next tab-hide. */
+    if (!autoAllowed) clearPending();
+  }
 
   /**
    * Page the host upward until ONE specific message is mounted.
@@ -479,7 +912,7 @@
     if (active) { active.cancelled = true; finish(active, "cancelled"); }
 
     const route = location.href;
-    const task = { route, cancelled: false, detach: null, timer: null, probes: 0 };
+    const task = { route, cancelled: false, cancelledBy: "", auto: false, detach: null, timer: null, probes: 0 };
     active = task;
     attachCancellation(task);
     setSeekStatus("running");
@@ -511,7 +944,7 @@
       const scroller = messages.length ? self.LCTAdapters.findScroller(messages[0]) : null;
       if (!scroller) { finish(task, "idle"); setSeekStatus("done"); return; }
 
-      showPill(label(), () => { task.cancelled = true; });
+      showPill(label(), () => { task.cancelled = true; task.cancelledBy = "stop"; });
       const outcome = await pageUp(adapter, task, scroller, {
         until: () => !!found(),
         onStep: () => showPill(label())
@@ -530,6 +963,7 @@
   }
 
   function stop() {
+    clearPending();
     if (!active) return;
     active.cancelled = true;
     clearTimeout(active.timer);
@@ -537,7 +971,7 @@
   }
 
   self.LCTHistoryLoader = {
-    maybeStart, start, stop, setAuto, supported, seekTo,
+    maybeStart, start, stop, setAuto, supported, seekTo, mountArchive,
     get active() { return !!active; }
   };
 })();

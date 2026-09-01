@@ -58,8 +58,8 @@ else {
      subdirectory, whose mtime does not move when a file inside it changes)
      left this printing "zip matches manifest" over a zip that predated the fix. */
   const WATCH = ["bg.js", "manifest.json", "content", "popup", "lib", "icons",
-                 "diag", "recall.html", "recall.css", "recall-page.js",
-                 "welcome.html", "welcome.css", "welcome.js"];
+                 "diag", "onboarding.html", "onboarding.css", "onboarding.js",
+                 "recall.html", "recall.css", "recall-page.js"];
   const newestOf = (full) => {
     let st;
     try { st = statSync(full); } catch { return 0; }
@@ -117,24 +117,78 @@ for (const [name, text] of [["listing", listing], ["README", readme], ["docs", d
 }
 if (period && !drift) ok(`sync interval claims agree with the code (${hours}h)`);
 
+/* The standalone policy pages are generated from docs/index.html, because a
+   privacy policy that says two different things on two URLs is a compliance
+   problem rather than an untidy repo. Google's consent screen wants a URL per
+   policy, so both must exist and both must still match their source. */
+try {
+  execFileSync(process.execPath, [join(root, "tools", "legal-pages.mjs"), "--check"], { stdio: "pipe" });
+  ok("privacy and terms pages match docs/index.html");
+} catch {
+  block("docs/privacy.html or docs/terms.html is stale or missing",
+    "node tools/legal-pages.mjs");
+}
+
 /* ---------- 4. someone can actually pay ---------- */
 
 const product = read("lib/product.js");
-const buy = (product.match(/BUY:\s*SITE\s*\+\s*"([^"]+)"/) || [])[1];
-if (!buy) block("lib/product.js has no BUY target");
-else ok(`buy button points at ${buy} on the pricing page`);
+const worker = read("server/entitlement-worker.js");
+const entitlement = read("lib/entitlement.js");
+const wrangler = read("server/wrangler.toml");
+const thanks = read("docs/thanks.html");
 
-// The pricing page is the one place a real checkout URL has to appear, and it
-// is the last thing anyone remembers to fill in.
-const buySection = /id="buy"/.test(docs);
-const checkoutHref = /id="checkout"[^>]*\n?\s*href="([^"]+)"/i.exec(docs)
-  || /href="([^"]+)"[^>]*id="checkout"/i.exec(docs);
-if (!buySection) block("docs/index.html has no #buy anchor for the buy button to land on");
-else if (!checkoutHref) block("docs/index.html has no #checkout button");
-else if (/REPLACE_WITH/.test(checkoutHref[1])) {
-  block("the payment link is still the placeholder — nobody can pay",
-    "one edit: replace the #checkout href in docs/index.html with your Dodo payment link");
-} else ok("pricing page carries a real checkout link", checkoutHref[1].slice(0, 52));
+/* The checkout is opened by the issuer, per purchase. These checks exist
+   because the OLD arrangement — a payment link pasted into a static page, and a
+   licence key handed back in the redirect URL — is the sort of thing that comes
+   back the first time someone is in a hurry. Each one is a regression guard for
+   a specific way that would happen. */
+
+// 4a. No payment link on the marketing site. Not a stale one, not a new one.
+if (/checkout\.dodopayments\.com|id="checkout"/i.test(docs)) {
+  block("docs/index.html carries a checkout link again",
+    "checkout is opened by the issuer (POST /checkout); the site sells nothing");
+} else ok("the pricing page sells nothing — no payment link on a static page");
+
+// The anchor stays: extensions shipped before the move still deep-link to it.
+if (!/id="buy"/.test(docs)) {
+  block('docs/index.html dropped the #buy anchor',
+    "older installs still link to /#buy; retire the URL, do not delete it");
+} else ok("/#buy still lands somewhere for installs shipped before the move");
+
+// 4b. And no buy URL back in the extension either.
+if (/\bBUY\s*:/.test(product)) {
+  block("lib/product.js has a BUY target again",
+    "the extension must not know where the checkout is; it asks the issuer");
+} else ok("the extension holds no payment URL, product id or provider");
+
+// 4c. The issuer is the one that has to know, so it has to be configured.
+const productId = (wrangler.match(/DODO_PRODUCT_ID\s*=\s*"([^"]*)"/) || [])[1];
+if (!/route === "\/checkout"/.test(worker) || !/route === "\/checkout\/claim"/.test(worker)) {
+  block("server/entitlement-worker.js has no /checkout routes — nobody can pay");
+} else if (!productId || /REPLACE|^pdt_x+$/i.test(productId)) {
+  block("server/wrangler.toml has no DODO_PRODUCT_ID — /checkout has nothing to sell",
+    "set DODO_PRODUCT_ID in server/wrangler.toml, then ./server/deploy.sh");
+} else ok("the issuer opens checkouts", productId);
+
+// The two halves of a signed request have to agree on the route name, or every
+// checkout fails its device proof at the issuer and nobody can buy anything.
+for (const route of ["checkout", "checkout-claim"]) {
+  const signed = new RegExp(`"${route}"`);
+  if (!signed.test(worker) || !signed.test(entitlement)) {
+    block(`the signing route "${route}" is missing from ${signed.test(worker) ? "lib/entitlement.js" : "server/entitlement-worker.js"}`);
+  }
+}
+
+// 4d. THE ONE THAT MATTERS. A licence key is a bearer secret for five device
+// seats, and a URL is read by history, profile sync, the omnibox and every
+// extension holding `tabs`. Nothing may put one there again.
+const returnUrl = (wrangler.match(/RETURN_URL\s*=\s*"([^"]*)"/) || [])[1] || "";
+if (/license_key|licence_key|[?&]key=/i.test(returnUrl)) {
+  block("RETURN_URL templates the licence key into a URL",
+    "the extension claims its own licence over its device proof; the URL carries nothing");
+} else if (/license_key|licence_key/i.test(thanks)) {
+  block("docs/thanks.html reads a licence key out of the URL again");
+} else ok("no licence key ever travels in a web address");
 
 /* ---------- 4b. one price, everywhere ---------- */
 
@@ -179,10 +233,15 @@ else {
 
 // The page someone lands on after paying. Without it a buyer's last impression
 // is the payment provider's own receipt screen and no idea what to do next.
-if (!read("docs/thanks.html")) block("docs/thanks.html is missing — no post-purchase page");
-else if (!/Licence key|licence key/i.test(read("docs/thanks.html"))) {
-  block("the post-purchase page never mentions the licence key");
-} else ok("post-purchase page explains how to activate");
+if (!thanks) block("docs/thanks.html is missing — no post-purchase page");
+else if (!/id="auto-activate"/.test(thanks)) {
+  block("the post-purchase page has no status box for the extension to write into");
+} else if (!/licence key/i.test(thanks)) {
+  // The automatic path is the one everybody takes; the emailed key is how a
+  // second machine is activated and how a lost delivery is recovered. A page
+  // that never mentions it strands both.
+  block("the post-purchase page never mentions the emailed licence key");
+} else ok("post-purchase page reports the automatic activation, and names the manual one");
 
 /* ---------- 5. the licence chain ---------- */
 
@@ -213,6 +272,18 @@ else {
   const siteCode = await head(site);
   siteCode === 200 ? ok("pricing/privacy page is live", site)
     : block(`pricing page answered ${siteCode || "nothing"} — stores require a reachable privacy policy`, site);
+
+  /* The standalone pages are what the store form and Google's consent screen
+     link. They exist in docs/ from the moment they are generated; they are
+     only reachable once docs/ is deployed, which is a push, not a build — so
+     this warns rather than blocks. A listing submitted with a 404 behind its
+     privacy link is refused. */
+  for (const page of ["privacy.html", "terms.html"]) {
+    const url = site.replace(/\/+$/, "") + "/" + page;
+    const code = await head(url);
+    code === 200 ? ok(`${page} is live`, url)
+      : warn(`${page} answered ${code || "nothing"} — deploy docs/ before submitting`, url);
+  }
 
   // A junk POST is enough: anything that answers proves a worker is deployed.
   let code;

@@ -17,7 +17,7 @@
     time: true,
     tempArchive: false,  // opt-in: the host was told not to keep these
 
-    history: false,    // walk the host's scroller on open — off, it moves the page
+    history: false,    // mount older turns in the page — see history-loader.js
     pro: false,
     trialUntil: 0      // ms epoch; 0 = no trial started
   };
@@ -35,6 +35,7 @@
     state.time && toolsUnlocked() ? (el) => self.LCTTimeline.info(el) : null;
 
   let lastMessages = [];
+  let lastTickAt = 0;          // the watchdog's proof that anything is running
   // The CONVERSATION, not location.href: these hosts rewrite their own query
   // string and hash while you sit still, and treating that as a chat switch
   // reset every per-chat cache several times a minute.
@@ -173,6 +174,7 @@
   // gate here made the minimap vanish on some chats — never again.)
   function onEngineUpdate(messages, windowedCount) {
     if (!contextAlive()) { showStaleNotice(); return; }
+    lastTickAt = Date.now();
     lastMessages = messages;
     syncTheme(); // hosts flip theme without reloading
     syncRail();  // the host's rail shows up once the chat gets long (throttled)
@@ -204,6 +206,9 @@
     resumeOffered = false;
     removeChip();
     seedFromProvider();
+    // The tour needs a minimap to point at, and the minimap hides under four
+    // messages. A short first chat must not cost someone the tour forever.
+    self.LCTTour.maybeStart();
   }
 
   /* ---------- the complete map, without moving the page ----------
@@ -252,8 +257,9 @@
     if (!pill) {
       pill = document.createElement("div");
       pill.id = "lct-mm-count";
-      pill.title = "Messages the speed engine has put to sleep. They wake instantly when you scroll to them.";
+      pill.setAttribute("data-tip", "Asleep right now|Not deleted \u2014 they wake the instant you scroll back");
       mm.insertBefore(pill, mm.querySelector("#lct-mm-stage") || mm.querySelector("#lct-mm-canvas"));
+      self.LCTTour.attachTips(mm);
     }
     if (windowedCount > 0) {
       pill.textContent = String(windowedCount);
@@ -269,6 +275,10 @@
 
   function maybeShowAha(total, windowedCount) {
     if (windowedCount < 50 || ahaShown.has(location.pathname)) return;
+    // The tour has a step saying this, pointed at the number itself. Two boxes
+    // explaining one thing is worse than either — and not marking it shown
+    // means it still gets said once the tour is done.
+    if (self.LCTTour.open) return;
     ahaShown.add(location.pathname);
     let msg =
       `This chat has ${total} messages, and your browser is now rendering only ` +
@@ -440,54 +450,47 @@
 
   function injectExportButtons() {
     const mm = document.getElementById("lct-minimap");
-    // The minimap hides itself (display:none) under 4 messages, under a host
-    // modal, or in a cramped window — see minimap.js. A bar docked inside it
-    // at that point collapses to 0x0 with it and stops being clickable, even
-    // though the toolbar's own features have nothing to do with that rule.
-    const mmVisible = !!mm && mm.style.display !== "none";
     let bar = document.getElementById("lct-export-bar");
+    // The action buttons are part of the navigator, never a second floating
+    // widget. When a short chat or modal hides the navigator, its actions hide
+    // with it and return in the same place when the map returns.
+    if (!mm) {
+      if (bar) bar.remove();
+      return;
+    }
     if (bar) {
-      if (mmVisible && bar.parentElement !== mm) {
-        bar.classList.remove("lct-floating");
-        mm.appendChild(bar);
-      } else if (!mmVisible && !bar.classList.contains("lct-floating")) {
-        bar.classList.add("lct-floating");
-        document.documentElement.appendChild(bar);
-      }
+      if (bar.parentElement !== mm) mm.appendChild(bar);
       return;
     }
     bar = document.createElement("div");
     bar.id = "lct-export-bar";
     // static markup only — no user/storage data goes through innerHTML
     bar.innerHTML = `
-      <button data-act="outline" title="Outline &amp; starred messages" aria-label="Outline and starred messages">
+      <button data-act="outline" data-tip="Outline &amp; stars|Every topic in the chat, and anything you starred" aria-label="Outline and starred messages">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg>
       </button>
-      <button data-act="search" title="Search this conversation" aria-label="Search this conversation">
+      <button data-act="search" data-tip="Search this chat|Reaches messages the page has already unloaded" aria-label="Search this conversation">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20.5 20.5-4-4"/></svg>
       </button>
-      <button data-act="bridge" title="Context Bridge: pull a past answer from any AI into this prompt" aria-label="Context Bridge">
+      <button data-act="bridge" data-tip="Context Bridge|Pull a past answer from any AI into the prompt you're typing" aria-label="Context Bridge">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17V9a3 3 0 0 1 3-3h10"/><path d="m14 3 3 3-3 3"/><path d="M20 7v8a3 3 0 0 1-3 3H7"/><path d="m10 21-3-3 3-3"/></svg>
       </button>
-      <button data-act="carry" title="Continue in a new chat: carry the goal, your starred messages and the last few turns into a fresh conversation" aria-label="Continue in a new chat">
+      <button data-act="carry" data-tip="Continue in a new chat|Carries the goal, your stars and the last few turns into a fresh one" aria-label="Continue in a new chat">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h13"/><path d="m13 6 6 6-6 6"/><path d="M20 4v16" opacity=".45"/></svg>
       </button>
-      <button data-act="history" title="Mount every older message in the page itself, so the site's own Ctrl+F can find it too. Tvara's own search and backups already cover the full conversation without this." aria-label="Mount every older message in the page">
+      <button data-act="history" data-tip="Mount older messages|Puts them back in the page so the site's own Ctrl+F finds them" aria-label="Mount every older message in the page">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V5"/><path d="m6 11 6-6 6 6"/><path d="M4 3h16"/></svg>
       </button>
-      <button data-fmt="md" title="Backup chat as Markdown" aria-label="Backup chat as Markdown">
+      <button data-fmt="md" data-tip="Back up as Markdown|The whole conversation, readable" aria-label="Backup chat as Markdown">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>
       </button>
-      <button data-fmt="json" title="Backup chat as JSON" aria-label="Backup chat as JSON">
+      <button data-fmt="json" data-tip="Back up as JSON|The whole conversation, re-importable" aria-label="Backup chat as JSON">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5c0 1.1.9 2 2 2h1"/><path d="M16 21h1a2 2 0 0 0 2-2v-5c0-1.1.9-2 2-2a2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1"/></svg>
       </button>
     `;
-    if (mmVisible) {
-      mm.appendChild(bar);
-    } else {
-      bar.classList.add("lct-floating");
-      document.documentElement.appendChild(bar);
-    }
+    mm.appendChild(bar);
+    self.LCTTour.attachTips(bar);
+    if (mm) self.LCTTour.attachTips(mm);
     // Only offered where the host actually pages its transcript; everywhere
     // else the whole conversation is already mounted and the button would be a
     // lie. Placed here, once, because the bar is built once.
@@ -590,21 +593,46 @@
 
   /* ---------- settings / license ---------- */
 
+  /* Did the worker actually answer, or did we give up on it? "No answer"
+     reads as free, and on Claude and Gemini free means no strip at all — so
+     the difference has to be visible to the retry below. */
+  let entitlementAnswered = false;
+
   async function loadState() {
-    const { settings } = await store.get(["settings"]);
+    let settings = null;
+    try { ({ settings } = await store.get(["settings"])); } catch (_) { /* defaults */ }
     if (settings) {
       state.enabled = settings.enabled !== false;
       state.minimap = settings.minimap !== false;
       state.time = settings.time !== false;
-      state.history = settings.history === true;   // opt-in: it moves the page
+      state.history = settings.history === true;   // opt-in; auto-walk is hidden-tab only
       state.tempArchive = settings.tempArchive === true;
     }
     // The worker holds the signed entitlement; content scripts only ask.
     // A hostile page shares this DOM but not this message channel.
-    const verdict = await new Promise((res) =>
-      chrome.runtime.sendMessage({ type: "entitlement-state" }, res));
+    /* A worker that is starting, updating or wedged can leave this message
+       unanswered forever, and nothing below is worth holding the whole
+       extension for — an unanswered round trip used to mean no engine, no
+       strip and no explanation on that tab until it was reloaded. Ask, wait a
+       moment, then carry on as free. */
+    const verdict = await new Promise((res) => {
+      let settled = false;
+      const done = (v) => { if (!settled) { settled = true; res(v); } };
+      setTimeout(() => done(null), 2500);
+      try {
+        chrome.runtime.sendMessage({ type: "entitlement-state" }, (v) => {
+          // "Could not establish connection" is what a worker that is still
+          // starting says. It is not a verdict, and it must not be filed as one.
+          if (!chrome.runtime.lastError && v) entitlementAnswered = true;
+          done(v);
+        });
+      } catch (_) { done(null); }
+    });
     state.pro = !!(verdict && verdict.entitled && verdict.via !== "trial");
-    state.trialUntil = (verdict && verdict.trial && verdict.trial.until) || 0;
+    /* grants, not until: an unverified week runs its clock and unlocks
+       nothing. Reading `until` alone let a reinstall farm Pro in-chat. */
+    const trial = verdict && verdict.trial;
+    state.trialUntil = (trial && trial.grants && trial.until) || 0;
   }
 
   function applyState() {
@@ -905,142 +933,66 @@
 
   try {
     chrome.runtime.onMessage.addListener((msg, _sender, respond) => {
-      if (!msg || msg.type !== "lct-health") return;
+      if (!msg) return;
+      if (msg.type === "lct-tour") {
+        self.LCTTour.replay();
+        try { respond({ ok: true }); } catch (_) { /* popup already closed */ }
+        return true;
+      }
+      if (msg.type !== "lct-health") return;
       try { respond(health()); } catch (e) { respond({ error: String(e && e.message || e) }); }
       return true;
     });
   } catch (_) { /* extension context gone */ }
 
-  /* ---------- first-run hint ----------
-     The welcome tab teaches the shortcuts once, in a tab most people close in
-     four seconds. This is the same lesson delivered where it is used, on the
-     first real conversation — once ever, dismissible, and printing the keys
-     the browser actually bound rather than the ones we asked for.
 
-     Docked left of the minimap rather than bottom-centre: that lane already
-     holds the resume chip and the note toast, and a hint that lands on top of
-     "resume where you left off" teaches one thing by hiding another. */
-  const HINT_KEY = "lct-hint-v1";
-
-  function hintKeys(commands) {
-    const mac = (() => {
-      /* navigator.platform is deprecated and userAgentData is not on every
-         browser this runs in, so both are asked, in that order, and the answer
-         is only ever used to choose a symbol. */
-      const d = (typeof navigator !== "undefined" && navigator.userAgentData) || null;
-      if (d && typeof d.platform === "string") return /mac/i.test(d.platform);
-      const ua = (typeof navigator !== "undefined" && navigator.userAgent) || "";
-      return /Mac|iPhone|iPad/i.test(ua);
-    })();
-    const pretty = (s) => !s ? null : s
-      .replace(/Command/g, "⌘")
-      .replace(/Shift/g, mac ? "⇧" : "Shift")
-      .replace(/Alt/g, mac ? "⌥" : "Alt")
-      .replace(/\+/g, mac ? "" : "+");
-    const by = new Map((commands || []).map((c) => [c.name, pretty(c.shortcut)]));
-    return [
-      [by.get("in-chat-search"), "search this conversation"],
-      [by.get("open-recall"), "search every chat, everywhere"]
-    ].filter(([k]) => k);   // an unbound command is not worth teaching
-  }
-
-  function showHint(rows) {
-    if (!rows.length || document.getElementById("lct-hint")) return;
-    const card = document.createElement("div");
-    card.id = "lct-hint";
-    card.setAttribute("role", "status");
-
-    const title = document.createElement("div");
-    title.className = "lct-hint-title";
-    title.textContent = "Tvara is on";
-    card.appendChild(title);
-
-    for (const [key, what] of rows) {
-      const row = document.createElement("div");
-      row.className = "lct-hint-row";
-      const kbd = document.createElement("kbd");
-      kbd.textContent = key;
-      const span = document.createElement("span");
-      span.textContent = what;
-      row.append(kbd, span);
-      card.appendChild(row);
-    }
-
-    /* Point at the strip, not just at the keyboard. Everything this extension
-       can do on the page lives in a navigator that only appears on hover — so a
-       hint that lists three keystrokes and never mentions it leaves search, the
-       outline, Context Bridge and the carry-over undiscovered. And a shortcut
-       can be missing entirely: Chrome drops one another extension already
-       holds, which is exactly what happened to search on the machine this was
-       written on. */
-    const where = document.createElement("div");
-    where.className = "lct-hint-row lct-hint-where";
-    const arrow = document.createElement("kbd");
-    arrow.textContent = "→";
-    const wtext = document.createElement("span");
-    wtext.textContent = "hover the strip on the right for search, outline and more";
-    where.append(arrow, wtext);
-    card.appendChild(where);
-
-    const close = document.createElement("button");
-    close.className = "lct-hint-ok";
-    close.type = "button";
-    close.textContent = "Got it";
-    const dismiss = () => { clearTimeout(timer); card.remove(); };
-    close.addEventListener("click", dismiss);
-    card.appendChild(close);
-
-    document.documentElement.appendChild(card);
-    requestAnimationFrame(() => card.classList.add("lct-hint-show"));
-
-    /* Show the navigator its full width for a moment while the hint is up.
-       "Hover the strip on the right" means nothing if the strip is a 13px
-       hairline the reader has not noticed yet. It returns to rest on its own,
-       and a hover in the meantime just keeps it open. */
-    const map = document.getElementById("lct-minimap");
-    if (map) {
-      map.classList.remove("lct-mm-rest");
-      setTimeout(() => {
-        if (!map.matches(":hover")) map.classList.add("lct-mm-rest");
-      }, 4000);
-    }
-    const timer = setTimeout(dismiss, 14000);
-  }
-
-  async function maybeHint() {
-    if (!state.enabled) return;
-    const got = await store.get([HINT_KEY]);
-    // An orphaned content script reads {} from a dead context — which looks
-    // exactly like a first run. Say nothing rather than repeat the lesson on
-    // every page load until the tab is reloaded.
-    if (!store.alive || (got && got[HINT_KEY])) return;
-    // Written BEFORE the card is drawn, so two tabs opening at once cannot both
-    // decide they are the first.
-    await store.set({ [HINT_KEY]: Date.now() });
-    if (!store.alive) return;
-    const commands = await new Promise((res) => {
-      try {
-        chrome.runtime.sendMessage({ type: "commands" }, (r) => {
-          void chrome.runtime.lastError; res(r);
-        });
-      } catch { res(null); }
+  // Defaults are a working extension, so whatever went wrong reading them,
+  // the engine still starts.
+  /* A worker that was asleep, starting or updating answers nothing, and a page
+     that took that for an answer sat on the free surface until it was
+     reloaded. Ask again, a few times, widening the gap. */
+  let licenceTries = 0;
+  function refreshLicence() {
+    loadState().catch(() => {}).then(() => {
+      applyState();
+      seedFromProvider();
+      if (entitlementAnswered || ++licenceTries >= 3) return;
+      setTimeout(refreshLicence, 2000 * licenceTries);
     });
-    showHint(hintKeys(commands));
   }
 
-  loadState().then(() => {
+  loadState().catch(() => {}).then(() => {
     applyState();
     seedFromProvider();
     if (state.enabled) kickVisitSync();
-    maybeHint();
+    if (!entitlementAnswered) setTimeout(refreshLicence, 2000);
+    self.LCTTour.maybeStart();
     // A handover staged by "Continue in a new chat" is waiting on the other
     // side of window.open. Only ever into an empty conversation, and only for
     // a few minutes — see carry.js.
     if (state.enabled && toolsUnlocked()) self.LCTCarry.deliver();
   });
 
-  // The onEngineUpdate check above only runs when the host mutates the page —
-  // a tab left open on a chat nobody is typing in can sit invalidated for a
-  // long time with no tick to catch it. This runs regardless of page activity.
-  setInterval(() => { if (!contextAlive()) showStaleNotice(); }, 4000);
+  /* ---------- the strip is not allowed to just not be there ----------
+     Everything we draw comes off the engine's tick, and the tick comes off the
+     host mutating. A host that re-renders our node away and then goes quiet —
+     a chat switch that mounts nothing new, a page that finished settling —
+     leaves nothing to bring it back, which is the "sometimes it appears and
+     sometimes it doesn't" report. So: if a tick has not happened in five
+     seconds and the strip is gone or hidden, ask for one. A rescan that
+     succeeds updates lastTickAt, so this costs one rescan per stall, not one
+     per interval.
+
+     The onEngineUpdate check also only runs on a mutation, and a tab left open
+     on a chat nobody is typing in can sit invalidated for a long time with no
+     tick to catch it. Same timer, same reason. */
+  setInterval(() => {
+    if (!contextAlive()) { showStaleNotice(); return; }
+    if (!state.enabled) return;
+    if (!self.LCTEngine.enabled) { applyState(); return; }
+    if (!state.minimap || !toolsUnlocked()) return;
+    const strip = document.getElementById("lct-minimap");
+    const gone = !strip || !strip.isConnected || strip.style.display === "none";
+    if (gone && Date.now() - lastTickAt > 5000) self.LCTEngine.rescan();
+  }, 2000);
 })();

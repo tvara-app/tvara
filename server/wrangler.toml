@@ -46,8 +46,26 @@ type = "ratelimit"
 namespace_id = "1001"
 simple = { limit = 60, period = 60 }
 
+# The cleaner. sweepLedgers() drops expired nonces and codes, settled orders,
+# old webhook receipts, dead seats, and trial/identity rows past the 400 days
+# the privacy page names. Nothing a live licence depends on is in that list —
+# revocations and owner rows are never swept. Daily, off-peak.
+[triggers]
+crons = ["23 4 * * *"]
+
 [vars]
 DODO_MODE = "live"
+
+# The product the /checkout route sells, and where the provider sends the buyer
+# afterwards. These live HERE and not on the marketing site, which is the whole
+# point of the change: price, product and provider move with a `wrangler deploy`
+# in seconds, not with a page deploy racing a CDN cache and a store review.
+#
+# The return URL carries NO licence key. The extension already knows its own
+# order ref and claims against /checkout/claim over its device proof, so there
+# is nothing in this URL worth reading out of somebody's history.
+DODO_PRODUCT_ID = "pdt_0NlmnndQ1Zk8I5JzkYeSN"
+RETURN_URL = "https://tvara-app.github.io/thanks.html"
 # The chrome-extension://<id> origin allowed to call this worker.
 # In live mode an EMPTY value refuses everyone — deliberately. An open default
 # on a live payment endpoint is a standing invitation to spend our KV writes
@@ -60,10 +78,41 @@ ALLOWED_ORIGINS = "chrome-extension://hbejlhhmbhkeaebcgmblchnodeampcgl"
 # when the Firefox build (tools/pack.mjs --firefox) is not being shipped.
 ALLOW_FIREFOX = "1"
 
+# ─────────────────────────────────────────────────────────────────────────────
+#   Identity. The anchor that survives an uninstall.
+#
+#   The trial ledger and licence ownership key on a VERIFIED EMAIL, not on the
+#   device keypair — that keypair dies with the extension, which is what made
+#   the trial resettable by reinstalling and a purchase unfindable afterwards.
+#
+#   GOOGLE_CLIENT_ID is optional: empty disables the one-tap route and leaves
+#   the mailed-code route, which every browser can use. Firefox cannot use the
+#   Google route at all (its redirect URL is minted per install and no OAuth
+#   client can name it), so the code route is not a fallback there, it is THE
+#   route. Set it in Google Cloud Console → Credentials → OAuth client ID →
+#   Web application, with the redirect https://<extension-id>.chromiumapp.org/
+GOOGLE_CLIENT_ID = "276513864843-6mf2p200h51i1b1m9ghkuav7fctmt5ku.apps.googleusercontent.com"
+
+# Extra throwaway-mailbox domains, comma separated. The built-in list in
+# entitlement-worker.js covers the common ones; this is here so a newly popular
+# one is a config change rather than a deploy.
+DISPOSABLE_EXTRA = ""
+
+# The address verification codes are sent from. Must be on a domain verified
+# with the mail provider, or every send bounces and every new user falls back
+# to an unverified trial that unlocks nothing.
+MAIL_FROM = "Tvara <hello@tvara.app>"
+
 # Secrets — never in this file. deploy.sh prompts for whichever is missing:
 #   wrangler secret put DODO_API_KEY        # Dodo Payments server-side API key
 #   wrangler secret put SIGNING_KEY         # node tools/genkey.mjs worker-key
 #   wrangler secret put DODO_WEBHOOK_SECRET # Dodo → Developer → Webhooks (whsec_…)
+#
+# Verification is Google-only. /identity/start and /identity/verify answer 410
+# unless OTP_ENABLED = "1" is set as a var, and that route additionally needs
+# MAIL_API_KEY (a Resend key) and a MAIL_FROM on a domain verified with them.
+# Neither is required for a normal deploy, and nothing mails a user without
+# them — the address never leaves the Worker.
 
 
 # Worker Traces — invocation logs, exceptions, timings. Server-side only: this

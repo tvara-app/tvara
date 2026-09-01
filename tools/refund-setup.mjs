@@ -48,8 +48,17 @@ if (E2E && MODE === "live") {
 const BASE = MODE === "test" ? "https://test.dodopayments.com" : "https://live.dodopayments.com";
 const HOOK_URL = ISSUER + "/webhook/dodo";
 /* Only what the issuer acts on. A narrower subscription is fewer deliveries to
-   verify and fewer ways to be surprised. */
-const EVENTS = ["refund.succeeded", "dispute.lost", "dispute.accepted"];
+   verify and fewer ways to be surprised.
+
+   The first two DELIVER a purchase and the last three take one away. Both
+   halves are load-bearing now: nothing else tells the issuer that money moved,
+   because the buyer's redirect is a client claiming it paid and the issuer does
+   not take a client's word for that. Miss `payment.succeeded` here and every
+   purchase silently falls back to the emailed key. */
+const EVENTS = [
+  "payment.succeeded", "license_key.created",
+  "refund.succeeded", "dispute.lost", "dispute.accepted"
+];
 
 const die = (msg) => { console.error("✋ " + msg); process.exit(1); };
 

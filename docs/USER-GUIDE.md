@@ -176,9 +176,10 @@ or opening a second one does not reset it.
 storage. The only history network requests are scoped to the declared
 first-party AI-provider endpoints. There is no telemetry and no chat-data
 upload route of any kind; the only non-provider requests are licensing ones,
-carrying a licence key, a device public key and (unavoidably) your IP — never
-conversation text. Starting the free trial makes one of those requests too, so
-a reinstall cannot mint a second free week. The Recall page shows exactly what's
+carrying a licence key, a device public key, a hash of your verified email
+address and (unavoidably) your IP — never conversation text. Starting the free
+trial makes one of those requests too, which is what stops a reinstall minting
+a second free week. The Recall page shows exactly what's
 stored (chats, messages, MB) and has a delete-everything button.
 **Honesty note:** without an import, Recall only knows chats you've opened
 since installing. It says so rather than pretending otherwise.
@@ -326,18 +327,40 @@ your own scripts).
 
 ## 6. Free trial, Pro, and licensing
 
-- **7-day free trial:** popup → *"Start 7-day free trial, no signup"*. One
-  click. Every tool unlocks on every platform, including Claude and Gemini.
-  The popup counts down the days; when it ends, free platforms stay free and
-  the speed engine stays on everywhere.
-- **Pro, $1, once, forever:** no subscription, no account. Buying gets you a
-  license key by email, tied to that address.
-- **Activating:** popup → paste the key → **Activate**. The extension asks the
-  payment provider's licence server to register this device, then stores the
-  receipt locally. Only your key and a coarse device label ("Chrome · macOS")
-  are sent, no cookies, no conversation text. After activation the key is
-  never displayed again (so a screenshot or screen-share can't leak it); the
-  popup shows only a masked email like `te•••@gmail.com`.
+- **7-day free trial:** popup → **Start 7-day free trial**. It asks you to
+  press **Continue with Google** first. That is the whole signup: no password,
+  no form, and Tvara asks Google for your email address and nothing else. Every
+  tool then unlocks on every platform, including Claude and Gemini. The popup
+  counts down the days; when it ends, free platforms stay free and the speed
+  engine stays on everywhere.
+
+  Signing in makes the trial *yours* rather than your install's. Uninstall and
+  reinstall and you neither lose the days you had left nor get a fresh week —
+  sign in with the same account and it picks up exactly where it was.
+
+  Google sign-in needs Chrome or Edge. Firefox gives every installation a
+  different internal address, which Google will not accept as a sign-in
+  destination, so the trial and Pro cannot be started there; the free features
+  work normally.
+- **Pro, $1, once, forever:** no subscription. Buying gets you a licence key by
+  email, tied to that address. Verify the same address in the popup and
+  **Restore my purchase** brings Pro back after a reinstall without pasting the
+  key at all.
+- **Buying:** popup → **Get Pro**. The extension asks our licence server to
+  open a checkout for that one purchase and opens it in a tab; there is no
+  payment page on the website and no payment link inside the extension. When
+  the payment clears, the licence is delivered back to the copy of Tvara that
+  started it and switches itself on — nothing to copy, nothing to paste. Your
+  key is never put in a web address, so it cannot end up in browser history or
+  in profile sync. It is emailed to you as well.
+- **Activating by hand:** popup → paste the key → **Activate**. This is how you
+  add your second through fifth device, and how you recover if a delivery goes
+  astray. The extension asks the payment provider's licence server to register
+  this device, then stores the receipt locally. Only your key and a coarse
+  device label ("Chrome · macOS") are sent, no cookies, no conversation text.
+  After activation the key is never displayed again (so a screenshot or
+  screen-share can't leak it); the popup shows only a masked email like
+  `te•••@gmail.com`.
 - **5 devices:** one licence activates on five. A "device" is a signed-in
   browser profile, so your laptop and desktop on the same Chrome profile share
   a single slot, and Firefox or a second profile takes its own.
@@ -353,8 +376,8 @@ your own scripts).
   clear the licence.
 - **Re-checks:** before a Pro action, whenever the last check is over fifteen
   minutes old — only if you're already online. A background alarm runs every
-  twelve hours too, but only contacts the issuer while the signed 90-day token
-  is inside its final 30 days. One authoritative refusal — the issuer saying
+  twelve hours too, but only contacts the issuer while the signed 30-day token
+  is inside its final 10 days. One authoritative refusal — the issuer saying
   the licence is unknown or inactive — withdraws Pro at once; an outage, a
   timeout or a flight never costs you access.
 - **Keys bought before this (`LCT1.…`)** are unchanged: verified by signature
@@ -371,23 +394,32 @@ your own scripts).
   extension contains no analytics, telemetry or remote-code path.
 - **The exception, stated plainly:** licensing. Activating Pro contacts the
   payment provider's licence API and our own licence issuer, which returns a
-  signed 90-day token. A licensed copy renews that token once it has under 30
+  signed 30-day token. A licensed copy renews that token once it has under 10
   days of life left, and re-checks before a Pro action when the last check is
   over fifteen minutes old. **Starting the free trial
   contacts the issuer too** — an earlier version of this guide said the free
   tier never contacted anything, which was not correct. What leaves the machine:
   your licence key, a coarse device label ("Chrome · macOS"), your device's
-  public key, the activation receipt id, and the IP any request carries. Never
-  conversation text, never a cookie, never an account.
+  public key, the activation receipt id, your email address once at
+  verification (the issuer mails the code and keeps only a hash of the
+  address), and the IP any request carries. Never conversation text, never a
+  cookie.
 - **What the issuer keeps:** a hash of your licence key, a fingerprint per
-  active device with a last-seen time, and your trial start date — each up to
-  400 days after last use — plus a **hashed** IP for 30 days, used to flag one
-  key being used from implausibly many places for a human to review. Past that
-  threshold it also keeps a count and a timestamp against the licence for 90
-  days, as evidence for that review. It never blocks anyone automatically.
-  Your email address is not kept at all: the issuer reads it from the payment
-  provider at check time and places it in the signed token your own browser
-  holds. Email support to see or delete any of it.
+  active device with a last-seen time, a **hash** of your verified email
+  address, and your trial start date — each up to 400 days, enforced by a
+  cleaner that runs daily rather than by a promise — plus a **hashed** IP for
+  30 days, used to flag one key being used from implausibly many places for a
+  human to review. Past that threshold it also keeps a count and a timestamp
+  against the licence for 90 days, as evidence for that review. It never blocks
+  anyone automatically.
+
+  Two things are deliberately kept longer. **The link between your verified
+  address and a licence you bought** is what makes Pro come back after a
+  reinstall without a key to find, so it lives as long as the licence does —
+  deleting it on a timer would take your purchase with it. **A revocation** (a
+  refund) is permanent, for the obvious reason. Your email address itself is
+  never kept in readable form anywhere. Email support to see or delete any of
+  it.
 - **Your device key:** generated once per install and **non-extractable** — the
   browser will not export the private half to us, to you, or to anyone. It only
   proves a request came from this device, so a device slot cannot be claimed by
@@ -457,9 +489,22 @@ That's by design. It searches sleeping messages too and wakes the right one
 when you jump.
 
 **Does the trial reset if I reinstall?**
-Trial state lives in local extension storage. We keep it honest but simple,
-it's a convenience, not a fortress. The product costs $1 once; if you find
-yourself gaming the trial twice, it's probably worth the coffee money.
+No. It used to: the trial was pinned to a keypair held in the extension's own
+storage, and uninstalling destroyed it, so a reinstall was a fresh week. It is
+now recorded against your verified email address, on the server, for 400 days.
+Reinstall, switch browsers or wipe your profile and verifying the same address
+returns the original start date, with whatever days were left still on it.
+
+**Can I get a second week with a different email address?**
+No. The week is recorded against the address *and* against the install, so
+verifying a second address in the same browser picks up the week that browser
+has already spent rather than starting a new one.
+
+**I reinstalled and Pro is gone.**
+Sign in in the popup and press **Restore my purchase**. Because buying requires
+signing in, that is all it takes — no key to find.
+It also reclaims the device slot the old install was holding, so reinstalling
+repeatedly cannot use up your five devices.
 
 **Something glitched on a site update.**
 AI sites ship UI changes constantly. If a feature stops appearing, it's

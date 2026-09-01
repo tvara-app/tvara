@@ -14,7 +14,7 @@
     <header>
       <div class="brand">
         <span class="mark" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M5 7h14M5 12h9M5 17h11"/><circle cx="18.5" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg>
+          <img src="../icons/icon128.png" alt="">
         </span>
         <span class="brand-text">
           <span class="brand-name">Tvara</span>
@@ -48,7 +48,7 @@
           </span>
           <span class="row-text">
             <span class="row-title">Minimap</span>
-            <span class="row-sub">Bird's-eye view of the chat</span>
+            <span class="row-sub">Maps the whole conversation</span>
           </span>
           <input type="checkbox" id="toggle-minimap" checked />
         </label>
@@ -58,7 +58,7 @@
           </span>
           <span class="row-text">
             <span class="row-title">Timestamps</span>
-            <span class="row-sub">Hover any message for its time</span>
+            <span class="row-sub">Shows each message's time on hover</span>
           </span>
           <input type="checkbox" id="toggle-time" checked />
         </label>
@@ -68,7 +68,7 @@
           </span>
           <span class="row-text">
             <span class="row-title">Load full history on open</span>
-            <span class="row-sub">Complete map instantly, but the page scrolls itself first</span>
+            <span class="row-sub">Renders every older message from your own copy — nothing is scrolled</span>
           </span>
           <input type="checkbox" id="toggle-history" />
         </label>
@@ -78,7 +78,7 @@
           </span>
           <span class="row-text">
             <span class="row-title">Archive temporary chats</span>
-            <span class="row-sub">Keep temporary, private and signed-out chats in your archive too</span>
+            <span class="row-sub">Keeps temporary and signed-out chats too</span>
           </span>
           <input type="checkbox" id="toggle-temp" />
         </label>
@@ -92,7 +92,7 @@
                  above the dial says what it found. This line is for the two
                  controls, which both have to FIT: with the description in
                  front of them, "check accuracy" fell off the end of the row. -->
-            <span class="row-sub"><a href="#" id="quota-warn-link">warn me at 20%</a> · <a href="#" id="quota-diag-link">check accuracy</a></span>
+            <span class="row-sub"><a href="#" id="quota-warn-link">warn at 20%</a> · <a href="#" id="quota-diag-link">accuracy</a></span>
           </span>
           <input type="checkbox" id="toggle-quota" checked />
         </label>
@@ -103,7 +103,7 @@
           </span>
           <span class="row-text">
             <span class="row-title">Total Recall</span>
-            <span class="row-sub">Search every chat, every platform</span>
+            <span class="row-sub">Searches every chat on every platform</span>
           </span>
           <button class="row-action" id="open-recall" type="button" aria-label="Open Total Recall in a new tab">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 16 16 8"/><path d="M9.5 8H16v6.5"/></svg>
@@ -128,7 +128,7 @@
           </span>
           <span class="row-text">
             <span class="row-title" id="deletion-alert-title">Chats deleted on the site</span>
-            <span class="row-sub" id="deletion-alert-sub">Your backup still has them. Decide what to keep</span>
+            <span class="row-sub" id="deletion-alert-sub">Your backup still has them. Decide what to keep.</span>
           </span>
         </button>
 
@@ -138,7 +138,7 @@
           </span>
           <span class="row-text">
             <span class="row-title" id="fill-title">Download your chats' text</span>
-            <span class="row-sub" id="fill-sub">Recall can only search what is here</span>
+            <span class="row-sub" id="fill-sub">Recall can only search what it has downloaded</span>
           </span>
         </button>
 
@@ -158,12 +158,22 @@
           <span class="pro-title">Unlock everything</span>
           <span class="price-pill" data-price="{price} · once, forever"></span>
         </div>
-        <p class="pro-note">Total Recall, Context Bridge and every tool on Claude &amp; Gemini. No account &mdash; and it verifies offline between checks.</p>
+        <p class="pro-note">Total Recall, Context Bridge and every tool on Claude &amp; Gemini. Verified once by email, then it works offline between checks.</p>
+        <div class="identity" id="identity" hidden>
+          <p class="pro-note" id="identity-why">Verify your email once. Your trial and your purchase follow the address &mdash; reinstall, or move to another browser, and they come back.</p>
+          <button id="identity-google" class="identity-google" type="button" hidden>Continue with Google</button>
+          <p class="pro-note" id="identity-nogoogle" hidden>Signing in needs Chrome or Edge. Firefox gives every install a different extension address, which Google will not accept as a redirect.</p>
+          <div id="identity-done" hidden>
+            <button id="identity-restore" type="button">Restore my purchase</button>
+            <button id="identity-signout" class="identity-link" type="button">Use a different account</button>
+          </div>
+          <p id="identity-status" role="status"></p>
+        </div>
         <button id="trial-start" hidden>Start 7-day free trial</button>
         <p id="trial-note" class="pro-note" hidden></p>
         <button id="buy-pro" class="buy" type="button" data-price="Get Pro · {price} once, forever"></button>
-        <p class="pro-note" id="buy-note">Already bought it? Paste the key from your purchase email.</p>
-        <div class="license-row">
+        <p class="pro-note"><button type="button" class="identity-link" id="license-toggle" aria-expanded="false" aria-controls="license-row">Bought before, or lost access to that account?</button></p>
+        <div class="license-row" id="license-row" hidden>
           <input type="text" id="license-input" placeholder="Licence key" autocomplete="off" spellcheck="false" />
           <button id="license-activate">Activate</button>
         </div>
@@ -195,6 +205,17 @@
         </div>
         <p class="pro-note" id="device-manager-note"></p>
         <div id="device-list"></div>
+        <div id="device-actions" hidden>
+          <button id="device-signout" class="ghost" disabled>Sign out</button>
+          <button id="device-signout-all" class="ghost">Sign out of all devices</button>
+        </div>
+        <div id="device-confirm" hidden>
+          <p class="pro-note" id="device-confirm-text"></p>
+          <div class="dm-confirm-row">
+            <button id="device-confirm-yes">Sign out</button>
+            <button id="device-confirm-no" class="ghost">Cancel</button>
+          </div>
+        </div>
         <button id="license-retry-activate" hidden>Try activating again</button>
         <p class="pro-note"><a id="device-help-link" href="https://tvara-app.github.io/#devices" target="_blank" rel="noopener">Slots held by a device you no longer have?</a></p>
         <button id="device-manager-back" class="ghost">Back</button>
@@ -202,8 +223,30 @@
     </main>
 
     <footer>
-      <span>Local archive · <a href="#" id="shortcuts-link">Shortcuts</a> · <a href="#" id="health-link">Health</a> · <a href="#" id="help-link">Help</a><a href="#" id="rate-link" hidden> · Rate it</a></span>
+      <span>Local archive · <a href="#" id="tour-link">Show me around</a> · <a href="#" id="shortcuts-link">Shortcuts</a> · <a href="#" id="health-link">Health</a> · <a href="#" id="help-link">Help</a><a href="#" id="rate-link" hidden> · Rate it</a></span>
     </footer>
+  </div>
+
+  <div id="popup-tour" hidden role="dialog" aria-modal="true" aria-labelledby="popup-tour-title">
+    <div id="popup-tour-ring" aria-hidden="true"></div>
+    <section class="popup-tour-card">
+      <button id="popup-tour-close" type="button" aria-label="Close tour">×</button>
+      <p id="popup-tour-count"></p>
+      <h2 id="popup-tour-title"></h2>
+      <p id="popup-tour-body"></p>
+      <!-- Only on the last card. The walkthrough runs inside a chat page, so
+           the tutorial opens one rather than telling the reader to go and find
+           one themselves. -->
+      <div id="popup-tour-chips" class="popup-tour-chips" hidden>
+        <button class="tour-chip" data-url="https://chatgpt.com/" type="button">ChatGPT</button><button class="tour-chip" data-url="https://claude.ai/" type="button">Claude</button><button class="tour-chip" data-url="https://gemini.google.com/" type="button">Gemini</button><button class="tour-chip" data-url="https://chat.deepseek.com/" type="button">DeepSeek</button><button class="tour-chip" data-url="https://grok.com/" type="button">Grok</button><button class="tour-chip" data-url="https://www.perplexity.ai/" type="button">Perplexity</button>
+      </div>
+      <div class="popup-tour-actions">
+        <button id="popup-tour-skip" type="button">Close</button>
+        <span></span>
+        <button id="popup-tour-back" type="button" hidden>Back</button>
+        <button id="popup-tour-next" type="button">Next</button>
+      </div>
+    </section>
   </div>
 
   <script src="../lib/product.js"></script>

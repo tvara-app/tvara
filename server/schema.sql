@@ -27,7 +27,10 @@ CREATE TABLE IF NOT EXISTS nonces (
 );
 CREATE INDEX IF NOT EXISTS nonces_by_expiry ON nonces (expires_at);
 
--- One trial per proven device, remembered server-side.
+-- One trial per proven device, remembered server-side. Still WRITTEN, not just
+-- read: identity closes "uninstall and reinstall", and this closes the cheaper
+-- one next to it — verifying a second address on the same install. See
+-- stampDeviceTrial() in entitlement-worker.js.
 CREATE TABLE IF NOT EXISTS trials (
   dev_fp     TEXT    PRIMARY KEY,
   started_at INTEGER NOT NULL
@@ -60,3 +63,213 @@ CREATE TABLE IF NOT EXISTS webhook_events (
   at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS webhook_events_by_at ON webhook_events (at);
+
+-- Orders. The extension asks the worker to open a checkout; the worker owns the
+-- session and this row is what ties the payment back to the install that
+-- started it. Without it the only link between "someone paid" and "this browser
+-- may have Pro" is a licence key pasted from an email, or worse, handed back in
+-- a redirect URL where history, sync and every other extension can read it.
+--
+-- state moves created -> paid -> fulfilled, and never backwards. `refunded` is
+-- terminal and set by the same webhook that writes the kill list.
+--
+-- lic_key holds the key only between fulfilment and the first claim by the
+-- device that opened the order; the claim nulls it. A bearer secret at rest is
+-- a liability with a shelf life, so it is given one.
+CREATE TABLE IF NOT EXISTS orders (
+  ref        TEXT    PRIMARY KEY,
+  dev_fp     TEXT    NOT NULL,
+  state      TEXT    NOT NULL,
+  session_id TEXT,
+  payment_id TEXT,
+  customer   TEXT,
+  lic_key    TEXT,
+  key_fp     TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS orders_by_dev ON orders (dev_fp, created_at);
+CREATE INDEX IF NOT EXISTS orders_by_payment ON orders (payment_id);
+
+-- A licence key whose payment.succeeded has not arrived yet.
+--
+-- Dodo delivers license_key.created and payment.succeeded in either order.
+-- Discarding a key that matched no order lost it permanently: the webhook was
+-- answered 200, so it was never redelivered, and the buyer's claim never found
+-- a key. Parked here, orderPaid() adopts it the moment its order appears.
+-- Stored in the same encrypted form as orders.lic_key.
+CREATE TABLE IF NOT EXISTS pending_keys (
+  payment_id TEXT    PRIMARY KEY,
+  lic_key    TEXT    NOT NULL,
+  key_fp     TEXT    NOT NULL,
+  at         INTEGER NOT NULL
+);
+
+-- ─────────────────────────────────────────────────────────────────────────────
+--  Identity. The anchor that survives an uninstall.
+--
+--  Everything above keys on dev_fp — a fingerprint of a keypair held in the
+--  extension's own IndexedDB. Uninstalling destroys it, so the trial ledger it
+--  keyed was resettable by removing the extension and adding it back, and a
+--  paying customer's seat could not be re-claimed after a reinstall either.
+--  Both are the same defect: no identity outlived the install.
+--
+--  The anchor is a VERIFIED email, held only as sha256(canonical email). The
+--  raw address is never written here — the OTP path sends to it and forgets
+--  it, the Google path reads it out of a signed id_token and forgets it.
+-- ─────────────────────────────────────────────────────────────────────────────
+
+-- One row per verified email, ever.
+CREATE TABLE IF NOT EXISTS identities (
+  email_fp   TEXT    PRIMARY KEY,
+  first_seen INTEGER NOT NULL,
+  via        TEXT    NOT NULL          -- 'otp' | 'google', first route used
+);
+
+-- The verified address itself, ENCRYPTED (AES-GCM under a key derived from
+-- SIGNING_KEY), kept apart from `identities` on purpose: that table is scanned
+-- by the retention sweep and joined against, this one is only ever read by
+-- email_fp. Separate table rather than a column so schema.sql stays CREATE
+-- TABLE IF NOT EXISTS throughout — an ALTER would fail on the second deploy.
+--
+-- Nothing serves this back to a client. It exists so support can answer "which
+-- address owns this licence" and so a person can be told what is held about
+-- them; a dump of it is ciphertext.
+CREATE TABLE IF NOT EXISTS identity_emails (
+  email_fp   TEXT    PRIMARY KEY,
+  email_enc  TEXT    NOT NULL,         -- base64url(iv . ciphertext)
+  updated_at INTEGER NOT NULL
+);
+
+-- Codes in flight. `tries` is what stops a 6-digit code from being guessed:
+-- the row is destroyed at OTP_MAX_TRIES, so the attacker gets a handful of
+-- attempts per SEND, not per code.
+CREATE TABLE IF NOT EXISTS otp_codes (
+  email_fp   TEXT    PRIMARY KEY,
+  code_hash  TEXT    NOT NULL,         -- sha256(code + email_fp + SIGNING_KEY)
+  expires_at INTEGER NOT NULL,
+  tries      INTEGER NOT NULL DEFAULT 0,
+  sent_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS otp_by_expiry ON otp_codes (expires_at);
+
+-- The trial ledger, re-keyed onto identity.
+--
+-- `trials` (dev_fp) is NOT dropped, and is not a legacy table either. It is the
+-- record of every week an INSTALL has spent, and claimIdentityTrial() reads it
+-- on the way in and re-stamps it on the way out. Two things depend on that: an
+-- install that predates identity does not get a second free week when its owner
+-- first signs in, and a second address verified on that same install inherits
+-- the week rather than minting one. Dropping it reopens both.
+CREATE TABLE IF NOT EXISTS trials_id (
+  email_fp   TEXT    PRIMARY KEY,
+  started_at INTEGER NOT NULL
+);
+
+-- Who owns a licence. This is what makes Pro come back after a reinstall
+-- without the buyer pasting a key out of an email.
+--
+-- lic_key is stored ENCRYPTED (AES-GCM under a key derived from SIGNING_KEY),
+-- because /entitlement re-validates against the payment provider and that call
+-- needs the key itself. A dump of this table is not a pile of working licences.
+CREATE TABLE IF NOT EXISTS owners (
+  key_fp   TEXT    NOT NULL,
+  email_fp TEXT    NOT NULL,
+  lic_enc  TEXT,                       -- base64url(iv . ciphertext), may be null
+  bound_at INTEGER NOT NULL,
+  PRIMARY KEY (key_fp, email_fp)
+);
+CREATE INDEX IF NOT EXISTS owners_by_email ON owners (email_fp);
+
+-- ─────────────────────────────────────────────────────────────────────────────
+--   Retention. sweepLedgers() in entitlement-worker.js runs these columns on a
+--   daily cron; without an index each pass is a full scan of a table that only
+--   ever grows. `revocations` and `owners` are deliberately absent from that
+--   sweep — a refund is permanent, and an owner row is what makes a purchase
+--   restorable after a reinstall.
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE INDEX IF NOT EXISTS seats_by_seen      ON seats (last_seen);
+CREATE INDEX IF NOT EXISTS trials_by_start    ON trials (started_at);
+CREATE INDEX IF NOT EXISTS trials_id_by_start ON trials_id (started_at);
+CREATE INDEX IF NOT EXISTS identities_by_seen ON identities (first_seen);
+CREATE INDEX IF NOT EXISTS orders_by_created  ON orders (created_at);
+CREATE INDEX IF NOT EXISTS orders_by_updated  ON orders (updated_at);
+CREATE INDEX IF NOT EXISTS identity_emails_by_seen ON identity_emails (updated_at);
+
+-- ─────────────────────────────────────────────────────────────────────────────
+--  Sessions. The device list a person actually recognises.
+--
+--  `seats` is a CAP: (licence, device) pairs, five of them, and it answers
+--  "may this device have Pro". It cannot answer "which devices am I signed in
+--  on" — it has no room for a name, it cannot see a trial device, and it is
+--  keyed on a licence rather than on the person holding it. Those are the
+--  three things a device manager is made of, so they live here.
+--
+--  PRIMARY KEY is dev_fp: one physical device, one session, whichever licence
+--  or identity it currently carries. The limit of that choice, stated so it is
+--  a decision and not an accident: one device holding TWO purchases has one
+--  row, and the row names the licence it last activated. The extension stores
+--  a single `license` record, so that is the shape it already has.
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS sessions (
+  dev_fp     TEXT    PRIMARY KEY,
+  email_fp   TEXT,                     -- null until an identity is verified
+  key_fp     TEXT,                     -- null on a trial device
+  created_at INTEGER NOT NULL,
+  claimed_at INTEGER NOT NULL,         -- reset on an intentful (re-)activation
+  last_seen  INTEGER NOT NULL,
+  label_enc  TEXT,                     -- AES-GCM, same sealing as identity_emails
+  plat       TEXT,                     -- coarse: "macOS · Chrome". Never a full UA.
+  geo        TEXT                      -- two-letter country, server-derived
+);
+CREATE INDEX IF NOT EXISTS sessions_by_email ON sessions (email_fp, last_seen);
+CREATE INDEX IF NOT EXISTS sessions_by_key   ON sessions (key_fp);
+CREATE INDEX IF NOT EXISTS sessions_by_seen  ON sessions (last_seen);
+
+-- Terminations.
+--
+-- Deleting the seat frees a slot; it does not keep the device out, because the
+-- device's next check-in silently claims it back. This row is what makes a
+-- termination a STATE. `scope` is a key_fp or an email_fp so a licence-scoped
+-- and an account-scoped kill share one table and one lookup.
+--
+-- Compared against sessions.claimed_at, never used as a boolean: a device that
+-- is deliberately re-activated afterwards carries a newer claimed_at and is
+-- live again, with no row to clean up and no resurrection race.
+CREATE TABLE IF NOT EXISTS session_kills (
+  scope  TEXT    NOT NULL,
+  dev_fp TEXT    NOT NULL,
+  at     INTEGER NOT NULL,
+  by     TEXT    NOT NULL,             -- 'self' | 'owner' | 'refund' | 'sweep'
+  PRIMARY KEY (scope, dev_fp)
+);
+CREATE INDEX IF NOT EXISTS session_kills_by_at ON session_kills (at);
+
+-- Per-account watermark and concurrency counter.
+--
+-- epoch   — "sign out of all devices", as one write instead of five. Anything
+--           claimed before it is signed out.
+-- version — bumped on every mutation. The device screen sends back the version
+--           it was showing, so a stale list cannot terminate a row that has
+--           stopped being what the person was looking at.
+CREATE TABLE IF NOT EXISTS account_state (
+  email_fp   TEXT    PRIMARY KEY,
+  epoch      INTEGER NOT NULL DEFAULT 0,
+  version    INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL
+);
+
+-- Idempotency and audit in one table.
+--
+-- A terminate that times out gets retried, and without this the retry kills a
+-- second device. The client mints op_id per user action; the row is written in
+-- the same transaction as the kill, and a repeat replays `result` verbatim.
+CREATE TABLE IF NOT EXISTS session_ops (
+  op_id    TEXT    PRIMARY KEY,
+  email_fp TEXT    NOT NULL,
+  kind     TEXT    NOT NULL,           -- 'terminate' | 'terminate-all'
+  targets  TEXT    NOT NULL,           -- JSON array of dev_fp
+  at       INTEGER NOT NULL,
+  result   TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS session_ops_by_at ON session_ops (at);

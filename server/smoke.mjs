@@ -21,8 +21,11 @@
  * WHAT EACH CHECK ISOLATES. Every one of them can only be produced by a worker
  * that got further than the previous one, so the first ✗ names the broken link:
  *
- *   1. our origin, /trial       200  origin accepted, trial ledger writable,
- *                                    ARCHIVE_SECRET set (it returns `ks`)
+ *   1. our origin, /trial       200  origin accepted and the device proof
+ *                                    verified. This script carries no identity
+ *                                    token, so the answer is {unverified:true}
+ *                                    and NOTHING is written — see check 1's
+ *                                    note under COST.
  *   2. stranger origin          403  ALLOWED_ORIGINS is actually in force
  *   3. /entitlement, junk key   404  DODO_API_KEY authenticated and Dodo gave a
  *                                    real verdict. A missing or wrong key is
@@ -35,9 +38,10 @@
  *                                    is told to update rather than let through
  *                                    with no device proof.
  *
- * COST. Check 1 writes one row to `trials` keyed on a throwaway device key, so
- * each deploy leaves one dead trial row behind. That is the price of testing
- * the real ledger instead of a mock, and it is a few bytes per deploy.
+ * COST. None in the ledgers. The trial is keyed on a verified identity now, and
+ * this script has none, so check 1 exercises origin, proof and version and then
+ * gets an answer that writes nothing. Only the nonce rows (check 4) are left
+ * behind, and those expire on their own.
  */
 
 const URL_BASE = (process.argv[2] || "").replace(/\/+$/, "");
@@ -66,7 +70,9 @@ const pair = await crypto.subtle.generateKey(
 const pubB64 = b64url(await crypto.subtle.exportKey("spki", pair.publicKey));
 
 /** The worker's SIGN_FIELDS table, from this side. */
-const SIGN_ROUTE = { "/trial": "trial", "/entitlement": "entitlement" };
+const SIGN_ROUTE = {
+  "/trial": "trial", "/entitlement": "entitlement", "/checkout": "checkout"
+};
 
 async function build(route, fields = [], extra = {}) {
   const nonce = b64url(crypto.getRandomValues(new Uint8Array(16)));
@@ -109,7 +115,7 @@ console.log(`\n→ smoke test against ${URL_BASE}`);
 console.log(`   as ${ORIGIN}\n`);
 
 check("/trial", await post("/trial", await build("/trial")), 200, {
-  200: "trial minted for a fresh device",
+  200: "origin, device proof and protocol all accepted",
   401: "device proof rejected — this script and lib/entitlement.js have drifted",
   403: "our own origin was REFUSED — ALLOWED_ORIGINS names a different extension",
   426: "the worker wants a protocol this script does not speak",
@@ -122,6 +128,46 @@ check("stranger origin", await post("/trial", await build("/trial"), STRANGER), 
   200: "another extension was NOT refused — ALLOWED_ORIGINS is not in force",
   403: "a stranger's extension is refused"
 });
+
+/* Can anyone actually buy this?
+
+   The one question a deploy used to have no way of answering. Checkout lived on
+   a static web page, so a worker could deploy perfectly, answer every check
+   here, and still be attached to a store nobody could pay at.
+
+   This opens a real session upstream, which is the only honest way to ask. No
+   money moves and the session expires unused; the cost is one abandoned
+   checkout object per deploy, which is the correct price for knowing.
+
+   503 is a warning rather than a failure: a worker deployed before its product
+   id exists is mid-setup, not broken. tools/preflight.mjs blocks the RELEASE on
+   the same condition, which is where it stops being mid-setup. */
+/* /checkout now refuses a sale to a device with no verified identity — see
+   entitlement-worker.js. This script proves a device key but carries no
+   identity token, so 401 is the CORRECT answer here, not a failure: it is the
+   same 401 a real anonymous purchase attempt would get. The body is what
+   tells the two 401s apart — "unverified" is the gate working; anything else
+   in that bucket is the device proof itself being refused. */
+const coRes = await post("/checkout", await build("/checkout"));
+const coUnverified = coRes.status === 401 && /unverified/.test(coRes.body);
+/* The expectation is 401, flat. Passing the observed status back in as the
+   expected one compared a value with itself, so this line printed green for
+   every deploy — including a dead one and a wide-open one. */
+check("/checkout", coRes, 401, {
+  200: "a checkout session opened — this deploy can take money, WITHOUT the identity gate",
+  401: "no sale to a device with no verified identity — the gate is working, as designed",
+  403: "our own origin was REFUSED — ALLOWED_ORIGINS names a different extension",
+  429: "rate-limited; this run proves nothing, wait and retry",
+  503: "nothing to sell — set DODO_PRODUCT_ID in wrangler.toml, or DODO_API_KEY is missing",
+  0: "nothing answered — the deploy did not take"
+}, [503]);
+
+/* A 401 alone is not the gate: the body is what tells "no verified identity"
+   apart from "your device proof was refused". The second is a real failure. */
+if (coRes.status === 401 && !coUnverified) {
+  failed = 1;
+  console.log("   ✗ " + "/checkout body".padEnd(24) + " 401  device proof rejected — this script and lib/entitlement.js have drifted");
+}
 
 const junk = "SMOKE-" + b64url(crypto.getRandomValues(new Uint8Array(9)));
 check("/entitlement junk key",

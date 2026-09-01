@@ -5,7 +5,16 @@
   "use strict";
 
   const $ = (id) => document.getElementById(id);
-  const send = (msg) => new Promise((res) => chrome.runtime.sendMessage(msg, res));
+  /* lastError is READ, always. A popup or Recall tab left open across an
+     extension reload is orphaned: every later message fails, and a lastError
+     nobody reads is logged as "Could not establish connection. Receiving end
+     does not exist." on the extensions page — an error report for something no
+     user can act on and no developer can fix. Reading it marks it handled; the
+     caller gets undefined and paints what it already had. */
+  const send = (msg) => new Promise((res) => {
+    try { chrome.runtime.sendMessage(msg, (reply) => { void chrome.runtime.lastError; res(reply); }); }
+    catch { res(null); }                          // context torn down mid-call
+  });
   const crypt = self.LCTBackupCrypto;
 
   // clampChat() (bg.js) stores whatever host a record claims — a length clamp,
@@ -15,10 +24,6 @@
   // harm is here, on click, where it becomes a real navigation — so the
   // allowlist lives at the point of use. Exact match only: a suffix/contains
   // check admits "evil-claude.ai" or "claude.ai@evil.com".
-  const KNOWN_CHAT_HOSTS = new Set([
-    "chatgpt.com", "chat.openai.com", "claude.ai",
-    "chat.deepseek.com", "grok.com", "www.perplexity.ai", "gemini.google.com"
-  ]);
 
   const setStatus = (id, text, kind = "") => {
     const node = $(id);
@@ -66,9 +71,12 @@
     // Opportunistic renewal — fire and forget, never gates paint.
     send({ type: "entitlement-refresh" });
 
+    // One chip, one definition — lib/product.js. Two surfaces showing a
+    // different mark for one licence is how a user starts wondering which of
+    // them is lying.
     const badge = $("plan-badge");
-    badge.textContent = pro ? "Pro" : trialOn ? "Trial" : "Free";
-    badge.className = "badge " + (pro ? "pro" : trialOn ? "trial" : "");
+    self.LCTProduct.paintBadge(badge, pro, trialOn);
+    badge.title = pro ? "Pro — purchased. A one-time licence, yours forever." : "";
 
     // The lock lives inside the archive core rather than replacing it: the
     // stats below stay visible so a locked archive still looks alive, and the
@@ -97,6 +105,9 @@
       node.disabled = !allowed;
       node.title = allowed ? "" : LOCK_COPY;
     }
+    // Re-assert the passphrase gate: the loop above just re-enabled Create on
+    // entitlement alone, which is only half of what the button waits for.
+    paintStrength();
     if (!canBackup) setStatus("backup-status", LOCK_COPY, "");
     if (!canRestore) setStatus("restore-status", LOCK_COPY, "");
     // Grace period: signed, valid, but overdue a renewal. Works, warns.
@@ -112,13 +123,24 @@
    */
   async function stampCreds() {
     const res = await send({ type: "archive-stamp" });
-    if (!res || res.err) return { stampKey: null, stampSub: "" };
-    let bytes;
-    try { bytes = crypt.base64ToBytes(res.secret); }
-    catch { return { stampKey: null, stampSub: "" }; }
-    const stampKey = await crypto.subtle.importKey(
-      "raw", bytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
-    return { stampKey, stampSub: res.sub || "" };
+    if (!res || res.err) return { stampKey: null, stampSub: "", stampKeys: [] };
+    const toKey = async (secret) => {
+      try {
+        return await crypto.subtle.importKey("raw", crypt.base64ToBytes(secret),
+          { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+      } catch { return null; }
+    };
+    const stampKey = await toKey(res.secret);
+    if (!stampKey) return { stampKey: null, stampSub: "", stampKeys: [] };
+    /* Open-only keys. The trial archive stamp was re-keyed once; a backup
+       sealed before that verifies under the old secret alone. Sealing still
+       uses stampKey and nothing else. */
+    const stampKeys = [];
+    for (const alt of Array.isArray(res.alts) ? res.alts : []) {
+      const key = await toKey(alt);
+      if (key) stampKeys.push(key);
+    }
+    return { stampKey, stampSub: res.sub || "", stampKeys };
   }
 
   /** One place the "you're locked" answer from the worker becomes UI copy. */
@@ -131,15 +153,39 @@
   self.LCTProduct.applyTo(document);
 
   $("trial-start").addEventListener("click", async () => {
+    /* The precondition the popup has and this page did not: an unverified week
+       runs its seven days and unlocks nothing, so starting one from here was a
+       button that looked like it worked and granted nothing. */
+    const id = await send({ type: "identity-state" });
+    if (!id || !id.verified) {
+      setStatus("trial-note",
+        "Open the Tvara popup and sign in first — that is what keeps your trial when you reinstall.",
+        "warn");
+      return;
+    }
+    setStatus("trial-note", "");
     await send({ type: "trial-start" });
     await loadPlan();
     $("q").focus();
   });
 
-  // Someone who already knows they want it should not have to go back to the
-  // popup to find out where to pay.
-  $("buy-pro").addEventListener("click", () => {
-    location.href = self.LCTProduct.BUY;
+  /* Someone who already knows they want it should not have to go back to the
+     popup. Same route the popup takes: the issuer opens the session, the
+     background opens the tab and owns the wait — so this page does not navigate
+     away from a search someone was in the middle of. */
+  $("buy-pro").addEventListener("click", async () => {
+    const btn = $("buy-pro");
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Opening checkout…";
+    const res = await send({ type: "checkout-start" });
+    btn.disabled = false;
+    /* The issuer will not sell to a device with no verified address behind it,
+       and this page has no place to verify one. Name the popup rather than
+       failing silently back to the button label. */
+    btn.textContent = res && res.ok ? "Checkout opened in a new tab"
+      : res && res.reason === "unverified" ? "Verify your email in the Tvara popup first"
+        : label;
   });
 
   /* ---------- search ---------- */
@@ -176,16 +222,17 @@
       (res.createdAt ? ` · started ${fmtWhen(res.createdAt)}` : "");
     div.append(top, snip, info);
     div.addEventListener("click", async () => {
-      // A record's host is only ever trusted for navigation if it exactly
-      // matches a real provider — see KNOWN_CHAT_HOSTS above. Refuse to
-      // navigate rather than silently drop the record; the click just does
-      // nothing, and the archive/search/export paths are untouched.
-      if (!KNOWN_CHAT_HOSTS.has(res.host)) return;
+      /* Host AND path, resolved together — chatUrl() refuses anything that
+         does not land back on the provider's own origin. Refuse to navigate
+         rather than drop the record: the click does nothing, and the
+         archive/search/export paths are untouched. */
+      const url = self.LCTProduct.chatUrl(res.host, res.path);
+      if (!url) return;
       // stash the query so the destination chat opens its in-chat search on it
       await chrome.storage.local.set({
         "recall-jump": { host: res.host, path: res.path, q: $("q").value.trim(), at: Date.now() }
       });
-      window.open("https://" + res.host + res.path, "_blank", "noopener");
+      window.open(url, "_blank", "noopener");
     });
     return div;
   }
@@ -475,19 +522,87 @@
 
   let restoreFile = null;
 
-  /** Live strength meter. The passphrase is the only thing protecting the file. */
+  const STRENGTH_WORDS = ["", "Weak", "Fair", "Strong", "Very strong"];
+
+  /** Live strength meter. The passphrase is the only thing protecting the file.
+   *  It also gates the button: being told the passphrase is too weak AFTER
+   *  pressing Create, with the archive already read, is how someone ends up
+   *  typing something shorter. */
+  /* Two independent choices, and the second only exists inside the first:
+     whether the file gets a password at all, and — if it does — how long this
+     browser holds on to it. Neither is guessed for the user. */
+  const protectionMode = () => ($("protect-none").checked ? "none" : "password");
+  const rememberScope = () => ($("remember-session").checked ? "session" : "device");
+
+  function paintProtection() {
+    const plain = protectionMode() === "none";
+    $("backup-secret").hidden = plain;
+    $("protect-warning").hidden = !plain;
+    $("create-backup").textContent = plain ? "Download unprotected backup" : "Create reinstall backup";
+    $("backup-remember").hidden = plain || !$("backup-auto").checked;
+    paintStrength();
+  }
+
   function paintStrength() {
     const value = $("backup-passphrase").value;
+    const confirmation = $("backup-passphrase-confirm").value;
     const meter = $("backup-strength");
-    if (!value) { meter.hidden = true; return; }
-    const rated = crypt.ratePassphrase(value);
-    meter.hidden = false;
-    meter.dataset.score = String(rated.score);
-    meter.querySelector(".strength-text").textContent = rated.ok
-      ? ["", "Weak", "Fair", "Strong", "Very strong"][rated.score] || "Strong"
-      : rated.reason;
+    // No password means nothing to rate and nothing to gate on.
+    if (protectionMode() === "none") {
+      meter.hidden = true;
+      $("create-backup").disabled = !canBackup;
+      return;
+    }
+    const rated = value ? crypt.ratePassphrase(value) : { ok: false, score: 0, reason: "" };
+    meter.hidden = !value;
+    if (value) {
+      meter.dataset.score = String(rated.score);
+      meter.querySelector(".strength-text").textContent = !rated.ok
+        ? rated.reason
+        : confirmation && confirmation !== value
+          ? (STRENGTH_WORDS[rated.score] || "Strong") + " \u2014 the two fields do not match yet"
+          : STRENGTH_WORDS[rated.score] || "Strong";
+    }
+    $("create-backup").disabled = !canBackup || !rated.ok || value !== confirmation;
   }
   $("backup-passphrase").addEventListener("input", paintStrength);
+  $("backup-passphrase-confirm").addEventListener("input", paintStrength);
+  for (const id of ["protect-password", "protect-none"]) $(id).addEventListener("change", paintProtection);
+  $("backup-auto").addEventListener("change", paintProtection);
+
+  /* A password the user did not invent is the strongest one they will ever
+     use here: 125 bits, uniform, and no reuse of anything they type elsewhere.
+     Revealed on purpose — a generated secret nobody can read is a secret
+     nobody keeps. */
+  $("backup-generate").addEventListener("click", () => {
+    const value = crypt.generatePassphrase();
+    $("backup-passphrase").value = value;
+    $("backup-passphrase-confirm").value = value;
+    $("backup-reveal").checked = true;
+    $("backup-passphrase").type = "text";
+    $("backup-passphrase-confirm").type = "text";
+    const note = $("backup-generated");
+    note.hidden = false;
+    note.textContent = "Write this down now. It is not stored anywhere you can read it back, and without it the file is gone for good.";
+    paintStrength();
+  });
+
+  /* A passphrase nobody can read back is a passphrase people keep short. This
+     only flips the input's own type — nothing is stored, sent or logged either
+     way — and it is what makes a 30-character phrase practical to type twice. */
+  function wireReveal(boxId, ...fieldIds) {
+    const box = $(boxId);
+    if (!box) return;
+    box.addEventListener("change", () => {
+      for (const id of fieldIds) {
+        const field = $(id);
+        if (field) field.type = box.checked ? "text" : "password";
+      }
+    });
+  }
+  wireReveal("backup-reveal", "backup-passphrase", "backup-passphrase-confirm");
+  wireReveal("restore-reveal", "restore-passphrase");
+  paintProtection();
 
   async function collectSnapshot() {
     const state = await send({ type: "recall-sync-status" });
@@ -516,35 +631,70 @@
   }
 
   async function createReinstallBackup() {
-    const passphrase = $("backup-passphrase").value;
-    const confirmation = $("backup-passphrase-confirm").value;
-    const rated = crypt.ratePassphrase(passphrase);
-    if (!rated.ok) throw new Error(rated.reason);
-    if (passphrase !== confirmation) throw new Error("The passphrases do not match");
+    const plain = protectionMode() === "none";
+    let passphrase = "";
+    if (!plain) {
+      passphrase = $("backup-passphrase").value;
+      const confirmation = $("backup-passphrase-confirm").value;
+      const rated = crypt.ratePassphrase(passphrase);
+      if (!rated.ok) throw new Error(rated.reason);
+      if (passphrase !== confirmation) throw new Error("The passphrases do not match");
+    }
 
     const payload = await collectSnapshot();
     const { stampKey, stampSub } = await stampCreds();
-    const sealed = await crypt.seal(payload, { passphrase, stampKey, stampSub });
     const stamp = new Date().toISOString().slice(0, 10);
+
+    /* The user's own call, taken at their word and named in the filename so the
+       file says what it is wherever it ends up. Still signed, so a restore
+       refuses an edited copy — what is given up here is secrecy, not
+       provenance. */
+    if (plain) {
+      const sealed = await crypt.sealPlain(payload, { stampKey, stampSub });
+      const filename = `tvara-${stamp}-unprotected.lctbackup`;
+      download(new Blob([sealed.json], { type: "application/json" }), filename);
+      await send({ type: "recall-backup-mark", meta: { chats: payload.chats.length, filename } });
+      setStatus("backup-status",
+        `${payload.chats.length.toLocaleString()} chats written to ${filename}. It is not encrypted: anyone who opens it can read every message.`, "err");
+      return;
+    }
+
+    /* Rounds are measured on the device doing the work rather than fixed: the
+       floor is what the slowest phone can still manage, and a faster machine
+       spends its speed on rounds an attacker must also pay for. */
+    const iterations = await crypt.calibrateIterations();
+    const sealed = await crypt.seal(payload, { passphrase, stampKey, stampSub, iterations });
     const filename = `tvara-${stamp}.lctbackup`;
     download(new Blob([sealed.json], { type: "application/octet-stream" }), filename);
     await send({ type: "recall-backup-mark", meta: { chats: payload.chats.length, filename } });
 
-    // Setting automatic backup up from the same passphrase costs one extra key
-    // derivation and removes the only reason a reinstall ever loses anything:
-    // needing to remember to press this button before uninstalling.
+    /* Remembering costs one extra key derivation and removes the only reason a
+       reinstall ever loses anything: needing to remember to press this button
+       before uninstalling. What is remembered is a key wrapped under the
+       passphrase, never the passphrase — and for how long is the user's call.
+       Declining it clears any older saved key, so the answer here is always the
+       current one. */
     let automatic = "";
     if ($("backup-auto").checked) {
+      const scope = rememberScope();
       try {
         const keyring = await crypt.mintKeyring(passphrase);
-        const result = await send({ type: "recall-autobackup-enable", config: { keyring, everyHours: 24 } });
-        automatic = result && result.ok ? " Automatic backups are on." : " Automatic backup could not be enabled.";
-      } catch { automatic = " Automatic backup could not be enabled."; }
+        const result = await send({ type: "recall-autobackup-enable", config: { keyring, everyHours: 24, scope } });
+        automatic = !result || !result.ok
+          ? " The password could not be remembered."
+          : scope === "session"
+            ? " It is held until you close the browser, and automatic backups run until then."
+            : " It is remembered on this device, and automatic backups keep running.";
+      } catch { automatic = " The password could not be remembered."; }
+    } else {
+      try { await send({ type: "recall-backup-forget-key" }); } catch { /* nothing was saved */ }
     }
 
     $("backup-passphrase").value = "";
     $("backup-passphrase-confirm").value = "";
     $("backup-strength").hidden = true;
+    $("backup-generated").hidden = true;
+    paintStrength();
     setStatus("backup-status", `${payload.chats.length.toLocaleString()} chats encrypted in ${filename}.${automatic}`, "ok");
     await paintAutoBackup();
   }
@@ -588,6 +738,16 @@
     const state = await send({ type: "recall-autobackup-state" });
     if (!state || state.err) return;
     $("autobackup-actions").hidden = !state.enabled;
+    $("backup-forget").hidden = !(state.enabled || state.awaitingKey);
+    /* The temporary case, said out loud. The schedule is still configured and
+       the browser has taken the key back, so this is the one screen that can
+       ask for it again — reporting a plain "off" here is how a user finds out
+       months later that nothing was being written. */
+    if (state.awaitingKey) {
+      setStatus("autobackup-status",
+        "Your backup password was only remembered until you closed the browser, so automatic backups are paused. Enter it above to start them again.", "err");
+      return;
+    }
     if (!state.enabled) {
       setStatus("autobackup-status", "Automatic backup is off. The archive only leaves this browser when you press the button.", "");
       return;
@@ -596,8 +756,11 @@
     if (state.lastError) {
       setStatus("autobackup-status", `Automatic backup is on, but the last attempt failed: ${state.lastError}`, "err");
     } else if (state.lastAt) {
+      const held = state.scope === "session"
+        ? "The password is held until you close the browser."
+        : "The password is remembered on this device.";
       setStatus("autobackup-status",
-        `Automatic backup is on. ${state.lastChats.toLocaleString()} chats written ${timeAgo(state.lastAt)} to ${where}. Same passphrase, same encryption.`, "ok");
+        `Automatic backup is on. ${state.lastChats.toLocaleString()} chats written ${timeAgo(state.lastAt)} to ${where}. ${held}`, "ok");
     } else {
       setStatus("autobackup-status", `Automatic backup is on. The first file will be written to ${where}.`, "");
     }
@@ -618,13 +781,32 @@
     await paintAutoBackup();
   });
 
+  $("backup-forget").addEventListener("click", async () => {
+    await send({ type: "recall-backup-forget-key" });
+    setStatus("backup-status", "The saved password is gone from this browser. Files already written still open with it; automatic backups are off until you enter it again.", "");
+    await paintAutoBackup();
+  });
+
   paintAutoBackup();
 
-  $("restore-file").addEventListener("change", (event) => {
+  /* A hint, not a decision: open() is what actually enforces which kind of file
+     this is. Reading the head of the file is enough to stop asking for a
+     passphrase that does not exist. */
+  async function looksUnprotected(file) {
+    try { return /"protection"\s*:\s*"none"/.test(await file.slice(0, 4096).text()); }
+    catch { return false; }
+  }
+
+  $("restore-file").addEventListener("change", async (event) => {
     restoreFile = event.target.files && event.target.files[0];
     $("restore-file-name").textContent = restoreFile ? restoreFile.name : "No backup selected";
     $("restore-run").disabled = !restoreFile || !canRestore;
     setStatus("restore-status", canRestore ? "" : LOCK_COPY);
+    const plain = !!restoreFile && await looksUnprotected(restoreFile);
+    $("restore-unprotected").hidden = !plain;
+    $("restore-passphrase").hidden = plain;
+    $("restore-passphrase-label").hidden = plain;
+    $("restore-reveal").closest("label").hidden = plain;
   });
 
   function waitLabel(ms) {
@@ -644,16 +826,21 @@
     }
     if (restoreFile.size > crypt.MAX_FILE_BYTES) throw new Error("This file is too large to be a backup");
     const passphrase = $("restore-passphrase").value;
-    if (!passphrase) throw new Error("Enter the backup passphrase");
 
     const text = await restoreFile.text();
     // Envelope shape is checked before any key work, so a malformed file fails
-    // fast and never counts against the attempt budget.
-    crypt.inspect(text);
+    // fast and never counts against the attempt budget. It also settles whether
+    // a passphrase is wanted at all, rather than the UI guessing.
+    const info = crypt.inspect(text);
+    if (info.protection !== crypt.PROTECTION_NONE && !passphrase) {
+      throw new Error("Enter the backup passphrase");
+    }
 
     let snapshot;
     try {
-      snapshot = await crypt.open(text, passphrase, { stampKey: (await stampCreds()).stampKey });
+      const creds = await stampCreds();
+      snapshot = await crypt.open(text, passphrase,
+        { stampKey: creds.stampKey, stampKeys: creds.stampKeys });
     } catch (error) {
       const after = await send({ type: "recall-restore-guard-fail" });
       const suffix = after && !after.allowed ? ` Further attempts are paused for ${waitLabel(after.waitMs)}.` : "";
@@ -687,7 +874,7 @@
       `${imported.toLocaleString()} chat${imported === 1 ? "" : "s"} added to the archive${skipped ? `, ${skipped} already here` : ""}. Checking the gap…`, "ok");
     await loadStats();
     await initSyncUI();
-    chrome.runtime.sendMessage({ type: "recall-bg-sync" });
+    send({ type: "recall-bg-sync" });
   }
 
   $("restore-run").addEventListener("click", async () => {
