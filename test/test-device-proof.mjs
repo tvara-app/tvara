@@ -39,8 +39,11 @@ t("client exposes the device-proof surface",
    edit made to the file — the helpers under test are the shipped ones. */
 const workerSrc = readFileSync(join(ROOT, "server", "entitlement-worker.js"), "utf8")
   .replace("export default {", "globalThis.__handler = {")
-  // Named exports are no more runnable in a vm script than `export default`.
-  .replace(/^export \{[^}]*\};?[ \t]*$/gm, "")
+  /* Named exports are no more runnable in a vm script than `export default`.
+     The `from "..."` form counts: the Durable Object is re-exported through the
+     entry point that way, and a pattern that stopped at the closing brace left
+     the line intact and broke every test in this file with a SyntaxError. */
+  .replace(/^export \{[^}]*\}(?:\s*from\s*["'][^"']*["'])?;?[ \t]*$/gm, "")
   + "\n;globalThis.__probe = { verifyDeviceProof, signingInput, sha256Hex, PROTOCOL };\n";
 const workerBox = { crypto: globalThis.crypto, TextEncoder, TextDecoder, btoa, atob, console, URL, AbortSignal, fetch: async () => { throw new Error("no upstream"); } };
 workerBox.globalThis = workerBox;
