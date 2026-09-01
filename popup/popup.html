@@ -21,7 +21,15 @@
           <span class="version" id="version"></span>
         </span>
       </div>
-      <span id="plan-badge" class="badge free">Free</span>
+      <div class="account" id="account">
+        <!-- Signed out this is absent, not a grey placeholder: an empty ring
+             where a face goes reads as a photo that failed to load. -->
+        <span class="account-ring" id="account-ring" hidden>
+          <img id="account-photo" alt="" referrerpolicy="no-referrer" hidden>
+          <span class="account-initial" id="account-initial" aria-hidden="true"></span>
+        </span>
+        <span id="plan-badge" class="badge free">Free</span>
+      </div>
     </header>
 
     <main>
@@ -132,6 +140,16 @@
           </span>
         </button>
 
+        <button class="row row-button alert" id="restore-alert" type="button" hidden>
+          <span class="row-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V9"/><path d="m7 14 5-5 5 5"/><path d="M4 4h16"/></svg>
+          </span>
+          <span class="row-text">
+            <span class="row-title" id="restore-alert-title">Restore your previous archive</span>
+            <span class="row-sub" id="restore-alert-sub">Only new chats are being captured until you do</span>
+          </span>
+        </button>
+
         <button class="row row-button" id="fill-archive" type="button" hidden>
           <span class="row-icon" aria-hidden="true">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 21h16"/></svg>
@@ -158,20 +176,21 @@
           <span class="pro-title">Unlock everything</span>
           <span class="price-pill" data-price="{price} · once, forever"></span>
         </div>
-        <p class="pro-note">Total Recall, Context Bridge and every tool on Claude &amp; Gemini. Verified once by email, then it works offline between checks.</p>
+        <p class="pro-note">Total Recall, Context Bridge and every tool on Claude &amp; Gemini. One check by email, then it works offline.</p>
         <div class="identity" id="identity" hidden>
-          <p class="pro-note" id="identity-why">Verify your email once. Your trial and your purchase follow the address &mdash; reinstall, or move to another browser, and they come back.</p>
+          <p class="pro-note" id="identity-why">Sign in once &mdash; your trial and your purchase follow the account, across reinstalls and browsers.</p>
           <button id="identity-google" class="identity-google" type="button" hidden>Continue with Google</button>
           <p class="pro-note" id="identity-nogoogle" hidden>Signing in needs Chrome or Edge. Firefox gives every install a different extension address, which Google will not accept as a redirect.</p>
           <div id="identity-done" hidden>
             <button id="identity-restore" type="button">Restore my purchase</button>
+            <button id="identity-devices" class="identity-link" type="button">Manage devices</button>
             <button id="identity-signout" class="identity-link" type="button">Use a different account</button>
           </div>
           <p id="identity-status" role="status"></p>
         </div>
         <button id="trial-start" hidden>Start 7-day free trial</button>
         <p id="trial-note" class="pro-note" hidden></p>
-        <button id="buy-pro" class="buy" type="button" data-price="Get Pro · {price} once, forever"></button>
+        <button id="buy-pro" class="buy" type="button" data-price="Get Pro · {price}"></button>
         <p class="pro-note"><button type="button" class="identity-link" id="license-toggle" aria-expanded="false" aria-controls="license-row">Bought before, or lost access to that account?</button></p>
         <div class="license-row" id="license-row" hidden>
           <input type="text" id="license-input" placeholder="Licence key" autocomplete="off" spellcheck="false" />
@@ -187,6 +206,14 @@
           <span class="state-title">Everything is unlocked</span>
           <span class="state-sub" id="trial-status" role="status"></span>
         </span>
+        <!-- The upsell card is hidden while a trial runs, and it is the only
+             place that held Buy, sign-in and the device screen. A trial is
+             exactly when someone decides to pay, so those live here too. -->
+        <span id="trial-actions">
+          <button id="trial-devices" class="ghost" type="button" hidden>Devices</button>
+          <button id="trial-buy" class="buy" type="button" data-price="Get Pro · {price}"></button>
+        </span>
+        <p id="trial-buy-status" class="pro-note" role="status" hidden></p>
       </section>
 
       <section class="state-card" id="pro-active" hidden>
@@ -230,7 +257,6 @@
   <div id="popup-tour" hidden role="dialog" aria-modal="true" aria-labelledby="popup-tour-title">
     <div id="popup-tour-ring" aria-hidden="true"></div>
     <section class="popup-tour-card">
-      <button id="popup-tour-close" type="button" aria-label="Close tour">×</button>
       <p id="popup-tour-count"></p>
       <h2 id="popup-tour-title"></h2>
       <p id="popup-tour-body"></p>

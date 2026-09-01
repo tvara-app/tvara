@@ -96,6 +96,24 @@ wrangler d1 execute tvara --remote --file schema.sql >/dev/null 2>&1 \
   || { echo "✋ schema apply failed — seats, nonces and the kill list would all degrade open"; exit 1; }
 echo "  ✓ schema applied"
 
+# schema.sql is CREATE TABLE IF NOT EXISTS, which cannot add a COLUMN to a table
+# that already exists — so a field introduced after a table shipped is missing
+# on every deployment older than it, and the statement that names it fails with
+# "no such column" at runtime rather than here. ALTER ... ADD COLUMN is the only
+# portable repair; it errors when the column is already there, which is the
+# ordinary case and the only error tolerated.
+echo "→ adding any columns an older schema lacks…"
+for column in "label_enc TEXT" "plat TEXT" "geo TEXT"; do
+  if ! out=$(wrangler d1 execute tvara --remote \
+      --command "ALTER TABLE sessions ADD COLUMN ${column};" 2>&1); then
+    case "$out" in
+      *"duplicate column"*|*"already exists"*) ;;
+      *) echo "✋ could not add sessions.${column%% *}"; echo "$out"; exit 1 ;;
+    esac
+  fi
+done
+echo "  ✓ session columns present"
+
 # ---------- 2. origin pin ----------
 python3 - "$ORIGIN" "$MODE" <<'PY'
 import re, sys

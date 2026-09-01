@@ -1414,8 +1414,8 @@ const idtRaw = (emailFp, iat = Date.now()) => {
 
 const ACCOUNT = "a".repeat(32);
 /** Three devices on one licence, all owned by ACCOUNT. */
-async function seededAccount() {
-  const e = env();
+async function seededAccount(over = {}) {
+  const e = env(over);
   stubDodo({ status: 200, body: { valid: true } });
   const keyFp = await keyFpOf(KEY);
   const devs = [DEVICE, await makeDevice(), await makeDevice()];
@@ -1445,6 +1445,141 @@ async function seededAccount() {
   const anon = await post(await signedBody({}, { route: "sessions" }), { e, path: "/sessions" });
   t("screen: without an identity there is no list", anon.status === 401);
   void devs;
+}
+
+/* ---------- a name set here is read there ----------
+ *
+ * Naming a device is worth nothing if it stays on the device that typed it.
+ * This is the whole round trip against the real worker module and the real
+ * schema.sql: one device labels ITSELF on /sessions — the only route a trial or
+ * free device ever reaches — and a second device on the same account reads the
+ * name back, decrypted, from the issuer. */
+{
+  const { e, devs } = await seededAccount();
+  const [first, second] = devs;
+  const list = async (dev, over = {}) => post(
+    await signedBody({ idt: idtRaw(ACCOUNT), ...over }, { route: "sessions", dev }),
+    { e, path: "/sessions" });
+
+  await list(first, { plat: "Windows 11 · Chrome", label: "Anirudh's ThinkPad" });
+  const seen = await (await list(second)).json();
+  const byFp = (list, dev) => list.find((d) => d.device === dev.fp) || {};
+  const named = byFp(seen.devices, first);
+  t("screen: a name set on one device is read by another on the account",
+    !!named && named.label === "Anirudh's ThinkPad",
+    JSON.stringify(seen.devices).slice(0, 200));
+  t("screen: …alongside the machine that carried it",
+    !!named && named.plat === "Windows 11 · Chrome", named && named.plat);
+
+  /* A device may only ever name ITSELF: the row is keyed on the dev_fp the
+     signature proved, so the second device sending a label writes its own. */
+  await list(second, { label: "Not the ThinkPad" });
+  const after = await (await list(second)).json();
+  t("screen: a device cannot rename another one",
+    byFp(after.devices, first).label === "Anirudh's ThinkPad",
+    JSON.stringify(after.devices).slice(0, 200));
+  t("screen: …it names its own row instead",
+    byFp(after.devices, second).label === "Not the ThinkPad",
+    JSON.stringify(after.devices).slice(0, 200));
+
+  // Every later check-in sends no label. COALESCE must keep the name, and a
+  // seal that fails must not slip "" through it either.
+  await list(first, { plat: "Windows 11 · Chrome" });
+  const kept = await (await list(second)).json();
+  t("screen: a check-in without a label leaves the name standing",
+    byFp(kept.devices, first).label === "Anirudh's ThinkPad",
+    JSON.stringify(kept.devices).slice(0, 200));
+
+  // The one thing the ledger must never hold in the clear.
+  const rows = e.DB.sqlite.prepare("SELECT label_enc FROM sessions").all();
+  t("screen: no name is stored in the clear",
+    rows.length > 0 && rows.every((r) => !String(r.label_enc || "").includes("ThinkPad")),
+    JSON.stringify(rows).slice(0, 160));
+}
+
+/* ---------- SESSION_SCOPE and FREE_DEVICE_LIMIT ----------
+   The device screen is open to free accounts on purpose while the system is
+   being exercised, and both halves of that decision are one var each. These
+   prove the switches actually switch, so turning monitoring into a paid
+   feature later is a deploy rather than a change. */
+{
+  const FREE = "f".repeat(32);
+  /** A verified account that has never bought anything. */
+  const freeAccount = async (over = {}) => {
+    const e = env(over);
+    e.DB.sqlite.prepare(
+      "INSERT INTO sessions (dev_fp, email_fp, key_fp, created_at, claimed_at, last_seen) " +
+      "VALUES (?, ?, NULL, ?, ?, ?)"
+    ).run(DEVICE.fp, FREE, Date.now(), Date.now(), Date.now());
+    return e;
+  };
+  {
+    const e = await freeAccount();
+    const res = await post(await signedBody({ idt: idtRaw(FREE) }, { route: "sessions" }),
+      { e, path: "/sessions" });
+    const body = await res.json();
+    t("scope all: a free account gets the device screen",
+      res.status === 200 && body.devices.length >= 1, `${res.status} ${JSON.stringify(body).slice(0, 120)}`);
+    t("scope all: a free device is not reported as Pro",
+      body.devices.every((d) => d.pro === false), JSON.stringify(body.devices).slice(0, 160));
+  }
+
+  {
+    const e = await freeAccount({ SESSION_SCOPE: "paid" });
+    const res = await post(await signedBody({ idt: idtRaw(FREE) }, { route: "sessions" }),
+      { e, path: "/sessions" });
+    t("scope paid: a free account is refused, and told so rather than shown an empty list",
+      res.status === 403, String(res.status));
+  }
+
+  {
+    /* The same flip must not take the screen away from somebody who paid. */
+    const { e } = await seededAccount({ SESSION_SCOPE: "paid" });
+    const res = await post(await signedBody({ idt: idtRaw(ACCOUNT) }, { route: "sessions" }),
+      { e, path: "/sessions" });
+    t("scope paid: a licence-owning account still has its list", res.status === 200,
+      String(res.status));
+  }
+
+  {
+    /* The cap, imposing the paid rule on a free account. Two devices, a limit
+       of one, and the caller is the one that must survive. */
+    const e = await freeAccount({ FREE_DEVICE_LIMIT: "1" });
+    const old = await makeDevice();
+    e.DB.sqlite.prepare(
+      "INSERT INTO sessions (dev_fp, email_fp, key_fp, created_at, claimed_at, last_seen) " +
+      "VALUES (?, ?, NULL, ?, ?, ?)"
+    ).run(old.fp, FREE, 1, 1, 1);
+    const res = await post(await signedBody({ idt: idtRaw(FREE) }, { route: "sessions" }),
+      { e, path: "/sessions" });
+    const body = await res.json();
+    t("free cap: the account is held to the limit",
+      res.status === 200 && body.devices.length === 1, JSON.stringify(body.devices).slice(0, 160));
+    t("free cap: the device that just checked in is the one kept",
+      body.devices[0] && body.devices[0].device === DEVICE.fp, JSON.stringify(body.devices[0] || {}));
+    t("free cap: the evicted device is tombstoned, not just deleted",
+      !!e.DB.sqlite.prepare("SELECT 1 FROM session_kills WHERE scope = ? AND dev_fp = ?")
+        .get(FREE, old.fp));
+    t("free cap: …by the sweep, so it reads differently from a person's Sign out",
+      e.DB.sqlite.prepare("SELECT by FROM session_kills WHERE scope = ? AND dev_fp = ?")
+        .get(FREE, old.fp).by === "sweep");
+  }
+
+  {
+    /* A paid device on a free-capped account must be left alone: the seat
+       ledger governs it, and evicting it here would sign out somebody who
+       paid because a free device of theirs went quiet. */
+    const e = await freeAccount({ FREE_DEVICE_LIMIT: "1" });
+    const paid = await makeDevice();
+    e.DB.sqlite.prepare(
+      "INSERT INTO sessions (dev_fp, email_fp, key_fp, created_at, claimed_at, last_seen) " +
+      "VALUES (?, ?, 'deadbeef', ?, ?, ?)"
+    ).run(paid.fp, FREE, 1, 1, 1);
+    await post(await signedBody({ idt: idtRaw(FREE) }, { route: "sessions" }),
+      { e, path: "/sessions" });
+    t("free cap: a device holding a licence is never evicted by it",
+      !!e.DB.sqlite.prepare("SELECT 1 FROM sessions WHERE dev_fp = ?").get(paid.fp));
+  }
 }
 
 /* Multi-select is the feature. One call, one transaction, or two devices are
@@ -1596,6 +1731,85 @@ async function seededAccount() {
     { route: "sessions-terminate" }), { e, path: "/sessions/terminate" });
   t("screen: an oversized target list is refused", res.status === 400);
   void devs;
+}
+
+/* ---------- signing in IS joining the account ----------
+ *
+ * The bug this pins: a trial or free device holds no seat and never reaches
+ * /entitlement, so nothing wrote its session row. Somebody signed in, opened
+ * the device screen and read "0 devices" — on the very machine they had just
+ * signed in on. The row is now written by /identity/verify and /identity/google
+ * themselves, before either answers.
+ *
+ * Proved from the OTHER device: the device that signed in never calls /sessions
+ * here, so the row it is found in can only have been written by the sign-in. */
+{
+  const mailed = [];
+  const savedFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    if (String(url).includes("api.resend.com")) {
+      mailed.push(JSON.parse(opts.body));
+      return new Response("{}", { status: 200 });
+    }
+    return new Response(JSON.stringify({ valid: true }),
+      { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+
+  const e = env({ MAIL_API_KEY: "re_test", MAIL_FROM: "Tvara <t@t.test>" });
+  const EMAIL = "joins@example.com";
+  const signingIn = await makeDevice();
+  const onlooker = await makeDevice();
+
+  await post(await signedBody({ email: EMAIL }, { route: "identity-start", dev: signingIn }),
+    { e, path: "/identity/start" });
+  const code = () => String(mailed[mailed.length - 1].subject).split(" ")[0];
+  const verified = await (await post(await signedBody(
+    { email: EMAIL, code: code(), plat: "Windows 11 \u00b7 Chrome", label: "Studio laptop" },
+    { route: "identity-verify", dev: signingIn }), { e, path: "/identity/verify" })).json();
+  t("sign-in: the identity is issued", !!verified.idt);
+
+  const rows = e.DB.sqlite.prepare("SELECT COUNT(*) AS n FROM sessions").get().n;
+  t("sign-in: the device is on the account before it asks for anything",
+    Number(rows) === 1, "rows=" + rows);
+
+  /* The second device is what makes this a real assertion. It signs in on the
+     same address and lists — and finds the FIRST device, which has made no
+     /sessions call of its own, sitting there named and described. */
+  await post(await signedBody({ email: EMAIL }, { route: "identity-start", dev: onlooker }),
+    { e, path: "/identity/start" });
+  await post(await signedBody({ email: EMAIL, code: code() },
+    { route: "identity-verify", dev: onlooker }), { e, path: "/identity/verify" });
+
+  const seen = await (await post(await signedBody({ idt: verified.idt },
+    { route: "sessions", dev: onlooker }), { e, path: "/sessions" })).json();
+  const first = (seen.devices || []).find((d) => d.device === signingIn.fp) || null;
+  t("sign-in: the other device on the account sees it in the list",
+    !!first, JSON.stringify(seen.devices || []).slice(0, 200));
+  t("sign-in: the name typed at sign-in travelled with it",
+    !!first && first.label === "Studio laptop");
+  t("sign-in: so did the platform",
+    !!first && first.plat === "Windows 11 \u00b7 Chrome");
+  t("sign-in: both devices are on the account",
+    (seen.devices || []).length === 2, String((seen.devices || []).length));
+  t("sign-in: no name is stored in the clear",
+    !e.DB.sqlite.prepare("SELECT label_enc FROM sessions WHERE dev_fp = ?")
+      .get(signingIn.fp).label_enc.includes("Studio"));
+
+  /* Signing in again must not mint a second row for the same machine, and must
+     not blank the name when the client sends none. */
+  await post(await signedBody({ email: EMAIL }, { route: "identity-start", dev: signingIn }),
+    { e, path: "/identity/start" });
+  await post(await signedBody({ email: EMAIL, code: code() },
+    { route: "identity-verify", dev: signingIn }), { e, path: "/identity/verify" });
+  const again = await (await post(await signedBody({ idt: verified.idt },
+    { route: "sessions", dev: onlooker }), { e, path: "/sessions" })).json();
+  const still = (again.devices || []).find((d) => d.device === signingIn.fp) || {};
+  t("sign-in: signing in twice is one device, not two",
+    (again.devices || []).length === 2, String((again.devices || []).length));
+  t("sign-in: a sign-in that sends no name leaves the name standing",
+    still.label === "Studio laptop", JSON.stringify(still));
+
+  globalThis.fetch = savedFetch;
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

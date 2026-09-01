@@ -164,7 +164,14 @@
       return;
     }
     setStatus("trial-note", "");
-    await send({ type: "trial-start" });
+    const started = await send({ type: "trial-start" });
+    // The worker refuses an unanchored week; this page's own check can be stale.
+    if (started && started.branch === "unverified") {
+      setStatus("trial-note",
+        "Open the Tvara popup and sign in first \u2014 that is what keeps your trial when you reinstall.",
+        "warn");
+      return;
+    }
     await loadPlan();
     $("q").focus();
   });
@@ -1075,16 +1082,22 @@
     const status = await send({ type: "recall-sync-status" });
     if (!status || status.err) return;
     const recovery = status.recovery || { state: "ready" };
-    // A reinstall no longer blocks anything: archiving has already restarted by
-    // the time this paints. Restoring the old file is a shortcut that fills in
-    // everything the providers no longer list, not a prerequisite.
+    // A reinstall no longer blocks anything, but it does HOLD: until this is
+    // answered the pass captures only chats newer than the backup, so the
+    // history is neither lost nor downloaded twice. Skipping rebuilds it from
+    // the providers instead.
     const offered = recovery.state === "restore-offered";
     $("recovery").hidden = false;
     $("recovery").classList.toggle("urgent", offered);
     $("recovery-title").textContent = offered ? "Bring your previous archive back" : "Restore an existing archive";
     $("recovery-skip").hidden = !offered;
+    // The popup links straight here. The panel is hidden until this paints, so
+    // the browser's own anchor scroll has already given up by now.
+    if (location.hash === "#recovery") {
+      $("recovery").scrollIntoView({ behavior: "smooth", block: "start" });
+    }
     if (offered && recovery.backup) {
-      $("recovery-copy").textContent = `This looks like a fresh install, and a ${Number(recovery.backup.chats || 0).toLocaleString()}-chat encrypted backup was made before it. Archiving has already restarted on its own and is adding only what is missing. Restore the file to bring back everything older than your providers still list.`;
+      $("recovery-copy").textContent = `This looks like a fresh install, and a ${Number(recovery.backup.chats || 0).toLocaleString()}-chat encrypted backup was made before it. Only chats created since that backup are being captured meanwhile \u2014 the rest is not being downloaded a second time. Restore the file to bring the older chats back, or continue without it to rebuild them from your providers.`;
     } else {
       $("recovery-copy").textContent = "Choose an encrypted Tvara backup to merge it into this browser. Chats already archived here are left alone; only what is missing is added.";
     }

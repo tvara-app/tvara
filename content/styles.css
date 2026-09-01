@@ -1633,19 +1633,6 @@
 }
 @keyframes lct-pin-pulse { 0%, 100% { opacity: .12; } 50% { opacity: .34; } }
 
-/* ---- the close, on every card ---- */
-#lct-tour-card .lct-tour-close {
-  position: absolute; top: 9px; right: 9px;
-  width: 24px; height: 24px;
-  display: flex; align-items: center; justify-content: center;
-  border: 0; border-radius: 7px;
-  background: transparent;
-  color: var(--lct-muted);
-  cursor: pointer;
-  font: 400 17px/1 inherit;
-}
-#lct-tour-card .lct-tour-close:hover { background: var(--lct-accent-soft); color: var(--lct-ink); }
-
 /* ---- the pin card ----
    Not a step in a sequence to look at: one thing, one picture, one button
    across the full width, and a way out under it. */
@@ -1659,11 +1646,20 @@
 #lct-tour-card.lct-tour-hero .lct-tour-actions { flex-direction: column; gap: 3px; margin-top: 13px; }
 #lct-tour-card.lct-tour-hero .lct-tour-spacer { display: none; }
 #lct-tour-card.lct-tour-hero .lct-tour-actions button {
-  width: 100%; padding: 10px 13px; font-size: 12.5px; border-radius: 9px;
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 10px 13px;
+  font-size: 12.5px;
+  border-radius: 9px;
 }
 #lct-tour-card.lct-tour-hero .lct-tour-next { order: 1; }
 #lct-tour-card.lct-tour-hero .lct-tour-actions button.lct-tour-skip {
-  order: 2; padding-left: 13px;
+  order: 2;
+  padding-left: 13px;
+  padding-right: 13px;
 }
 
 #lct-tour-card .lct-tour-meta {
@@ -1708,6 +1704,10 @@
 #lct-tour-card .lct-tour-actions { display: flex; align-items: center; gap: 7px; margin-top: 14px; }
 #lct-tour-card .lct-tour-spacer { flex: 1; }
 #lct-tour-card .lct-tour-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
   padding: 6px 13px;
   border: 1px solid var(--lct-line);
   border-radius: 8px;
@@ -1717,7 +1717,15 @@
   font: 600 11.5px/1 inherit;
 }
 #lct-tour-card .lct-tour-actions button:hover { background: var(--lct-accent-soft); color: var(--lct-ink); }
-#lct-tour-card .lct-tour-actions button.lct-tour-skip { border-color: transparent; padding-left: 0; }
+#lct-tour-card .lct-tour-actions button.lct-tour-skip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  border-color: transparent;
+  padding-left: 13px;
+  padding-right: 13px;
+}
 #lct-tour-card .lct-tour-actions button.lct-tour-skip:empty { display: none; }
 #lct-tour-card .lct-tour-actions button.lct-tour-next {
   border-color: transparent;

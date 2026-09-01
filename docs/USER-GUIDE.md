@@ -109,6 +109,22 @@ silent recording. These chats are labelled *temporary* in results and cannot be
 reopened on the platform: the original was never saved there.
 
 **How the archive builds:**
+- **It starts itself:** the first pass begins the moment the extension is
+  installed. Nothing waits for you to open a chat site or press anything.
+- **Starting the browser is enough:** every pass runs in the extension's
+  background worker on your own signed-in sessions. The browser does not have
+  to be the window you are looking at, no chat tab has to be open, and closing
+  the popup does not stop anything. If the browser shuts a pass down partway,
+  it books itself back in and carries on from where the archive actually is.
+- **It steps aside, briefly:** while you are actually looking at a chat site,
+  an unattended pass on that site waits rather than compete with you for the
+  provider's rate limit. If you stay there, it stops waiting after 20 minutes
+  and continues one request at a time.
+- **The text follows the titles, by itself:** a history listing gives every
+  conversation's title in one call; the words cost one call each. Those are
+  fetched in the background as soon as a pass finds them missing. **Archive
+  core** in the popup shows how many are left, and stops it if you want —
+  and a download you stop stays stopped.
 - **Automatic, in the background:** a check runs by itself roughly every 3
   hours, shortly after the browser starts, and whenever you open one of the
   chat sites (at most once every 20 minutes), no button to press. It
@@ -150,11 +166,16 @@ keeps a current copy in `Downloads/Tvara/` by itself. This is the
 part that matters: the manual button only ever helped people who remembered to
 press it before uninstalling.
 
-**After a reinstall,** archiving restarts on its own straight away and adds only
-what is missing. It does not wait for you to restore anything. The Recall page
-offers your previous backup at the top; restoring it merges in, leaving chats
-already archived alone and bringing back the older ones your providers no longer
-list. Restoring is a shortcut, never a prerequisite.
+**After a reinstall,** archiving restarts on its own straight away, but it
+captures only chats newer than your last backup. An uninstall takes the archive
+and leaves the ledger, so the extension knows exactly how many chats this
+account had; re-downloading all of them from the provider would spend hours of
+requests on chats you have not lost. The popup and the Recall page both offer
+the previous backup instead. Restore it and the older chats come back, merged,
+leaving anything already archived alone. Choose **Continue without restoring**
+and the full history is rebuilt from the providers after all — and if you answer
+neither, the offer lapses after a week and the rebuild runs by itself, so
+nothing is left permanently uncaptured.
 
 **When you delete a chat on the provider's site,** the archived copy is *not*
 deleted with it. It is held aside and you are asked, a badge on the toolbar
@@ -334,9 +355,14 @@ your own scripts).
   counts down the days; when it ends, free platforms stay free and the speed
   engine stays on everywhere.
 
-  Signing in makes the trial *yours* rather than your install's. Uninstall and
-  reinstall and you neither lose the days you had left nor get a fresh week —
-  sign in with the same account and it picks up exactly where it was.
+  Signing in makes the trial *yours* rather than your install's, and it is
+  required before the clock starts — not a suggestion beside a button that
+  would have worked anyway. A week with no address behind it is tied to a key
+  living inside this installation, and uninstalling destroys it: the days you
+  had spent would come back as a fresh offer, and the ones you were owed could
+  not be found again. With an address, uninstall and reinstall and you neither
+  lose the days you had left nor get a fresh week — sign in with the same
+  account and it picks up exactly where it was, and the popup says so.
 
   Google sign-in needs Chrome or Edge. Firefox gives every installation a
   different internal address, which Google will not accept as a sign-in
@@ -368,6 +394,30 @@ your own scripts).
   you're on and **Terminate** for the rest. If all five are full when you
   activate, the extension quietly frees your oldest device and carries on; it
   only stops to ask when the slots belong to devices it doesn't recognise.
+- **Naming a device:** each row shows the name you gave that machine, or, if
+  you have not named it, what the browser will say about it: the operating
+  system with its major version, the handset model on Android, and the browser.
+  A browser extension cannot read the computer's own name — there is no API
+  that exposes "DESKTOP-8FJ2K1" or "Anirudh's MacBook Pro" to a web page or an
+  extension, on any platform — so a name you recognise has to be typed once.
+  Press **Name it** on your own row, type a name, and every other device on the
+  account sees it at its next check-in. You can only rename the device you are
+  on: the licence server keys the name to the device that proved the request,
+  so no machine can label another one.
+- **When a device appears:** signing in is what puts a machine on this list.
+  You do not have to buy anything or start a trial first, and you do not have
+  to wait for a check-in — the row is written while you are signing in, so the
+  device screen already shows the machine you are sitting at the first time you
+  open it. Your own device is always on the list even if the licence server
+  cannot be reached; a device the server has no record of yet cannot be signed
+  out, because there is nothing on the server to sign out.
+- **Your account photo:** once you sign in with Google, your profile picture
+  sits in the top-right corner of the popup, in a ring whose colour is your
+  plan — Free, Trial or Pro — with the same word on the pill beside it. The
+  picture and your name are read out of the sign-in token by the extension and
+  kept on this device only; they are never sent to our servers, and they are
+  removed when you sign out. If Google serves no picture, the circle shows your
+  initial instead.
 - **Moving to a new browser:** click **Remove** (which hands the slot back)
   and activate on the new machine with the same key. **Remove frees a slot; it
   does not switch a device off.** A removed browser that still has the key
@@ -403,7 +453,11 @@ your own scripts).
   public key, the activation receipt id, your email address once at
   verification (the issuer mails the code and keeps only a hash of the
   address), and the IP any request carries. Never conversation text, never a
-  cookie.
+  cookie. **Your Google profile picture and display name are not on that
+  list.** Signing in with Google asks for them so the popup can show whose
+  account it is; the extension reads them out of the sign-in token on your own
+  machine and stores them there. Neither is ever sent to the issuer, and both
+  are deleted when you sign out.
 - **What the issuer keeps:** a hash of your licence key, a fingerprint per
   active device with a last-seen time, a **hash** of your verified email
   address, and your trial start date — each up to 400 days, enforced by a
@@ -460,7 +514,8 @@ material, so a wiped browser cannot keep writing readable archives of whatever
 comes next. Your `.lctbackup` files stay on your disk. Turn automatic backup on
 and there is nothing to remember before uninstalling; a small durable marker
 also lets the new install offer the restore, while archiving restarts by itself
-either way.
+either way — capturing new chats meanwhile rather than downloading the whole
+history a second time.
 
 ---
 

@@ -464,17 +464,11 @@
     // inner pane instead — overflow on the card itself would clip it. The
     // buttons stay out of that pane: on a 360px-tall window they were the part
     // that scrolled away, leaving a card with no visible way to dismiss it.
-    const close = document.createElement("button");
-    close.type = "button";
-    close.className = "lct-tour-close";
-    close.setAttribute("aria-label", "Close tour");
-    close.textContent = "\u00d7";
-    close.addEventListener("click", finish);
     pane = document.createElement("div");
     pane.className = "lct-tour-pane";
     foot = document.createElement("div");
     foot.className = "lct-tour-foot";
-    card.append(close, pane, foot);
+    card.append(pane, foot);
 
     root.append(ring, card);
     document.documentElement.appendChild(root);

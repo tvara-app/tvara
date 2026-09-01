@@ -976,9 +976,25 @@ async function ownsLicence(env, keyFp, emailFp) {
  * owns anything so the client knows to call /restore instead of showing a
  * trial button to somebody who already paid.
  */
-async function identityAnswer(env, emailFp, devFp, origin) {
+async function identityAnswer(env, emailFp, devFp, origin, seat) {
   const idt = await mintIdentityToken(env, emailFp);
   if (!idt) return json({ error: "unavailable" }, 503, origin);
+
+  /* Signing in IS the moment this device joins the account, so its row is
+     written here rather than at the first paid check-in. A trial or free
+     device never reaches /entitlement, and before this the device screen was
+     empty for the very person who had just signed in on it. Written before the
+     answer goes out, so the list is already right by the time the client can
+     ask for it. */
+  if (devFp) {
+    await touchSession(env, {
+      devFp, keyFp: null, emailFp,
+      plat: (seat && seat.plat) || "", geo: (seat && seat.geo) || "",
+      label: (seat && seat.label) || ""
+    });
+    await enforceFreeDeviceLimit(env, emailFp, devFp);
+  }
+
   const startedAt = await readIdentityTrial(env, emailFp);
   /* A device that spent a week before identity existed. Reported so the client
      shows the truth immediately; /trial writes it across when it is called. */
@@ -1867,6 +1883,80 @@ function sessionGeo(request) {
   return /^[A-Z]{2}$/.test(cc) ? cc : "";
 }
 
+/* ---------- who the device screen is for ----------
+ *
+ * Two vars, both flippable with a `wrangler deploy` and no extension release.
+ *
+ * SESSION_SCOPE     "all" (default) puts every verified account on the device
+ *                   screen, free ones included — which is how the system is
+ *                   being exercised before there are many paying accounts to
+ *                   exercise it with. "paid" narrows it to accounts that own a
+ *                   licence. Nothing else changes: the same tables, the same
+ *                   kills, the same list.
+ *
+ * FREE_DEVICE_LIMIT 0 (default) caps nothing. Set it to SEAT_LIMIT to impose
+ *                   the paid rule on free accounts — oldest device out when an
+ *                   N+1th signs in, with a real tombstone rather than a silent
+ *                   delete the next check-in would undo.
+ */
+function sessionScope(env) {
+  return String((env && env.SESSION_SCOPE) || "all").toLowerCase() === "paid" ? "paid" : "all";
+}
+
+function freeDeviceLimit(env) {
+  const n = Number((env && env.FREE_DEVICE_LIMIT) || 0);
+  return Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), 50) : 0;
+}
+
+/** Does this account own a licence — i.e. is it a paid account? */
+async function accountHasLicence(db, emailFp) {
+  try {
+    const row = await db.prepare("SELECT 1 AS ok FROM owners WHERE email_fp = ?1 LIMIT 1")
+      .bind(emailFp).first();
+    return !!(row && row.ok);
+  } catch { return false; }
+}
+
+/**
+ * Hold a free account to FREE_DEVICE_LIMIT devices, newest kept.
+ *
+ * Deliberately the same mechanism a person's own Sign out uses: the row goes
+ * and a tombstone is written under the account scope, so the evicted device's
+ * next check-in reads as signed out instead of silently claiming itself back.
+ * `by` is 'sweep', which is what tells the two apart in the audit.
+ *
+ * Only ever touches rows with no licence on them. A paid device is governed by
+ * the seat ledger and must not be evicted by a free-tier rule.
+ */
+async function enforceFreeDeviceLimit(env, emailFp, keepDev) {
+  const limit = freeDeviceLimit(env);
+  const db = d1(env);
+  if (!limit || !db || !emailFp) return;
+  try {
+    const res = await db.prepare(
+      "SELECT dev_fp FROM sessions WHERE email_fp = ?1 AND key_fp IS NULL " +
+      "ORDER BY last_seen DESC LIMIT -1 OFFSET ?2"
+    ).bind(emailFp, limit).all();
+    const over = ((res && res.results) || [])
+      .map((r) => String(r.dev_fp)).filter((d) => d !== keepDev);
+    if (!over.length) return;
+    const now = Date.now();
+    const writes = [];
+    for (const devFp of over) {
+      writes.push(db.prepare("DELETE FROM sessions WHERE dev_fp = ?1 AND email_fp = ?2")
+        .bind(devFp, emailFp));
+      writes.push(db.prepare(
+        "INSERT INTO session_kills (scope, dev_fp, at, by) VALUES (?1, ?2, ?3, 'sweep') " +
+        "ON CONFLICT(scope, dev_fp) DO UPDATE SET at = excluded.at, by = excluded.by"
+      ).bind(emailFp, devFp, now));
+    }
+    writes.push(db.prepare(
+      "UPDATE account_state SET version = version + 1, updated_at = ?2 WHERE email_fp = ?1"
+    ).bind(emailFp, now));
+    await db.batch(writes);
+  } catch { /* a cap is not worth failing the call it rode in on */ }
+}
+
 /**
  * Record that this device is alive, with whatever we now know about it.
  *
@@ -1882,7 +1972,10 @@ async function touchSession(env, { devFp, keyFp, emailFp, plat, geo, label }) {
   if (label) {
     try {
       const key = await aesKeyFor(env, "session-label");
-      labelEnc = key ? await aesSeal(key, String(label).slice(0, 40)) : null;
+      /* aesSeal answers "" when it cannot seal, and "" is not NULL: COALESCE
+         below would take it as a new label and blank the name the device
+         already had. Only a real ciphertext may reach the statement. */
+      labelEnc = (key && await aesSeal(key, String(label).slice(0, 40))) || null;
     } catch { labelEnc = null; }
   }
   try {
@@ -2880,7 +2973,7 @@ async function route(request, env) {
       return json({ error: res.reason, left: res.left }, 401, origin);
     }
     await noteIdentity(env, emailFp, "otp");
-    return identityAnswer(env, emailFp, devFp, origin);
+    return identityAnswer(env, emailFp, devFp, origin, { plat: sessionPlat(body.plat), geo: sessionGeo(request), label: str(body.label) });
   }
 
   /* ---------- /identity/google ----------
@@ -2895,7 +2988,7 @@ async function route(request, env) {
     const emailFp = await emailFpOf(googleEmail);
     await noteIdentity(env, emailFp, "google");
     await rememberEmail(env, emailFp, googleEmail);
-    return identityAnswer(env, emailFp, devFp, origin);
+    return identityAnswer(env, emailFp, devFp, origin, { plat: sessionPlat(body.plat), geo: sessionGeo(request), label: str(body.label) });
   }
 
   /* ---------- /restore ----------
@@ -2983,6 +3076,14 @@ async function route(request, env) {
       tt = await mintTrialToken(env, { identityFp, devFp, startedAt: claimed.startedAt, ks });
     } catch { return json({ error: "unavailable" }, 503, origin); }
 
+    // Register the trial device so it is on the account's device screen from
+    // the first day, not only once it buys something.
+    await touchSession(env, {
+      devFp, keyFp: null, emailFp: identityFp,
+      plat: sessionPlat(body.plat), geo: sessionGeo(request), label: str(body.label)
+    });
+    await enforceFreeDeviceLimit(env, identityFp, devFp);
+
     return json({
       startedAt: claimed.startedAt,
       already: claimed.already,
@@ -3051,6 +3152,25 @@ async function route(request, env) {
        person clicks and far less than a script needs. */
     if (await rateLimited(env, "acct:" + identityFp, ip)) {
       return json({ error: "slow down" }, 429, origin, retryAfter(RL_WINDOW_S * 1000));
+    }
+
+    /* Free accounts are on the device screen while SESSION_SCOPE is "all".
+       Flipping it to "paid" is the whole switch — no extension release, and
+       every ledger below stays exactly as it is. */
+    if (sessionScope(env) === "paid" && !(await accountHasLicence(db, identityFp))) {
+      return json({ error: "paid only" }, 403, origin);
+    }
+
+    /* A trial or free device holds no seat and never reaches /entitlement, so
+       nothing else ever writes its row — it would open this screen and not
+       find itself. List route only: on a terminate, the caller's row is either
+       already there or is about to be killed. */
+    if (route === "/sessions") {
+      await touchSession(env, {
+        devFp, keyFp: null, emailFp: identityFp,
+        plat: sessionPlat(body.plat), geo: sessionGeo(request), label: str(body.label)
+      });
+      await enforceFreeDeviceLimit(env, identityFp, devFp);
     }
 
     let state, devices;

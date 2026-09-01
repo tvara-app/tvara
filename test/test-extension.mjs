@@ -227,8 +227,17 @@ try {
   /* Read from the manifest rather than typed here: a hardcoded version turns
      every release into a test edit, and the thing worth asserting is that the
      popup shows the version it SHIPS, not one particular number. */
-  const MF_VERSION = JSON.parse(readFileSync(join(SRC, "manifest.json"), "utf8")).version;
+  const MF = JSON.parse(readFileSync(join(SRC, "manifest.json"), "utf8"));
+  const MF_VERSION = MF.version;
   t("A1 version shown", (await pop.textContent("#version")).trim() === `v${MF_VERSION}`);
+  /* The account photo is served by Google, and an extension page loads no
+     remote image the CSP has not named. Without this line the header renders a
+     broken circle for every signed-in user and nothing says why. */
+  const CSP = String((MF.content_security_policy || {}).extension_pages || "");
+  t("A1 the account photo's host is allowed to load",
+    /img-src[^;]*googleusercontent\.com/.test(CSP), CSP);
+  t("A1 …and scripts are still same-origin only",
+    /script-src 'self'/.test(CSP) && !/script-src[^;]*http/.test(CSP), CSP);
   t("A1 upsell visible / active card hidden",
     (await pop.isVisible("#pro-upsell")) && !(await pop.isVisible("#pro-active")));
   t("A1 speed/minimap/time toggles on by default",
@@ -300,22 +309,24 @@ try {
 
   t("A1b buy button visible in free state", await pop.isVisible("#buy-pro"));
 
-  /* Buying without a verified address is refused before the round trip. The
+  /* Buying without a verified address signs in FIRST, in the same click. The
      address is what makes the purchase findable again after a reinstall, so it
      is part of buying rather than an extra step next to it — and the issuer
-     refuses an anonymous checkout anyway. */
+     refuses an anonymous checkout anyway, so no checkout may be opened until
+     the sign-in has actually come back ok. */
   const buyAnon = await pop.evaluate(async () => {
-    let sent = null;
+    const sent = [];
     const realSend = chrome.runtime.sendMessage;
-    chrome.runtime.sendMessage = (msg, cb) => { sent = msg; if (cb) cb({}); };
+    chrome.runtime.sendMessage = (msg, cb) => { sent.push(msg && msg.type); if (cb) cb({}); };
     document.getElementById("buy-pro").click();
-    await new Promise((r) => setTimeout(r, 60));
+    await new Promise((r) => setTimeout(r, 120));
     chrome.runtime.sendMessage = realSend;
     return { sent, status: (document.getElementById("identity-status") || {}).textContent || "" };
   });
-  t("A1b buying while signed out asks for a sign-in and sends nothing",
-    buyAnon.sent === null && /Sign in with Google|needs Chrome or Edge/.test(buyAnon.status),
-    JSON.stringify(buyAnon));
+  t("A1b buying while signed out starts the sign-in",
+    buyAnon.sent.includes("identity-google"), JSON.stringify(buyAnon));
+  t("A1b …and opens no checkout until it succeeds",
+    !buyAnon.sent.includes("checkout-start"), JSON.stringify(buyAnon));
 
   /* From here the popup believes an address is verified. The issuer is not
      reachable from this harness, so the record verification would have written
@@ -609,6 +620,24 @@ try {
     /Sign in with Google|needs Chrome or Edge/.test(await pop.textContent("#identity-status")));
   t("A8 ...and started nothing",
     (await pop.evaluate(async () => (await chrome.storage.local.get("lct-trial-v2"))["lct-trial-v2"])) === undefined);
+
+  /* The button's check is advice; this is the rule. A week with no verified
+     address behind it is anchored to a keypair that dies with an uninstall —
+     the issuer keeps a row for a device that no longer exists and no email to
+     match it to, so the days already spent come back as a fresh offer. Any
+     caller that skips the popup — a stale "signed in", another surface, a
+     console — has to be refused here. */
+  const askTrial = () => pop.evaluate(() => new Promise((r) =>
+    chrome.runtime.sendMessage({ type: "trial-start" }, r)));
+  const noAuth = await askTrial();
+  t("A8 the worker itself refuses a week with no address behind it",
+    noAuth && noAuth.branch === "unverified" && noAuth.started === false,
+    JSON.stringify(noAuth));
+  const twice = await askTrial();
+  t("A8 ...and asking again still starts nothing",
+    twice && twice.branch === "unverified" &&
+    (await pop.evaluate(async () => (await chrome.storage.local.get("lct-trial-v2"))["lct-trial-v2"])) === undefined,
+    JSON.stringify(twice));
 
   /* An unverified week runs its clock and unlocks NOTHING. Without this an
      issuer outage — real or manufactured by blocking the domain — would be a
@@ -2990,14 +3019,20 @@ try {
     unlockedSnap && !unlockedSnap.err && Array.isArray(unlockedSnap.chats),
     JSON.stringify(unlockedState));
 
-  // Trial is worker-owned and sync-backed: clearing local storage is the
-  // one-click "reset my trial" that must not work.
-  await pop.evaluate(async () => {
+  /* Trial is worker-owned and sync-backed: clearing local storage is the
+     one-click "reset my trial" that must not work. Seeded directly rather than
+     through trial-start, which refuses a week with no verified address behind
+     it — that rule is A8's, and this assertion is about where the record
+     lives, not about who may start one. */
+  await pop.evaluate(async (startedAt) => {
     await chrome.storage.local.remove(["license", "lct-entitlement-v2"]);
-  });
-  const trialFirst = await ask({ type: "trial-start" });
+    const rec = { startedAt, v: 2, checkedAt: Date.now() };
+    await chrome.storage.local.set({ "lct-trial-v2": rec });
+    await chrome.storage.sync.set({ "lct-trial-v2": rec });
+  }, Date.now() - 2 * 864e5);
+  const trialFirst = await ask({ type: "trial-state" });
   await pop.evaluate(() => chrome.storage.local.remove("lct-trial-v2"));   // local only
-  const trialSecond = await ask({ type: "trial-start" });
+  const trialSecond = await ask({ type: "trial-state" });
   t("B13 wiping local storage does not mint a second trial",
     trialFirst.until > 0 && trialSecond.until === trialFirst.until,
     JSON.stringify({ trialFirst, trialSecond }));
@@ -3602,6 +3637,15 @@ try {
       hit && Array.isArray(hit.results) && hit.results.some((r) => r.id === "chatgpt.com/c/stub-a"),
       JSON.stringify(hit && hit.results && hit.results.length));
 
+    /* The popup asks the worker to pick the queue up as it opens, and with no
+       provider signed in here that run writes "ChatGPT: not signed in" over the
+       row — which is a different assertion from this one. Park the queue first:
+       the auto path declines a stopped one without touching the note, so what
+       is painted below is the idle copy this block is about. */
+    await pop.evaluate(async () => {
+      const held = (await chrome.storage.local.get("lct-fill-v1"))["lct-fill-v1"] || {};
+      await chrome.storage.local.set({ "lct-fill-v1": { ...held, state: "stopped", note: "" } });
+    });
     // the popup offers it, and says how much is missing
     await pop.reload();
     await pop.waitForTimeout(2500);
@@ -3615,6 +3659,116 @@ try {
       /\d/.test(row.title) && /min/.test(row.sub), JSON.stringify(row));
     t("B21 …and says why it matters",
       /Recall can only search what it has downloaded/.test(row.sub), row.sub);
+  }
+
+  /* ---- B22. Nobody should have to ask for their own backup ----
+     The queue above was only ever emptied by a click on that row. Installing
+     the extension, signing in, restarting the browser — none of them started
+     it, so an archive sat at hundreds of titles and no words until the user
+     found the row. And the pass that fetches the words stepped aside whenever
+     a chat site was the frontmost tab in ANY window, which for a tab left open
+     is always, so the platform was deferred forever. */
+  {
+    const ask = (m) => pop.evaluate((mm) => new Promise((r) => chrome.runtime.sendMessage(mm, r)), m);
+    const presence = (tabs, host, focusedId) =>
+      ask({ type: "tab-presence-selftest", tabs, host, focusedId });
+    // B21 parked the queue to assert its idle copy. Un-park it: a stopped queue
+    // is the one thing that legitimately refuses to start by itself.
+    await pop.evaluate(async () => {
+      const held = (await chrome.storage.local.get("lct-fill-v1"))["lct-fill-v1"] || {};
+      await chrome.storage.local.set({ "lct-fill-v1": { ...held, state: "partial", note: "" } });
+    });
+
+    // The tab that made the archive stop: open, frontmost in its own window,
+    // and that window is not the one the user is looking at.
+    const bg = await presence(
+      [{ url: "https://chatgpt.com/c/x", active: true, windowId: 7 }], "chatgpt.com", 3);
+    t("B22 a chat site left open in a background window is not being used",
+      bg && bg.open === true && bg.active === false, JSON.stringify(bg));
+
+    const fg = await presence(
+      [{ url: "https://chatgpt.com/c/x", active: true, windowId: 3 }], "chatgpt.com", 3);
+    t("B22 …but the same tab in the focused window is",
+      fg && fg.open === true && fg.active === true, JSON.stringify(fg));
+
+    const away = await presence(
+      [{ url: "https://chatgpt.com/c/x", active: true, windowId: 3 }], "chatgpt.com", -1);
+    t("B22 …and with the browser itself not in front, nobody is browsing",
+      away && away.open === true && away.active === false, JSON.stringify(away));
+
+    const behind = await presence(
+      [{ url: "https://chatgpt.com/c/x", active: false, windowId: 3 }], "chatgpt.com", 3);
+    t("B22 a background tab in the focused window is open, not in use",
+      behind && behind.open === true && behind.active === false, JSON.stringify(behind));
+
+    const other = await presence(
+      [{ url: "https://claude.ai/chat/x", active: true, windowId: 3 }], "chatgpt.com", 3);
+    t("B22 …and another provider's tab says nothing about this one",
+      other && other.open === false && other.active === false, JSON.stringify(other));
+
+    // A tab with no readable URL must not be counted as the user sitting there.
+    const opaque = await presence([{ active: true, windowId: 3 }], "chatgpt.com", 3);
+    t("B22 an opaque tab is not this site", opaque && opaque.open === false, JSON.stringify(opaque));
+
+    /* The download starting itself. B21 left stubs in the queue, so there is
+       real work outstanding: the worker must take it without being asked. */
+    const queued = await ask({ type: "archive-fill-state" });
+    t("B22 there is still text outstanding to prove this with",
+      queued && queued.total > 0, JSON.stringify(queued && queued.total));
+
+    /* Either answer proves the point: it is running, and no click asked it to.
+       Opening the popup already fires the same path, so a run can be in flight
+       before this line. */
+    const started = await ask({ type: "archive-fill-auto", reason: "test" });
+    t("B22 the worker starts the download without being asked",
+      started && (started.status === "started" || started.status === "already-running"),
+      JSON.stringify(started));
+
+    // …and it answers immediately. An hour-long queue must not hold the port.
+    const t0 = Date.now();
+    await ask({ type: "archive-fill-state" });
+    t("B22 …and answering does not wait for the queue to drain",
+      Date.now() - t0 < 8000, String(Date.now() - t0));
+
+    /* Stop still means stop. The row is the user's own switch; nothing above
+       may quietly turn it back on, on the next pass or the next restart. */
+    await ask({ type: "archive-fill-stop" });
+    const afterStop = await ask({ type: "archive-fill-auto", reason: "test" });
+    t("B22 a download the user stopped is not restarted behind their back",
+      afterStop && afterStop.status === "stopped", JSON.stringify(afterStop));
+
+    // Turning background sync off turns this off with it: one consent, not two.
+    await pop.evaluate(async () => {
+      const { settings } = await chrome.storage.local.get("settings");
+      await chrome.storage.local.set({ settings: { ...(settings || {}), autoSync: false } });
+      const held = (await chrome.storage.local.get("lct-fill-v1"))["lct-fill-v1"] || {};
+      await chrome.storage.local.set({ "lct-fill-v1": { ...held, state: "partial" } });
+    });
+    const offState = await ask({ type: "archive-fill-auto", reason: "test" });
+    t("B22 background sync switched off switches this off too",
+      offState && offState.status === "disabled", JSON.stringify(offState));
+
+    /* The stopped run's own last write is "stopped", and it lands whenever the
+       loop notices the cancel — after this line if it is not waited for, which
+       would park the queue again behind the re-arm below. */
+    for (let i = 0; i < 40; i++) {
+      const st = await ask({ type: "archive-fill-state" });
+      if (st && !st.running) break;
+      await pop.waitForTimeout(250);
+    }
+    await pop.evaluate(async () => {
+      const { settings } = await chrome.storage.local.get("settings");
+      const next = { ...(settings || {}) };
+      delete next.autoSync;
+      await chrome.storage.local.set({ settings: next });
+      const held = (await chrome.storage.local.get("lct-fill-v1"))["lct-fill-v1"] || {};
+      await chrome.storage.local.set({ "lct-fill-v1": { ...held, state: "partial" } });
+    });
+    const backOn = await ask({ type: "archive-fill-auto", reason: "test" });
+    t("B22 …and switched back on, it picks the queue up again",
+      backOn && (backOn.status === "started" || backOn.status === "already-running"),
+      JSON.stringify(backOn));
+    await ask({ type: "archive-fill-stop" });
   }
 
   /* ---- B14. First run ----
@@ -3900,11 +4054,13 @@ try {
     for (let i = 0; i < 30; i++) {
       seen.push({ step: tour.dataset.step, text: tour.textContent });
       counts.push(document.getElementById("popup-tour-count").textContent);
-      if (next.textContent === "Show in chat") break;
+      // The last card hands over to the in-chat tour; clicking Next there
+      // opens a chat tab and closes the popup, which is not this assertion.
+      if (next.hidden || next.textContent === "Continue in a chat") break;
       next.click();
       await new Promise((r) => setTimeout(r, 25));
     }
-    document.getElementById("popup-tour-close").click();
+    document.getElementById("popup-tour-skip").click();
     return { hidden: tour.hidden, seen, counts };
   });
   const popupSteps = popupTour.seen.map((s) => s.step);

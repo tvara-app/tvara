@@ -750,6 +750,106 @@ try {
   t("G5 a wipe clears every per-account usage tally", usageLeft.length === 0, JSON.stringify(usageLeft));
   t("G5 a wipe empties the archive", (await rows()).length === 0, String((await rows()).length));
 
+  /* ================= J. reinstall: the archive is gone, the ledger is not =================
+     storage.sync survives an uninstall; IndexedDB does not. So a reinstalled
+     browser wakes holding a ledger that says "this account had four chats" and
+     an archive that holds none, and it used to answer that by downloading all
+     four again — 714 of them, for the person who reported it. With an
+     encrypted backup on offer the pass must fetch only what is new, keep the
+     evidence that four were held, and rebuild the rest only once the offer is
+     declined or lapses. */
+
+  /** Everything an uninstall takes, and nothing it leaves.
+   *  The archive is emptied rather than deleteDatabase()d: the worker holds an
+   *  open connection, so the delete blocks and never fires, and a test that
+   *  hangs proves nothing. An empty chats store is what the next pass reads
+   *  either way. */
+  const reinstall = () => page.evaluate(() => new Promise((res, rej) => {
+    const req = indexedDB.open("lct-recall", 3);
+    req.onerror = () => rej(req.error);
+    req.onsuccess = () => {
+      const tx = req.result.transaction("chats", "readwrite");
+      tx.objectStore("chats").clear();
+      tx.oncomplete = () => { req.result.close(); chrome.storage.local.clear().then(res, res); };
+      tx.onerror = () => rej(tx.error);
+    };
+  }));
+  const chatgptDetails = async () => (await providers.calls())
+    .filter((c) => c.startsWith("/chatgpt/backend-api/conversation/")).length;
+  const coverageOfAlice = async () =>
+    (await checkpointsFor("chatgpt")).map(([, c]) => c.coverage).sort((a, b) => b - a)[0];
+
+  await providers.control({ chatgpt: { signedIn: true, current: "acct-alice",
+    accounts: { "acct-alice": { email: "alice@example.com", chats: alice } } } });
+  await syncNow();
+  t("J0 baseline: the account's four chats are archived",
+    idsFor(await rows(), "chatgpt.com/c/alice-").length === 4,
+    JSON.stringify(idsFor(await rows(), "chatgpt.com/c/alice-")));
+  t("J0 and the ledger records the coverage", (await coverageOfAlice()) === 4,
+    String(await coverageOfAlice()));
+
+  /** The durable trace an export leaves behind. Written straight to
+   *  storage.sync rather than through "recall-backup-mark", which sits behind
+   *  the paid gate this suite has no licence for — the marker's shape is
+   *  markBackup()'s, and sync is the only area a reinstall leaves standing. */
+  const markBackup = (chats) => page.evaluate((n) => chrome.storage.sync.set({
+    "lct-recall-backup-marker-v1":
+      { version: 1, createdAt: Date.now(), chats: n, filename: "alice.lctbackup" }
+  }), chats);
+
+  // The user exports the encrypted backup, then reinstalls.
+  await markBackup(4);
+  await reinstall();
+
+  // One chat written after the backup. It is the only thing the pass may fetch.
+  const afterBackup = makeChats("zeta", 1, Date.now() - 3600000);
+  await providers.control({ chatgpt: { accounts: {
+    "acct-alice": { email: "alice@example.com", chats: alice.concat(afterBackup) } } } });
+  await providers.calls();                    // drain, so the count below is this pass alone
+  await syncNow();
+
+  const heldDetails = await chatgptDetails();
+  const heldRows = await rows();
+  t("J1 a reinstall downloads only the chat that is new, not the whole history",
+    heldDetails === 1, `${heldDetails} conversation fetches`);
+  t("J1 and the new chat is archived", idsFor(heldRows, "chatgpt.com/c/zeta-").length === 1);
+  t("J2 the ledger keeps the evidence that four chats were held",
+    (await coverageOfAlice()) === 4, String(await coverageOfAlice()));
+  const held = await send({ type: "recall-sync-status" });
+  t("J3 the restore is on offer, with the count the backup carried",
+    held.recovery.state === "restore-offered" && held.recovery.backup.chats === 4,
+    JSON.stringify(held.recovery));
+  t("J4 a held pass puts nothing up for deletion", (await quarantined()).length === 0,
+    JSON.stringify(await quarantined()));
+
+  // Declining it is the other half of the promise: nobody is left holding an
+  // archive that starts at the reinstall.
+  await send({ type: "recall-recovery-skip" });
+  await providers.calls();
+  await syncNow();
+  t("J5 declining the restore rebuilds the history from the provider",
+    idsFor(await rows(), "chatgpt.com/c/alice-").length === 4,
+    JSON.stringify(idsFor(await rows(), "chatgpt.com/c/alice-")));
+  t("J5 and coverage counts all five", (await coverageOfAlice()) === 5,
+    String(await coverageOfAlice()));
+
+  // Nobody answers the offer. It has to time out, or the archive would start
+  // at the reinstall for the life of the install.
+  await markBackup(5);
+  await reinstall();
+  await send({ type: "recall-sync-status" });   // materialises the recovery record
+  await page.evaluate(async () => {
+    const k = "lct-recall-recovery-v1";
+    const rec = (await chrome.storage.local.get(k))[k];
+    await chrome.storage.local.set({ [k]: { ...rec, reinstalledAt: Date.now() - 8 * 86400000 } });
+  });
+  await providers.calls();
+  await syncNow();
+  const lapsedDetails = await chatgptDetails();
+  t("J6 an unanswered offer lapses and the full rebuild runs",
+    lapsedDetails === 5 && idsFor(await rows(), "chatgpt.com/c/alice-").length === 4,
+    `${lapsedDetails} conversation fetches`);
+
   /* ================= I. the network guard ================= */
   /* bgFetch attaches the user's session to every request it makes, so the set
      of hosts it will call is a security boundary, not a detail. It is derived

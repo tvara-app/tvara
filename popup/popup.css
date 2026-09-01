@@ -143,20 +143,6 @@ body {
   box-shadow: 0 14px 32px rgb(0 0 0 / .42);
   pointer-events: auto;
 }
-#popup-tour-close {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  width: 26px;
-  height: 26px;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--ink-faint);
-  cursor: pointer;
-  font: 400 18px/1 var(--sans);
-}
-#popup-tour-close:hover { background: rgb(255 255 255 / .08); color: var(--ink); }
 #popup-tour-count { color: var(--ember); font-size: 9px; font-weight: 700; letter-spacing: .13em; text-transform: uppercase; }
 #popup-tour-title { max-width: 285px; margin-top: 4px; font-size: 15px; font-weight: 600; letter-spacing: -.02em; }
 #popup-tour-body { margin-top: 5px; color: var(--ink-dim); font-size: 11.5px; line-height: 1.4; }
@@ -172,7 +158,14 @@ body {
   cursor: pointer;
   font: 500 10.5px/1 var(--sans);
 }
-.popup-tour-actions #popup-tour-skip { border-color: transparent; padding-left: 0; }
+.popup-tour-actions #popup-tour-skip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  border-color: transparent;
+  padding-left: 0;
+}
 .popup-tour-actions #popup-tour-next { border-color: transparent; background: var(--ember); color: #2b1015; }
 .popup-tour-actions button:hover { color: var(--ink); background: rgb(255 255 255 / .08); }
 .popup-tour-actions #popup-tour-next:hover { background: #ffc29e; color: #2b1015; }
@@ -236,6 +229,54 @@ header {
   box-shadow: 0 1px 6px -1px rgb(255 177 133 / .5);
 }
 .badge.trial { border-color: rgb(255 255 255 / .5); color: var(--ink); }
+
+/* ---------- account face ----------
+   The plan is said twice on purpose and never twice the same way: the ring is
+   the glance, the pill is the word. Ring colour and pill fill come off ONE
+   class on .account, so the two cannot disagree about which plan is running. */
+.account { display: flex; align-items: center; gap: 7px; flex: none; }
+
+.account-ring {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  border-radius: 50%;
+  /* The ring is the border; the dark gap between it and the photo is what
+     stops a light avatar bleeding into an accent-coloured rim. */
+  border: 1.5px solid rgb(255 255 255 / .22);
+  padding: 1.5px;
+  background: rgb(255 255 255 / .05);
+}
+.account-ring[hidden] { display: none; }
+.account-ring img,
+.account-initial {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  display: block;
+  object-fit: cover;
+}
+.account-ring img[hidden] { display: none; }
+
+/* The fallback, and the first frame of every open: a monogram costs no network
+   and no layout shift, so the circle is never empty while a photo loads. */
+.account-initial {
+  display: grid;
+  place-items: center;
+  background: rgb(255 255 255 / .09);
+  color: var(--ink-dim);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+}
+.account-ring img:not([hidden]) + .account-initial { display: none; }
+
+.account.pro .account-ring { border-color: var(--ember); box-shadow: 0 0 0 1px rgb(255 177 133 / .25); }
+.account.trial .account-ring { border-color: rgb(255 255 255 / .55); }
 
 /* ---------- live pulse ----------
    A reading, not a monument: the figure sits on the baseline of its own
@@ -681,6 +722,28 @@ body.searching footer { display: none; }
 #buy-pro.primary:hover { opacity: .88; }
 #buy-note { margin-top: 5px; }
 
+/* Buy and Devices, inside the trial card. The card is one flex row, so the
+   status line has to claim a whole row of its own or it lands beside the
+   buttons and squeezes them out of the 380px pane. */
+#trial-active { flex-wrap: wrap; }
+#trial-actions { display: flex; flex: none; gap: 6px; align-items: center; }
+#trial-buy {
+  min-height: 26px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--ember);
+  color: #16090d;
+  font: 500 10.5px/1 var(--sans);
+  white-space: nowrap;
+  cursor: pointer;
+}
+#trial-buy:hover { opacity: .88; }
+#trial-buy:disabled { cursor: default; opacity: .6; }
+#trial-buy-status { flex-basis: 100%; }
+#trial-buy-status.warn { color: var(--ember); }
+#trial-buy-status.err { color: var(--danger); }
+
 .license-row input, .license-row button, #trial-start, #identity-google, #identity-restore, .ghost {
   min-height: 26px;
   border: 1px solid var(--line);
@@ -705,6 +768,17 @@ body.searching footer { display: none; }
   color: #16090d;
   cursor: pointer;
 }
+/* See paintIdentity(). Not :has() — the popup ships to a Firefox floor that
+   predates it, and a silently unstyled button is worse than a class. */
+.pro-card.needs-signin #trial-start,
+.pro-card.needs-signin #buy-pro {
+  border-color: var(--line);
+  background: transparent;
+  color: var(--ink-faint);
+}
+.pro-card.needs-signin #trial-start:hover,
+.pro-card.needs-signin #buy-pro:hover { background: rgb(255 255 255 / .05); color: var(--ink); }
+
 #trial-start, #identity-google, #identity-restore {
   width: 100%;
   margin-top: 5px;
@@ -756,6 +830,38 @@ body.dm-open #pro-active, body.dm-open #trial-active { display: none !important;
 .dm-confirm-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .device-pick { flex: none; accent-color: var(--ember); margin: 0; }
 .device-row.picked { border-color: var(--ember); }
+/* Rename, in the row it renames. A form, not a prompt(): a popup that opens a
+   modal loses focus to it and closes itself. */
+.device-rename { white-space: nowrap; }
+.device-rename-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; width: 100%; }
+.device-rename-input {
+  min-width: 0;
+  flex: 1;
+  min-height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  outline: 0;
+  background: rgb(255 255 255 / .04);
+  color: var(--ink);
+  font: 400 10.5px/1 var(--sans);
+}
+.device-rename-input:focus { border-color: rgb(255 177 133 / .5); }
+.device-rename-save {
+  flex: none;
+  min-height: 24px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: var(--ink);
+  color: #16090d;
+  font: 500 9.5px/1 var(--sans);
+  cursor: pointer;
+}
+.device-rename-save:disabled { cursor: default; opacity: .55; }
+.device-rename-err { flex-basis: 100%; color: var(--danger); font-size: 9px; }
+.device-rename-err:empty { display: none; }
+
 #device-manager-back { width: 100%; margin-top: 9px; }
 #license-retry-activate {
   width: 100%;
@@ -834,7 +940,7 @@ button:disabled { cursor: default; }
 /* ---------- identity ---------- */
 /* Sits above the trial button because it is the step before it: an unverified
    week unlocks nothing, so asking for the address first is the honest order. */
-.identity { display: grid; gap: 8px; margin: 10px 0; }
+.identity { display: grid; gap: 5px; margin: 8px 0; }
 .identity[hidden] { display: none; }
 .identity-link {
   background: none;
@@ -848,7 +954,17 @@ button:disabled { cursor: default; }
   cursor: pointer;
   justify-self: start;
 }
+#identity-status {
+  margin-top: 1px;
+  color: var(--ink-faint);
+  font: 400 9.5px/1.35 var(--sans);
+}
 #identity-status:empty { display: none; }
+#identity-status.ok { color: var(--ok); }
+#identity-status.warn { color: var(--ember); }
+#identity-status.err { color: var(--danger); }
+/* Busy is a state of the button, not a sentence under it. */
+#identity-google:disabled, #identity-restore:disabled { cursor: default; opacity: .55; }
 #identity-done { display: grid; gap: 6px; }
 #identity-done[hidden] { display: none; }
 

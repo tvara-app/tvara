@@ -733,6 +733,9 @@ const BG_FETCH_TIMEOUT_MS = 20000;
 const BG_RATE_TRIP = 3;                          // consecutive 429s → circuit opens
 const BG_HOST_COOLDOWN_MS = 15 * 60 * 1000;
 const BG_PASS_BUDGET_MS = 4 * 60 * 1000;         // MV3 workers get reclaimed
+// How long politeness towards a site the user is actually on may hold a pass
+// off before it runs anyway, one request at a time.
+const BG_DEFER_MAX_MS = 20 * 60 * 1000;
 // Journal entries are ~120B, and the manifest grants unlimitedStorage, so this
 // covers a very large first backfill without ever refusing the watermark.
 const BG_PENDING_MAX = 50000;
@@ -1287,6 +1290,30 @@ async function restoreLedger(backupLedger, backupMeta, backupProfile) {
 async function skipRecovery() {
   await chrome.storage.local.set({ [BG_RECOVERY]: { state: "skipped", at: Date.now() } });
   return { ok: true };
+}
+
+/* The offer has to expire. Somebody who never opens the Recall page would
+   otherwise keep an archive holding only what arrived after the reinstall, for
+   as long as the install lasts. */
+const BG_RESTORE_HOLD_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Is a restore still on offer for THIS install?
+ *
+ * storage.sync survives an uninstall; IndexedDB does not. So a reinstalled
+ * browser wakes with a ledger saying an account holds 714 chats and an archive
+ * holding none. Re-downloading all 714 is a correct archive and the wrong
+ * answer: the user already made the encrypted backup that has them, and every
+ * one of those requests is spent on a chat they have not lost. While this is
+ * true the pass captures only what is new.
+ */
+async function restoreHeld() {
+  try {
+    const { [BG_RECOVERY]: rec } = await chrome.storage.local.get(BG_RECOVERY);
+    if (!rec || rec.state !== "restore-offered") return false;
+    const since = Number(rec.reinstalledAt) || 0;
+    return !since || Date.now() - since < BG_RESTORE_HOLD_MS;
+  } catch { return false; }
 }
 
 async function workerId() {
@@ -3817,17 +3844,39 @@ async function finishPlatform(adapter, checkpointKey, checkpoint, result, fields
 async function tabPresence(host) {
   try {
     if (typeof chrome.tabs === "undefined") return { open: false, active: false };
-    const tabs = await chrome.tabs.query({});
-    let open = false, active = false;
-    for (const t of tabs) {
-      let h = "";
-      try { h = new URL(t.url || "").hostname; } catch { /* opaque tab */ }
-      if (h !== host) continue;
-      open = true;
-      if (t.active) active = true;
-    }
-    return { open, active };
+    /* tab.active alone cannot answer this. It means "frontmost in its own
+       window", which is equally true of a chat site left open in a background
+       or minimised window — and a tab left open is the normal case, so the
+       platform deferred on every pass for as long as it stayed open and the
+       archive never caught up. The question is whether the user is LOOKING at
+       the site, so the focused window has to agree.
+       No windows API (or no focused window at all, i.e. the browser is not the
+       front application): nobody is browsing, so nothing is being competed
+       with. Erring towards syncing is the safe direction — tabs.open still
+       drops the pass to one request at a time. */
+    let focusedId = -1;
+    try {
+      if (typeof chrome.windows !== "undefined") {
+        const win = await chrome.windows.getLastFocused();
+        if (win && win.focused) focusedId = win.id;
+      }
+    } catch { /* windows unavailable */ }
+    return presenceFrom(await chrome.tabs.query({}), host, focusedId);
   } catch { return { open: false, active: false }; }
+}
+
+/* The decision itself, with the browser taken out of it. focusedId is -1 when
+   no window holds focus, and no tab is "being used" in that case. */
+function presenceFrom(tabs, host, focusedId) {
+  let open = false, active = false;
+  for (const t of (Array.isArray(tabs) ? tabs : [])) {
+    let h = "";
+    try { h = new URL((t && t.url) || "").hostname; } catch { /* opaque tab */ }
+    if (!host || h !== host) continue;
+    open = true;
+    if (t.active && focusedId !== -1 && t.windowId === focusedId) active = true;
+  }
+  return { open, active };
 }
 
 /**
@@ -3874,16 +3923,31 @@ async function bgSyncPlatform(adapter, run, opts = {}) {
     return { ok: true, result: "cooling-down" };
   }
 
-  // 2. never compete with the user's own browsing on an unattended pass
+  /* 2. never compete with the user's own browsing on an unattended pass —
+     but courtesy is not a licence to starve. Somebody who works in one chat
+     site all day is precisely the person with the most to archive, and
+     deferring every pass meant that account was never archived at all. After
+     BG_DEFER_MAX_MS of nothing but defers the pass runs anyway, at one request
+     at a time because the tab is open. */
   const tabs = await tabPresence(adapter.host);
   if (auto && tabs.active) {
-    await chrome.storage.local.set({
-      [BG_SYNC_PROG(adapter.id)]: {
-        state: "deferred", phase: "deferred", runId: run.id, platform: adapter.id,
-        done: 0, total: 0, msg: `Waiting until you're done on ${adapter.label}`, at: Date.now()
-      }
-    });
-    return { ok: true, result: "deferred" };
+    let since = 0;
+    try {
+      const key = BG_SYNC_PROG(adapter.id);
+      const prev = (await chrome.storage.local.get(key))[key];
+      if (prev && prev.state === "deferred") since = Number(prev.since) || 0;
+    } catch { /* unreadable: this pass starts the clock */ }
+    if (!since) since = Date.now();
+    if (Date.now() - since < BG_DEFER_MAX_MS) {
+      await chrome.storage.local.set({
+        [BG_SYNC_PROG(adapter.id)]: {
+          state: "deferred", phase: "deferred", runId: run.id, platform: adapter.id,
+          done: 0, total: 0, since,
+          msg: `Waiting until you're done on ${adapter.label}`, at: Date.now()
+        }
+      });
+      return { ok: true, result: "deferred" };
+    }
   }
 
   let contexts;
@@ -3958,8 +4022,29 @@ async function bgSyncAccount(adapter, run, opts, ctx, tabs, seat = { seat: 0, se
     // host it was worse than useless once a second account existed: the second
     // account's rows padded the count, so the check that exists to notice a
     // wiped archive could no longer notice one.
+    const coverageOk = covered >= 0 && acctIndex.size >= covered;
+    // The archive is gone and a backup of it exists: a reinstall, not a bug.
+    // See restoreHeld(). The coverage guard is right that something is wrong;
+    // rebuilding the whole history from the providers is the wrong repair.
+    let holding = !coverageOk && covered > 0 && acctIndex.size === 0 && await restoreHeld();
     const trustWatermark = !!(checkpoint && checkpoint.safeWatermark &&
-      covered >= 0 && acctIndex.size >= covered && pendingOk);
+      (holding || (coverageOk && pendingOk)));
+    /* A held pass archives what is new and rewrites nothing else. The
+       checkpoint is the only surviving evidence that this account once held
+       `covered` chats and how much was still outstanding when the archive
+       died. Zeroing either turns "wiped" into "complete", and the old history
+       would never be rebuilt even after the user declines the restore. */
+    let holdKeep = holding ? {
+      coverage: covered, coverageKnown: true,
+      safeWatermark: checkpoint.safeWatermark,
+      pendingCount: checkpoint.pendingCount || 0,
+      passState: checkpoint.passState || "clean"
+    } : null;
+    const holdCoverage = (n) => holding ? covered : n;
+    let heldSince = holding ? Math.max(0, checkpoint.safeWatermark - BG_SYNC_OVERLAP_MS) : 0;
+    const doneMsg = () => holding
+      ? "New chats captured \u00b7 restore your backup for the rest"
+      : "Everything is already backed up";
     // A delta listing cannot see a deletion: a chat the user removed simply is
     // not in the window, exactly like a chat that never changed. Once a day the
     // pass lists everything instead, purely so vanished chats can be noticed.
@@ -3987,9 +4072,9 @@ async function bgSyncAccount(adapter, run, opts, ctx, tabs, seat = { seat: 0, se
       if (!hasNew) {
         await finishPlatform(adapter, checkpointKey,
           { ...checkpoint, safeWatermark: scanStartedAt, pendingCount: 0, passState: "clean",
-            runId: run.id, acctScoped: true },
+            runId: run.id, acctScoped: true, ...(holdKeep || {}) },
           "up-to-date", { attempted: 0, total: 0, succeeded: 0, failed: 0 },
-          "Everything is already backed up", acctIndex.size);
+          doneMsg(), holdCoverage(acctIndex.size));
         return { ok: true, result: "up-to-date", mode };
       }
     }
@@ -4032,6 +4117,11 @@ async function bgSyncAccount(adapter, run, opts, ctx, tabs, seat = { seat: 0, se
         acctIndex = await accountIndex(adapter.host, adapter.prefix, acct);
         carried = [];
         strangerAccount = true;
+        // The hold was computed against the checkpoint this pass opened with.
+        // This is a different account: its coverage, its watermark and its
+        // restore decision are its own, and carrying the previous account's
+        // over would write one account's history under another's name.
+        holding = false; holdKeep = null; heldSince = 0;
         await setActiveAccount(adapter, checkpointKey);
         await noteAccount(adapter.id, acct, { identified: false });
       }
@@ -4089,6 +4179,10 @@ async function bgSyncAccount(adapter, run, opts, ctx, tabs, seat = { seat: 0, se
     const stubIds = new Set((await readStubs())[adapter.id] || []);
     const work = Array.from(byId.values()).filter((w) => {
       const recordId = adapter.host + adapter.prefix + w.id;
+      // Belt and braces for a provider that must be re-identified from a
+      // COMPLETE listing: sinceMs cannot prune that one, so prune the work.
+      // Without this, holding a restore still re-downloaded every chat there.
+      if (heldSince && w.rev <= heldSince) return false;
       const archivedRevision = index.get(recordId);
       if (archivedRevision === undefined || archivedRevision < w.rev) return true;
       return stubIds.has(recordId);
@@ -4098,9 +4192,9 @@ async function bgSyncAccount(adapter, run, opts, ctx, tabs, seat = { seat: 0, se
       await finishPlatform(adapter, checkpointKey,
         { ...checkpoint, safeWatermark: complete ? scanStartedAt : (checkpoint?.safeWatermark || 0),
           pendingCount: 0, passState: complete ? "clean" : "partial", runId: run.id,
-          anchor, acctScoped: true },
+          anchor, acctScoped: true, ...(holdKeep || {}) },
         "up-to-date", { attempted: metas.length, total: metas.length, succeeded: 0, failed: 0 },
-        "Everything is already backed up", await accountCount(acct));
+        doneMsg(), holdCoverage(await accountCount(acct)));
       return { ok: true, result: "up-to-date", mode };
     }
 
@@ -4121,7 +4215,8 @@ async function bgSyncAccount(adapter, run, opts, ctx, tabs, seat = { seat: 0, se
       coverage: baseCoverage, coverageKnown: true,
       pendingCount: work.length,
       passState: complete && !overflow ? "clean" : "partial",
-      cooldownUntil: 0, runId: String(run.id).slice(0, 8)
+      cooldownUntil: 0, runId: String(run.id).slice(0, 8),
+      ...(holdKeep || {})
     });
 
     // 6. fetch loop
@@ -4230,7 +4325,8 @@ async function bgSyncAccount(adapter, run, opts, ctx, tabs, seat = { seat: 0, se
         lastResult: circuitOpen ? "rate-limited" : budgetHit ? "budget" : "partial",
         archived, coverage, coverageKnown: true, pendingCount: left,
         passState: complete && !overflow ? "clean" : "partial",
-        cooldownUntil: circuitOpen ? until : 0, runId: String(run.id).slice(0, 8)
+        cooldownUntil: circuitOpen ? until : 0, runId: String(run.id).slice(0, 8),
+        ...(holdKeep || {})
       });
       progressPending = null;
       await chrome.storage.local.set({
@@ -4251,11 +4347,11 @@ async function bgSyncAccount(adapter, run, opts, ctx, tabs, seat = { seat: 0, se
         safeWatermark: complete && !overflow ? scanStartedAt : (checkpoint?.safeWatermark || 0),
         archived, pendingCount: 0,
         passState: complete && !overflow ? "clean" : "partial",
-        cooldownUntil: 0, runId: String(run.id).slice(0, 8) },
+        cooldownUntil: 0, runId: String(run.id).slice(0, 8), ...(holdKeep || {}) },
       mode, { attempted, total, succeeded, failed },
       archived ? `${archived} new chat${archived === 1 ? "" : "s"} backed up`
-               : "Everything is already backed up",
-      coverage);
+               : doneMsg(),
+      holdCoverage(coverage));
     return { ok: true, result: mode, archived };
   } catch (error) {
     return reportPlatformError(adapter, run, error, { attempted, total, succeeded, failed });
@@ -4326,6 +4422,10 @@ async function bgSyncAll(opts = {}) {
     // New chats just landed; if the portable copy is due, write it now rather
     // than waiting out the clock.
     await maybeAutoBackup("sync");
+    /* The listing brought back titles; those chats hold no text until the fill
+       fetches it. Not awaited — a full queue is about an hour and the pass that
+       found the work must not be held open for it. */
+    fillAutoStart("sync").catch(() => {});
     return { status: "done", results };
   } finally {
     clearInterval(pulse);
@@ -4455,6 +4555,37 @@ async function fillStop() {
   try { await chrome.alarms.clear(BG_FILL_ALARM); } catch { /* no alarms */ }
   await writeFill({ state: "stopped" });
   return { ok: true };
+}
+
+/* Only a click ever started the text download. The sync pass wrote the stubs
+   and then waited for someone to find the row in the popup, so a fresh install
+   archived hundreds of titles, no words, and reported 0% — the archive is not
+   a thing to be asked for. Called wherever new stubs land and on every worker
+   start, so a reclaim, an extension reload or a browser restart all resume it;
+   the queue is the resume point and fillStart() owns the overlap guard.
+
+   It does not need a tab, a focused window, or the popup: the fetches run in
+   the worker on the user's own cookies.
+
+   A stop is honoured. fillStop() persists "stopped", and that is the user's
+   own switch on the same row — nothing here may quietly flip it back on. */
+async function fillAutoStart(reason) {
+  // The two refusals come first. A run still draining after a stop would
+  // otherwise answer "already-running", which reads as consent it does not have.
+  if (!(await autoSyncEnabled())) return { status: "disabled" };
+  try {
+    const got = await chrome.storage.local.get(BG_FILL);
+    const held = got && got[BG_FILL];
+    if (held && held.state === "stopped") return { status: "stopped" };
+  } catch { /* unreadable: treat as never run */ }
+  if (fillRunning) return { status: "already-running" };
+  // Cheap when there is nothing to do: one keyed count, no message bodies.
+  if (!(await fillState()).total) return { status: "empty" };
+  await writeFill({ auto: String(reason || "auto").slice(0, 16) });
+  // Not awaited: a full queue is about an hour, and every caller here is either
+  // a message port or a pass that must not be held open for it.
+  fillStart();
+  return { status: "started" };
 }
 
 async function fillStart() {
@@ -4695,7 +4826,14 @@ function summarize(platforms, running, recovery, runId) {
   if (current.length && current.length === connected.length) {
     const oldest = current.reduce((min, p) => Math.min(min, p.checkpoint.completedAt || 0), Infinity);
     const archived = current.reduce((sum, p) => sum + (p.checkpoint.coverage || 0), 0);
-    return { state: "current", message: "Everything is already backed up", checkedAt: oldest, archived, connected: connected.length };
+    // While a restore is on offer the pass is deliberately capturing only what
+    // is new, so "everything is already backed up" would be a lie told by the
+    // one line most people read.
+    const held = recovery && recovery.state === "restore-offered";
+    return { state: "current",
+      message: held ? "New chats are backed up \u00b7 restore your archive for the rest"
+                    : "Everything is already backed up",
+      checkedAt: oldest, archived, connected: connected.length };
   }
   if (current.length) {
     return { state: "pending", message: `${connected.length - current.length} provider${connected.length - current.length === 1 ? "" : "s"} left to check`, checkedAt: 0, connected: connected.length };
@@ -5328,6 +5466,10 @@ try {
     // A purchase started before the last shutdown is still owed a licence.
     ensureOrderAlarm().catch(() => {});
     firstRunBootstrap("wake").catch(() => {});   // no-op once it has run
+    /* An extension reload and a browser restart both clear alarms, so a fill
+       that was mid-queue had nothing left to wake it and stalled at whatever
+       percentage it had reached. This is the only listener that runs on both. */
+    fillAutoStart("wake").catch(() => {});
     // A reinstall wipes storage.local, so the badge has to be repainted from
     // whatever survived rather than assumed to be still on screen.
     readDeletions().then((state) => paintDeletionBadge(Object.keys(state.items).length));
@@ -5592,6 +5734,26 @@ async function startTrial() {
   const cur = await trialState();
   if (cur.started) return cur;                       // one per profile, ever
 
+  /* No week without an address behind it.
+
+     An unverified week is anchored to a keypair in this extension's own
+     storage, and uninstalling destroys it. So the week a user had already
+     spent came back as a fresh offer on reinstall, and the days they were
+     actually owed could not be found again — the issuer had a device row for a
+     device that no longer exists and no email to match it to. The verified
+     address is the only anchor that survives, and it has to be there BEFORE
+     the clock starts, not sometime during the week.
+
+     Both surfaces that draw the button check this first. This is the rule
+     itself, so no other caller of `trial-start` can route around it, and so a
+     UI holding a stale "signed in" cannot start an orphan week. */
+  let verified = false;
+  try {
+    const rec = await self.LCTEntitlement.readIdentity();
+    verified = !!(rec && rec.idt);
+  } catch { /* pre-init: treat as signed out */ }
+  if (!verified) return { ...cur, branch: "unverified" };
+
   // Ask the issuer first. It remembers this device across reinstalls and
   // storage wipes, so a returning user gets their ORIGINAL start date back
   // rather than a fresh week. Offline, we fall back to our own clock — a
@@ -5655,11 +5817,62 @@ function googleSignInAvailable() {
   } catch { return false; }
 }
 
+/* The face on the account card: picture URL, display name, address. Read out
+   of the id_token this device already holds and kept LOCAL — the issuer is
+   told none of it, and it is not in `sync`, because a photo URL is the one
+   piece of the identity that is worth nothing on another machine. */
+const PROFILE_KEY = "lct-identity-profile-v1";
+
+/** The claims of a JWT, for display only. Nothing here is trusted: the grant
+ *  is the issuer's own signed token, checked elsewhere. */
+function jwtClaims(token) {
+  try {
+    const part = String(token || "").split(".")[1] || "";
+    if (!part || part.length > 4096) return null;
+    const b64 = part.replace(/-/g, "+").replace(/_/g, "/");
+    const json = atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4));
+    const out = JSON.parse(json);
+    return out && typeof out === "object" ? out : null;
+  } catch { return null; }
+}
+
+/** Google serves avatars at whatever size the URL asks for. 96px covers a
+ *  retina 36px circle and nothing larger is ever rendered. */
+function avatarUrl(raw) {
+  const url = String(raw || "");
+  if (!/^https:\/\/[a-z0-9.-]*\.googleusercontent\.com\//i.test(url)) return "";
+  if (url.length > 512) return "";
+  return url.replace(/=s\d+(-c)?$/, "=s96-c");
+}
+
+async function writeProfile(claims) {
+  const profile = {
+    picture: avatarUrl(claims && claims.picture),
+    name: String((claims && claims.name) || "").slice(0, 64),
+    email: String((claims && claims.email) || "").slice(0, 254)
+  };
+  if (!profile.picture && !profile.name && !profile.email) return null;
+  try { await chrome.storage.local.set({ [PROFILE_KEY]: profile }); } catch { /* dead context */ }
+  return profile;
+}
+
+async function readProfile() {
+  try {
+    const got = await chrome.storage.local.get(PROFILE_KEY);
+    const p = got && got[PROFILE_KEY];
+    return p && typeof p === "object" ? p : null;
+  } catch { return null; }
+}
+
 async function identityState() {
   let rec = null;
   try { rec = await self.LCTEntitlement.readIdentity(); } catch { /* pre-init */ }
-  return { verified: !!(rec && rec.idt), at: Number(rec && rec.at) || 0,
-    google: googleSignInAvailable() };
+  const verified = !!(rec && rec.idt);
+  return { verified, at: Number(rec && rec.at) || 0,
+    google: googleSignInAvailable(),
+    // Only ever alongside a live identity: a face left over from an account
+    // this install has signed out of would be naming the wrong person.
+    profile: verified ? await readProfile() : null };
 }
 
 /** Ask the issuer to mail a code. */
@@ -5695,7 +5908,10 @@ async function identityGoogleSignIn() {
   const url = "https://accounts.google.com/o/oauth2/v2/auth"
     + "?client_id=" + encodeURIComponent(GOOGLE_CLIENT_ID)
     + "&response_type=id_token"
-    + "&scope=" + encodeURIComponent("openid email")
+    /* `profile` buys exactly one thing: the picture and display name in the
+       id_token, which is what puts a face on the account card. Both are read
+       out of the token locally and never sent to the issuer. */
+    + "&scope=" + encodeURIComponent("openid email profile")
     + "&redirect_uri=" + encodeURIComponent(redirect)
     + "&nonce=" + encodeURIComponent(nonce)
     // Always ask which account. Silently reusing whichever one the browser is
@@ -5718,6 +5934,9 @@ async function identityGoogleSignIn() {
   try { res = await self.LCTEntitlement.identityGoogle(idToken); }
   catch { return { branch: "network" }; }
   if (res.branch !== "ok") return res;
+  // Only after the issuer has accepted the token: a face stored against a
+  // sign-in that failed would outlive an identity that never existed.
+  await writeProfile(jwtClaims(idToken));
   return { ...res, settled: await settleAfterVerify(res.json) };
 }
 
@@ -5792,6 +6011,7 @@ async function identityRestore() {
  */
 async function identitySignOut() {
   try { await self.LCTEntitlement.clearIdentity(); } catch { /* already gone */ }
+  try { await chrome.storage.local.remove(PROFILE_KEY); } catch { /* already gone */ }
   return identityState();
 }
 
@@ -6306,6 +6526,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case "recall-bg-sync":     return bgSyncAll({ reason: "manual" });
       case "archive-fill-state": return fillState();
       case "archive-fill-start": { fillStart(); return { started: true }; }
+      /* Opening the popup is not a request to start a download, so this is the
+         auto path and not fillStart(): it declines on a queue the user stopped.
+         It exists so a queue is never left waiting for a click. */
+      case "archive-fill-auto":  return fillAutoStart(String(msg.reason || "ask").slice(0, 16));
       case "archive-fill-stop":  return fillStop();
       case "recall-auto-tick":   return autoSyncTick();
       case "recall-visit-sync":  return visitSync(msg.platform);
@@ -6353,6 +6577,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // The parsers are pure, and a silent regression in them is what turns a
       // real percentage into a plausible wrong one. Reachable so the test page
       // can assert them without a provider.
+      /* Whether the user is LOOKING at a chat site decides whether an auto pass
+         steps aside, and a wrong answer there silently stops archiving. The
+         browser cannot be posed from a test, so the decision is reachable
+         without one. */
+      case "tab-presence-selftest": return presenceFrom(msg.tabs || [], String(msg.host || ""),
+        Number.isFinite(msg.focusedId) ? msg.focusedId : -1);
       case "quota-selftest":     return {
         json: self.LCTQuota.fromJson(msg.json || {}, { now: Number(msg.now) || undefined }),
         headers: self.LCTQuota.fromHeaders(msg.headers || {}, { now: Number(msg.now) || undefined }),

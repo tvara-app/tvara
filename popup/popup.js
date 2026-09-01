@@ -44,10 +44,41 @@
      would, and the store screenshot harness compares without trimming. */
   const paintBadge = (el, pro, trialActive) => self.LCTProduct.paintBadge(el, pro, trialActive);
 
+  /* The face on the header. `accountProfile` is whatever the last Google
+     sign-in put in local storage — picture, display name, address — and it is
+     read here only. Absent, signed out, or a photo that will not load: the
+     circle falls back to a monogram and then to nothing, and the plan pill
+     beside it is unaffected either way. */
+  function paintAccount() {
+    const acct = $("account");
+    if (!acct) return;
+    acct.className = "account " + currentPlan;
+    const ring = $("account-ring");
+    const who = String((accountProfile && (accountProfile.name || accountProfile.email)) || "").trim();
+    const src = String((accountProfile && accountProfile.picture) || "");
+    ring.hidden = !(who || src);
+    if (ring.hidden) return;
+    $("account-initial").textContent = who ? who.slice(0, 1) : "\u2022";
+    ring.title = who ? "Signed in as " + who : "Signed in";
+    const img = $("account-photo");
+    if (!src) { img.hidden = true; img.removeAttribute("src"); return; }
+    if (img.getAttribute("src") === src) return;
+    /* Hidden until it decodes. A broken-image glyph sitting in the ring reads
+       as a fault; the monogram underneath reads as the account. */
+    img.hidden = true;
+    img.onload = () => { img.hidden = false; };
+    img.onerror = () => { img.hidden = true; };
+    img.src = src;
+  }
+
   function paintPlan(pro, maskedEmail, trialUntil, overdueDays) {
     const badge = $("plan-badge");
     const trialActive = !pro && trialUntil > Date.now();
     paintBadge(badge, pro, trialActive);
+    /* The ring around the account photo says the same thing the pill says, off
+       the same two booleans — so the two can never name different plans. */
+    currentPlan = pro ? "pro" : trialActive ? "trial" : "free";
+    paintAccount();
     /* evaluate() has computed `stale` and `overdueDays` since it was written,
        with a comment saying the UI shows it — and nothing read either field.
        A licence 200 days past its check-in showed a plain "Pro" badge and no
@@ -81,6 +112,7 @@
       note.className = "pro-note active";
       note.textContent = `Trial active: ${days} day${days === 1 ? "" : "s"} left, everything unlocked`;
       $("trial-status").textContent = `${days} day${days === 1 ? "" : "s"} left in your free trial`;
+      paintTrialBuy();
     } else if (trialUntil > 0) {
       startBtn.hidden = true;
       note.hidden = false;
@@ -750,6 +782,30 @@
     try { localStorage.setItem(CACHE, JSON.stringify(cache)); } catch { /* quota/private mode */ }
   }
 
+  /* Device screen and Buy are painted by two owners that cannot wait for each
+     other: load() settles the licence, refreshIdentity() the account. Separate
+     flags so a slow identity call cannot un-paint a licence's button.
+     /sessions gates on identity, not licence — a trial device belongs there.
+     Declared above every reader; `identityVerified` below would be a TDZ throw
+     during the synchronous first paint. */
+  /* Painted during parse from the cache, then again from identity-state. The
+     photo URL is cached with the rest of the first-paint mirror so a signed-in
+     header does not pop a face in one round trip after it opens. */
+  let accountProfile = (cache && cache.profile) || null;
+  let currentPlan = "free";
+  let devicesPro = !!(cache && cache.pro && cache.licenseKind === "dodo");
+  let devicesAccount = !!(cache && cache.identity);
+  let googleReady = !(cache && cache.noGoogle);
+  let checkoutPending = false;
+
+  function paintDevicesEntries() {
+    // One entry per card; only one card is on screen at a time.
+    const set = (id, show) => { const el = $(id); if (el) el.hidden = !show; };
+    set("license-devices", devicesPro);
+    set("trial-devices", devicesAccount);
+    set("identity-devices", devicesAccount);
+  }
+
   // Synchronous restore — runs during parse, i.e. before the first paint.
   $("version").textContent = "v" + chrome.runtime.getManifest().version;
   paintToggles(cache && cache.settings);
@@ -767,6 +823,7 @@
     (cache && cache.quota) || null
   );
   if (cache && cache.licenseNote) paintLicenseState({ ...cache.licenseNote, sticky: true });
+  paintDevicesEntries();
 
   /* ---------- authoritative async load ---------- */
 
@@ -892,7 +949,11 @@
        locked Recall would be the popup lying about what the user has. It reads
        as Free, with the upsell and the verify prompt still standing. */
     const trial = verdict && verdict.trial;
-    const trialUntil = (trial && trial.grants && trial.until) || 0;
+    /* `via` rather than `trial.grants`: grants only says a signed week exists,
+       and a licensed install can be holding one of those too — which is how a
+       paying customer's header came to read TRIAL. The badge names what is
+       actually unlocking the extension right now, and nothing else. */
+    const trialUntil = (verdict && verdict.via === "trial" && trial && trial.until) || 0;
     const pro = !!(verdict && verdict.entitled && verdict.via !== "trial");
     const licenseKind = (verdict && verdict.kind) || null;
     const masked = license && license.key ? maskEmail(license.email) : null;
@@ -952,7 +1013,8 @@
         });
       }
     }
-    $("license-devices").hidden = !(pro && licenseKind === "dodo");
+    devicesPro = !!(pro && licenseKind === "dodo");
+    paintDevicesEntries();
     const seatCount = licenseKind === "dodo"
       ? Object.keys((await self.LCTDodo.readSeats()).seats).length : 0;
     paintPlan(pro, masked, trialUntil, (verdict && verdict.overdueDays) || 0);
@@ -1094,7 +1156,13 @@
     setTimeout(refreshFill, 400);
   });
 
-  refreshFill();
+  /* Opening the popup is not what starts the download — it starts itself, on
+     install and after every sync pass. This only covers the case where nothing
+     woke it; the worker declines on a queue the user stopped, and on an empty
+     one. */
+  send({ type: "archive-fill-auto", reason: "popup" }).then((res) => {
+    if (res && res.status === "started") fillExpected = Date.now() + 30000;
+  }).catch(() => {}).then(refreshFill);
 
   /* The allowance figures are only worth trusting if they can be checked, so the
      check is one click from the number itself. stopPropagation because the link
@@ -1130,6 +1198,16 @@
       return;
     }
     const t = await send({ type: "trial-start" });
+    /* The worker refuses an unanchored week outright. This popup can be holding
+       a "signed in" from before a sign-out in another tab, so the refusal is
+       answered here rather than assumed impossible. */
+    if (t && t.branch === "unverified") {
+      identityVerified = false;
+      identityMsg("Sign in with Google first \u2014 it is what keeps your trial when you reinstall.", "warn");
+      const g = $("identity-google");
+      if (!g.hidden) g.focus();
+      return;
+    }
     // Same rule as the verdict paint above: a week that grants nothing is not
     // a trial as far as this UI is concerned.
     const until = (t && t.grants && t.until) || 0;
@@ -1154,6 +1232,20 @@
   function paintIdentity(state) {
     identityVerified = !!(state && state.verified);
     const google = !!(state && state.google);
+    accountProfile = (state && state.profile) || null;
+    saveCache({ profile: accountProfile });
+    paintAccount();
+    /* Cached so the next open paints the device entry during parse instead of
+       popping it in a round trip later. */
+    devicesAccount = identityVerified;
+    googleReady = google;
+    saveCache({ identity: identityVerified, noGoogle: !google });
+    paintDevicesEntries();
+    paintTrialBuy();
+    /* Three full-width buttons of equal weight is what the card looked like:
+       one decision, asked three times. While the sign-in is still the step in
+       front of the other two, it is the only filled one. */
+    $("pro-upsell").classList.toggle("needs-signin", !identityVerified && google);
     $("identity").hidden = false;
     $("identity-done").hidden = !identityVerified;
     // Firefox cannot register a redirect URL, so the button is absent there
@@ -1164,7 +1256,7 @@
     $("identity-nogoogle").hidden = identityVerified || google;
     $("identity-why").textContent = identityVerified
       ? "Signed in. Your trial and your purchase follow this account."
-      : "Sign in once. Your trial and your purchase follow the account \u2014 reinstall, or move to another browser, and they come back.";
+      : "Sign in once \u2014 your trial and your purchase follow the account, across reinstalls and browsers.";
   }
 
   async function refreshIdentity() {
@@ -1190,8 +1282,14 @@
   }
 
   $("identity-google").addEventListener("click", async () => {
-    identityMsg("Opening Google\u2026");
+    const button = $("identity-google");
+    const label = button.textContent;
+    button.disabled = true;
+    button.textContent = "Opening Google\u2026";
+    identityMsg("");
     const res = await send({ type: "identity-google" });
+    button.disabled = false;
+    button.textContent = label;
     if (!res || res.branch !== "ok") {
       identityMsg(res && res.branch === "cancelled"
         ? "Sign-in cancelled." : "Google sign-in did not complete. Try again in a moment.", "warn");
@@ -1423,7 +1521,8 @@
     const name = document.createElement("span");
     name.className = "device-name";
     // textContent only: the registry is synced data, i.e. untrusted input.
-    name.textContent = id === selfId ? seat.label + " (this device)" : seat.label;
+    const shown = id === selfId ? (dmSelfName || dmSelfPlat || seat.label) : seat.label;
+    name.textContent = id === selfId ? shown + " (this device)" : shown;
     const meta = document.createElement("span");
     meta.className = "device-meta";
     const when = seat.activatedAt ? new Date(seat.activatedAt).toLocaleDateString() : "unknown date";
@@ -1459,6 +1558,13 @@
 
   let dmVersion = 0;
   let dmDevices = [];
+  /* What this machine calls itself, computed HERE rather than read back from
+     the issuer: a row that has never checked in still has to say something
+     true, and "Unknown device" about the machine you are holding is the bug
+     this screen was reported for. */
+  let dmSelfPlat = "";
+  let dmSelfName = "";
+  let dmRenaming = false;
   let dmPicked = new Set();
   let dmOpId = "";
   let dmPending = "";
@@ -1486,7 +1592,9 @@
     pick.type = "checkbox";
     pick.className = "device-pick";
     pick.checked = dmPicked.has(d.device);
-    pick.setAttribute("aria-label", "Select " + (d.label || d.plat || "device"));
+    pick.setAttribute("aria-label", "Select " + deviceTitle(d));
+    // A row the issuer has no id for. Sign out would have nothing to send.
+    if (d.local) { pick.disabled = true; pick.title = "Not registered yet \u2014 nothing to sign out."; }
     /* Only this row and the buttons. Re-rendering the whole list on a tick
        throws away the checkbox the person is still on — it detaches the very
        element they clicked, which loses focus and breaks a keyboard pass down
@@ -1501,14 +1609,119 @@
     const name = document.createElement("span");
     name.className = "device-name";
     // textContent only: a label is written by another device — untrusted input.
-    name.textContent = (d.label || d.plat || "Unknown device") + (d.self ? " (this device)" : "");
+    name.textContent = deviceTitle(d) + (d.self ? " (this device)" : "");
     const meta = document.createElement("span");
     meta.className = "device-meta";
-    meta.textContent = [d.label && d.plat ? d.plat : "", d.geo, seenWhen(d.lastSeen)]
+    // The machine under the name. Dropped when it IS the name, so the row does
+    // not print "Windows 11 · Chrome" twice.
+    const machine = d.self ? (d.plat || dmSelfPlat) : d.plat;
+    meta.textContent = [deviceTitle(d) === machine ? "" : machine, d.geo, seenWhen(d.lastSeen)]
       .filter(Boolean).join(" \u00b7 ");
     text.append(name, meta);
     row.append(pick, text);
+    /* Only this device's own row. The issuer keys a label on the dev_fp the
+       request proved, so no device can name another one — offering the button
+       there would be a control that cannot work. */
+    if (d.self) {
+      const rename = document.createElement("button");
+      rename.type = "button";
+      rename.className = "ghost device-rename";
+      rename.textContent = d.label ? "Rename" : "Name it";
+      rename.addEventListener("click", () => startRename(row, d));
+      row.append(rename);
+    }
     return row;
+  }
+
+  /**
+   * The machine in front of the person is always on this list.
+   *
+   * The issuer writes the row at sign-in, so `self` is normally already there.
+   * When it is not — a sign-in that predates that write, a row swept by the
+   * free-device cap, a list served from behind a stale edge — the honest thing
+   * on screen is still this device, not "0 devices". It carries no id, because
+   * an id is what a Sign out acts on and the issuer has no row to act on yet.
+   *
+   * Never called on the answer to a terminate: signing this device out is a
+   * list that is CORRECTLY missing it, and re-adding it there would undo on
+   * screen what the person just did.
+   */
+  function ensureSelfRow(devices) {
+    const list = Array.isArray(devices) ? devices.slice() : [];
+    if (list.some((d) => d && d.self)) return list;
+    list.unshift({
+      device: "", label: dmSelfName || "", plat: dmSelfPlat || "", geo: "",
+      lastSeen: Date.now(), createdAt: Date.now(), pro: false, self: true, local: true
+    });
+    return list;
+  }
+
+  /** One answer for the name on a row, used by the row, its checkbox label and
+   *  its meta line so the three can never disagree. */
+  function deviceTitle(d) {
+    const own = d.self ? (d.label || dmSelfName) : d.label;
+    return own || d.plat || (d.self ? dmSelfPlat : "") || "Unknown device";
+  }
+
+  /** Rename this device, in place. */
+  function startRename(row, d) {
+    if (dmRenaming) return;
+    dmRenaming = true;
+    const form = document.createElement("form");
+    form.className = "device-rename-row";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "device-rename-input";
+    input.maxLength = self.LCTEntitlement.DEVICE_NAME_MAX;
+    input.value = d.label || dmSelfName || "";
+    input.placeholder = dmSelfPlat || "This device";
+    input.setAttribute("aria-label", "Name for this device");
+    const save = document.createElement("button");
+    save.type = "submit";
+    save.className = "device-rename-save";
+    save.textContent = "Save";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "identity-link device-rename-cancel";
+    cancel.textContent = "Cancel";
+    const err = document.createElement("span");
+    err.className = "device-rename-err";
+    err.id = "device-rename-err";
+    err.setAttribute("role", "status");
+    form.append(input, save, cancel, err);
+    row.replaceChildren(form);
+    input.focus();
+    input.select();
+    cancel.addEventListener("click", () => { dmRenaming = false; renderSessions(); });
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      save.disabled = true;
+      const res = await self.LCTEntitlement.setDeviceName(input.value);
+      if (!res || !res.ok) {
+        save.disabled = false;
+        err.textContent = res && res.reason === "empty"
+          ? "Give it a name first." : "Could not save that name.";
+        input.focus();
+        return;
+      }
+      dmSelfName = res.name;
+      // Shown immediately, then overwritten by whatever the issuer confirms —
+      // the local copy is what this device knows, not what the account holds.
+      for (const dev of dmDevices) if (dev.self) dev.label = res.name;
+      dmRenaming = false;
+      /* The issuer learns a label on a session touch, and listing IS one. So
+         re-list rather than patching the row and trusting the two to agree. */
+      const listed = await self.LCTEntitlement.listSessions();
+      if (listed && listed.branch === "ok" && listed.data && Array.isArray(listed.data.devices)) {
+        dmVersion = Number(listed.data.version) || dmVersion;
+        dmDevices = ensureSelfRow(listed.data.devices);
+        renderSessions("Renamed. Every device on the account sees it.");
+        return;
+      }
+      // Saved here, not confirmed there. Saying "renamed" would promise the
+      // other devices something that has not happened yet.
+      renderSessions("Saved on this device. The others see it at its next check-in.");
+    });
   }
 
   function syncActions() {
@@ -1519,10 +1732,18 @@
 
   function renderSessions(note) {
     $("device-list").replaceChildren(...dmDevices.map(sessionRow));
-    $("device-count").textContent = `${dmDevices.length} of ${self.LCTDodo.SEAT_LIMIT}`;
+    // "of 5" is a seat cap. A trial device holds no seat, so counting it
+    // against one states a limit that is not being applied to them.
+    $("device-count").textContent = devicesPro
+      ? `${dmDevices.length} of ${self.LCTDodo.SEAT_LIMIT}`
+      : `${dmDevices.length} device${dmDevices.length === 1 ? "" : "s"}`;
     $("device-manager-title").textContent = "Your devices";
     $("device-manager-note").textContent = note ||
       "Every device signed in to your account. Pick any, then sign them out.";
+    // A trial holds no seat, so the seat-recovery link is the wrong question.
+    $("device-help-link").textContent = devicesPro
+      ? "Slots held by a device you no longer have?"
+      : "See a device you don't recognise?";
     $("device-actions").hidden = false;
     $("device-confirm").hidden = true;
     syncActions();
@@ -1600,6 +1821,10 @@
   }
 
   async function openDeviceManager(mode, unknownDevices) {
+    dmRenaming = false;
+    [dmSelfPlat, dmSelfName] = await Promise.all([
+      self.LCTEntitlement.describePlatform(), self.LCTEntitlement.currentDeviceName()
+    ]);
     document.body.classList.add("dm-open");
     $("device-manager").hidden = false;
     $("device-confirm").hidden = true;
@@ -1607,7 +1832,7 @@
     const res = await self.LCTEntitlement.listSessions();
     if (res && res.branch === "ok" && res.data && Array.isArray(res.data.devices)) {
       dmVersion = Number(res.data.version) || 0;
-      dmDevices = res.data.devices;
+      dmDevices = ensureSelfRow(res.data.devices);
       dmPicked = new Set();
       renderSessions(mode === "limit"
         ? "All slots are in use. Sign one out here to finish activating on this device." : "");
@@ -1626,6 +1851,11 @@
     if (res && res.branch === "unverified") {
       $("device-manager-note").textContent =
         "Sign in to see every device on your account. This list is only the ones this browser knows about.";
+    } else if (res && res.branch === "notenrolled") {
+      // SESSION_SCOPE = "paid" on the issuer. Not an error, and not something
+      // to retry — say what it takes to get the list.
+      $("device-manager-note").textContent =
+        "The device list comes with Pro. This is only what this browser knows about.";
     }
   }
 
@@ -2044,7 +2274,6 @@
     $("popup-tour-next").hidden = true;
   }
 
-  $("popup-tour-close").addEventListener("click", closePopupTour);
   $("popup-tour-skip").addEventListener("click", closePopupTour);
   $("popup-tour-back").addEventListener("click", () => {
     popupTourAt--;
@@ -2134,31 +2363,105 @@
     saveCache({ pro: true, masked, licenseKind: (license && license.kind) || "dodo", seatCount });
   }
 
-  $("buy-pro").addEventListener("click", async () => {
+  /* ---------- buying ----------
+     #buy-pro lives in the upsell card, hidden for the whole trial week — which
+     is when people decide to pay. #trial-buy is the same purchase from the
+     trial card. One path, so the sign-in gate and error copy cannot drift. */
+
+  /** Trial card's own status line; the upsell's is off screen there. */
+  function trialSay(text, cls = "") {
+    const el = $("trial-buy-status");
+    if (!el) return;
+    el.textContent = text || "";
+    el.className = "pro-note" + (cls ? " " + cls : "");
+    el.hidden = !text;
+  }
+
+  function paintTrialBuy() {
+    const btn = $("trial-buy");
+    if (!btn) return;
+    // An open order is not a second thing to buy — a second session is a
+    // second chance to be charged.
+    btn.disabled = checkoutPending;
+    if (checkoutPending) btn.textContent = "Finishing…";
+    else if (!devicesAccount) btn.textContent = self.LCTProduct.PRICE + " · sign in & buy";
+    else btn.textContent = "Get Pro · " + self.LCTProduct.PRICE;
+  }
+
+  /**
+   * Sign in if needed, then open the hosted checkout. Returns only on failure —
+   * success closes the popup; the tab is open and the worker waits on it.
+   *
+   * @param {HTMLButtonElement} btn pressed button
+   * @param {(text: string, cls?: string) => void} say status sink
+   * @param {(copy: object) => void} [fail] renders a refusal with its note line
+   */
+  async function startPurchase(btn, say, fail) {
+    if (!btn || btn.disabled) return;
+    if (checkoutPending) {
+      say("A purchase is already going through. Give it a moment.", "warn");
+      return;
+    }
+    const label = btn.textContent;
+    const done = (text, cls) => {
+      btn.disabled = false;
+      btn.textContent = label;
+      if (text) say(text, cls);
+      paintTrialBuy();
+    };
+    btn.disabled = true;
+
     /* The issuer refuses an anonymous checkout, and being told that after the
        round trip is worse than being asked first: the address is what makes
        the purchase findable again after a reinstall, so it is part of buying,
        not an extra step bolted onto it. */
     if (!identityVerified) {
-      const gbtn = $("identity-google");
-      identityMsg(gbtn.hidden
-        ? "Buying needs Chrome or Edge — Google sign-in cannot work in this browser."
-        : "Sign in with Google first — it is what brings Pro back if you reinstall.", "warn");
-      if (!gbtn.hidden) gbtn.focus();
-      return;
+      if (!googleReady) {
+        done("Buying needs Chrome or Edge — Google sign-in cannot work in this browser.", "err");
+        return;
+      }
+      btn.textContent = "Opening Google…";
+      say("Signing in first — it is what brings Pro back if you reinstall.");
+      const who = await send({ type: "identity-google" });
+      if (!who || who.branch !== "ok") {
+        done(who && who.branch === "cancelled"
+          ? "Sign-in cancelled. Nothing was charged."
+          : "Google sign-in did not complete. Try again in a moment.", "warn");
+        return;
+      }
+      await refreshIdentity();
+      /* Sign-in can settle it: the account already owns a licence, or a trial.
+         paintSettled() reloads, so never open a checkout for what they have. */
+      const settled = who.settled;
+      if (settled && (settled.restored || settled.trial)) {
+        paintSettled(settled);
+        say("");
+        return;
+      }
+      if (!identityVerified) {
+        done("Sign-in didn't finish. Try once more.", "warn");
+        return;
+      }
     }
-    const btn = $("buy-pro");
-    const label = btn.textContent;
-    btn.disabled = true;
+
     btn.textContent = "Opening checkout…";
+    say("");
     const res = await send({ type: "checkout-start" });
     // The tab is open and the background is waiting on it; there is nothing
     // left for a 380px panel to do.
     if (res && res.ok) { window.close(); return; }
-    btn.disabled = false;
-    btn.textContent = label;
-    paintLicenseState(CHECKOUT_COPY[res && res.reason] || CHECKOUT_FALLBACK);
-  });
+    const copy = CHECKOUT_COPY[res && res.reason] || CHECKOUT_FALLBACK;
+    done("", "");
+    if (fail) fail(copy);
+    else say(copy.note ? copy.text + " " + copy.note : copy.text, copy.cls);
+  }
+
+  $("buy-pro").addEventListener("click", () =>
+    startPurchase($("buy-pro"),
+      (text, cls) => (text ? identityMsg(text, cls) : identityMsg("")),
+      (copy) => paintLicenseState(copy)));
+
+  $("trial-buy").addEventListener("click", () => startPurchase($("trial-buy"), trialSay));
 
   /* A purchase already in flight — from an earlier popup, or from before the
      browser was last closed. Says so instead of showing a Buy button to
@@ -2166,6 +2469,12 @@
   (async () => {
     const state = await send({ type: "checkout-state" });
     if (!state || !state.pending) return;
+    // Also reaches the trial card, whose Buy button must not open a second one.
+    checkoutPending = true;
+    paintTrialBuy();
+    trialSay(state.held
+      ? "Your key arrived — finishing your activation."
+      : "Waiting for your payment to clear. You can close this.", "warn");
     if (state.held) revealLicenseBox(false);
     paintLicenseState(state.held
       ? { text: "Finishing your activation…", cls: "warn",
@@ -2175,17 +2484,22 @@
 
     const done = await send({ type: "checkout-poll" });
     if (!done) return;
+    checkoutPending = false;
+    paintTrialBuy();
     if (done.state === "active") {
+      trialSay("");
       paintLicenseState(null);
       await paintProFromStorage();
     } else if (done.state === "refunded") {
+      trialSay("That purchase was refunded. Nothing to activate.", "err");
       paintLicenseState({ text: "That purchase was refunded.", cls: "err",
         note: "Nothing to activate. Reply to your purchase email if this is wrong." });
     }
   })();
   $("help-link").addEventListener("click", (e) => {
     e.preventDefault();
-    chrome.tabs.create({ url: self.LCTProduct.HELP });
+    const supportUrl = self.LCTProduct.supportMailUrl("Tvara help");
+    chrome.tabs.create({ url: supportUrl });
   });
 
   // "Is it still working on the site itself?" — answerable in one click rather
@@ -2231,6 +2545,8 @@
   });
 
   $("license-devices").addEventListener("click", () => openDeviceManager("manage"));
+  $("trial-devices").addEventListener("click", () => openDeviceManager("manage"));
+  $("identity-devices").addEventListener("click", () => openDeviceManager("manage"));
   $("device-manager-back").addEventListener("click", closeDeviceManager);
   $("device-signout").addEventListener("click", () => { if (dmPicked.size) armConfirm("picked"); });
   $("device-signout-all").addEventListener("click", () => armConfirm("all"));
@@ -2338,6 +2654,25 @@
       ? "1 chat was deleted on the site" : `${count} chats were deleted on the site`;
   }
 
+  /* A reinstall keeps the ledger (storage.sync) and loses the archive
+     (IndexedDB), so the pass captures only new chats until the backup is
+     restored. The Recall page has always said so; the popup is where the
+     person actually is when they notice the count. */
+  function paintRestoreAlert(recovery) {
+    const offered = !!(recovery && recovery.state === "restore-offered");
+    $("restore-alert").hidden = !offered;
+    if (!offered) return;
+    const chats = Number(recovery.backup && recovery.backup.chats) || 0;
+    $("restore-alert-title").textContent = chats
+      ? `Restore your ${chats.toLocaleString()} archived chats`
+      : "Restore your previous archive";
+  }
+
+  $("restore-alert").addEventListener("click", () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL("recall.html#recovery") });
+    window.close();
+  });
+
   $("deletion-alert").addEventListener("click", () => {
     chrome.tabs.create({ url: chrome.runtime.getURL("recall.html#deletions") });
     window.close();
@@ -2349,6 +2684,7 @@
     if (!status && retry) return setTimeout(() => checkFreshness(false), 350);
     paintSummary(status && status.summary);
     paintDeletionAlert(status && status.deletions);
+    paintRestoreAlert(status && status.recovery);
   }
 
   async function triggerSync() {

@@ -49,7 +49,8 @@
     "test:security-egress": "node test/security-egress-proof.mjs",
     "lint": "eslint .",
     "lint:webext": "node tools/pack.mjs --firefox && rm -rf dist/webext-lint && mkdir -p dist/webext-lint && unzip -q dist/*-firefox.zip -d dist/webext-lint && npx --yes web-ext@8 lint --source-dir=dist/webext-lint",
-    "test:device-proof": "node test/test-device-proof.mjs"
+    "test:device-proof": "node test/test-device-proof.mjs",
+    "test:session-ui": "node test/real-chrome-session-ui.mjs"
   },
   "engines": {
     "node": ">=24"
