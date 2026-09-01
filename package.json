@@ -19,6 +19,7 @@
     "test:backup-password": "node test/test-backup-password.mjs",
     "test:quota": "node test/test-quota.mjs",
     "verify:live": "node test/verify-live.mjs",
+    "smoke:sessions": "node server/session-smoke.mjs https://tvara.tharuntejandhe.workers.dev chrome-extension://hbejlhhmbhkeaebcgmblchnodeampcgl",
     "verify:login": "node test/verify-live.mjs login",
     "attach": "node tools/attach.mjs",
     "attach:watch": "node tools/attach.mjs --watch",

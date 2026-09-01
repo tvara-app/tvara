@@ -318,21 +318,32 @@ system defends the server and the seat economy, not the client binary.
 All routes keep the existing envelope: `{v, device_pub, nonce, ts, sig}` plus
 route-specific signed fields.
 
+Field names below are the ones the worker actually parses — **snake_case on the
+wire**. `lib/entitlement.js` accepts camelCase from its callers and converts, so
+a client written straight from an older draft of this section fails silently
+rather than loudly: `ifVersion` arrives as `undefined`, the 412 stale-screen
+guard never fires, and `keepSelf: false` — meant to sign this device out too —
+is read as `keep_self === undefined`, which defaults to keeping it. A 200 comes
+back saying the terminate worked while the device that asked stays signed in.
+
 - `POST /sessions` — identity token + device proof. Returns
-  `{version, bookmark, limit, devices: [{device, label, plat, geo, lastSeen,
-  createdAt, self, kind: "pro"|"trial"}]}`, newest activity first.
-- `POST /sessions/terminate` — `{targets: [dev_fp], op_id, ifVersion}`.
+  `{version, limit, devices: [{device, label, plat, geo, lastSeen, createdAt,
+  self, pro}]}`, newest activity first. `pro` is a boolean (the seat holds a
+  licence key); there is no `kind` string and no `bookmark`.
+- `POST /sessions/terminate` — `{targets: [dev_fp], op_id, if_version}`.
   **Multi-device by construction**: the array is the feature. One transaction,
-  one version bump, one broadcast. Returns the new version and the fresh list.
-- `POST /sessions/terminate-all` — `{op_id, ifVersion, keepSelf}`. Sets
-  `epoch = now`, cascades every seat, requires a fresh identity.
+  one version bump. Returns the new version and the fresh list.
+- `POST /sessions/terminate-all` — `{op_id, if_version, keep_self}`. Sets
+  `epoch = now`, cascades every seat, requires a fresh identity. `keep_self`
+  defaults to true — only an explicit `false` cuts the calling device.
 - `POST /session` — the heartbeat. Device proof and a licence key; the identity
   token is optional and only widens which kills apply. Returns
   `{live, reason}` — `reason` is `terminated`, `signed-out` or `revoked` — and
   `503` on any infrastructure failure, never `live: false`.
-- `GET /sessions/watch` — WebSocket upgrade into the account's Durable Object.
-  Authenticated by a short-lived ticket issued by `POST /sessions`, because a
-  WebSocket handshake cannot carry a signed body.
+There is no `GET /sessions/watch`. It was designed alongside the Durable Object
+and dropped with it (§6): `grep -rn "WebSocketPair\|DurableObject" server/`
+returns nothing. Termination reaches a device on its next heartbeat, which is
+what §7's timing budget is about.
 
 The old `/devices` and `/devices/revoke` stay, unchanged, for one release: an
 extension in the store today still calls them.
@@ -435,13 +446,26 @@ Three layers, and the third found a bug the first two could not.
 
 ## 13.1 Tests
 
-- `test/test-sessions.mjs` (new) — list, multi-target terminate, terminate-all,
-  `ifVersion` conflict, `op_id` replay, backfill from `seats`, cascade leaves no
-  orphaned seat.
+- `test/test-worker.mjs` — list, multi-target terminate, terminate-all,
+  `if_version` conflict, `op_id` replay, backfill from `seats`, cascade leaves no
+  orphaned seat ("screen: their seats are released with them"). These landed in
+  the existing worker suite rather than a file of their own: they need the same
+  SQLite-backed D1 double and signed-body helpers, and a second harness built to
+  share them is a second harness to keep in step.
 - `test/test-worker.mjs` — heartbeat live and dead, kill blocks silent re-claim,
   `intent=activate` clears it, D1 down answers 503 and never `live:false`.
-- `test/security-entitlement-gate.mjs` — a key holder without the account cannot
-  terminate a peer; a stale identity token cannot terminate-all.
-- `test/test-device-proof.mjs` — every session route requires a valid proof; a
-  forged `dev_fp` is rejected.
-- `test/fuzz-worker.mjs` — fuzz the three new bodies.
+- `test/test-worker.mjs` — a key holder without the account cannot terminate a
+  peer (`:1446`); a stale identity token cannot terminate-all (`:1535`). Same
+  reason as above: these read as security tests, but they need the D1 double, so
+  they live with it rather than in `security-entitlement-gate.mjs`.
+- `server/session-smoke.mjs` — the deployed routes, adversarially, against a
+  real issuer. Eight refusals; run with `npm run smoke:sessions`. Read its
+  header before trusting a green run — it holds no seat, so it can prove the
+  refusals and not the grant.
+
+**Not covered, and worth being honest about it.** `test/fuzz-worker.mjs` targets
+`/entitlement` only, so `body.targets` — the one attacker-supplied *array* in
+the whole issuer — has no fuzz coverage. `test/test-device-proof.mjs` has no
+session cases either. Neither gap is dangerous today (both routes sit behind the
+device proof and the identity gate), but this list previously claimed both were
+covered, which is the state that stops anyone adding them.

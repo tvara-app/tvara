@@ -1532,10 +1532,35 @@ try {
   t("B2c1 …and scrolling up to read older turns is still not permission to walk",
     atTop.state === "(never started)" && atTop.loads <= 1, JSON.stringify(atTop));
 
-  /* There is no automatic walk left to check for: settings.history renders the
-     older turns from the archive instead of scrolling for them, so the page is
-     never taken at all — background tab or not. The ⤒ walk, below, is the only
-     thing that still moves a scroller, and only when asked. */
+  /* B2c3 — the other half of the same contract, and the half nothing checked.
+     Every assertion above proves a REFUSAL, so a loader that had quietly stopped
+     walking altogether passed them all: that is how two regressions got in. One
+     dropped the arm the moment a second chat was opened, the other left an arm
+     with no event that could ever fire.
+
+     The walk itself cannot be observed here — headless Chrome reports every tab
+     as visible (see launchCtx), so it never becomes eligible. The ARM can be,
+     and it is the thing that broke: the walk follows from it plus document.hidden. */
+  const armCount = await armed.evaluate(() => document.documentElement.dataset.lctHistoryArmed);
+  t("B2c3 opening a chat ARMS the walk rather than losing it — the refusal above is a wait, not a no",
+    armCount === "1", `lctHistoryArmed=${JSON.stringify(armCount)}`);
+
+  /* And the arm must survive a second chat. A single-slot `pending` looked
+     correct until two routes wanted one at once: the second overwrote the
+     first, while startedRoutes had already marked the first handled, so neither
+     could be re-armed and both chats lost the feature permanently. */
+  const twoRoutes = await armed.evaluate(async () => {
+    history.pushState({}, "", "?c=second");
+    window.dispatchEvent(new Event("popstate"));
+    for (let i = 0; i < 40; i++) {
+      if (document.documentElement.dataset.lctHistoryArmed === "2") break;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    return { armed: document.documentElement.dataset.lctHistoryArmed, href: location.search };
+  });
+  t("B2c3 …and a second chat arms alongside the first instead of evicting it",
+    twoRoutes.armed === "2", JSON.stringify(twoRoutes));
+
   await armed.close();
 
   const virtual = await ctx.newPage();

@@ -37,6 +37,9 @@
      1,500 turns at ~25/page is 60 round trips, which outruns any short cap. */
   const CEILING_MS = 240000;
   const IDLE_RESUME_MS = 2500;
+  /* Let the host's own route/open auto-scroll land before walking on top of it.
+     The arm path went straight to 0 and raced it. */
+  const SETTLE_MS = 700;
   /* A background-only walk is chopped into tab-away stints, so a long
      conversation legitimately needs many. Only a reader interrupting spends
      one — the tab coming forward is the design working, not a fight. */
@@ -117,13 +120,6 @@
     if (!messages.length) return "0";
     const tail = adapter && adapter.stableKey ? adapter.stableKey(messages[messages.length - 1]) : "";
     return messages.length + "|" + messageKey(adapter, messages[0]) + "|" + tail;
-  }
-
-  /* ---------- the freeze ----------
-     Without a freeze there is no invisible walk, so a host we cannot clone is a
-     host the automatic walk waits out. */
-  function canFreeze() {
-    return typeof document.documentElement.append === "function";
   }
 
   function makeFreeze(scroller) {
@@ -534,7 +530,11 @@
          walk is finishing a job somebody asked for out loud, with the pill and
          its Stop button still on screen — making that one wait for a
          background tab abandons it silently instead. */
-      if (auto && !backgrounded() && !canFreeze()) return armPending(adapter, route);
+      /* `&& !canFreeze()` used to guard this and could never be true — it
+         tested for ParentNode.append, which predates the oldest browser this
+         extension loads on. So the auto resume walked a page somebody was
+         looking at, with announce=false meaning no pill and no Stop. */
+      if (auto && !backgrounded()) return armPending(adapter, route);
       const task = { route, cancelled: false, cancelledBy: "", auto, detach: null, timer: null, probes: 0 };
       active = task;
       attachCancellation(task);
@@ -551,6 +551,14 @@
     if (task.detach) task.detach();
     if (active === task) active = null;
     setStatus(status);
+    /* visibilitychange is the only other thing that calls tryPending, and it has
+       already fired by the time a task ends. A seek that started visible and
+       finished hidden therefore left its arm with nothing to wake it, and a tab
+       parked in the background — the whole point of a background-only walk —
+       waited on it forever. Deferred a turn because begin() finishes the
+       outgoing task BEFORE claiming `active`, and a synchronous call here would
+       re-enter begin() underneath it. */
+    if (!active) setTimeout(tryPending, 0);
   }
 
   function begin(adapter, delay, auto) {
@@ -589,30 +597,53 @@
      comes from the background sync, and neither of those touches the page at
      all. The ⤒ button is unchanged — that one was asked for, out loud, by
      someone watching. */
-  let pending = null;               // { adapter, route } waiting for the tab to go away
+  /* One arm per route, not one arm in total. A single slot survived only while
+     every arm was consumed immediately: open chat A, then chat B, and B's arm
+     overwrote A's — while maybeStart had already stamped A into startedRoutes on
+     the way past, so nothing could ever arm it again. Going back to A then found
+     a route marked handled, waiting on an arm that no longer existed, and the
+     next tab-hide dropped B's too. Both chats stranded, permanently. */
+  const pending = new Map();        // route -> adapter, waiting for the tab to go away
 
   function backgrounded() {
     return document.hidden;
   }
 
-  function clearPending() {
-    pending = null;
+  /* Deliberately observable, on its own key rather than lctHistoryState — the
+     arm is not a walk state, and B2c1 asserts that lctHistoryState never moves.
+     Without this the arm is invisible from outside: a walk that correctly
+     declined to run and a walk whose arm was silently dropped look identical,
+     which is exactly how two regressions got past a suite that only ever
+     asserted the refusal. */
+  function noteArmed() {
+    document.documentElement.dataset.lctHistoryArmed = String(pending.size);
+  }
+
+  function clearPending(route) {
+    if (route === undefined) pending.clear();
+    else pending.delete(route);
+    noteArmed();
   }
 
   function armPending(adapter, route) {
     // Nothing to subscribe to: visibilitychange is the only event that can make
     // a pending route eligible, and it is already wired below.
-    if (pending && pending.route === route) return;
-    pending = { adapter, route };
+    pending.set(route, adapter);
+    noteArmed();
   }
 
   function tryPending() {
-    if (!pending || active) return;
-    if (location.href !== pending.route || completedRoutes.has(pending.route)) return clearPending();
+    if (active) return;
+    const route = location.href;
+    const adapter = pending.get(route);
+    if (!adapter) return;
+    /* Re-checked here, not just at arm time: an arm can outlive the setting that
+       made it. applyState re-runs on an entitlement change as well as a settings
+       one, and both land as setAuto(false) without touching this map. */
+    if (!autoAllowed || completedRoutes.has(route)) return clearPending(route);
     if (!backgrounded()) return;
-    const adapter = pending.adapter;
-    clearPending();
-    begin(adapter, 0, true);
+    clearPending(route);
+    begin(adapter, SETTLE_MS, true);
   }
 
   document.addEventListener("visibilitychange", () => {
@@ -827,12 +858,22 @@
        And the walk, because the archive is not always there — a chat nobody has
        synced, a provider with no endpoint — and "sometimes" is not the feature.
        The walk parks the host's scroller at the top, which is the only way it
-       hands over older turns, and does it behind a freeze: a still copy of the
-       scroller sits over it, so the reader keeps seeing the exact pixels they
-       were looking at. Any input at all stands it down and hands the live page
-       back. */
-    mountArchive(adapter);
-    begin(adapter, 700, true);
+       hands over older turns, and there is no invisible version of that while
+       the tab is on screen. So it is ARMED here, not started: it runs when the
+       tab goes away, per "never move a page somebody is looking at" above.
+       Calling begin() here instead took the scroller 700ms after a chat opened,
+       which is the exact report that comment was written for. */
+    const arm = () => {
+      armPending(adapter, route);
+      // A chat opened in a tab that is already hidden has no visibilitychange
+      // coming to start it, and would otherwise wait for one forever.
+      tryPending();
+    };
+    // Only a mount that actually rendered older turns makes the walk redundant;
+    // every other outcome is the "sometimes" above and still needs the fallback.
+    // Also the only .catch this call has ever had — an insertBefore that throws
+    // was an unhandled rejection that took the arm down with it.
+    mountArchive(adapter).then((mounted) => { if (!mounted) arm(); }, arm);
   }
 
   /** The reader asked for it. Redo even a route we already walked. */
@@ -845,7 +886,14 @@
     return begin(adapter, 0, false);
   }
 
-  function setAuto(on) { autoAllowed = !!on; }
+  function setAuto(on) {
+    autoAllowed = !!on;
+    /* Assignment alone stranded live arms. applyState calls setAuto(false) when
+       History is unticked or the entitlement lapses, but stop() — the only other
+       thing that clears an arm — runs only when the WHOLE extension is switched
+       off, so a switched-off feature still walked on the next tab-hide. */
+    if (!autoAllowed) clearPending();
+  }
 
   /**
    * Page the host upward until ONE specific message is mounted.

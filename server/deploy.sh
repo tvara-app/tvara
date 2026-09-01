@@ -201,5 +201,16 @@ if ! node ./smoke.mjs "$URL" "$ORIGIN"; then
   exit 1
 fi
 
+# smoke.mjs covers /trial, /entitlement and /checkout. The session routes are
+# the ones where a mistake is SILENT — a /sessions that lost its identity gate
+# answers 200 to anybody and no happy path notices — so they get their own
+# adversarial pass, using the same $URL and $ORIGIN this script already refused
+# to guess. Every check asserts a refusal, so it needs no licence and no
+# identity and is safe to run against production.
+if ! node ./session-smoke.mjs "$URL" "$ORIGIN"; then
+  echo "❌ deployed, but the session monitoring routes are not answering safely."
+  exit 1
+fi
+
 echo "✅ issuer live at ${URL}"
 echo "   lib/entitlement.js must point at exactly this host (ISSUER)."

@@ -3065,6 +3065,35 @@ async function retireStaleQuotaTags(id, acct, fresh) {
 const quotaCtx = new Map();        // host -> { ctx, at }
 const quotaPolledAt = new Map();   // id -> ms
 const quotaInflight = new Map();   // id -> Promise
+const QUOTA_POLLED_AT = "lct-quota-polled-at";
+
+/* The same service-worker defect the session heartbeat had, except this Map is
+   the only thing keeping us off somebody else's allowance endpoint. It dies with
+   the worker every ~30s of idle, so QUOTA_POLL_MIN_MS was a minute on paper and
+   a respawn in practice. storage.session survives the respawn and clears on
+   browser restart, which is the one moment a fresh poll is wanted anyway. */
+async function quotaLastPoll(id) {
+  const mem = quotaPolledAt.get(id) || 0;
+  const area = sessionArea();
+  if (!area) return mem;
+  try {
+    const got = await area.get(QUOTA_POLLED_AT);
+    const map = (got && got[QUOTA_POLLED_AT]) || {};
+    return Math.max(mem, Number(map[id]) || 0);
+  } catch { return mem; }
+}
+
+async function noteQuotaPoll(id, at) {
+  quotaPolledAt.set(id, at);
+  const area = sessionArea();
+  if (!area) return;
+  try {
+    const got = await area.get(QUOTA_POLLED_AT);
+    const map = (got && got[QUOTA_POLLED_AT]) || {};
+    map[id] = at;
+    await area.set({ [QUOTA_POLLED_AT]: map });
+  } catch { /* the memory map stands in */ }
+}
 
 /**
  * Candidate allowance endpoints.
@@ -3295,7 +3324,7 @@ async function quotaPoll(platformId, reason = "manual") {
   const inflight = quotaInflight.get(platformId);
   if (inflight) return inflight;
 
-  const last = quotaPolledAt.get(platformId) || 0;
+  const last = await quotaLastPoll(platformId);
   if (reason !== "manual" && Date.now() - last < QUOTA_POLL_MIN_MS) {
     return { id: platformId, skipped: "polled recently" };
   }
@@ -3316,7 +3345,7 @@ async function quotaPoll(platformId, reason = "manual") {
       const result = await quotaTry(adapter, ctx, endpoint);
       if (result.ok && result.windows) windows.push(...result.windows);
     }
-    quotaPolledAt.set(platformId, Date.now());
+    await noteQuotaPoll(platformId, Date.now());
     if (!windows.length) return { id: platformId, skipped: "provider reported nothing" };
 
     const acct = await quotaAcctFor(adapter, ctx);
@@ -5130,6 +5159,7 @@ const BG_SESSION_PERIOD_MIN = 60;
 
 async function sessionTick() {
   lastHeartbeatAt = Date.now();
+  await noteHeartbeat(lastHeartbeatAt);
   try {
     const got = await chrome.storage.local.get("license");
     const lic = got && got.license;
@@ -5152,13 +5182,63 @@ async function sessionTick() {
  * five-minute floor.
  */
 const SESSION_ACTIVE_MS = 5 * 60e3;
+const BG_HEARTBEAT_AT = "lct-heartbeat-at";
 let lastHeartbeatAt = 0;
+
+/* The floor has to OUTLIVE the worker, and a module variable does not.
+   An MV3 service worker is killed about 30 seconds after it goes idle and
+   respawned on the next content-script message, so `lastHeartbeatAt` resets to
+   0 many times an hour and the five-minute floor it is guarding stops existing
+   — every respawn asks the issuer again. That is the difference between the
+   120 calls a day docs/SESSIONS.md budgets for and several thousand, and it
+   bites hardest exactly when somebody is using the product hard: five devices
+   share RL_SESSION_MAX (200/hour/key), so the heartbeats start answering 429,
+   and a 429 carries no verdict. A device that really was signed out then stops
+   finding out — the one job this clock has, lost to its own chatter.
+
+   storage.session is the right home: it survives the respawn and clears on
+   browser restart, which is the single moment an unconditional check is
+   genuinely wanted anyway. */
+async function readHeartbeatAt() {
+  /* 0, not lastHeartbeatAt: maybeSessionTick stamps the memory floor to `now`
+     before it gets here, so returning that made every comparison `now - now`
+     and refused the tick forever instead of falling back to it. No persisted
+     floor means the memory floor already ruled — say yes and let it stand. */
+  const area = sessionArea();
+  if (!area) return 0;
+  try {
+    const got = await area.get(BG_HEARTBEAT_AT);
+    return Number(got && got[BG_HEARTBEAT_AT]) || 0;
+  } catch { return 0; }
+}
+
+async function noteHeartbeat(at) {
+  const area = sessionArea();
+  if (!area) return;
+  try { await area.set({ [BG_HEARTBEAT_AT]: at }); } catch { /* memory floor stands in */ }
+}
 
 function maybeSessionTick() {
   const now = Date.now();
-  if (now - lastHeartbeatAt < SESSION_ACTIVE_MS) return;
+  const was = lastHeartbeatAt;
+  if (now - was < SESSION_ACTIVE_MS) return;
   lastHeartbeatAt = now;      // set BEFORE the await: two messages in the same
-  sessionTick();              // tick must not both start a request
+  dueSessionTick(now, was);   // tick must not both start a request
+}
+
+/** The persisted half of the floor, which the line above cannot check without
+ *  awaiting — and awaiting there would reopen the same-tick race it closes. */
+async function dueSessionTick(now, was) {
+  if (now - (await readHeartbeatAt()) < SESSION_ACTIVE_MS) {
+    /* Declined, so give the memory floor its old value back. Leaving `now` there
+       charged a full SESSION_ACTIVE_MS for a request that never went out: a
+       respawn at 4:59 blocked every check until 9:59, doubling the interval this
+       clock documents. */
+    if (lastHeartbeatAt === now) lastHeartbeatAt = was;
+    return;
+  }
+  await noteHeartbeat(now);
+  sessionTick();
 }
 
 async function ensureSessionAlarm() {
@@ -5238,8 +5318,13 @@ try {
     ensureSessionAlarm();
     /* Browser start is the one moment a device that was terminated while it was
        switched off can find out before it is used. The alarm's own delay is two
-       minutes; this does not wait for it. */
-    sessionTick();
+       minutes; this does not wait for it.
+
+       maybeSessionTick, not sessionTick: wake() also runs on every respawn of
+       the service worker (see the call below), and an unconditional check there
+       is the same flood the floor above exists to stop. At a real browser start
+       storage.session is empty, so this still fires immediately. */
+    maybeSessionTick();
     // A purchase started before the last shutdown is still owed a licence.
     ensureOrderAlarm().catch(() => {});
     firstRunBootstrap("wake").catch(() => {});   // no-op once it has run
@@ -6123,6 +6208,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const got = await chrome.storage.local.get("license");
         const lic = got && got.license;
         if (!lic || !lic.key) return { skipped: "none" };
+        /* Honour the same floor as everything else, and record it. maybeSessionTick
+           already ran for THIS message, and the popup sends entitlement-refresh
+           four lines before it — so one popup open used to spend two of
+           RL_SESSION_MAX (200/hour/key, shared across five devices) and, because
+           neither floor was stamped, bought nothing the next tick would count. */
+        const now = Date.now();
+        if (now - lastHeartbeatAt < SESSION_ACTIVE_MS) return { skipped: "recent" };
+        if (now - (await readHeartbeatAt()) < SESSION_ACTIVE_MS) return { skipped: "recent" };
+        lastHeartbeatAt = now;
+        await noteHeartbeat(now);
         return self.LCTEntitlement.heartbeat(lic);
       }
       case "entitlement-refresh": {
