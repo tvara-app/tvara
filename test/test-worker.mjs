@@ -1812,6 +1812,90 @@ async function seededAccount(over = {}) {
   globalThis.fetch = savedFetch;
 }
 
+/* ---------- the live channel ----------
+ *
+ * A WebSocket handshake is a GET. The POST-only gate used to sit ABOVE this
+ * branch, so every upgrade answered 405 and the Durable Object was never
+ * reached — the whole feature was unreachable and nothing here was looking.
+ * The first assertion is that regression: any answer other than 405 proves the
+ * branch is being entered at all.
+ */
+const watchMacKey = createHash("sha256").update("lct-identity-mac-v1:" + SIGNING_KEY).digest();
+function watchTicket(claims) {
+  const payload = Buffer.from(JSON.stringify(claims));
+  const mac = createHmac("sha256", watchMacKey).update(payload).digest();
+  return `LCTW1.${b64u(payload)}.${b64u(mac)}`;
+}
+
+const EFP = "a".repeat(32);
+const DFP = "b".repeat(32);
+
+/** A Durable Object namespace that records what it was handed. */
+function accountsStub() {
+  const seen = [];
+  return {
+    seen,
+    idFromName: (name) => ({ name }),
+    get: (id) => ({
+      fetch: (url, init) => {
+        seen.push({ id: id.name, url: String(url), devFp: init.headers["x-dev-fp"] });
+        /* The real object answers 101. Node's Response refuses that status, so
+           the stub stands in with a marker the assertion can recognise — what
+           is under test is that the branch delegates, not what it returns. */
+        return new Response("upgraded", { status: 200 });
+      }
+    })
+  };
+}
+
+const watch = (query, { e = env(), upgrade = true, origin = ORIGIN } = {}) =>
+  worker.fetch(new Request("https://issuer.example/sessions/watch" + query, {
+    method: "GET",
+    headers: { Origin: origin, ...(upgrade ? { Upgrade: "websocket" } : {}) }
+  }), e);
+
+t("watch: an upgrade is NOT answered 405 — the POST gate must not stand in front of it",
+  (await watch("?t=x")).status !== 405);
+
+t("watch: no Durable Object bound is 503, not a crash",
+  (await watch("?t=x")).status === 503);
+
+t("watch: a GET without the Upgrade header is 426, not a socket",
+  (await watch("?t=x", { e: env({ ACCOUNTS: accountsStub() }), upgrade: false })).status === 426);
+
+t("watch: the origin gate still applies to the socket",
+  (await watch("?t=x", { origin: "https://evil.example" })).status === 403);
+
+t("watch: a ticket that is not ours is refused",
+  (await watch("?t=LCTW1.aaaa.bbbb", { e: env({ ACCOUNTS: accountsStub() }) })).status === 401);
+
+t("watch: an expired ticket is refused even though its MAC is good",
+  (await watch("?t=" + encodeURIComponent(watchTicket({ v: 1, efp: EFP, dfp: DFP, exp: Date.now() - 1 })),
+    { e: env({ ACCOUNTS: accountsStub() }) })).status === 401);
+
+/* The forgery that would matter: a ticket is the only thing naming the device,
+   so a payload edited to name somebody else must not survive its own MAC. */
+{
+  const good = watchTicket({ v: 1, efp: EFP, dfp: DFP, exp: Date.now() + 60e3 });
+  const parts = good.split(".");
+  const swapped = [parts[0], b64u(Buffer.from(JSON.stringify(
+    { v: 1, efp: "c".repeat(32), dfp: DFP, exp: Date.now() + 60e3 }))), parts[2]].join(".");
+  t("watch: a payload rewritten to name another account fails its MAC",
+    (await watch("?t=" + encodeURIComponent(swapped), { e: env({ ACCOUNTS: accountsStub() }) })).status === 401);
+}
+
+{
+  const accounts = accountsStub();
+  const res = await watch("?t=" + encodeURIComponent(watchTicket({ v: 1, efp: EFP, dfp: DFP, exp: Date.now() + 60e3 })),
+    { e: env({ ACCOUNTS: accounts }) });
+  t("watch: a live ticket reaches the account's object",
+    res.status === 200 && (await res.text()) === "upgraded" && accounts.seen.length === 1);
+  /* The device the ticket PROVED, never one read off the query string — a tag
+     a caller could choose would be a way to watch a stranger's account. */
+  t("watch: the object is handed the proven fingerprints and nothing else",
+    accounts.seen[0] && accounts.seen[0].id === EFP && accounts.seen[0].devFp === DFP);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) console.log("failed:\n  " + failed.join("\n  "));
 process.exit(fail ? 1 : 0);

@@ -2805,7 +2805,6 @@ async function route(request, env) {
     return new Response(null, { status: 204, headers: corsHeaders(origin) });
   }
   if (!originAllowed(origin, env)) return new Response("forbidden", { status: 403 });
-  if (request.method !== "POST") return json({ error: "method" }, 405, origin);
 
   /* ---------- edge rate limit ----------
      The KV counters further down are a brake: their get-then-put races, so a
@@ -2848,6 +2847,12 @@ async function route(request, env) {
       headers: { Upgrade: "websocket", "x-dev-fp": claims.dfp }
     });
   }
+
+  /* Below the watch branch, not above it. A WebSocket handshake is a GET, so
+     a POST-only gate ahead of that branch made the live channel unreachable:
+     every upgrade answered 405 and the Durable Object was never asked. Every
+     route past this point does read a signed body, and still must be POST. */
+  if (request.method !== "POST") return json({ error: "method" }, 405, origin);
 
   const ROUTES = ["/entitlement", "/trial", "/devices", "/devices/revoke", "/session",
     "/sessions", "/sessions/terminate", "/sessions/terminate-all",

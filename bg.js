@@ -3935,7 +3935,6 @@ function presenceFrom(tabs, host) {
  * archive. A Claude login with three organisations is three passes.
  */
 async function bgSyncPlatform(adapter, run, opts = {}) {
-  const auto = opts.reason === "auto";
 
   // 1. host cooling down from an earlier 429 — say so, don't grind
   const cooldownUntil = await loadCooldown(adapter.host);
@@ -5448,7 +5447,7 @@ async function sessionWatchConnect(reason) {
   if (sessionWsDone) return { status: "signed-out" };
   if (sessionWs) return { status: "open" };
   if (typeof WebSocket === "undefined") return { status: "unsupported" };
-  let url = "";
+  let url;
   try {
     const res = await self.LCTEntitlement.listSessions();
     if (!res || res.branch !== "ok") return { status: res ? res.branch : "network" };
@@ -5483,7 +5482,7 @@ async function sessionWatchConnect(reason) {
    `killed` is this device; `changed` says only that the list moved, which is
    why it carries no fingerprints. */
 async function sessionWatchMessage(raw) {
-  let msg = null;
+  let msg;
   try { msg = JSON.parse(String(raw || "")); } catch { return; }
   if (!msg || typeof msg.type !== "string") return;
   if (msg.type === "killed") {
