@@ -721,11 +721,12 @@
     // The provider's own Retry-After wins over our backoff when it says longer:
     // retrying inside a 429's window just spends the next one.
     const wait = Math.max(MOUNT_RETRY_MS * (used + 1), Number(afterMs) || 0);
-    setTimeout(() => {
+    const again = () => {
       if (location.href !== route) return;
       mountedRoutes.delete(route);
       mountArchive(adapter);
-    }, Math.min(wait, 120000));
+    };
+    setTimeout(again, Math.min(wait, 120000));
   }
 
   async function mountArchive(adapter) {
