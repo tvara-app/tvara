@@ -37,6 +37,25 @@ database_id = "afebbfde-fc06-47f7-aa19-4c494557987d"
 binding = "RL"
 id = "b345d802a1c248bc9684c6ab28bf3153"
 
+# The live device channel. One object per account, holding one hibernatable
+# WebSocket per signed-in device, so a sign-out lands on the removed device in
+# about a second instead of waiting out its alarm.
+#
+# It is an ACCELERATOR and never a ledger: D1 commits the kill first and this
+# object is only told afterwards. If it is unavailable, every route still
+# answers and the device still dies on its next heartbeat — see
+# server/account-do.js and docs/SESSIONS.md §4.
+[[durable_objects.bindings]]
+name = "ACCOUNTS"
+class_name = "AccountDO"
+
+# SQLite-backed, not the key-value backend: that is the one Durable Objects
+# offers outside the paid plan, and this object stores nothing anyway — its
+# whole state is the set of open sockets, which the hibernation API owns.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AccountDO"]
+
 # The hard bound the KV counters are not — enforced at the edge, keyed on IP,
 # before the body is read. 60 requests per minute is roomy for a shared NAT and
 # tight against a script. Failing open in the worker if the binding is absent.

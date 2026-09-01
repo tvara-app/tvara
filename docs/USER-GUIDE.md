@@ -116,10 +116,10 @@ reopened on the platform: the original was never saved there.
   to be the window you are looking at, no chat tab has to be open, and closing
   the popup does not stop anything. If the browser shuts a pass down partway,
   it books itself back in and carries on from where the archive actually is.
-- **It steps aside, briefly:** while you are actually looking at a chat site,
-  an unattended pass on that site waits rather than compete with you for the
-  provider's rate limit. If you stay there, it stops waiting after 20 minutes
-  and continues one request at a time.
+- **It never waits for you:** a pass does not stop or pause because a chat
+  site is open, because that window is in front, or because Chrome is behind
+  another application. Having the site open only slows the pass to one request
+  at a time, so it is not competing with you for the provider's rate limit.
 - **The text follows the titles, by itself:** a history listing gives every
   conversation's title in one call; the words cost one call each. Those are
   fetched in the background as soon as a pass finds them missing. **Archive

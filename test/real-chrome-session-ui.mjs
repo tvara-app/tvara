@@ -253,6 +253,22 @@ try {
        destructive control that acts on nothing. */
     t("Sign out is dead until something is picked", await page.isDisabled("#device-signout"));
 
+    /* A row's own Sign out acts on THAT device. It must not sweep in whatever
+       is ticked, and it must leave those ticks alone. */
+    await page.locator("#device-list .device-row").nth(2).locator(".device-pick").check();
+    await page.locator("#device-list .device-row").nth(1).locator(".device-signout-one").click();
+    await page.waitForTimeout(200);
+    t("a row's Sign out arms the same confirmation", await page.isVisible("#device-confirm"));
+    t("…for that one device, not it plus what was ticked",
+      /out 1 device\?/i.test(await text(page, "#device-confirm-text")),
+      await text(page, "#device-confirm-text"));
+    await page.click("#device-confirm-no");
+    await page.waitForTimeout(200);
+    t("…and a tick it never touched survives",
+      await page.locator("#device-list .device-row").nth(2).locator(".device-pick").isChecked());
+    await page.locator("#device-list .device-row").nth(2).locator(".device-pick").uncheck();
+    await page.waitForTimeout(150);
+
     // Tick the work laptop, the way a person picks the machine they lost.
     await page.locator("#device-list .device-row").nth(1).locator(".device-pick").check();
     await page.waitForTimeout(150);
@@ -639,9 +655,12 @@ try {
       /^Work laptop/.test(await rowText(page, 2)), await rowText(page, 2));
     t("…with the machine kept underneath it",
       /Windows 11 · Edge/.test(await rowText(page, 2)), await rowText(page, 2));
-    t("only this device offers a rename",
-      await page.locator("#device-list .device-row").nth(0).locator(".device-rename").count() === 1 &&
-      await page.locator("#device-list .device-row").nth(1).locator(".device-rename").count() === 0);
+    t("only this device's name is the rename control",
+      await page.locator("#device-list .device-row").nth(0).locator(".device-name-edit").count() === 1 &&
+      await page.locator("#device-list .device-row").nth(1).locator(".device-name-edit").count() === 0);
+    t("every row carries its own Sign out instead of a rename button",
+      await page.locator("#device-list .device-signout-one").count() === 2 &&
+      await page.locator("#device-list .device-rename").count() === 0);
     await shot(page, "18-device-names");
     await page.close();
   }
@@ -652,7 +671,7 @@ try {
   {
     const page = await popup(deviceWorld(NAMED));
     await openDevices(page);
-    await page.locator(".device-rename").first().click();
+    await page.locator(".device-name-edit").first().click();
     await page.fill(".device-rename-input", "Anirudh's ThinkPad");
     await page.evaluate(() => self.__issuer("/sessions", { version: 4, limit: 5, devices: [
       { device: "a".repeat(32), label: "Anirudh's ThinkPad", plat: "Windows 11 · Chrome",
@@ -667,8 +686,9 @@ try {
     t("the note says the account got it, not just this browser",
       /every device/i.test(await text(page, "#device-manager-note")),
       await text(page, "#device-manager-note"));
-    t("the button now offers a rename rather than a first name",
-      /rename/i.test(await text(page, ".device-rename")), await text(page, ".device-rename"));
+    t("the row action stayed Sign out, not a rename button",
+      /^sign out$/i.test((await text(page, ".device-signout-one")).trim()),
+      await text(page, ".device-signout-one"));
     await shot(page, "19-device-named");
     await page.close();
   }
@@ -679,7 +699,7 @@ try {
   {
     const page = await popup(deviceWorld(NAMED));
     await openDevices(page);
-    await page.locator(".device-rename").first().click();
+    await page.locator(".device-name-edit").first().click();
 
     await page.fill(".device-rename-input", "    ");
     await page.click(".device-rename-save");
@@ -702,7 +722,7 @@ try {
     t("…and it is shown as typed", (await rowText(page, 1)).includes("<img src=x"),
       await rowText(page, 1));
 
-    await page.locator(".device-rename").first().click();
+    await page.locator(".device-name-edit").first().click();
     await page.fill(".device-rename-input", "Anirudh 💻 ノート");
     await page.evaluate(() => self.__issuer("/sessions", { version: 6, limit: 5, devices: [
       { device: "a".repeat(32), label: "Anirudh 💻 ノート", plat: "macOS · Chrome",
@@ -715,7 +735,7 @@ try {
     // The issuer caps the field at 40; the box must not let a person type 200
     // and then silently lose 160 of them.
     const cap = await page.evaluate(() => {
-      const el = document.querySelector(".device-rename");
+      const el = document.querySelector(".device-name-edit");
       el.click();
       return document.querySelector(".device-rename-input").maxLength;
     });
@@ -731,7 +751,7 @@ try {
   {
     const page = await popup(deviceWorld(NAMED));
     await openDevices(page);
-    await page.locator(".device-rename").first().click();
+    await page.locator(".device-name-edit").first().click();
     await page.fill(".device-rename-input", "Kitchen iMac");
     await page.evaluate(() => self.__issuer("/sessions", null));   // 503 from here on
     await page.click(".device-rename-save");
@@ -898,7 +918,10 @@ try {
       await page.locator("#device-list .device-row").nth(0)
         .locator(".device-pick").isDisabled());
     t("…but it can still be named", await page.locator("#device-list .device-row").nth(0)
-      .locator(".device-rename").count() === 1);
+      .locator(".device-name-edit").count() === 1);
+    t("…and its own Sign out is dead too, for the same reason",
+      await page.locator("#device-list .device-row").nth(0)
+        .locator(".device-signout-one").isDisabled());
     await shot(page, "26-never-zero");
     await page.close();
 

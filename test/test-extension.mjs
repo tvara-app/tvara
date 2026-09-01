@@ -3665,13 +3665,14 @@ try {
      The queue above was only ever emptied by a click on that row. Installing
      the extension, signing in, restarting the browser — none of them started
      it, so an archive sat at hundreds of titles and no words until the user
-     found the row. And the pass that fetches the words stepped aside whenever
-     a chat site was the frontmost tab in ANY window, which for a tab left open
-     is always, so the platform was deferred forever. */
+     found the row. And the listing pass stepped aside whenever a chat site was
+     the frontmost tab in the last-focused window — which stays true after the
+     user switches to another application, so a tab left open held the pass off
+     indefinitely and the archive only moved when the popup forced a manual
+     run. An open tab now sets the request rate and nothing else. */
   {
     const ask = (m) => pop.evaluate((mm) => new Promise((r) => chrome.runtime.sendMessage(mm, r)), m);
-    const presence = (tabs, host, focusedId) =>
-      ask({ type: "tab-presence-selftest", tabs, host, focusedId });
+    const presence = (tabs, host) => ask({ type: "tab-presence-selftest", tabs, host });
     // B21 parked the queue to assert its idle copy. Un-park it: a stopped queue
     // is the one thing that legitimately refuses to start by itself.
     await pop.evaluate(async () => {
@@ -3679,36 +3680,57 @@ try {
       await chrome.storage.local.set({ "lct-fill-v1": { ...held, state: "partial", note: "" } });
     });
 
-    // The tab that made the archive stop: open, frontmost in its own window,
-    // and that window is not the one the user is looking at.
-    const bg = await presence(
-      [{ url: "https://chatgpt.com/c/x", active: true, windowId: 7 }], "chatgpt.com", 3);
-    t("B22 a chat site left open in a background window is not being used",
-      bg && bg.open === true && bg.active === false, JSON.stringify(bg));
-
-    const fg = await presence(
-      [{ url: "https://chatgpt.com/c/x", active: true, windowId: 3 }], "chatgpt.com", 3);
-    t("B22 …but the same tab in the focused window is",
-      fg && fg.open === true && fg.active === true, JSON.stringify(fg));
-
-    const away = await presence(
-      [{ url: "https://chatgpt.com/c/x", active: true, windowId: 3 }], "chatgpt.com", -1);
-    t("B22 …and with the browser itself not in front, nobody is browsing",
-      away && away.open === true && away.active === false, JSON.stringify(away));
-
-    const behind = await presence(
-      [{ url: "https://chatgpt.com/c/x", active: false, windowId: 3 }], "chatgpt.com", 3);
-    t("B22 a background tab in the focused window is open, not in use",
-      behind && behind.open === true && behind.active === false, JSON.stringify(behind));
+    /* The tab that used to stop the archive: open, frontmost in its own window,
+       in a window Chrome still calls focused after the user switched apps.
+       Whatever the browser is doing, this is one answer now — a tab is open,
+       so the pass paces itself. It never means "do not run". */
+    for (const [name, tabs] of [
+      ["frontmost in a background window", [{ url: "https://chatgpt.com/c/x", active: true, windowId: 7 }]],
+      ["frontmost in the focused window",  [{ url: "https://chatgpt.com/c/x", active: true, windowId: 3 }]],
+      ["a background tab",                 [{ url: "https://chatgpt.com/c/x", active: false, windowId: 3 }]]
+    ]) {
+      const got = await presence(tabs, "chatgpt.com");
+      t(`B22 ${name} is just an open tab`,
+        got && got.open === true && got.active === undefined, JSON.stringify(got));
+    }
 
     const other = await presence(
-      [{ url: "https://claude.ai/chat/x", active: true, windowId: 3 }], "chatgpt.com", 3);
+      [{ url: "https://claude.ai/chat/x", active: true, windowId: 3 }], "chatgpt.com");
     t("B22 …and another provider's tab says nothing about this one",
-      other && other.open === false && other.active === false, JSON.stringify(other));
+      other && other.open === false, JSON.stringify(other));
 
-    // A tab with no readable URL must not be counted as the user sitting there.
-    const opaque = await presence([{ active: true, windowId: 3 }], "chatgpt.com", 3);
+    // A tab with no readable URL must not be counted as this site being open.
+    const opaque = await presence([{ active: true, windowId: 3 }], "chatgpt.com");
     t("B22 an opaque tab is not this site", opaque && opaque.open === false, JSON.stringify(opaque));
+
+    /* ---- the pass rebooking itself ----
+       The resume alarm is what carries an unfinished pass across an MV3 worker
+       being reclaimed and across a browser restart. Booked once at the END of a
+       pass it was never written at all when the worker died mid-fetch, and a
+       restart cleared it either way — leaving nothing but the 3-hour period
+       alarm, which is why the archive looked stopped. */
+    const alarm = () => pop.evaluate(() => chrome.alarms.get("lct-auto-sync-resume"));
+    await pop.evaluate(() => chrome.alarms.clear("lct-auto-sync-resume"));
+    await pop.evaluate(() => chrome.storage.local.set({
+      "recall-sync-progress:chatgpt": { state: "syncing", msg: "12 saved, 30 left." }
+    }));
+    const rebooked = await ask({ type: "sync-resume-selftest" });
+    const armed = await alarm();
+    t("B22 a pass left mid-way rebooks itself after a restart",
+      rebooked && rebooked.status === "resuming" && !!armed, JSON.stringify({ rebooked, armed }));
+    t("B22 …and repeats, so a worker reclaimed mid-fetch is covered too",
+      armed && armed.periodInMinutes === 1, JSON.stringify(armed));
+
+    /* Nothing outstanding: every platform's last word is "done" and the run
+       itself reached "done". Both are read, so both have to be cleared. */
+    await pop.evaluate(() => chrome.storage.local.set({
+      "recall-sync-progress:chatgpt": { state: "done" },
+      "lct-recall-sync-run-v1": { id: "t", state: "done", finishedAt: Date.now() }
+    }));
+    await pop.evaluate(() => chrome.alarms.clear("lct-auto-sync-resume"));
+    const idle = await ask({ type: "sync-resume-selftest" });
+    t("B22 …and a finished pass books nothing",
+      idle && idle.status === "idle" && !(await alarm()), JSON.stringify(idle));
 
     /* The download starting itself. B21 left stubs in the queue, so there is
        real work outstanding: the worker must take it without being asked. */

@@ -824,15 +824,29 @@ body.dm-open #pro-active, body.dm-open #trial-active { display: none !important;
 }
 .device-meta { display: block; color: var(--ink-faint); font-size: 9px; }
 .device-row.is-self .device-name { color: var(--ember); }
+/* The name on this device's own row opens the rename. A button so the keyboard
+   reaches it; styled back to the text it replaces. */
+.device-name-edit {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: text;
+}
+.device-name-edit:hover, .device-name-edit:focus-visible { text-decoration: underline dotted; }
 .device-row button { flex: none; min-height: 24px; padding: 0 9px; font-size: 9.5px; }
 #device-actions, #device-confirm { display: grid; gap: 6px; margin-top: 9px; }
 #device-actions button, #device-confirm button { width: 100%; min-height: 26px; }
 .dm-confirm-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .device-pick { flex: none; accent-color: var(--ember); margin: 0; }
 .device-row.picked { border-color: var(--ember); }
+.device-signout-one { white-space: nowrap; }
+.device-signout-one:disabled { cursor: default; opacity: .45; }
 /* Rename, in the row it renames. A form, not a prompt(): a popup that opens a
    modal loses focus to it and closes itself. */
-.device-rename { white-space: nowrap; }
 .device-rename-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; width: 100%; }
 .device-rename-input {
   min-width: 0;

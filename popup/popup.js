@@ -1568,6 +1568,7 @@
   let dmPicked = new Set();
   let dmOpId = "";
   let dmPending = "";
+  let dmPendingIds = [];
 
   /* One key per user action, reused across retries of THAT action. A retry
      that mints a fresh one is a second sign-out, which is the bug the issuer's
@@ -1606,8 +1607,16 @@
     });
     const text = document.createElement("span");
     text.className = "device-text";
-    const name = document.createElement("span");
-    name.className = "device-name";
+    /* The name IS the rename control, and only on this device's own row: the
+       issuer keys a label on the dev_fp the request proved, so no device can
+       name another one. */
+    const name = document.createElement(d.self ? "button" : "span");
+    name.className = "device-name" + (d.self ? " device-name-edit" : "");
+    if (d.self) {
+      name.type = "button";
+      name.title = "Rename this device";
+      name.addEventListener("click", () => startRename(row, d));
+    }
     // textContent only: a label is written by another device — untrusted input.
     name.textContent = deviceTitle(d) + (d.self ? " (this device)" : "");
     const meta = document.createElement("span");
@@ -1619,17 +1628,15 @@
       .filter(Boolean).join(" \u00b7 ");
     text.append(name, meta);
     row.append(pick, text);
-    /* Only this device's own row. The issuer keys a label on the dev_fp the
-       request proved, so no device can name another one — offering the button
-       there would be a control that cannot work. */
-    if (d.self) {
-      const rename = document.createElement("button");
-      rename.type = "button";
-      rename.className = "ghost device-rename";
-      rename.textContent = d.label ? "Rename" : "Name it";
-      rename.addEventListener("click", () => startRename(row, d));
-      row.append(rename);
-    }
+    // Sign this one out without touching the checkboxes — a row action, so it
+    // arms the same confirm step as the bulk button rather than acting at once.
+    const out = document.createElement("button");
+    out.type = "button";
+    out.className = "ghost device-signout-one";
+    out.textContent = "Sign out";
+    if (d.local) { out.disabled = true; out.title = "Not registered yet \u2014 nothing to sign out."; }
+    else out.addEventListener("click", () => armConfirm("picked", [d.device]));
+    row.append(out);
     return row;
   }
 
@@ -1751,12 +1758,15 @@
 
   /* Click one. The second is the Confirm button below — signing a machine out
      is not something to do on a mis-tap, and it is not undoable from here. */
-  function armConfirm(kind) {
+  function armConfirm(kind, ids) {
     dmPending = kind;
+    // Frozen here, not read from dmPicked at confirm time: a row button acts on
+    // its own device, and the checkboxes must survive it untouched.
+    dmPendingIds = kind === "all" ? [] : (ids || [...dmPicked]);
     dmOpId = newOpId();
     const others = dmDevices.filter((d) => !d.self).length;
-    const n = kind === "all" ? others : dmPicked.size;
-    const self1 = kind !== "all" && dmPicked.has((dmDevices.find((d) => d.self) || {}).device);
+    const n = kind === "all" ? others : dmPendingIds.length;
+    const self1 = kind !== "all" && dmPendingIds.includes((dmDevices.find((d) => d.self) || {}).device);
     $("device-confirm-text").textContent =
       `Sign out ${n} device${n === 1 ? "" : "s"}? ` +
       (self1 ? "That includes this one, so Pro stops here too."
@@ -1770,7 +1780,7 @@
     yes.disabled = true;
     yes.textContent = "Signing out\u2026";
     const opts = { opId: dmOpId, ifVersion: dmVersion };
-    const picked = [...dmPicked];
+    const picked = dmPendingIds;
     const res = dmPending === "all"
       ? await self.LCTEntitlement.terminateAllSessions(opts)
       : await self.LCTEntitlement.terminateSessions(picked, opts);
@@ -1785,6 +1795,7 @@
       dmDevices = Array.isArray(res.data.devices) ? res.data.devices : dmDevices;
       const live = new Set(dmDevices.map((d) => d.device));
       dmPicked = new Set([...dmPicked].filter((id) => live.has(id)));
+      dmPendingIds = dmPendingIds.filter((id) => live.has(id));
       renderSessions("This list changed on another device. Here it is again — check it and sign out.");
       return;
     }
@@ -1820,11 +1831,39 @@
     saveCache({ seatCount: dmDevices.length });
   }
 
+
+  /* Somebody signed a device out somewhere else while this list is on screen.
+     The worker hears it on the account socket and forwards it here; without
+     this the popup goes on offering Sign out on a row that has already gone,
+     and the click comes back 412 "stale" for no reason the user can see.
+
+     Registered once. The message carries no device fingerprints — it says only
+     that the list moved — so the list is re-read rather than patched. */
+  let dmWatching = false;
+  function watchSessionChanges() {
+    if (dmWatching) return;
+    dmWatching = true;
+    try {
+      chrome.runtime.onMessage.addListener((msg) => {
+        if (!msg || msg.type !== "sessions-changed") return;
+        if ($("device-manager").hidden) return;
+        self.LCTEntitlement.listSessions().then((res) => {
+          if (!res || res.branch !== "ok" || !res.data || !Array.isArray(res.data.devices)) return;
+          dmVersion = Number(res.data.version) || dmVersion;
+          dmDevices = ensureSelfRow(res.data.devices);
+          dmPicked = new Set();
+          renderSessions("This list just changed on another device.");
+        }).catch(() => { /* the next open re-reads it */ });
+      });
+    } catch { /* no runtime messaging: the list is still correct when reopened */ }
+  }
+
   async function openDeviceManager(mode, unknownDevices) {
     dmRenaming = false;
     [dmSelfPlat, dmSelfName] = await Promise.all([
       self.LCTEntitlement.describePlatform(), self.LCTEntitlement.currentDeviceName()
     ]);
+    watchSessionChanges();
     document.body.classList.add("dm-open");
     $("device-manager").hidden = false;
     $("device-confirm").hidden = true;
@@ -1865,6 +1904,7 @@
     $("device-confirm").hidden = true;
     dmPicked = new Set();
     dmPending = "";
+    dmPendingIds = [];
   }
 
   async function terminate(targetId, btn, selfId, mode) {

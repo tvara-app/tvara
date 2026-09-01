@@ -733,9 +733,11 @@ const BG_FETCH_TIMEOUT_MS = 20000;
 const BG_RATE_TRIP = 3;                          // consecutive 429s → circuit opens
 const BG_HOST_COOLDOWN_MS = 15 * 60 * 1000;
 const BG_PASS_BUDGET_MS = 4 * 60 * 1000;         // MV3 workers get reclaimed
-// How long politeness towards a site the user is actually on may hold a pass
-// off before it runs anyway, one request at a time.
-const BG_DEFER_MAX_MS = 20 * 60 * 1000;
+/* …and the fetch loop never gets less than this, however long the listing took.
+   Sharing one clock without a floor turns a slow listing into a pass that
+   archives nothing at all, repeated forever — the exact stall the shared clock
+   exists to prevent. */
+const BG_MIN_FETCH_MS = 60 * 1000;
 // Journal entries are ~120B, and the manifest grants unlimitedStorage, so this
 // covers a very large first backfill without ever refusing the watermark.
 const BG_PENDING_MAX = 50000;
@@ -745,6 +747,46 @@ const BG_LIST_MAX_PAGES = 100;
 const BG_SYNC_LIST_PAGE = 100;
 const BG_SYNC_BATCH = 15;
 const BG_SYNC_OVERLAP_MS = 5 * 60 * 1000;
+/* ---------- what the background actually did ----------
+   The archive runs where nobody can watch it: a worker with no console open,
+   woken by an alarm, killed again seconds later. When it looks stopped there is
+   nothing to inspect — the progress row shows the last thing WRITTEN, which is
+   identical whether a pass is running, being refused, or never woke at all.
+   This is what tells those three apart.
+
+   Deliberately coarse: one line per pass and per platform, never per chat, so a
+   week of syncing is a few hundred rows. Written through rather than buffered —
+   the case worth seeing is a worker that dies mid-pass, and an in-memory tail
+   dies with it. Never awaited by callers and never able to fail a pass. */
+const BG_TRACE = "lct-bg-trace-v1";
+const BG_TRACE_MAX = 200;
+
+async function trace(event, detail) {
+  try {
+    const held = (await chrome.storage.local.get(BG_TRACE))[BG_TRACE];
+    const rows = Array.isArray(held) ? held : [];
+    rows.push({ t: Date.now(), e: String(event).slice(0, 40),
+      ...(detail == null ? {} : { d: String(detail).slice(0, 160) }) });
+    await chrome.storage.local.set({ [BG_TRACE]: rows.slice(-BG_TRACE_MAX) });
+  } catch { /* storage gone: a trace is never worth failing a pass for */ }
+}
+
+async function readTrace() {
+  try {
+    const held = (await chrome.storage.local.get(BG_TRACE))[BG_TRACE];
+    const rows = Array.isArray(held) ? held : [];
+    /* Alarms are the whole question — whether the browser is waking this worker
+       while nobody is looking at it — so they are reported alongside. */
+    let alarms = [];
+    try {
+      alarms = (await chrome.alarms.getAll()).map((a) => ({
+        name: a.name, inMs: Math.round(a.scheduledTime - Date.now()), every: a.periodInMinutes || 0
+      }));
+    } catch { /* alarms unavailable */ }
+    return { rows, alarms, now: Date.now(), worker: thisWorkerId, running: bgSyncRunning, filling: fillRunning };
+  } catch { return { rows: [], alarms: [], now: Date.now() }; }
+}
+
 const BG_RUN_STALE_MS = 90 * 1000;
 const BG_PLATFORM_IDS = new Set(["chatgpt", "claude", "deepseek", "grok", "perplexity", "gemini"]);
 const BG_SYNC_FLAG = (p) => "recall-sync-" + p;     // { lastFull: ms } — chrome.storage.local
@@ -3838,45 +3880,30 @@ async function finishPlatform(adapter, checkpointKey, checkpoint, result, fields
   });
 }
 
-// Is the user on this site right now? An auto pass defers rather than compete
-// with their own browsing for the provider's rate limit. Needs no "tabs"
-// permission — tab.url is populated for hosts we already hold permission for.
+/* Is one of this site's tabs open? Not "is the user looking at it" — that
+   question is deliberately not asked any more. Whether the browser is the
+   front application, and which of its windows holds focus, decide nothing:
+   the archive has to build while the user is in another app, which is most of
+   the time. The answer here only sets the request rate, never whether a pass
+   runs at all.
+
+   Needs no "tabs" permission — tab.url is populated for hosts we already hold
+   permission for. */
 async function tabPresence(host) {
   try {
-    if (typeof chrome.tabs === "undefined") return { open: false, active: false };
-    /* tab.active alone cannot answer this. It means "frontmost in its own
-       window", which is equally true of a chat site left open in a background
-       or minimised window — and a tab left open is the normal case, so the
-       platform deferred on every pass for as long as it stayed open and the
-       archive never caught up. The question is whether the user is LOOKING at
-       the site, so the focused window has to agree.
-       No windows API (or no focused window at all, i.e. the browser is not the
-       front application): nobody is browsing, so nothing is being competed
-       with. Erring towards syncing is the safe direction — tabs.open still
-       drops the pass to one request at a time. */
-    let focusedId = -1;
-    try {
-      if (typeof chrome.windows !== "undefined") {
-        const win = await chrome.windows.getLastFocused();
-        if (win && win.focused) focusedId = win.id;
-      }
-    } catch { /* windows unavailable */ }
-    return presenceFrom(await chrome.tabs.query({}), host, focusedId);
-  } catch { return { open: false, active: false }; }
+    if (typeof chrome.tabs === "undefined") return { open: false };
+    return presenceFrom(await chrome.tabs.query({}), host);
+  } catch { return { open: false }; }
 }
 
-/* The decision itself, with the browser taken out of it. focusedId is -1 when
-   no window holds focus, and no tab is "being used" in that case. */
-function presenceFrom(tabs, host, focusedId) {
-  let open = false, active = false;
+/* The decision itself, with the browser taken out of it. */
+function presenceFrom(tabs, host) {
   for (const t of (Array.isArray(tabs) ? tabs : [])) {
     let h = "";
     try { h = new URL((t && t.url) || "").hostname; } catch { /* opaque tab */ }
-    if (!host || h !== host) continue;
-    open = true;
-    if (t.active && focusedId !== -1 && t.windowId === focusedId) active = true;
+    if (host && h === host) return { open: true };
   }
-  return { open, active };
+  return { open: false };
 }
 
 /**
@@ -3923,32 +3950,14 @@ async function bgSyncPlatform(adapter, run, opts = {}) {
     return { ok: true, result: "cooling-down" };
   }
 
-  /* 2. never compete with the user's own browsing on an unattended pass —
-     but courtesy is not a licence to starve. Somebody who works in one chat
-     site all day is precisely the person with the most to archive, and
-     deferring every pass meant that account was never archived at all. After
-     BG_DEFER_MAX_MS of nothing but defers the pass runs anyway, at one request
-     at a time because the tab is open. */
+  /* 2. how hard to push, not whether to go.
+     This used to defer the whole pass while a tab of the site was frontmost.
+     It read "frontmost in its own window" plus "Chrome's last focused window",
+     and neither goes false when the user switches to another application — so
+     a chat site left open held the pass off indefinitely and the archive only
+     ever moved when the popup forced a manual run. An unattended pass now
+     always runs; an open tab only drops it to one request at a time. */
   const tabs = await tabPresence(adapter.host);
-  if (auto && tabs.active) {
-    let since = 0;
-    try {
-      const key = BG_SYNC_PROG(adapter.id);
-      const prev = (await chrome.storage.local.get(key))[key];
-      if (prev && prev.state === "deferred") since = Number(prev.since) || 0;
-    } catch { /* unreadable: this pass starts the clock */ }
-    if (!since) since = Date.now();
-    if (Date.now() - since < BG_DEFER_MAX_MS) {
-      await chrome.storage.local.set({
-        [BG_SYNC_PROG(adapter.id)]: {
-          state: "deferred", phase: "deferred", runId: run.id, platform: adapter.id,
-          done: 0, total: 0, since,
-          msg: `Waiting until you're done on ${adapter.label}`, at: Date.now()
-        }
-      });
-      return { ok: true, result: "deferred" };
-    }
-  }
 
   let contexts;
   try {
@@ -3990,6 +3999,15 @@ function mergeAccountResults(results) {
 }
 
 async function bgSyncAccount(adapter, run, opts, ctx, tabs, seat = { seat: 0, seats: 1 }) {
+  /* The budget clock starts HERE, not at the fetch loop below.
+     Started at the fetch loop it did not count the listing, and on a large
+     history the listing is the expensive half: pages of titles, one request at
+     a time, minutes of it. A pass could then spend ten minutes listing and take
+     a full four more to fetch — long past the point where the worker is
+     reclaimed, so the same listing was redone next pass and the archive sat at
+     the same percentage forever. Everything this pass does now shares one
+     budget, and whatever it did not reach is journalled for the next one. */
+  const passStart = Date.now();
   let attempted = 0, succeeded = 0, failed = 0, total = 0;
   try {
     const { key: provisionalKey, checkpoint: provisionalCheckpoint } = await readCheckpoint(adapter, ctx);
@@ -4221,9 +4239,9 @@ async function bgSyncAccount(adapter, run, opts, ctx, tabs, seat = { seat: 0, se
 
     // 6. fetch loop
     const concurrency = Math.max(1, tabs.open
-      ? 1                                     // user is here, just not focused
+      ? 1                                     // a tab of the site is open
       : policyFor(adapter.host).concurrency);
-    const passStart = Date.now();
+    const fetchDeadline = Math.max(passStart + BG_PASS_BUDGET_MS, Date.now() + BG_MIN_FETCH_MS);
     let cursor = 0, archived = 0, fatal = null, circuitOpen = false, budgetHit = false;
     const importQueue = [];
     const settled = [], gone = [];
@@ -4253,7 +4271,11 @@ async function bgSyncAccount(adapter, run, opts, ctx, tabs, seat = { seat: 0, se
       while (!fatal && !circuitOpen && !budgetHit) {
         const slot = cursor++;
         if (slot >= total) return;
-        if (Date.now() - passStart > BG_PASS_BUDGET_MS) { budgetHit = true; return; }
+        if (Date.now() > fetchDeadline) {
+          budgetHit = true;
+          trace("budget", `${adapter.id} stopped at ${attempted}/${total}`);
+          return;
+        }
         const item = work[slot];
         try {
           const msgs = await adapter.detail(ctx, item.id);
@@ -4395,9 +4417,10 @@ async function bgSyncAll(opts = {}) {
   // gates the pass: a reinstalled browser starts re-archiving straight away and
   // a later restore merges into it.
   await ensureRecoveryState();
-  if (bgSyncRunning) return { status: "already-running" };
+  if (bgSyncRunning) { trace("pass-skip", "worker busy"); return { status: "already-running" }; }
   const run = await beginRun();
-  if (!run) return { status: "already-running" };
+  if (!run) { trace("pass-skip", "a run is already journalled"); return { status: "already-running" }; }
+  trace("pass-start", opts.reason || "?");
   bgSyncRunning = true;
   // writeProgress is no longer the only heartbeat: a cooldown or paced listing
   // can outlast BG_RUN_STALE_MS and the run would declare itself interrupted.
@@ -4407,17 +4430,23 @@ async function bgSyncAll(opts = {}) {
     // must not promise that it will.
     const canResume = await autoSyncEnabled();
     opts = { ...opts, canResume };
+    // Before the first request, so a reclaim anywhere below is covered.
+    if (canResume) await scheduleResume();
     const results = [];
     // Sequential, not Promise.all: four platforms at once meant up to 32
     // concurrent authenticated requests on the user's own cookies.
     for (const adapter of BG_ADAPTERS) {
-      results.push(await bgSyncPlatform(adapter, run, opts));
+      const r = await bgSyncPlatform(adapter, run, opts);
+      results.push(r);
+      trace("platform", `${adapter.id} ${(r && r.result) || "?"} ` +
+        `archived=${(r && r.archived) || 0} left=${(r && r.left) || 0}`);
       await sleep(2000);
     }
     await flushProgress();
     await chrome.storage.local.set({ [BG_RUN]: { ...run, state: "done", finishedAt: Date.now() } });
-    if (canResume && results.some((r) => r && (r.left || r.result === "deferred" || r.result === "partial"))) {
-      await scheduleResume();
+    // The booking above stands unless this pass finished the work.
+    if (!canResume || !results.some((r) => r && (r.left || r.result === "partial"))) {
+      await clearResume();
     }
     // New chats just landed; if the portable copy is due, write it now rather
     // than waiting out the clock.
@@ -4426,6 +4455,7 @@ async function bgSyncAll(opts = {}) {
        fetches it. Not awaited — a full queue is about an hour and the pass that
        found the work must not be held open for it. */
     fillAutoStart("sync").catch(() => {});
+    trace("pass-end", `${Math.round((Date.now() - run.startedAt) / 1000)}s`);
     return { status: "done", results };
   } finally {
     clearInterval(pulse);
@@ -4581,6 +4611,7 @@ async function fillAutoStart(reason) {
   if (fillRunning) return { status: "already-running" };
   // Cheap when there is nothing to do: one keyed count, no message bodies.
   if (!(await fillState()).total) return { status: "empty" };
+  trace("fill-start", String(reason || "auto"));
   await writeFill({ auto: String(reason || "auto").slice(0, 16) });
   // Not awaited: a full queue is about an hour, and every caller here is either
   // a message port or a pass that must not be held open for it.
@@ -5215,11 +5246,50 @@ async function ensureAutoSyncAlarm() {
   } catch { /* alarms unavailable */ }
 }
 
-// A pass that ended with work outstanding comes back promptly rather than
-// waiting out the full period. 1 minute is the platform floor.
+/* A pass that has work outstanding comes back promptly rather than waiting out
+   the full period. 1 minute is the platform floor.
+
+   Booked BEFORE the first request and REPEATING, not once when a pass ends. An
+   MV3 worker is reclaimed mid-fetch routinely and a browser can be killed
+   outright; neither reaches the end of a pass, so a one-shot alarm booked there
+   was never written and the archive sat until the 3-hour period came round. The
+   checkpoint is the resume point, so picking up is just running again — and a
+   tick that lands on a live pass costs one already-running answer.
+   clearResume() ends it once a pass finishes with nothing left. */
 async function scheduleResume() {
-  try { await chrome.alarms.create(BG_RESUME_ALARM, { delayInMinutes: 1 }); }
+  try { await chrome.alarms.create(BG_RESUME_ALARM, { delayInMinutes: 1, periodInMinutes: 1 }); }
   catch { /* alarms unavailable */ }
+}
+
+async function clearResume() {
+  try { await chrome.alarms.clear(BG_RESUME_ALARM); } catch { /* nothing booked */ }
+}
+
+/* Is there a pass to pick up?
+
+   A browser restart and an extension reload both clear every alarm, so work the
+   last pass left had nothing to wake it and waited out the full period — up to
+   three hours after a restart, which from the user's side is an archive that
+   stopped. Reads what the last pass wrote about itself rather than re-deriving
+   it: "syncing" is a pass that stopped with chats still to fetch, "paused" is
+   one the provider is rate-limiting, and a run that never reached "done" was
+   interrupted. */
+async function resumeIfUnfinished() {
+  if (!(await autoSyncEnabled())) return { status: "disabled" };
+  let left = false;
+  try {
+    const keys = [BG_RUN, ...[...BG_PLATFORM_IDS].map(BG_SYNC_PROG)];
+    const got = await chrome.storage.local.get(keys);
+    const run = got[BG_RUN];
+    left = !!(run && run.state && run.state !== "done");
+    for (const id of BG_PLATFORM_IDS) {
+      const p = got[BG_SYNC_PROG(id)];
+      if (p && (p.state === "syncing" || p.state === "paused")) left = true;
+    }
+  } catch { /* unreadable: the period alarm is still underneath this */ }
+  if (left) await scheduleResume();
+  trace("resume-check", left ? "rebooked an unfinished pass" : "nothing outstanding");
+  return { status: left ? "resuming" : "idle" };
 }
 
 /* A tab just opened one of the providers. That is a better sync trigger than
@@ -5246,7 +5316,9 @@ async function visitSync(platform) {
 }
 
 async function autoSyncTick(options = {}) {
-  if (!(await autoSyncEnabled())) return { status: "disabled" };
+  // Switched off mid-pass: the repeating resume alarm must go with it, or it
+  // wakes the worker every minute for a pass that returns "disabled".
+  if (!(await autoSyncEnabled())) { await clearResume(); return { status: "disabled" }; }
   /* Readings and the plan on each account go stale faster than the archive
      does, and this is the only clock the extension has that does not need a
      tab. Own throttle (15 min), so a resume tick minutes after the last pass
@@ -5295,6 +5367,145 @@ async function entitlementTick() {
 const BG_SESSION_ALARM = "lct-session";
 const BG_SESSION_PERIOD_MIN = 60;
 
+const BG_SIGNOUT_NOTE = "lct-signed-out";
+
+/* The device that was signed out is by definition NOT the one the person is
+   looking at — there is no popup open on it and no page of ours to write into.
+   A system notification is the only surface that reaches it, and without one
+   the device simply stops being Pro with no explanation, which reads as a bug
+   rather than as something somebody deliberately did.
+
+   Announces the CHANGE, never the state: the caller only reaches here on the
+   tick where `live` first came back false. Repeating it hourly would make a
+   deliberate sign-out feel like a fault. */
+async function notifySignedOut(reason) {
+  try {
+    if (!chrome.notifications || !chrome.notifications.create) return;
+    const revoked = String(reason || "") === "revoked";
+    await chrome.notifications.create(BG_SIGNOUT_NOTE, {
+      type: "basic",
+      iconUrl: chrome.runtime.getURL("icons/icon128.png"),
+      title: revoked ? "Tvara licence revoked" : "This device was signed out",
+      // Says the one thing a person needs to hear first: their history is safe.
+      message: revoked
+        ? "Pro is off on this device. Your archive stays on this machine."
+        : "Signed out from another device. Your archive stays on this machine \u2014 sign in to turn Pro back on.",
+      priority: 2,
+      requireInteraction: false
+    });
+  } catch { /* notifications unavailable — the popup still carries it */ }
+}
+
+/* ---------- the live device channel ----------
+   A socket to the account's Durable Object, so signing this device out from
+   another one lands here in about a second instead of waiting out the alarm.
+
+   docs/SESSIONS.md §4 designed this and dropped it, on the grounds that keeping
+   an MV3 worker awake for a licensing event is a poor trade. That is now
+   accepted deliberately — but only the ACCELERATION was ever in question, and
+   nothing below decides anything: every path here ends in the same
+   markSignedOut() the heartbeat writes, and a socket that never connects costs
+   the alarm's interval, not correctness.
+
+   The ping is not politeness. An MV3 worker is killed after 30 seconds of
+   silence and WebSocket traffic is what resets that timer, so the interval IS
+   the mechanism keeping this channel open. */
+const BG_WS_PING_MS = 25e3;
+const BG_WS_MIN_BACKOFF_MS = 5e3;
+const BG_WS_MAX_BACKOFF_MS = 60e3;
+let sessionWs = null;
+let sessionWsPing = null;
+let sessionWsRetry = null;
+let sessionWsBackoff = BG_WS_MIN_BACKOFF_MS;
+/* Set when the issuer closes us with 4001. A device that was just signed out
+   reconnecting is a loop, and the ticket it would need is gone with the seat. */
+let sessionWsDone = false;
+
+function sessionWatchClose() {
+  if (sessionWsPing) { clearInterval(sessionWsPing); sessionWsPing = null; }
+  if (sessionWs) { try { sessionWs.close(); } catch { /* already closed */ } sessionWs = null; }
+}
+
+function sessionWatchRetry() {
+  if (sessionWsDone || sessionWsRetry) return;
+  const wait = sessionWsBackoff;
+  sessionWsBackoff = Math.min(BG_WS_MAX_BACKOFF_MS, Math.round(sessionWsBackoff * 1.8));
+  sessionWsRetry = setTimeout(() => {
+    sessionWsRetry = null;
+    sessionWatchConnect("retry").catch(() => {});
+  }, wait);
+}
+
+/**
+ * Open the channel, or leave it shut and say why.
+ *
+ * The ticket comes from listSessions(), which is a SIGNED call — that is the
+ * whole reason the upgrade can be trusted, since a WebSocket handshake carries
+ * no body to sign. One ticket per connection: a reconnect asks again rather
+ * than replaying a minute-old one.
+ */
+async function sessionWatchConnect(reason) {
+  if (sessionWsDone) return { status: "signed-out" };
+  if (sessionWs) return { status: "open" };
+  if (typeof WebSocket === "undefined") return { status: "unsupported" };
+  let url = "";
+  try {
+    const res = await self.LCTEntitlement.listSessions();
+    if (!res || res.branch !== "ok") return { status: res ? res.branch : "network" };
+    url = self.LCTEntitlement.sessionWatchUrl((res.data || res.json || {}).ticket);
+  } catch { return { status: "error" }; }
+  // No ticket is the issuer saying it has no live channel to offer. Not a
+  // failure: the heartbeat is the floor and it is still running.
+  if (!url) return { status: "no-channel" };
+
+  let ws;
+  try { ws = new WebSocket(url); } catch { sessionWatchRetry(); return { status: "error" }; }
+  sessionWs = ws;
+  ws.addEventListener("open", () => {
+    sessionWsBackoff = BG_WS_MIN_BACKOFF_MS;
+    trace("watch-open", String(reason || "?"));
+    sessionWsPing = setInterval(() => {
+      try { ws.send("ping"); } catch { /* closing; the close handler retries */ }
+    }, BG_WS_PING_MS);
+  });
+  ws.addEventListener("message", (ev) => { sessionWatchMessage(ev && ev.data); });
+  ws.addEventListener("close", (ev) => {
+    if (ev && ev.code === 4001) sessionWsDone = true;
+    sessionWatchClose();
+    trace("watch-close", String((ev && ev.code) || "?"));
+    sessionWatchRetry();
+  });
+  ws.addEventListener("error", () => { sessionWatchClose(); sessionWatchRetry(); });
+  return { status: "connecting" };
+}
+
+/* What the object says. Two messages and nothing else is acted on.
+   `killed` is this device; `changed` says only that the list moved, which is
+   why it carries no fingerprints. */
+async function sessionWatchMessage(raw) {
+  let msg = null;
+  try { msg = JSON.parse(String(raw || "")); } catch { return; }
+  if (!msg || typeof msg.type !== "string") return;
+  if (msg.type === "killed") {
+    sessionWsDone = true;
+    trace("watch-killed", String(msg.reason || "terminated"));
+    /* Written by the same two calls the heartbeat uses. The push is a faster
+       way to learn the news, never a second way of deciding it. */
+    try { await self.LCTEntitlement.applyRemoteSignOut(msg.reason); }
+    catch { /* dead context: the heartbeat writes the same thing */ }
+    await notifySignedOut(msg.reason);
+    sessionWatchClose();
+    return;
+  }
+  if (msg.type === "changed") {
+    /* Somebody else's row moved. Nothing is decided here — the device screen
+       re-reads /sessions when it is opened, and this only makes sure a popup
+       already open is not painting a list that has stopped being true. */
+    try { await chrome.runtime.sendMessage({ type: "sessions-changed", version: msg.version }); }
+    catch { /* no listener: nothing is open */ }
+  }
+}
+
 async function sessionTick() {
   lastHeartbeatAt = Date.now();
   await noteHeartbeat(lastHeartbeatAt);
@@ -5302,7 +5513,16 @@ async function sessionTick() {
     const got = await chrome.storage.local.get("license");
     const lic = got && got.license;
     if (!lic || !lic.key) return;
-    await self.LCTEntitlement.heartbeat(lic);
+    /* Read BEFORE the call. heartbeat() writes the marker itself, so asking
+       afterwards cannot tell "signed out just now" from "signed out last week"
+       — and the toast is only owed on the transition. */
+    const was = await self.LCTEntitlement.readSignOut();
+    const res = await self.LCTEntitlement.heartbeat(lic);
+    if (res && res.live === false && !was) await notifySignedOut(res.reason);
+    // Came back: a device re-activated elsewhere must not keep a stale toast up.
+    if (res && res.live === true && was) {
+      try { await chrome.notifications.clear(BG_SIGNOUT_NOTE); } catch { /* fine */ }
+    }
   } catch { /* offline, dead context, or no device key — the next tick retries */ }
 }
 
@@ -5442,6 +5662,7 @@ async function firstRunBootstrap(reason) {
 try {
   chrome.alarms.onAlarm.addListener((alarm) => {
     if (!alarm) return;
+    trace("alarm", alarm.name);
     if (alarm.name === BG_FILL_ALARM) { if (!fillRunning) fillStart(); }
     else if (alarm.name === BG_AUTO_ALARM || alarm.name === BG_RESUME_ALARM) autoSyncTick();
     else if (alarm.name === BG_AUTOBACKUP_ALARM) maybeAutoBackup("alarm");
@@ -5450,6 +5671,7 @@ try {
     else if (alarm.name === BG_ORDER_ALARM) claimPendingOrder().catch(() => {});
   });
   const wake = () => {
+    trace("worker-start", thisWorkerId);
     ensureAutoSyncAlarm();
     ensureAutoBackupAlarm();
     ensureEntitlementAlarm();
@@ -5470,6 +5692,12 @@ try {
        that was mid-queue had nothing left to wake it and stalled at whatever
        percentage it had reached. This is the only listener that runs on both. */
     fillAutoStart("wake").catch(() => {});
+    // Same for the listing pass: a restart cleared the alarm that was holding
+    // its place, and the period alarm alone is up to three hours away.
+    resumeIfUnfinished().catch(() => {});
+    /* The socket dies with the worker, so every respawn re-opens it. Cheap when
+       there is nothing to open: no identity means no ticket and no call. */
+    sessionWatchConnect("wake").catch(() => {});
     // A reinstall wipes storage.local, so the badge has to be repainted from
     // whatever survived rather than assumed to be still on screen.
     readDeletions().then((state) => paintDeletionBadge(Object.keys(state.items).length));
@@ -5510,6 +5738,20 @@ try {
 // not on a page where the user has to go hunting for it.
 try {
   chrome.notifications.onClicked.addListener((id) => {
+    if (id === BG_SIGNOUT_NOTE) {
+      chrome.notifications.clear(id);
+      /* The sign-in button lives in the POPUP, and there is no anchor on the
+         Recall page that reaches it — sending them there would be a dead end.
+         openPopup() is the only thing that lands on the button itself; it is
+         not available on every Chrome, so the Recall page is the fallback
+         rather than the destination. */
+      const fallback = () => chrome.tabs.create({ url: chrome.runtime.getURL("recall.html") });
+      try {
+        if (chrome.action && chrome.action.openPopup) chrome.action.openPopup().catch(fallback);
+        else fallback();
+      } catch { fallback(); }
+      return;
+    }
     if (id !== "lct-deletions") return;
     chrome.notifications.clear(id);
     chrome.tabs.create({ url: chrome.runtime.getURL("recall.html#deletions") });
@@ -6577,12 +6819,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // The parsers are pure, and a silent regression in them is what turns a
       // real percentage into a plausible wrong one. Reachable so the test page
       // can assert them without a provider.
-      /* Whether the user is LOOKING at a chat site decides whether an auto pass
-         steps aside, and a wrong answer there silently stops archiving. The
-         browser cannot be posed from a test, so the decision is reachable
-         without one. */
-      case "tab-presence-selftest": return presenceFrom(msg.tabs || [], String(msg.host || ""),
-        Number.isFinite(msg.focusedId) ? msg.focusedId : -1);
+      /* An open tab sets the request rate and nothing else. It must never
+         answer "open" for a tab belonging to another site, which would halve
+         the rate for no reason, and never "closed" for one that is open. */
+      case "tab-presence-selftest": return presenceFrom(msg.tabs || [], String(msg.host || ""));
+      /* A restart clears every alarm, and the period alarm alone is up to three
+         hours away — so whether this rebooks an interrupted pass is the
+         difference between an archive that carries on and one that stops. */
+      case "sync-resume-selftest": return resumeIfUnfinished();
+      // What the background did while nobody was watching. See trace() above.
+      case "bg-trace":       return readTrace();
+      case "bg-trace-clear": { await chrome.storage.local.remove(BG_TRACE); return { ok: true }; }
       case "quota-selftest":     return {
         json: self.LCTQuota.fromJson(msg.json || {}, { now: Number(msg.now) || undefined }),
         headers: self.LCTQuota.fromHeaders(msg.headers || {}, { now: Number(msg.now) || undefined }),

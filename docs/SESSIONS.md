@@ -7,7 +7,11 @@ every mutation is one transaction, and a signed-out device loses Pro in seconds
 while the browser is open.
 
 This document is the plan. §10 is the build order and says what is built.
-Everything in §10 is built except the Durable Object, which was considered and
+Everything in §10 is built, the Durable Object included — §4 records why that
+decision was reversed. The paragraph below is the original note, kept because
+the reasoning it replaced is still the cost being paid:
+
+Everything in §10 was built except the Durable Object, which was considered and
 dropped — §4 says why, and what took its place.
 
 ---
@@ -100,7 +104,25 @@ check-in rides along on a five-minute floor. Idle but running: up to an hour, on
 the alarm. Closed: the next browser start. Opening the popup checks immediately.
 Netflix says "up to 8 hours" for the same feature.
 
-**Why there is no WebSocket.** The first draft of this document put a Durable
+**Why there IS a WebSocket — a reversal.** This section used to argue the
+opposite, and the argument is kept below because it is still the honest cost.
+What changed is the weighting, not the facts: being signed out with no
+explanation reads as a broken extension, and the device it happens to is by
+definition the one with no popup open to explain it. A system notification is
+the only surface that reaches it, and a notification an hour late is worse than
+none. The Durable Object shipped as §4 said it could — one class
+(`server/account-do.js`), one binding, one migration, and a ticket issued by the
+signed `POST /sessions` because a WebSocket handshake cannot carry a signed
+body. SQLite-backed, so it needs no paid plan.
+
+What did NOT change is the rule that made the reversal safe: the socket is an
+accelerator and never a channel that decides anything. The DO is told only
+AFTER D1 has committed, it holds no state worth losing, and a device that never
+connects still dies on its next heartbeat. Every failure mode in §7 stands.
+The standing cost is real and accepted: a ~25s ping keeps the service worker
+resident, which is what §4 refused.
+
+**The original argument.** The first draft of this document put a Durable
 Object per account in this diagram, holding a hibernatable socket so a sign-out
 landed in about a second. That is the right answer for a web app and the wrong
 one for an MV3 extension: the service worker is killed after 30 seconds idle, so

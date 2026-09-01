@@ -155,6 +155,11 @@ const MAX_CLOCK_SKEW_MS = 5 * 60 * 1000;  // reject requests older than 5 min
    upstream call; short enough that a lost delivery costs the buyer seconds. */
 const CLAIM_PULL_AFTER_MS = 20e3;
 
+/* The live channel. Exported from this module because Cloudflare binds a
+   Durable Object class to the Worker's entry point, not to the file it is
+   written in. See server/account-do.js for why it decides nothing. */
+export { AccountDO } from "./account-do.js";
+
 /* ---------- codec ---------- */
 
 const enc = new TextEncoder();
@@ -557,6 +562,62 @@ async function mintIdentityToken(env, emailFp) {
   const payload = enc.encode(JSON.stringify({ v: 1, efp: emailFp, iat: now, exp: now + IDENTITY_TTL_MS }));
   const mac = await crypto.subtle.sign("HMAC", key, payload);
   return `LCTID1.${b64url(payload)}.${b64url(mac)}`;
+}
+
+/* ---------- watch ticket ----------
+   A WebSocket handshake carries no body, so the device proof every other route
+   on this Worker rests on cannot be presented at the upgrade. The signed
+   POST /sessions the popup already makes hands back one of these instead: a
+   60-second bearer naming the account and the device that proved itself.
+
+   Short-lived rather than single-use. Enforcing single use needs a row per
+   ticket, and the worst a replay buys is a second socket on an account the
+   holder already proved they own — while a stored row would be a new write on
+   the hot path of a screen people open casually. */
+const WATCH_TICKET_TTL_MS = 60e3;
+
+async function mintWatchTicket(env, emailFp, devFp) {
+  const key = await identityMacKey(env);
+  if (!key) return "";
+  const payload = enc.encode(JSON.stringify({
+    v: 1, efp: emailFp, dfp: devFp, exp: Date.now() + WATCH_TICKET_TTL_MS
+  }));
+  const mac = await crypto.subtle.sign("HMAC", key, payload);
+  return `LCTW1.${b64url(payload)}.${b64url(mac)}`;
+}
+
+/** The account and device a ticket proves, or null. Fails closed throughout. */
+async function readWatchTicket(env, ticket) {
+  const parts = String(ticket || "").split(".");
+  if (parts.length !== 3 || parts[0] !== "LCTW1") return null;
+  const key = await identityMacKey(env);
+  if (!key) return null;
+  let payload, mac;
+  try { payload = b64urlToBytes(parts[1]); mac = b64urlToBytes(parts[2]); } catch { return null; }
+  let ok;
+  try { ok = await crypto.subtle.verify("HMAC", key, mac, payload); } catch { return null; }
+  if (!ok) return null;
+  let claims;
+  try { claims = JSON.parse(new TextDecoder().decode(payload)); } catch { return null; }
+  if (!claims || claims.v !== 1) return null;
+  if (!/^[a-f0-9]{32}$/.test(String(claims.efp || ""))) return null;
+  if (!/^[a-f0-9]{32}$/.test(String(claims.dfp || ""))) return null;
+  if (!(Number(claims.exp) > Date.now())) return null;
+  return { efp: String(claims.efp), dfp: String(claims.dfp) };
+}
+
+/* Tell the account's live devices what just landed in D1. Never awaited by the
+   route and never able to fail it: the socket is an accelerator, and a push
+   that does not arrive costs one alarm interval, not a wrong answer. */
+async function announceToAccount(env, emailFp, payload) {
+  try {
+    if (!env.ACCOUNTS) return;
+    const stub = env.ACCOUNTS.get(env.ACCOUNTS.idFromName(emailFp));
+    await stub.fetch("https://account/announce", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+  } catch { /* the heartbeat is still underneath this */ }
 }
 
 let idMacKey = null;
@@ -2763,6 +2824,31 @@ async function route(request, env) {
 
   const url = new URL(request.url);
   const route = url.pathname;
+
+  /* ---------- the live channel ----------
+     Handled before the route table, the body cap and the device proof, because
+     none of those can apply: a WebSocket upgrade is a GET with no body, so the
+     signature every other route rests on has nowhere to travel. The ticket is
+     what stands in for it — minted by the signed POST /sessions the popup
+     already makes, good for 60 seconds, naming the account and the device that
+     proved themselves there.
+
+     This route decides nothing. It cannot sign anyone out, cannot report
+     whether a device is entitled, and hands the Durable Object only the two
+     fingerprints it verified — see server/account-do.js. */
+  if (route === "/sessions/watch") {
+    if (request.headers.get("Upgrade") !== "websocket") {
+      return json({ error: "expected websocket" }, 426, origin);
+    }
+    if (!env.ACCOUNTS) return json({ error: "unavailable" }, 503, origin);
+    const claims = await readWatchTicket(env, url.searchParams.get("t") || "");
+    if (!claims) return json({ error: "bad ticket" }, 401, origin);
+    const stub = env.ACCOUNTS.get(env.ACCOUNTS.idFromName(claims.efp));
+    return stub.fetch("https://account/watch", {
+      headers: { Upgrade: "websocket", "x-dev-fp": claims.dfp }
+    });
+  }
+
   const ROUTES = ["/entitlement", "/trial", "/devices", "/devices/revoke", "/session",
     "/sessions", "/sessions/terminate", "/sessions/terminate-all",
     "/checkout", "/checkout/claim",
@@ -3181,7 +3267,12 @@ async function route(request, env) {
     if (!devices) return json({ error: "unavailable" }, 503, origin);
 
     if (route === "/sessions") {
-      return json({ version: state.version, limit: SEAT_LIMIT, devices }, 200, origin);
+      /* The ticket rides back with the list. Minting it here rather than on a
+         route of its own is what keeps the socket behind a device proof: this
+         answer is only reachable by a caller that just signed one. */
+      const ticket = env.ACCOUNTS ? await mintWatchTicket(env, identityFp, devFp) : "";
+      return json({ version: state.version, limit: SEAT_LIMIT, devices,
+        ...(ticket ? { ticket } : {}) }, 200, origin);
     }
 
     /* A retry of a call that landed and then lost its connection. Answering it
@@ -3248,6 +3339,17 @@ async function route(request, env) {
         setEpoch: route === "/sessions/terminate-all"
       });
     } catch { return json({ error: "unavailable" }, 503, origin); }
+
+    /* AFTER the batch, never before: the socket must not be able to tell a
+       device it is signed out while the ledger still says otherwise. Awaited so
+       the push races nothing, but its own failure is swallowed inside — a
+       Durable Object that is down costs the alarm's interval, not a wrong
+       answer. */
+    await announceToAccount(env, identityFp, {
+      killed: Array.isArray(result && result.terminated) ? result.terminated : [],
+      version: (result && result.version) || 0,
+      reason: route === "/sessions/terminate-all" ? "signed-out-all" : "terminated"
+    });
 
     let after;
     try { after = await listSessions(env, identityFp, devFp); } catch { after = null; }
