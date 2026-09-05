@@ -46,11 +46,11 @@ const grab = (name) => {
   throw new Error("unbalanced braces reading " + name);
 };
 
-const NAMES = ["geminiValueEnd", "geminiFrames", "geminiPayloads", "geminiTime", "geminiAt",
-  "pplxTime", "pplxFromTrace", "pplxAnswer", "xaiTime", "chatBranch", "chatgptMsgs", "turnMsgs", "planName", "claudeOrgCtx", "planRank", "bestPlanSeat", "clampText", "planFromAny"];
+const NAMES = ["geminiValueEnd", "geminiFrames", "geminiPayloads", "geminiTime", "geminiAt", "geminiText",
+  "pplxTime", "pplxFromTrace", "pplxAnswer", "xaiTime", "chatBranch", "chatgptMsgs", "turnMsgs", "planName", "claudeOrgCtx", "planRank", "bestPlanSeat", "clampText", "planFromAny", "pickAllowanceSeat"];
 const {
-  geminiFrames, geminiPayloads, geminiTime, geminiAt, pplxTime, pplxFromTrace, pplxAnswer, xaiTime,
-  chatgptMsgs, turnMsgs, planName, claudeOrgCtx, bestPlanSeat, clampText, planFromAny
+  geminiFrames, geminiPayloads, geminiTime, geminiAt, geminiText, pplxTime, pplxFromTrace, pplxAnswer, xaiTime,
+  chatgptMsgs, turnMsgs, planName, claudeOrgCtx, bestPlanSeat, clampText, planFromAny, pickAllowanceSeat
 } = await import("data:text/javascript," + encodeURIComponent(
   NAMES.map(grab).join("\n") + `\nexport {${NAMES.join(",")}};`));
 
@@ -237,6 +237,40 @@ t("plan: Pro Lite is not Pro", planName("chatgptprolite") === "Pro Lite");
 t("plan: …and Pro is still Pro", planName("chatgptpro") === "Pro" && planName("chatgptproplan") === "Pro");
 t("plan: 'go' inside a word is not a tier",
   planName("google") === "" && planName("cargo") === "" && planName("django") === "");
+/* Gemini is archived from the RPC, not the DOM, so THINK_SEL cannot reach it.
+   A thinking model writes its working into the same text list as the answer,
+   ahead of it — and taking element 0 stored "Drafting the Formulas… Writing the
+   Final Response:" as though it were the reply, with the reply itself never
+   archived at all. Structure only: the working comes before the answer, never
+   after it. */
+t("gemini: the answer is taken, not the working before it",
+  geminiText([["Drafting the formulas. Writing the final response:"], ["The answer is 42."]]) ===
+  "The answer is 42.");
+t("gemini: one entry is the answer, unchanged",
+  geminiText([["Only this."]]) === "Only this.");
+t("gemini: a bare string is still an answer", geminiText("plain") === "plain");
+t("gemini: empty entries are not the answer",
+  geminiText([["The answer."], [""], ["   "]]) === "The answer.");
+t("gemini: nothing is nothing, never a guess",
+  geminiText([]) === "" && geminiText(null) === "" && geminiText([[""]]) === "");
+/* One login owns several Claude organisations and they all report the same
+   tier, so choosing a seat by plan alone was a coin toss settled by whichever
+   the API listed first — usually the personal org nobody uses, reporting 100%
+   left while the site said a quarter of the week was gone. */
+{
+  const unused = { acct: "a", windows: [{ pctLeft: 100 }] };
+  const real = { acct: "b", windows: [{ pctLeft: 76 }, { pctLeft: 39 }] };
+  t("seat: the allowance being SPENT is the subscription's",
+    pickAllowanceSeat([unused, real]) === real);
+  t("seat: …whichever order the provider listed them in",
+    pickAllowanceSeat([real, unused]) === real);
+  t("seat: one seat is the seat", pickAllowanceSeat([unused]) === unused);
+  t("seat: nothing read is nothing chosen",
+    pickAllowanceSeat([]) === undefined && pickAllowanceSeat(null) === undefined);
+  t("seat: seats with no share keep the first, rather than guessing",
+    pickAllowanceSeat([{ acct: "a", windows: [{ remaining: 3 }] },
+      { acct: "b", windows: [{ remaining: 9 }] }]).acct === "a");
+}
 t("plan: nothing said is not 'Free'", planName("") === "" && planName(null) === "");
 
 /* The org list is where Claude states this, and `capabilities` alone called a

@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Markdown render harness</title>
+</head>
+<body>
+<!-- renderMarkdown() is what the preview panel paints an archived message
+     with, and nothing tested it — which is why "$\begin{aligned} … $" reached
+     a reader as its own source and an image inside a sentence stayed as
+     "![alt](src)". A content script's globals live in an isolated world
+     page.evaluate cannot reach, so both files are loaded here as PAGE scripts.
+     history-loader.js talks to the worker, so `chrome` is shimmed to the
+     smallest thing that lets the module finish loading. Never shipped:
+     tools/pack.mjs does not include test/. -->
+<script>
+  self.chrome = {
+    runtime: {
+      id: "harness", lastError: null,
+      sendMessage: (_m, cb) => { if (typeof cb === "function") cb(undefined); },
+      onMessage: { addListener() {} },
+      getURL: (p) => p
+    },
+    storage: {
+      local: { get: async () => ({}), set: async () => {}, remove: async () => {} },
+      onChanged: { addListener() {} }
+    }
+  };
+</script>
+<script src="/content/richtext.js"></script>
+<script src="/content/history-loader.js"></script>
+</body>
+</html>

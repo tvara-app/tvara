@@ -134,7 +134,9 @@
     sum: "∑", prod: "∏", int: "∫", partial: "∂", nabla: "∇", forall: "∀", exists: "∃",
     in: "∈", notin: "∉", subset: "⊂", subseteq: "⊆", cup: "∪", cap: "∩", emptyset: "∅",
     rightarrow: "→", to: "→", leftarrow: "←", Rightarrow: "⇒", leftrightarrow: "↔", mapsto: "↦",
-    ldots: "…", cdots: "⋯", angle: "∠", perp: "⊥", parallel: "∥", degree: "°", sqrt: "√",
+    /* `\dots` is what models actually write — LaTeX's own context-sensitive
+       one — and without it the word "dots" appeared inside the formula. */
+    ldots: "…", dots: "…", vdots: "⋮", ddots: "⋱", cdots: "⋯", angle: "∠", perp: "⊥", parallel: "∥", degree: "°", sqrt: "√",
     /* The ones a transformer answer is made of, and none of them were here:
        an unknown command renders as its own name, so "QK^\\top" came out as
        "QK^top" and "\\odot" as the word. */
@@ -436,13 +438,43 @@
     // MathJax v2 left the source in a script tag beside the render.
     const script = el.querySelector('script[type^="math/tex"]');
     if (script && script.textContent.trim()) return script.textContent.trim();
+    /* The MathML both renderers keep BESIDE the visual render, when they keep
+       it. Not LaTeX, but the symbols in reading order — and read from the
+       assistive copy specifically, so none of the visual half comes with it. */
+    const aside = el.querySelector("mjx-assistive-mml math, .katex-mathml math");
+    if (aside && aside.textContent.trim()) return tidy(aside.textContent);
     const label = el.getAttribute && el.getAttribute("aria-label");
     if (label && label.trim()) return label.trim();
-    /* No source kept. The MathML text is not LaTeX, but it is the symbols in
-       reading order, which beats an empty line where an equation was. */
     const mml = el.matches && el.matches("math") ? el : el.querySelector("math");
-    return mml ? (mml.textContent || "").replace(/\s+/g, " ").trim() : "";
+    if (mml && (mml.textContent || "").trim()) return tidy(mml.textContent);
+    /* MathJax's SVG output keeps NOTHING readable: no annotation, no MathML,
+       and textContent is empty because every glyph is a <path>. It is the one
+       shape that made a formula disappear rather than arrive mangled — the
+       sentence around it closed up, and "Query (Q)" reached the reader as
+       "Query ()". Two things are still recoverable from it. */
+    const title = el.querySelector("svg title, svg desc");
+    if (title && title.textContent.trim()) return tidy(title.textContent);
+    /* Each glyph carries its own codepoint: <use data-c="1D444"> is 𝑄. The
+       symbols in reading order, again — the same bargain as the MathML. */
+    const glyphs = el.querySelectorAll("svg [data-c]");
+    if (glyphs.length) {
+      let text = "";
+      for (const g of glyphs) {
+        const code = parseInt(g.getAttribute("data-c"), 16);
+        if (Number.isFinite(code) && code > 0 && code <= 0x10FFFF) text += String.fromCodePoint(code);
+      }
+      if (text.trim()) return tidy(text);
+    }
+    /* Last: the render itself, with the half that is drawn for the eye taken
+       out. KaTeX writes the MathML and the glyphs side by side, so the whole
+       textContent returns every symbol twice. */
+    let clone;
+    try { clone = el.cloneNode(true); } catch { return ""; }
+    for (const dead of clone.querySelectorAll('[aria-hidden="true"], .katex-html, svg')) dead.remove();
+    return tidy(clone.textContent || "");
   }
+
+  const tidy = (t) => String(t || "").replace(/\s+/g, " ").trim();
 
   const isDisplayMath = (el) => {
     try { return !!(el.matches && el.matches(DISPLAY_SEL)); } catch { return false; }
@@ -573,7 +605,12 @@
         try { isMath = !!(child.matches && child.matches(MATH_SEL)); } catch { isMath = false; }
         if (isMath) {
           const tex = mathSource(child);
+          /* A formula with no readable source is still a formula that was
+             THERE. Dropping it silently is what turned "Query (Q)" into
+             "Query ()" — the sentence reads as broken punctuation, and nothing
+             says an equation is missing. Say so instead. */
           if (tex) out.push(isDisplayMath(child) ? `\n$$${tex}$$\n` : ` $${tex}$ `);
+          else out.push(isDisplayMath(child) ? "\n[formula]\n" : " [formula] ");
           continue;
         }
         /* A drawing, not a paragraph. Checked before PRE, because a rendered

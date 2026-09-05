@@ -473,6 +473,10 @@
       // do NOT satisfy it mean this platform has drifted and we are running on
       // a fallback layer — working, but on borrowed time.
       canon: "user-query, model-response",
+      /* What a turn IS on this host. A fallback layer matches message-content,
+         and one answer holds several of them — see oncePerTurn(). */
+      turnSel: 'user-query, model-response, [class*="turn-container"], ' +
+        '[class*="response-container"], [class*="query-container"]',
       // Where a POSITIVE role marker exists for both sides, so the health
       // report can say whether roles were read or guessed.
       roleCanon: "user-query, model-response",
@@ -942,13 +946,49 @@
          something that is not there. Dropped only when something survives —
          a host that names its turn wrapper "reasoning-turn" would otherwise
          empty the whole list, which is the mistake the tool filter made once. */
+      /* `closest`, not `matches`: the thinking block is a CONTAINER, and on a
+         fallback layer what the selector matches is the body inside it. Gemini
+         renders one answer as several <message-content> — the thoughts, then
+         the reply — so matching the element alone kept both and one message
+         drew two ticks, the whole answer painted as though the working were a
+         turn of its own. */
       let list = kept;
       try {
-        const real = kept.filter((el) => !(el.matches && el.matches(self.LCTRichText.THINK_SEL)));
+        const think = self.LCTRichText.THINK_SEL;
+        const real = kept.filter((el) => !(el.closest && el.closest(think)));
         if (real.length) list = real;
       } catch (_) { /* richtext not up yet — the list stands */ }
-      return outermost(list);
+      return oncePerTurn(a, outermost(list));
     };
+  }
+
+  /* One tick per TURN, not per body.
+   *
+   * A primary layer matches turn containers and needs none of this. A fallback
+   * matches whatever is left — a body, a content block — and a single answer
+   * can hold several of those: Gemini's <model-response> carries one
+   * <message-content> for its working and another for the reply, so the day
+   * the custom element names change, every answer starts counting twice.
+   *
+   * So when an adapter names the containers a turn IS (`turnSel`), each match
+   * is lifted to the one that holds it and duplicates collapse. Structure
+   * only, and it can never REMOVE a turn: an element with no such ancestor is
+   * kept exactly where it is.
+   */
+  function oncePerTurn(adapter, list) {
+    const sel = adapter && adapter.turnSel;
+    if (!sel || list.length < 2) return list;
+    const out = [];
+    const seen = new Set();
+    for (const el of list) {
+      let turn;
+      try { turn = el.closest && el.closest(sel); } catch (_) { /* bad selector */ }
+      const key = turn || el;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(key);
+    }
+    return out;
   }
 
   // adapters without an explicit composer() use the generic resolver

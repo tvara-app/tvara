@@ -842,12 +842,65 @@
   const PRIVATE_USE = /[\uE000-\uF8FF]/g;
   const clean = (t) => String(t || "").replace(PRIVATE_USE, "");
 
-  /** Inline markdown into `parent`: **bold**, *italic*, `code`. */
+  /* http(s), blob and data only. Never a scheme that can run something. */
+  const IMG_OK = /^(https?:|blob:|data:image\/)/i;
+  const LINK_OK = /^(https?:|mailto:)/i;
+
+  /** A picture, or an honest note saying one was here. */
+  function appendImage(host, alt, src) {
+    if (IMG_OK.test(src)) {
+      const img = document.createElement("img");
+      img.className = "lct-hp-img";
+      img.loading = "lazy";
+      img.decoding = "async";
+      img.alt = alt || "";
+      img.src = src;
+      host.appendChild(img);
+      return img;
+    }
+    const note = document.createElement("span");
+    note.className = "lct-hp-note";
+    note.textContent = "\u{1F5BC} " + (alt || "image");
+    host.appendChild(note);
+    return note;
+  }
+
+  function appendLink(host, label, url) {
+    if (!LINK_OK.test(url)) { host.appendChild(document.createTextNode(label || url)); return; }
+    const a = document.createElement("a");
+    a.href = url;
+    a.target = "_blank";
+    a.rel = "noreferrer noopener";
+    a.textContent = label || url;
+    host.appendChild(a);
+  }
+
+  /* An image or a link written INSIDE a sentence. The block path only catches
+     one alone on its own line, so a picture in the middle of a paragraph — and
+     every link in an answer — reached the panel as its own source: the literal
+     characters "![shot](blob:...)" in front of the reader. */
+  const INLINE_LINK = /(!?)\[([^\]]*)\]\(\s*([^)\s]*)\s*\)/g;
+
+  function inlineLinks(parent, text) {
+    const src = String(text || "");
+    let at = 0, m;
+    INLINE_LINK.lastIndex = 0;
+    while ((m = INLINE_LINK.exec(src))) {
+      if (m.index > at) inlineMarkers(parent, src.slice(at, m.index));
+      const url = m[3];
+      if (m[1] === "!") appendImage(parent, m[2], url);
+      else appendLink(parent, m[2], url);
+      at = m.index + m[0].length;
+    }
+    if (at < src.length) inlineMarkers(parent, src.slice(at));
+  }
+
+  /** Inline markdown into `parent`: **bold**, *italic*, `code`, images, links. */
   function inline(parent, text) {
-    if (!rich()) { inlineMarkers(parent, text); return; }
+    if (!rich()) { inlineLinks(parent, text); return; }
     for (const part of self.LCTRichText.splitInlineMath(text)) {
       if (part.tex !== undefined) self.LCTRichText.math(parent, part.tex, false);
-      else inlineMarkers(parent, part.text);
+      else inlineLinks(parent, part.text);
     }
   }
 
@@ -1002,13 +1055,33 @@
     const endList = () => { list = null; listTag = ""; };
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      const fence = /^\s*```(\w*)\s*$/.exec(line);
+      /* An opening fence, and what follows it.
+
+         Two things used to turn a whole answer into one wide scrolling code
+         box of PROSE. The opener demanded nothing after the language, so
+         ```js title="x" was not a fence at all — and the CLOSING ``` then
+         opened one, swallowing every paragraph to the end of the message. And
+         a fence the model never closed (a truncated answer, a stray ``` in a
+         sentence) did the same on its own.
+
+         So: the language is the first word and trailing text is ignored, the
+         closer is any line starting ```, and with no closer in the message the
+         remainder has to EARN the block — one line prose could not have
+         produced. Otherwise the ``` is text and the paragraphs stay
+         paragraphs, which is the honest failure. */
+      const fence = /^\s*```\s*([A-Za-z0-9+#_.-]*)/.exec(line);
       if (fence) {
-        endList();
-        const body = [];
-        for (i++; i < lines.length && !/^\s*```\s*$/.test(lines[i]); i++) body.push(lines[i]);
-        codeInto(host, body.join("\n"), fence[1]);
-        continue;
+        let close = -1;
+        for (let j = i + 1; j < lines.length; j++) {
+          if (/^\s*```/.test(lines[j])) { close = j; break; }
+        }
+        const body = lines.slice(i + 1, close < 0 ? lines.length : close);
+        if (close >= 0 || (rich() && body.some((l) => self.LCTRichText.strongCode(l)))) {
+          endList();
+          codeInto(host, body.join("\n"), fence[1]);
+          i = close < 0 ? lines.length : close;
+          continue;
+        }
       }
       /* A picture on its own line. The archive stores one as ![alt](src) — a
          message that IS an image had no text at all before, so it arrived in
@@ -1016,22 +1089,7 @@
       const pic = /^\s*!\[([^\]]*)\]\(\s*([^)\s]*)\s*\)\s*$/.exec(line);
       if (pic) {
         endList();
-        const src = pic[2];
-        // http(s), blob and data only. Never a scheme that can run something.
-        if (/^(https?:|blob:|data:image\/)/i.test(src)) {
-          const img = document.createElement("img");
-          img.className = "lct-hp-img";
-          img.loading = "lazy";
-          img.decoding = "async";
-          img.alt = pic[1] || "";
-          img.src = src;
-          host.appendChild(img);
-        } else {
-          const note = document.createElement("p");
-          note.className = "lct-hp-note";
-          note.textContent = "🖼 " + (pic[1] || "image");
-          host.appendChild(note);
-        }
+        appendImage(host, pic[1], pic[2]);
         continue;
       }
       /* $$…$$ on its own, one or more lines — and \[…\], which is what MathJax
@@ -1051,6 +1109,32 @@
         }
         blockMath(host, body.join(" ").trim());
         continue;
+      }
+      /* An environment on its own, with or without dollars around it.
+         `$\begin{aligned} … \end{aligned}$` is written at least as often as
+         `$$…$$`, and NOTHING caught it: the block openers above want `$$` or
+         `\[`, and the inline scanner stops at a newline. So a multi-line
+         derivation arrived in the panel as its own source — "$\begin{aligned}"
+         and every backslash after it, in front of the reader, which is what
+         this whole renderer exists to prevent.
+
+         The closer has to be in reach or this is not an environment at all:
+         with no `\end` ahead, fall through and render the line as the text it
+         is, rather than swallowing the rest of the message. */
+      const openEnv = /^\s*\$?\s*(\\begin\{[a-zA-Z*]+\}.*)$/.exec(line);
+      if (openEnv) {
+        const closes = /\\end\{[a-zA-Z*]+\}\s*\$?\s*$/;
+        let end = closes.test(line) ? i : -1;
+        for (let j = i + 1; end < 0 && j < lines.length && j - i <= 200; j++) {
+          if (closes.test(lines[j])) end = j;
+        }
+        if (end >= 0) {
+          endList();
+          const body = [openEnv[1], ...lines.slice(i + 1, end + 1)];
+          blockMath(host, body.join(" ").replace(/\$\s*$/, "").trim());
+          i = end;
+          continue;
+        }
       }
       /* Code pasted without fences — the usual way it arrives in a chat, and
          what turned one program into forty one-line paragraphs. */

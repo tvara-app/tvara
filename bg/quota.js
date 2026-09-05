@@ -522,6 +522,7 @@ async function quotaPoll(platformId, reason = "manual") {
     // store — the sweep below reads it, and an account that merely answered
     // nothing today is not an account that is gone.
     const live = new Set();
+    const read = [];
     for (const seat of (seats.length ? seats : [ctx])) {
       const acct = await quotaAcctFor(adapter, seat);
       live.add(acct);
@@ -533,15 +534,41 @@ async function quotaPoll(platformId, reason = "manual") {
         if (!saidPlan && result.plan) saidPlan = result.plan;
       }
       if (!windows.length) continue;
-      await quotaStore(platformId, acct, {
+      read.push({
+        acct,
         // What the provider states beats what the handshake inferred: the
         // handshake reads an org list, and the org it picks is not always the
         // one being paid for.
-        id: platformId, acct,
+        id: platformId,
         plan: saidPlan || learnedPlan || (seat && seat.plan) || (ctx && ctx.plan) || "",
         windows, observedAt: Date.now(), source: "polled"
       });
-      stored++; total += windows.length;
+    }
+
+    /* One subscription, one row — decided from the NUMBERS, not before them.
+     *
+     * A claude.ai login routinely owns several organisations and they all
+     * report the same tier, so picking a seat by plan alone was a coin toss
+     * settled by whichever the API listed first — usually the personal org
+     * nobody uses. That org honestly has 100% left, and it is the row the
+     * subscriber saw while the site told them they had spent a quarter of the
+     * week. The allowance being consumed is the one they are using, and the
+     * only way to know which that is, is to read them and compare.
+     *
+     * Ties and unknowns keep the first, which is the old behaviour. */
+    if (adapter.oneAllowance && read.length > 1) {
+      const winner = pickAllowanceSeat(read);
+      /* The seats that lost are not accounts that vanished — they are the same
+         subscription seen from another organisation, and leaving them stored
+         is what put the subscriber in the panel twice. */
+      for (const rec of read) if (rec !== winner) live.delete(rec.acct);
+      read.length = 0;
+      read.push(winner);
+    }
+
+    for (const rec of read) {
+      await quotaStore(platformId, rec.acct, rec);
+      stored++; total += rec.windows.length;
     }
     /* Rows for accounts this login does not have any more. The panel is a list
        of ACCOUNTS, and one that is gone kept its last reading forever: the
@@ -892,6 +919,28 @@ async function quotaDiagnose(platformId) {
     out.push({ id, acct, probe, stored, shown: stored ? self.LCTQuota.primary(stored, {}) : null });
   }
   return { at: Date.now(), platforms: out };
+}
+
+/**
+ * Of several seats on ONE subscription, the seat whose allowance is being spent.
+ *
+ * Self-contained on purpose: test/test-parsers.mjs lifts this function on its
+ * own, and anything it referenced from module scope would be missing from the
+ * lift.
+ */
+function pickAllowanceSeat(read) {
+  const list = Array.isArray(read) ? read : [];
+  if (list.length < 2) return list[0];
+  const spent = (rec) => {
+    let low = Infinity;
+    for (const w of (rec && rec.windows) || []) {
+      if (w && typeof w.pctLeft === "number") low = Math.min(low, w.pctLeft);
+    }
+    return low;
+  };
+  let winner = list[0];
+  for (const rec of list) if (spent(rec) < spent(winner)) winner = rec;
+  return winner;
 }
 
 async function sweepDue(platformId) {

@@ -1,0 +1,61 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Gemini thread fixture</title>
+<!--
+  A Gemini answer is one <model-response> holding several <message-content>
+  blocks: the thinking, then the reply. Layer 1 counts the custom elements and
+  gets it right; the moment Google renames those, layer 2 counts
+  message-content and one answer becomes two — the "a single message detected
+  as multiple" report, on the host most likely to drift because its element
+  names change often.
+
+  Two exchanges. FOUR ticks is the only right answer, two each way, on both
+  layers. Counting message-content gives six; counting the display equations
+  or the paragraphs gives far more.
+
+  ?drift=1 renames the custom elements, which is the day Google redesigns.
+-->
+<style>
+  body { font: 14px/1.6 system-ui, sans-serif; margin: 0; background: #131316; color: #e8e8ea; }
+  .thread { max-width: 760px; margin: 0 auto; padding: 24px 16px 60vh; }
+  .turn { padding: 10px 0 20px; border-bottom: 1px solid #26262c; }
+  .q { font-size: 18px; font-weight: 600; }
+  .math { margin: 14px 0; text-align: center; }
+</style>
+<div class="thread" id="thread"></div>
+<script>
+  const drift = new URLSearchParams(location.search).get("drift") === "1";
+  const ask = drift ? "div" : "user-query";
+  const ans = drift ? "div" : "model-response";
+
+  const eq = (tex) =>
+    '<div class="math"><span class="katex"><span class="katex-mathml"><math><semantics><mrow>' +
+    '<mi>x</mi></mrow><annotation encoding="application/x-tex">' + tex +
+    '</annotation></semantics></math></span>' +
+    '<span class="katex-html" aria-hidden="true">x</span></span></div>';
+
+  const answers = [
+    '<model-thoughts><message-content><p>Drafting the formulas. Check the scaling term.</p>' +
+    '<p>Then write the final response.</p></message-content></model-thoughts>' +
+    '<message-content><p>The fundamental operation is scaled dot-product attention:</p>' +
+    eq('\\text{Attention}(Q,K,V) = \\text{softmax}\\left(\\frac{QK^T}{\\sqrt{d_k}}\\right)V') +
+    '<p>where the scaling keeps the softmax out of saturation.</p>' +
+    eq('\\sqrt{d_k}') +
+    '<p>That is the whole of it.</p></message-content>',
+
+    '<model-thoughts><message-content><p>Consider multi-head next.</p></message-content></model-thoughts>' +
+    '<message-content><p>Multi-head attention projects into several subspaces:</p>' +
+    eq('\\text{MultiHead}(Q,K,V) = \\text{Concat}(\\text{head}_1, \\dots, \\text{head}_h)W^O') +
+    '<p>Each head is an attention over its own projection.</p></message-content>'
+  ];
+  const asks = [
+    "give me the formula for the transformer architecture",
+    "and how does multi-head attention extend it"
+  ];
+
+  document.getElementById("thread").innerHTML = asks.map((q, i) => `
+    <div class="turn">
+      <${ask} class="query-container"><message-content><div class="q">${q}</div></message-content></${ask}>
+      <${ans} class="response-container">${answers[i]}</${ans}>
+    </div>`).join("");
+</script>

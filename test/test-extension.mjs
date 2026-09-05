@@ -1342,6 +1342,34 @@ try {
     pplxSplit.user === 2 || pplxSplit.user === -1, JSON.stringify(pplxSplit));
   await pplx.close();
 
+  /* ---- B2m Gemini: one answer, several content blocks ----
+     A Gemini answer is one <model-response> holding several <message-content>
+     — the working, then the reply. Layer 1 counts the custom elements and is
+     right; the day Google renames them the fallback counts message-content and
+     one answer becomes two, every tick painting as the model's. Four ticks is
+     the only right answer on BOTH layers, two each way. */
+  for (const [what, query, expect] of [
+    ["on its own elements", "", 4],
+    ["and on the fallback, the day Google renames them", "&drift=1", 4]
+  ]) {
+    const gem = await ctx.newPage();
+    trackErrors(gem);
+    await gem.goto("http://127.0.0.1:8917/test/gemini-turns.html?lctAdapter=gemini" + query);
+    await gem.waitForSelector("#lct-mm-canvas", { timeout: 20000 });
+    const map = await gem.evaluate(() => {
+      const canvas = document.getElementById("lct-mm-canvas");
+      const ticks = [...document.querySelectorAll("#lct-mm-canvas [data-lct-role]")];
+      return {
+        ticks: Number(canvas?.getAttribute("aria-valuemax") || 0),
+        user: ticks.length ? ticks.filter((n) => n.dataset.lctRole === "user").length : -1
+      };
+    });
+    t(`B2m one answer is one tick ${what}`, map.ticks === expect, JSON.stringify(map));
+    t("B2m …and the working is not counted as a turn of its own",
+      map.user === 2 || map.user === -1, JSON.stringify(map));
+    await gem.close();
+  }
+
   /* ---- B2j one tick per turn, whatever matched ----
      A layer that matches both a turn and something inside it counts that turn
      twice, and the nested match is never a message its ancestor does not
@@ -1439,6 +1467,100 @@ try {
     };
   });
   await mathPage.close();
+
+  /* What the PANEL paints, which is a different renderer from the one above and
+     had no test at all. Two things a reader saw as raw source: an environment
+     inside single dollars — the block openers want `$$` or `\[`, and the inline
+     scanner stops at a newline, so nothing caught it — and an image or a link
+     written inside a sentence rather than alone on its line. */
+  const mdPage = await ctx.newPage();
+  trackErrors(mdPage);
+  await mdPage.goto("http://127.0.0.1:8917/test/markdown-harness.html");
+  await mdPage.waitForFunction(() => !!(self.LCTHistoryLoader &&
+    self.LCTHistoryLoader.renderMarkdown), null, { timeout: 10000 });
+  const md = await mdPage.evaluate(() => {
+    const render = (src) => {
+      const host = document.createElement("div");
+      self.LCTHistoryLoader.renderMarkdown(host, src);
+      return {
+        maths: host.querySelectorAll(".lct-math-block math").length,
+        tables: host.querySelectorAll("mtable").length,
+        imgs: [...host.querySelectorAll("img")].map((i) => i.getAttribute("src")),
+        links: [...host.querySelectorAll("a")].map((a) => a.getAttribute("href")),
+        pres: host.querySelectorAll("pre").length,
+        preText: [...host.querySelectorAll("pre")].map((p) => p.textContent).join(" "),
+        text: host.textContent
+      };
+    };
+    return {
+      aligned: render("Multi-head attention:\n\n$\\begin{aligned}\n" +
+        "\\text{head}_i &= \\text{Attention}(QW_i^Q, KW_i^K, VW_i^V) \\\\\n" +
+        "\\text{MultiHead}(Q, K, V) &= \\text{Concat}(\\text{head}_1, \\dots, \\text{head}_h)W^O\n" +
+        "\\end{aligned}$\n\nwhere $h$ is the number of heads."),
+      bare: render("\\begin{aligned}\na &= b \\\\\nc &= d\n\\end{aligned}"),
+      inlineImg: render("Here is the result ![the plot](https://x.test/p.png) and it is fine."),
+      blockImg: render("![shot](data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==)"),
+      unsafeImg: render("![x](javascript:alert(1))"),
+      link: render("See [the paper](https://arxiv.org/abs/1706.03762) for more."),
+      unclosed: render("\\begin{aligned} but nothing ever closes it\nplain text after"),
+      price: render("It costs $5 and then $6 later."),
+      fenceTitle: render("```js title=\"x\"\nconst a = 1;\n```\nAfter the block."),
+      unclosedProse: render("```\nI'll assume you are asking whether the server\n" +
+        "accepts JSON only in the request body and how it relates to HTTP methods."),
+      unclosedCode: render("```\nconst a = 1;\nfoo.bar();"),
+      closedProse: render("```\njust some words here\n```\nafter")
+    };
+  });
+  await mdPage.close();
+
+  t("B23 an aligned environment inside single dollars renders as a formula",
+    md.aligned.maths === 1 && md.aligned.tables === 1, JSON.stringify(md.aligned).slice(0, 200));
+  t("B23 …and none of its source is left in front of the reader",
+    !/\\begin\{|\\text\{|\\end\{/.test(md.aligned.text), md.aligned.text.slice(0, 120));
+  t("B23 …with the ellipsis the model wrote, not the word 'dots'",
+    md.aligned.text.includes("\u2026") && !/\bdots\b/.test(md.aligned.text),
+    md.aligned.text.slice(0, 160));
+  t("B23 an environment with no dollars at all is still a formula",
+    md.bare.maths === 1 && md.bare.tables === 1, JSON.stringify(md.bare).slice(0, 160));
+  t("B23 an environment that never closes is text, not a swallowed message",
+    md.unclosed.maths === 0 && md.unclosed.text.includes("plain text after"),
+    JSON.stringify(md.unclosed).slice(0, 160));
+  t("B23 a price is not a formula",
+    md.price.maths === 0 && md.price.text.includes("$5"), md.price.text);
+  t("B24 an image inside a sentence is a picture, not its own source",
+    md.inlineImg.imgs.length === 1 && md.inlineImg.imgs[0] === "https://x.test/p.png" &&
+    !md.inlineImg.text.includes("!["), JSON.stringify(md.inlineImg).slice(0, 200));
+  t("B24 …and the sentence around it survives",
+    md.inlineImg.text.includes("Here is the result") && md.inlineImg.text.includes("and it is fine"),
+    md.inlineImg.text);
+  t("B24 an image alone on its line still renders",
+    md.blockImg.imgs.length === 1 && /^data:image\/gif/.test(md.blockImg.imgs[0]),
+    JSON.stringify(md.blockImg.imgs));
+  /* http(s), blob and data:image only. A scheme that can RUN something is
+     named rather than rendered — the archive holds whatever the page held. */
+  t("B24 a scheme that can run something is named, never loaded",
+    md.unsafeImg.imgs.length === 0 && md.unsafeImg.text.includes("x"),
+    JSON.stringify(md.unsafeImg).slice(0, 160));
+  /* One opening fence used to swallow the rest of an answer into a single wide
+     scrolling box of prose — the opener refused a title after the language, so
+     the CLOSING ``` opened a block instead, and a fence the model never closed
+     did the same on its own. */
+  t("B25 a fence with a title after the language is still a fence",
+    md.fenceTitle.pres === 1 && md.fenceTitle.text.includes("After the block") &&
+    !md.fenceTitle.preText.includes("After the block"),
+    JSON.stringify(md.fenceTitle).slice(0, 200));
+  t("B25 an unclosed fence does not swallow the prose after it",
+    md.unclosedProse.pres === 0 && md.unclosedProse.text.includes("request body"),
+    JSON.stringify(md.unclosedProse).slice(0, 200));
+  t("B25 …but an unclosed fence over real code is still code",
+    md.unclosedCode.pres === 1 && md.unclosedCode.preText.includes("foo.bar()"),
+    JSON.stringify(md.unclosedCode).slice(0, 200));
+  t("B25 a closed fence is a block whatever is in it",
+    md.closedProse.pres === 1 && md.closedProse.preText.includes("just some words"),
+    JSON.stringify(md.closedProse).slice(0, 200));
+  t("B24 a link is a link",
+    md.link.links.length === 1 && md.link.links[0] === "https://arxiv.org/abs/1706.03762" &&
+    md.link.text.includes("See the paper for more"), JSON.stringify(md.link).slice(0, 200));
   t("B2i the LaTeX is taken from the render, not from its glyphs",
     /\$Q \\in \\mathbb\{R\}\^\{n\}\$/.test(mathRead.read), mathRead.read);
   t("B2i a standalone equation survives at all, on its own line",

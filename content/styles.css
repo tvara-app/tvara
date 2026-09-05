@@ -457,8 +457,11 @@
 .lct-hp-text p { margin: 0 0 8px; }
 /* A message that IS a picture. Bounded, never pushing the panel wider, and a
    background so a transparent PNG is not invisible on a dark panel. */
+/* inline-block, not block: a picture written INSIDE a sentence is part of that
+   sentence, and one alone on its line still sits on its own. */
 .lct-hp-img {
-  display: block;
+  display: inline-block;
+  vertical-align: middle;
   max-width: 100%;
   max-height: 320px;
   margin: 6px 0 10px;
@@ -467,6 +470,10 @@
   background: rgba(255, 255, 255, .04);
 }
 .lct-hp-note { margin: 0 0 8px; opacity: .7; }
+/* A link in an archived answer. Underlined rather than coloured alone: the
+   panel's palette is not guaranteed to give a blue enough contrast. */
+.lct-hp-text a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.lct-hp-text a:hover { opacity: .8; }
 .lct-hp-text h1, .lct-hp-text h2, .lct-hp-text h3,
 .lct-hp-text h4, .lct-hp-text h5, .lct-hp-text h6 {
   margin: 12px 0 6px; font-size: 1.05em; font-weight: 650; line-height: 1.3;
@@ -1907,11 +1914,17 @@ html[data-lct-history-state="running"] #lct-minimap { opacity: 1; }
 .lct-tok-kw  { color: #ff7b9c; font-weight: 600; }
 .lct-tok-fn  { color: #79c0ff; }
 
+/* A standalone equation is the centrepiece of the answers it appears in, and it
+   reads as one only with air around it: crowded against the sentence above and
+   below, a derivation looks like a run-on line of symbols. The provider's own
+   page gives it a wide berth; so does this. */
 .lct-math-block {
-  margin: 0 0 10px; padding: 8px 10px; border-radius: 9px; overflow-x: auto;
-  background: rgba(255, 255, 255, 0.05); text-align: center;
+  margin: 14px 0 16px; padding: 12px 14px; border-radius: 10px; overflow-x: auto;
+  background: rgba(255, 255, 255, 0.05); text-align: center; line-height: 1.6;
 }
-.lct-math-block math { font-size: 1.15em; }
+.lct-math-block math { font-size: 1.2em; }
+/* Inline maths sits in a sentence and must not crowd the words either side. */
+.lct-hp-text math { margin: 0 .08em; }
 math { font-family: "Latin Modern Math", "STIX Two Math", Cambria Math, serif; }
 /* A browser without MathML still gets the source, not an empty box. */
 .lct-math-raw {

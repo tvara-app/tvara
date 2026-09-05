@@ -185,6 +185,32 @@ function geminiTime(value) {
 /** Read a positional path out of a batchexecute payload. Everything in these
  *  replies is addressed by index, and any hop can legitimately be absent, so a
  *  miss is undefined rather than a throw. */
+/**
+ * The ANSWER out of a candidate's text list.
+ *
+ * A thinking model puts its working in that same list, ahead of the reply —
+ * so taking element 0 archived "Drafting the Formulas (Mental Check & LaTeX
+ * formatting)… Writing the Final Response: start with a polite overview" as
+ * though it were the answer, and the answer itself was never stored at all.
+ * This is the same rule as THINK_SEL in the page, applied where the page's
+ * rules cannot reach: Gemini is archived from the RPC, not the DOM.
+ *
+ * Structure only, never the words: the reply is the LAST text the candidate
+ * carries, because the working is written before the answer and never after
+ * it. One entry is unchanged behaviour — nothing to tell apart.
+ */
+function geminiText(list) {
+  if (typeof list === "string") return list.trim();
+  if (!Array.isArray(list)) return "";
+  const parts = [];
+  for (const part of list) {
+    const text = typeof part === "string" ? part
+      : (Array.isArray(part) && typeof part[0] === "string") ? part[0] : "";
+    if (text && text.trim()) parts.push(text.trim());
+  }
+  return parts.length ? parts[parts.length - 1] : "";
+}
+
 function geminiAt(node, path) {
   let at = node;
   for (const step of path) {
@@ -561,11 +587,22 @@ const BG_ADAPTERS = [
      * 100% left. There is one session cookie and one subscription here: pick
      * the org that holds the plan, and report it once.
      */
+    /* One login, one allowance — but WHICH organisation holds it cannot be
+       settled here. Every org this login owns reports the same tier, so
+       bestPlanSeat() was choosing between equals and the tie fell to whichever
+       the API listed first: usually the personal org nobody uses, reporting
+       100% left while the site said a quarter of the week was gone. Narrow to
+       the seats that tie at the best plan and let the READINGS decide — see
+       `oneAllowance` in bg/quota.js. */
+    oneAllowance: true,
     quotaSeats(ctx) {
       const seats = this.accounts(ctx);
       if (seats.length < 2) return seats;
       const best = bestPlanSeat(seats);
-      return best ? [best] : seats;
+      if (!best) return seats;
+      const top = planRank(best.plan);
+      const tied = seats.filter((s) => planRank(s && s.plan) === top);
+      return tied.length ? tied : [best];
     },
     /* The usage endpoint states the plan outright (`plan_name`), and bootstrap
        carries the membership the tier lives on. Both are already fetched for
@@ -767,10 +804,16 @@ const BG_ADAPTERS = [
         identified: false
       };
     },
-    async rpc(ctx, rpcid, payload) {
+    /* `opts.sourcePath` and `opts.ext` are not decoration: batchexecute routes
+       on the page the call claims to come from, and the usage RPC is served to
+       /usage with the extension header its own page sends. Asked from /app with
+       no header — which is right for the listing, and was hardcoded for every
+       call — it answers nothing at all, and the panel said Gemini published no
+       allowance while gemini.google.com/usage was showing one. */
+    async rpc(ctx, rpcid, payload, opts) {
       geminiReqid = (geminiReqid || Math.floor(Math.random() * 90000) + 10000) + 100000;
       const params = new URLSearchParams({
-        rpcids: rpcid, "source-path": "/app", hl: "en",
+        rpcids: rpcid, "source-path": (opts && opts.sourcePath) || "/app", hl: "en",
         _reqid: String(geminiReqid), rt: "c"
       });
       if (ctx.bl) params.set("bl", ctx.bl);
@@ -779,7 +822,8 @@ const BG_ADAPTERS = [
         method: "POST",
         headers: {
           "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
-          "X-Same-Domain": "1"
+          "X-Same-Domain": "1",
+          ...(opts && opts.ext ? { "x-goog-ext-73010989-jspb": opts.ext } : {})
         },
         // Three levels of nesting, the innermost one a JSON string: the batch,
         // the envelope list, then the envelope. "generic" is the ordering slot a
@@ -804,8 +848,11 @@ const BG_ADAPTERS = [
      */
     async quotaJson(ctx) {
       let payloads;
-      try { payloads = geminiPayloads(await this.rpc(ctx, GEMINI_RPC_USAGE, []), GEMINI_RPC_USAGE); }
-      catch { return null; }
+      try {
+        payloads = geminiPayloads(
+          await this.rpc(ctx, GEMINI_RPC_USAGE, [], { sourcePath: "/usage", ext: "[0]" }),
+          GEMINI_RPC_USAGE);
+      } catch { return null; }
       const buckets = payloads.map((p) => (Array.isArray(p) ? p[1] : null)).find(Array.isArray);
       if (!Array.isArray(buckets) || !buckets.length) return null;
       const out = {};
@@ -893,7 +940,7 @@ const BG_ADAPTERS = [
         // drafts the reader never saw.
         const best = geminiAt(turn, [3, 0, 0]);
         // Index 22 is where a "card" answer keeps its text instead of index 1.
-        const reply = String(geminiAt(best, [1, 0]) || geminiAt(best, [22, 0]) || "").trim();
+        const reply = geminiText(geminiAt(best, [1])) || geminiText(geminiAt(best, [22]));
         if (reply) msgs.push({ r: "assistant", t: reply, ts: 0 });
       }
       return msgs;

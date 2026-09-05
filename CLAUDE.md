@@ -186,6 +186,15 @@ whatever the handshake inferred:
 - **Perplexity** — `/rest/user/settings` → `subscription_tier` gated on
   `subscription_status`, so a lapsed Pro is not still called Pro. Its live
   counters are at `/rest/rate-limit/all`.
+- **Gemini** — **batchexecute routes on the page a call claims to come from.**
+  `rpc()` hardcoded `source-path=/app` for every call and sent no extension
+  header. That is right for the LISTING, which is why archiving worked — the
+  usage RPC is served to `/usage` with `x-goog-ext-73010989-jspb: [0]`, and
+  asked from `/app` it answers nothing, so the panel said Gemini published no
+  allowance while gemini.google.com/usage was showing one.
+- **DeepSeek publishes no allowance at all.** It enforces with `429` plus a
+  proof-of-work challenge, not with a quota endpoint. "no limit published" on
+  that row is the true answer, not a gap to be filled with an estimate.
 - **Gemini** — no REST API at all: the allowance is a batchexecute RPC
   (`jSf9Qc`), answering `[status, [[remaining, usedRatio, type, [[s, ns]]], …]]`
   with type 1 the five-hour window and type 2 the weekly one. The adapter's
@@ -253,6 +262,16 @@ provider published, it is still the truth and it is still shown.
 
 Rules the panel cannot break:
 
+- **Which seat holds the allowance is decided from the NUMBERS, not before
+  them.** Every organisation a claude.ai login owns reports the same tier, so
+  picking one by plan alone was a coin toss settled by whichever the API listed
+  first — usually the personal org nobody uses, reporting "100% left" while the
+  site said a quarter of the week was gone. `quotaSeats()` now returns every
+  seat tied at the best plan and `pickAllowanceSeat()` (`bg/quota.js`) keeps the
+  one being SPENT; the losers are dropped from the live set rather than stored,
+  because they are one subscription seen twice. Where no seat publishes a share
+  there is nothing to compare, so the first is kept rather than a preference
+  invented.
 - **One login, one allowance row.** `accounts()` lists every ORGANISATION —
   the archive is per organisation, a chat lives in one — but a subscription is
   not. Polling each org stored each as its own account, so one subscriber saw
@@ -338,6 +357,18 @@ it there.
   last kept element can contain the next. Grok's layer 1 also refuses a
   `[role="listitem"]` whose parent is a `<ul>`/`<ol>`: a bulleted list inside an
   answer matched that selector once per bullet.
+- **One tick per TURN, not per body.** A primary layer matches turn containers
+  and needs nothing more. A fallback matches whatever is left, and one answer
+  can hold several of those: Gemini's `<model-response>` carries one
+  `<message-content>` for its working and another for the reply, so the day the
+  custom element names change every answer counts twice — all of it painted as
+  the model's. `oncePerTurn()` (`content/adapters.js`) lifts each match to the
+  container a turn IS (`adapter.turnSel`) and collapses duplicates; an element
+  with no such ancestor is kept where it is, so it can never remove a turn. The
+  thinking filter tests `closest`, not `matches`, for the same reason: the
+  thinking block is a CONTAINER, and on a fallback layer what matched is the
+  body inside it. `test/gemini-turns.html` is two exchanges; four ticks on both
+  layers, `?drift=1` renaming the custom elements.
 - **A marker node is not a turn.** ChatGPT keys its DOM nodes by TRANSCRIPT
   message id, and one visible answer carries several — a reasoning summary, a
   browsing block, the answer itself. Its `<article>` is the turn, and
@@ -442,6 +473,34 @@ the message away with its own toolbar. An icon button holds an `<svg>`, never an
 
 `content/exporter.js` runs the same three rules, so a file and a preview of the
 same conversation cannot disagree.
+
+**A fence must not swallow the answer.** `renderMarkdown()` is what the panel
+paints an archived message with, and its opener demanded nothing after the
+language — so ```` ```js title="x" ```` was not a fence at all, and the CLOSING
+fence opened one that ran to the end of the message. Every paragraph after it
+painted as code, in one `<pre>` that scrolls sideways because prose does not
+wrap there. The language is now the first word, any line starting with three
+backticks closes a block, and where the message holds no closer the remainder
+has to EARN it — one line `strongCode()` says prose could not have produced.
+Otherwise the fence is text and the paragraphs stay paragraphs.
+
+**Not every formula is written between double dollars.**
+`$\begin{aligned} … \end{aligned}$` is as common as `$$…$$`, and nothing caught
+it: the block openers want `$$` or `\[`, and `INLINE_MATH` stops at a newline.
+A multi-line derivation arrived as its own source. An environment now opens a
+display block with or without dollars around it, and refuses when no `\end` is
+in reach rather than swallowing the rest of the message.
+
+**An image or a link inside a sentence is not on its own line.** The block path
+only matched one alone, so a picture mid-paragraph — and every markdown link —
+reached the reader as the literal `![alt](src)`. `appendImage()` and
+`appendLink()` are the single place the scheme allowlist lives: http(s), blob
+and `data:image` render, anything that could run is named instead.
+
+`test/markdown-harness.html` loads `history-loader.js` as a PAGE script for the
+same reason the richtext one does — a content script's globals are unreachable
+from `page.evaluate`. Before it, the renderer the panel actually uses had no
+test at all, which is why these three kept coming back.
 
 **A drawn diagram is the same trap as a rendered formula.** Mermaid, Graphviz
 and PlantUML render to an inline `<svg>`, and walking one returns its node
