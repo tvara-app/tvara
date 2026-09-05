@@ -382,15 +382,17 @@
 /* ===== Message preview =====
    What you read while the site catches up. It closes itself the moment the
    real message is on screen — it is the wait made useful, not a second reader. */
-#lct-preview {
+#lct-history-panel {
   position: fixed;
+  /* To the LEFT of the map, and clear of the host's own scrollbar — the rail
+     inset is measured in main.js and covers both. */
   right: calc(64px + var(--lct-rail-inset, 0px));
-  top: 12vh;
+  top: 6vh;
+  bottom: 6vh;
   z-index: 2147483645;
   display: flex;
   flex-direction: column;
-  width: min(460px, calc(100vw - 110px));
-  max-height: 62vh;
+  width: min(520px, calc(100vw - 140px));
   border: 1px solid rgba(255, 220, 230, 0.14);
   border-radius: 14px;
   background: rgba(33, 15, 23, 0.985);
@@ -401,49 +403,106 @@
   transform: translateY(6px) scale(0.985);
   transition: opacity 0.2s ease, transform 0.2s cubic-bezier(0.22, 1, 0.36, 1);
 }
-#lct-preview.lct-p-open { opacity: 1; pointer-events: auto; transform: none; }
-.lct-p-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 10px 10px 13px;
+#lct-history-panel.lct-hp-open { opacity: 1; pointer-events: auto; transform: none; }
+@media (prefers-reduced-motion: reduce) {
+  #lct-history-panel { transition: none; }
+}
+.lct-hp-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px 10px 11px 14px;
   border-bottom: 1px solid rgba(255, 220, 230, 0.14);
 }
-.lct-p-title {
-  flex: 1;
-  font: 600 11.5px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  font-variant-numeric: tabular-nums;
+.lct-hp-title {
+  font: 600 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: var(--lct-accent);
 }
-.lct-p-close {
-  width: 24px;
-  height: 24px;
-  border: 1px solid rgba(255, 220, 230, 0.14);
-  border-radius: 8px;
-  background: transparent;
-  font: 400 12px/1 inherit;
-  cursor: pointer;
-  border-color: var(--lct-line);
-  color: var(--lct-muted);
-}
-.lct-p-body {
+.lct-hp-count {
   flex: 1;
-  overflow-y: auto;
-  padding: 13px;
-  font: 400 13px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-/* The 80-char index snippet, before the archive read lands. Trailing off is
-   honest — there IS more, it just hasn't arrived yet. */
-.lct-p-partial::after { content: "…"; opacity: 0.5; }
-.lct-p-note {
-  padding: 8px 13px 11px;
-  border-top: 1px solid rgba(255, 220, 230, 0.14);
-  font: 500 10.5px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font: 500 11px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-variant-numeric: tabular-nums;
   color: var(--lct-muted);
 }
-.lct-p-note:empty { display: none; }
+.lct-hp-close {
+  width: 24px; height: 24px;
+  border: 1px solid var(--lct-line); border-radius: 8px;
+  background: transparent; font: 400 12px/1 inherit; cursor: pointer;
+  color: var(--lct-muted);
+}
+.lct-hp-close:hover { color: #fbf6f8; }
+/* The reader itself. Its own scroll container, so a long conversation never
+   makes the page behind it move. */
+.lct-hp-list {
+  flex: 1; overflow-y: auto; overscroll-behavior: contain;
+  padding: 12px 14px 18px;
+  font: 400 13px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+.lct-hp-list:focus-visible { outline: 2px solid var(--lct-accent); outline-offset: -2px; }
+.lct-hp-row {
+  padding: 10px 12px; margin: 0 0 10px;
+  border: 1px solid transparent; border-radius: 10px;
+  background: rgba(255, 255, 255, 0.035);
+  cursor: pointer;
+}
+.lct-hp-row:hover { background: rgba(255, 255, 255, 0.06); }
+.lct-hp-row:focus-visible { outline: 2px solid var(--lct-accent); outline-offset: 2px; }
+.lct-hp-row[data-lct-old="user"] { background: rgba(255, 255, 255, 0.07); }
+.lct-hp-who {
+  font: 600 10px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--lct-muted); margin-bottom: 6px;
+}
+.lct-hp-text { overflow-wrap: anywhere; }
+.lct-hp-text > :first-child { margin-top: 0; }
+.lct-hp-text > :last-child { margin-bottom: 0; }
+.lct-hp-text p { margin: 0 0 8px; }
+/* A message that IS a picture. Bounded, never pushing the panel wider, and a
+   background so a transparent PNG is not invisible on a dark panel. */
+.lct-hp-img {
+  display: block;
+  max-width: 100%;
+  max-height: 320px;
+  margin: 6px 0 10px;
+  border-radius: 8px;
+  object-fit: contain;
+  background: rgba(255, 255, 255, .04);
+}
+.lct-hp-note { margin: 0 0 8px; opacity: .7; }
+.lct-hp-text h1, .lct-hp-text h2, .lct-hp-text h3,
+.lct-hp-text h4, .lct-hp-text h5, .lct-hp-text h6 {
+  margin: 12px 0 6px; font-size: 1.05em; font-weight: 650; line-height: 1.3;
+}
+.lct-hp-text ul, .lct-hp-text ol { margin: 0 0 8px; padding-left: 20px; }
+.lct-hp-text li { margin: 3px 0; }
+.lct-hp-text blockquote {
+  margin: 0 0 8px; padding-left: 10px;
+  border-left: 2px solid var(--lct-line); color: var(--lct-muted);
+}
+.lct-hp-text hr { border: 0; height: 1px; margin: 12px 0; background: var(--lct-line); }
+.lct-hp-text code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9em; padding: 0.12em 0.35em; border-radius: 5px;
+  background: rgba(255, 255, 255, 0.09);
+}
+/* A code block scrolls inside itself — it must never widen the panel. */
+.lct-hp-text pre {
+  margin: 0 0 10px; padding: 10px 12px; border-radius: 9px; overflow-x: auto;
+  background: rgba(0, 0, 0, 0.32);
+}
+.lct-hp-text pre code { background: none; padding: 0; white-space: pre; display: block; }
+/* A wide table scrolls inside itself for the same reason a code block does: a
+   sixty-column comparison must not push the panel out past the window. */
+.lct-hp-text table {
+  display: block; width: max-content; max-width: 100%;
+  overflow-x: auto; border-collapse: collapse;
+}
+.lct-hp-text th, .lct-hp-text td {
+  border: 1px solid var(--lct-line); padding: 4px 8px; white-space: nowrap;
+}
+.lct-hp-empty {
+  padding: 24px 4px; text-align: center;
+  font: 500 12px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: var(--lct-muted);
+}
 
 /* ===== Toast note ===== */
 #lct-note {
@@ -852,14 +911,12 @@
 }
 .lct-o-h, .lct-o-note { color: var(--lct-muted); }
 
-#lct-seek, #lct-preview {
+#lct-seek, #lct-history-panel {
   border-color: var(--lct-line);
   background: var(--lct-field), var(--lct-surface-strong);
   color: var(--lct-ink);
   box-shadow: var(--lct-shadow);
 }
-.lct-p-head, .lct-p-note { border-color: var(--lct-line); }
-.lct-p-close:hover { background: var(--lct-accent-soft); color: var(--lct-accent); }
 
 #lct-bridge {
   border-color: var(--lct-line);
@@ -1251,6 +1308,13 @@
 /* Reading the map is a deliberate act — it comes forward when you go to it. */
 #lct-minimap:hover,
 #lct-minimap:focus-within { opacity: 1; }
+/* …and it does NOT fade out while it is doing what you clicked it for.
+   Clicking a marker starts a seek, the page moves under the pointer, the
+   pointer is no longer over the strip, and the strip faded away mid-job — so
+   the map vanished at the exact moment it was the only thing explaining what
+   was happening. It stays up until the work stops. */
+html[data-lct-seek-state="running"] #lct-minimap,
+html[data-lct-history-state="running"] #lct-minimap { opacity: 1; }
 #lct-minimap:hover #lct-mm-stage,
 #lct-minimap:focus-within #lct-mm-stage {
   border-color: color-mix(in srgb, var(--lct-accent) 22%, transparent);
@@ -1747,11 +1811,178 @@
 /* Older turns, rendered from the archive rather than scrolled for. Deliberately
    plain: these are a find-on-page target and a reading fallback, not an attempt
    to impersonate the host's own bubbles. */
+/* ---------- turns restored from the archive ----------
+   These are OUR nodes, above the host's own list, and they are the first thing
+   somebody sees when they scroll back. Reading as a wall of plain text next to
+   the host's rendered messages is not a cosmetic problem: it reads as a
+   different, broken page. So they carry the shape the host uses — a measured
+   column, the person's turn as a bubble on the right, the model's turn plain —
+   and inherit the host's own font and colours rather than declaring any. */
 #lct-old-turns { max-width: 48rem; margin: 0 auto; padding: 8px 16px 24px; }
-#lct-old-turns .lct-old { margin: 0 0 20px; font: inherit; }
+#lct-old-turns .lct-old { margin: 0 0 24px; font: inherit; display: flow-root; }
 #lct-old-turns .lct-old-who {
   font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
-  opacity: .55; margin-bottom: 4px;
+  opacity: .45; margin-bottom: 6px;
 }
-#lct-old-turns .lct-old-text { white-space: pre-wrap; line-height: 1.6; }
-#lct-old-turns .lct-old[data-lct-old="user"] .lct-old-text { opacity: .85; }
+#lct-old-turns .lct-old-text { line-height: 1.65; overflow-wrap: anywhere; }
+
+/* The person's turn: a bubble on the right, the way every one of these hosts
+   draws it. currentColor at low alpha, so it lands right in either theme
+   without this file knowing which one is on. */
+#lct-old-turns .lct-old[data-lct-old="user"] { display: flex; flex-direction: column; align-items: flex-end; }
+#lct-old-turns .lct-old[data-lct-old="user"] .lct-old-text {
+  background: color-mix(in srgb, currentColor 10%, transparent);
+  border-radius: 18px; padding: 10px 16px; max-width: 80%;
+}
+#lct-old-turns .lct-old[data-lct-old="user"] .lct-old-who { align-self: flex-end; }
+
+/* Block elements the renderer emits. Spacing only — never a colour or a face. */
+#lct-old-turns .lct-old-text > :first-child { margin-top: 0; }
+#lct-old-turns .lct-old-text > :last-child { margin-bottom: 0; }
+#lct-old-turns .lct-old-text p { margin: 0 0 12px; }
+#lct-old-turns .lct-old-text h1,
+#lct-old-turns .lct-old-text h2,
+#lct-old-turns .lct-old-text h3,
+#lct-old-turns .lct-old-text h4,
+#lct-old-turns .lct-old-text h5,
+#lct-old-turns .lct-old-text h6 {
+  margin: 20px 0 8px; line-height: 1.3; font-weight: 650;
+}
+#lct-old-turns .lct-old-text h1 { font-size: 1.5em; }
+#lct-old-turns .lct-old-text h2 { font-size: 1.3em; }
+#lct-old-turns .lct-old-text h3 { font-size: 1.12em; }
+#lct-old-turns .lct-old-text h4,
+#lct-old-turns .lct-old-text h5,
+#lct-old-turns .lct-old-text h6 { font-size: 1em; }
+#lct-old-turns .lct-old-text ul,
+#lct-old-turns .lct-old-text ol { margin: 0 0 12px; padding-left: 24px; }
+#lct-old-turns .lct-old-text li { margin: 4px 0; }
+#lct-old-turns .lct-old-text blockquote {
+  margin: 0 0 12px; padding-left: 14px;
+  border-left: 2px solid color-mix(in srgb, currentColor 25%, transparent);
+  opacity: .85;
+}
+#lct-old-turns .lct-old-text hr {
+  border: 0; height: 1px; margin: 20px 0;
+  background: color-mix(in srgb, currentColor 18%, transparent);
+}
+#lct-old-turns .lct-old-text code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: .9em; padding: .12em .35em; border-radius: 5px;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+/* A fenced block scrolls inside itself. It must never be the reason the
+   conversation column grows a horizontal scrollbar. */
+#lct-old-turns .lct-old-text pre {
+  margin: 0 0 14px; padding: 12px 14px; border-radius: 10px; overflow-x: auto;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+#lct-old-turns .lct-old-text table {
+  display: block; width: max-content; max-width: 100%;
+  overflow-x: auto; border-collapse: collapse;
+}
+#lct-old-turns .lct-old-text th, #lct-old-turns .lct-old-text td {
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  padding: 4px 8px; white-space: nowrap;
+}
+#lct-old-turns .lct-old-text pre code {
+  background: none; padding: 0; border-radius: 0;
+  white-space: pre; display: block; line-height: 1.5;
+}
+
+/* ===== Code and maths in archived text =====
+   Token colours are set on both themes; the panel backdrop is dark either way,
+   so one palette carries. Language label sits in the corner of the block. */
+.lct-code { position: relative; }
+.lct-code[data-lct-lang]::before {
+  content: attr(data-lct-lang);
+  position: absolute; top: 6px; right: 10px;
+  font: 600 10px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--lct-muted); opacity: 0.75; pointer-events: none;
+}
+.lct-tok-com { color: #7f8ea3; font-style: italic; }
+.lct-tok-str { color: #7ee787; }
+.lct-tok-num { color: #f0a45d; }
+.lct-tok-kw  { color: #ff7b9c; font-weight: 600; }
+.lct-tok-fn  { color: #79c0ff; }
+
+.lct-math-block {
+  margin: 0 0 10px; padding: 8px 10px; border-radius: 9px; overflow-x: auto;
+  background: rgba(255, 255, 255, 0.05); text-align: center;
+}
+.lct-math-block math { font-size: 1.15em; }
+math { font-family: "Latin Modern Math", "STIX Two Math", Cambria Math, serif; }
+/* A browser without MathML still gets the source, not an empty box. */
+.lct-math-raw {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.92em; padding: 0.1em 0.3em; border-radius: 5px;
+  background: rgba(255, 255, 255, 0.09);
+}
+
+/* The turn count is a reading of the page, not a fact from the provider. When
+   the layout stops matching what we recognise, say so rather than presenting a
+   confident number. */
+#lct-mm-approx {
+  position: absolute; top: 4px; left: 50%; transform: translateX(-50%);
+  font: 700 11px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--lct-muted); opacity: 0.85; pointer-events: auto; cursor: help;
+}
+#lct-minimap.lct-collapsed #lct-mm-approx { display: none; }
+
+/* ===== A chat was deleted on the site =====
+   The question is asked where the user already is, with the answer on it. */
+#lct-del-toast {
+  position: fixed; right: 18px; bottom: 18px; z-index: 2147483001;
+  width: 320px; max-width: calc(100vw - 36px);
+  padding: 14px 16px; border-radius: 14px;
+  background: var(--lct-panel, #17171b); color: var(--lct-text, #f2f2f4);
+  border: 1px solid var(--lct-line, rgba(255,255,255,0.12));
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  opacity: 0; transform: translateY(8px);
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+#lct-del-toast.lct-del-in { opacity: 1; transform: none; }
+.lct-del-head {
+  font: 600 10px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--lct-accent, #ff7b9c); margin-bottom: 8px;
+}
+.lct-del-name { font-weight: 600; margin-bottom: 3px; overflow-wrap: anywhere; }
+.lct-del-sub { color: var(--lct-muted, #9a9aa6); font-size: 12px; }
+.lct-del-row { display: flex; gap: 8px; margin-top: 12px; }
+.lct-del-row button {
+  flex: 1; padding: 8px 10px; border-radius: 9px; cursor: pointer;
+  font: 600 12px/1 inherit; border: 1px solid var(--lct-line, rgba(255,255,255,0.14));
+}
+.lct-del-keep { background: #f4f4f6; color: #16161a; border-color: transparent; }
+.lct-del-drop { background: transparent; color: #ff8098; border-color: rgba(255, 128, 152, 0.5); }
+.lct-del-row button:hover { filter: brightness(1.08); }
+
+/* Five seconds to change your mind, centred where the eye already is. */
+#lct-del-undo {
+  position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 8px);
+  z-index: 2147483002; display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px 10px 16px; border-radius: 12px; overflow: hidden;
+  background: var(--lct-panel, #17171b); color: var(--lct-text, #f2f2f4);
+  border: 1px solid var(--lct-line, rgba(255,255,255,0.12));
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.42);
+  font: 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  opacity: 0; transition: opacity 140ms ease, transform 140ms ease;
+}
+#lct-del-undo.lct-del-in { opacity: 1; transform: translate(-50%, 0); }
+.lct-del-undo-btn {
+  padding: 6px 12px; border-radius: 8px; cursor: pointer;
+  font: 700 12px/1 inherit; color: #16161a; background: #f4f4f6; border: 0;
+}
+.lct-del-undo-bar {
+  position: absolute; left: 0; bottom: 0; height: 2px; width: 100%;
+  background: var(--lct-accent, #ff7b9c); transform-origin: left center;
+  animation: lct-del-drain 5s linear forwards;
+}
+@keyframes lct-del-drain { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+@media (prefers-reduced-motion: reduce) {
+  #lct-del-toast, #lct-del-undo { transition: none; }
+  .lct-del-undo-bar { animation: none; }
+}

@@ -73,6 +73,7 @@
         "content/quota.js",
         "content/engine.js",
         "content/nav.js",
+        "content/richtext.js",
         "content/history-loader.js",
         "content/chat-index.js",
         "content/preview.js",
@@ -87,6 +88,7 @@
         "content/distil.js",
         "content/carry.js",
         "content/tour.js",
+        "content/deletion-toast.js",
         "content/main.js"
       ],
       "css": [
@@ -160,14 +162,14 @@
         "default": "Ctrl+Shift+K",
         "mac": "Command+Shift+K"
       },
-      "description": "Total Recall \u2014 search every chat, every platform"
+      "description": "Total Recall — search every chat, every platform"
     },
     "open-bridge": {
       "suggested_key": {
         "default": "Ctrl+Shift+U",
         "mac": "Command+Shift+U"
       },
-      "description": "Context Bridge \u2014 inject past context into your prompt"
+      "description": "Context Bridge — inject past context into your prompt"
     }
   }
 }

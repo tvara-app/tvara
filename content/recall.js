@@ -51,7 +51,14 @@
   // `fresh` re-reads the tail, the only part that can still move. 5 deep, the
   // same window search.js and the timeline use: a message must be re-read once
   // more AFTER it finishes streaming, and only leaving the tail ends that.
-  const BLOCK_SEL = "p, h1, h2, h3, h4, li, pre, blockquote";
+  /* Display maths belongs here too. A KaTeX or MathJax display block is a
+     <div>/<mjx-container>, matched by nothing in this list — and because the
+     list DID match the paragraphs around it, the fallback to whole-element text
+     never ran, so every standalone equation was dropped from the archive while
+     the prose either side survived. That is what a page of formulae looked
+     like: five headings, five explanations, and not one equation. */
+  const BLOCK_SEL = "p, h1, h2, h3, h4, li, pre, blockquote, " +
+    '.katex-display, mjx-container[display="true"], math[display="block"]';
   const TAIL = 5;
   const textCache = new WeakMap();
 
@@ -65,17 +72,26 @@
     return text;
   }
 
+  /* Text, with formulae written back as the LaTeX they were rendered from.
+     A rendered formula is not text: KaTeX puts the MathML and the glyphs side
+     by side, so textContent doubles every symbol, and MathJax's SVG output has
+     no text at all. See LCTRichText.textWithMath. */
+  const readable = (node) => {
+    try { return self.LCTRichText.textWithMath(node); }
+    catch { return (node.textContent || "").trim(); }
+  };
+
   function extractText(el) {
     const blocks = el.querySelectorAll(BLOCK_SEL);
-    if (!blocks.length) return (el.textContent || "").trim();
+    if (!blocks.length) return readable(el);
     const parts = [];
     for (const b of blocks) {
       const anc = b.parentElement && b.parentElement.closest(BLOCK_SEL);
       if (anc && el.contains(anc)) continue; // nested — its parent block covers it
-      const t = (b.textContent || "").trim();
+      const t = readable(b);
       if (t) parts.push(t);
     }
-    return parts.join("\n") || (el.textContent || "").trim();
+    return parts.join("\n") || readable(el);
   }
 
   function update(messages) {
@@ -87,7 +103,10 @@
   function flush() {
     writeTimer = null;
     const msgs = latest;
-    if (!msgs || msgs.length < 2) return;
+    /* One message is a chat. The floor was two, so a conversation somebody
+       opened, asked once and left never reached the archive — and those are
+       precisely the ones nobody can find again later. */
+    if (!msgs || !msgs.length) return;
     /* Not a conversation URL: either a home/settings screen with nothing to
        index, or a temporary chat — a real conversation the host chose not to
        keep. Off by default, deliberately: the user told that platform not to
@@ -115,13 +134,19 @@
 
     const out = [];
     const tailFrom = msgs.length - TAIL;
+    /* Resolved across the whole list, not per element. Asked one at a time this
+       read `adapter.role(el) === "user" ? "user" : "assistant"`, so a host that
+       painted no marker — or painted one the adapter could not find — wrote
+       EVERY turn down as the model's. That is what reaches the archive, and the
+       archive is what the card and the map then report. resolveRoles() fills an
+       unstated role by alternating from the nearest stated one instead. */
+    let roles;
+    try { roles = self.LCTAdapters.resolveRoles(adapter, msgs); } catch { roles = []; }
     for (let i = 0; i < msgs.length; i++) {
       const el = msgs[i];
-      let role = "assistant";
-      try { role = adapter.role(el) === "user" ? "user" : "assistant"; } catch { /* guard */ }
       const inf = self.LCTTimeline.info(el);
       out.push({
-        r: role,
+        r: roles[i] === "user" ? "user" : "assistant",
         t: textOf(el, i >= tailFrom),
         ts: inf && inf.kind === "exact" ? inf.t : 0
       });
@@ -150,6 +175,12 @@
           msgs: out
         }
       }, () => void chrome.runtime.lastError); // SW asleep/reloading — next flush catches up
+      /* A newer copy of this conversation is now in the archive. Anything that
+         reads it FROM there — the preview panel — is holding an older one, and
+         on a chat still being written that older one is a half-finished answer.
+         Before this, the panel kept the first thing it ever read for the life of
+         the page: a new conversation looked empty until a reload. */
+      self.LCTArchiveRev = (self.LCTArchiveRev || 0) + 1;
     } catch { /* extension reloading — never break the host page */ }
   }
 

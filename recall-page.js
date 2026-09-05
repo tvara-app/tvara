@@ -719,8 +719,42 @@
       if (!res || res.err) throw new Error("Could not read the archive");
       const chats = res.chats || [];
       if (!chats.length) throw new Error("There is nothing archived yet");
-      const file = JSON.stringify(
-        { format: "tvara-archive-export", version: 1, createdAt: Date.now(), chats }, null, 2);
+      /* Grouped by provider, because that is how anyone reads their own
+         archive back: "what did I ask Claude", not "chat 1,482 of 2,300". Each
+         provider carries its own count and its own date range, and the chats
+         inside one run newest first — a flat list of two thousand objects in
+         write order is a file nobody opens twice. */
+      const byProvider = {};
+      for (const chat of chats) {
+        const name = String((chat && chat.platform) || (chat && chat.host) || "Other");
+        (byProvider[name] || (byProvider[name] = [])).push(chat);
+      }
+      const providers = Object.keys(byProvider).sort();
+      const summary = {};
+      for (const name of providers) {
+        const list = byProvider[name];
+        list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+        const times = list.map((c) => c.updatedAt || 0).filter(Boolean);
+        summary[name] = {
+          chats: list.length,
+          messages: list.reduce((n, c) => n + (c.n || (c.msgs || []).length), 0),
+          newest: times.length ? new Date(Math.max(...times)).toISOString() : null,
+          oldest: times.length ? new Date(Math.min(...times)).toISOString() : null
+        };
+      }
+      const file = JSON.stringify({
+        format: "tvara-archive-export",
+        version: 2,
+        createdAt: new Date().toISOString(),
+        totals: {
+          chats: chats.length,
+          messages: chats.reduce((n, c) => n + (c.n || (c.msgs || []).length), 0),
+          providers: providers.length
+        },
+        providers: summary,
+        // The conversations themselves, under the provider they came from.
+        archive: byProvider
+      }, null, 2);
       const stamp = new Date().toISOString().slice(0, 10);
       download(new Blob([file], { type: "application/json" }), `tvara-archive-${stamp}.json`);
       setStatus("export-status",
@@ -950,6 +984,8 @@
   }
 
   async function paintDeletions() {
+    // The panel moved to the popup and the notification. Nothing to paint here.
+    if (!$("deletions-list")) return;
     const state = await send({ type: "recall-deletions" });
     if (!state || state.err) return;
     const items = state.items || [];
@@ -960,8 +996,8 @@
     $("deletions-list").replaceChildren(...items.map(deletionRow));
   }
 
-  $("deletions-keep-all").addEventListener("click", () => resolveDeletion([], "keep"));
-  $("deletions-delete-all").addEventListener("click", function () {
+  if ($("deletions-keep-all")) $("deletions-keep-all").addEventListener("click", () => resolveDeletion([], "keep"));
+  if ($("deletions-delete-all")) $("deletions-delete-all").addEventListener("click", function () {
     // Same arming pattern as the wipe button: bulk deletion of the only
     // remaining copy should never be one stray click away.
     if (this.dataset.armed !== "1") {
@@ -975,7 +1011,7 @@
     resolveDeletion([], "delete");
   });
 
-  $("deletion-policy").addEventListener("change", async () => {
+  if ($("deletion-policy")) $("deletion-policy").addEventListener("change", async () => {
     const value = $("deletion-policy").value;
     const { settings } = await chrome.storage.local.get("settings");
     await chrome.storage.local.set({ settings: { ...(settings || {}), deletionPolicy: value } });
@@ -988,8 +1024,11 @@
   });
 
   paintDeletions();
-  if (location.hash === "#deletions") {
-    $("deletions").scrollIntoView({ behavior: "smooth", block: "start" });
+  /* The section moved to the popup and the notification. An old #deletions link
+     — a bookmark, or the popup before it was updated — must not throw here. */
+  const deletionsAnchor = $("deletions");
+  if (location.hash === "#deletions" && deletionsAnchor) {
+    deletionsAnchor.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   /* ---------- background-owned history sync ---------- */
@@ -1152,6 +1191,31 @@
     await chrome.storage.local.set({
       settings: { ...(settings || {}), autoSync: $("auto-sync").checked }
     });
+  });
+
+  // How far back future passes list. Read once; written merged, like auto-sync.
+  (async () => {
+    try {
+      const { settings } = await chrome.storage.local.get("settings");
+      const days = Math.floor(Number(settings && settings.historyDays) || 0);
+      const select = $("history-window");
+      const offered = [...select.options].map((o) => Number(o.value));
+      if (offered.includes(days)) { select.value = String(days); return; }
+      /* A stored 3 has no option at or below it except "Everything", and
+         picking that told the user their archive had no horizon while the
+         worker was capping it at three days. Show the real number instead. */
+      const custom = document.createElement("option");
+      custom.value = String(days);
+      custom.textContent = days === 1 ? "The last day" : "The last " + days + " days";
+      select.insertBefore(custom, select.options[1] || null);
+      select.value = String(days);
+    } catch { /* storage unavailable — the default option stands */ }
+  })();
+
+  $("history-window").addEventListener("change", async () => {
+    const days = Math.max(0, Math.floor(Number($("history-window").value) || 0));
+    const { settings } = await chrome.storage.local.get("settings");
+    await chrome.storage.local.set({ settings: { ...(settings || {}), historyDays: days } });
   });
 
   $("sync-all").addEventListener("click", async () => {

@@ -1,0 +1,586 @@
+# Tvara — working notes
+
+Chrome MV3 extension. A local archive of every AI chat the user has, plus the
+tools that make a long chat usable. One IndexedDB on the extension origin; the
+background service worker owns it and is the only authority on what is paid.
+
+Providers: ChatGPT, Claude, DeepSeek, Grok, Perplexity, Gemini.
+
+## What this is for
+
+**Your own AI history, kept on your machine, and honest about what it holds.**
+Everything else follows from that sentence, and when a decision is close, it is
+the tie-breaker:
+
+1. **Nothing leaves the device.** No chat text, title or prompt is uploaded by
+   any code path. The one server is the licence issuer, and it never sees a
+   word of a conversation.
+2. **Never lose what the user wrote.** A provider deleting a chat does not
+   delete the copy here; a shrinking write never replaces a fuller record; a
+   backup exists so a reinstall costs nothing. When in doubt, keep it and ask.
+3. **Say what is true, or say nothing.** A count the code cannot vouch for is
+   marked approximate; an allowance nobody published reads "not reported", never
+   an estimate; a plan that cannot be read is blank, never "Free". A wrong
+   answer that looks right is the worst outcome in this codebase, and most of
+   the rules below exist because one shipped.
+4. **A feature that silently does nothing reads as broken.** The map, the card
+   and the speed engine appear everywhere, on every provider, free.
+5. **Never break the host page.** Unknown DOM, drifted selector, missing
+   endpoint: do nothing at all. The worst case is the site behaving normally.
+
+Speed is how this started and is still the first thing a user feels, but the
+product is the archive — the tools exist to make what it holds usable.
+
+## Layout
+
+| Path | What it owns |
+|---|---|
+| `bg.js` | Service worker entry: the `importScripts` list, every event listener, the message router. ~490 lines. |
+| `bg/` | The rest of the worker, one file per concern: `store` `state` `fetch` `providers` `chat-index` `deletions` `accounts` `quota` `sync` `fill` `status` `backup` `schedule` `bootstrap` `paywall`. |
+| `lib/entitlement.js` | Licence + trial + identity + device sessions, client side. Signs every issuer call. |
+| `lib/dodo.js`, `lib/license.js` | Payment provider, offline `LCT1` key verification. |
+| `content/` | Per-site scripts. `adapters.js` is the only file that knows a host's DOM. |
+| `content/richtext.js` | Code highlighting and LaTeX → MathML for archived text. No library: the CSP blocks every CDN. |
+| `content/deletion-toast.js` | "A chat was deleted", asked in the page, with Keep/Delete on it and a 5s undo. |
+| `popup/` | The popup, the device screen, the account card. |
+| `recall-page.js`, `recall.html` | Full-page archive: search, export, restore, the history window. NOT deletions — see below. |
+| `content/chatcard.js` | The hover card. Reads the archive via `chat-stats`, never the DOM alone. |
+| `server/` | Cloudflare Worker (`entitlement-worker.js`), D1 schema, `AccountDO`. |
+| `docs/SESSIONS.md` | The device-session design, including decisions that were reversed. |
+
+## The worker is one scope, split across files
+
+`bg.js` and every file in `bg/` share ONE global scope. Chrome loads them with
+`importScripts` (synchronous, so listeners still register in the worker's first
+turn); `tools/pack.mjs` lists the same files as plain Firefox background scripts,
+**derived from the `importScripts` call** so the two can never drift. Rules:
+
+- **No `type: "module"` on the Firefox background, ever.** Module scope is
+  per-file; it would hide every function from every other file.
+- **A new module has to be added to `BG_MODULES` in `bg.js`** — the array the
+  worker spreads into `importScripts`, and the single source of truth for the
+  packer, ESLint, and the tests. It is spelled out ONCE: the failure path
+  re-imports the same array, and the packer dedupes what it parses.
+- **A dead worker says nothing.** Chrome reports a failed `importScripts` as
+  "An unknown error occurred when fetching the script", which names no file, and
+  the next line — `const _gate = requireEntitlement` — then threw and took every
+  listener with it. So the batch failure retries one module at a time to name
+  the file (only when none of them ran; a throw from inside a module has already
+  run its predecessors, and re-running those redeclares every const), and the
+  gate falls back to a deny. Fail closed and stay alive.
+- **Anything reading the worker as text reads all of it.** `tools/worker-source.mjs`
+  (`workerFiles` / `workerSource`) exists for that; reading `bg.js` alone now
+  checks the router and nothing else, and passes while it does.
+- ESLint derives each file's cross-module globals from the sources, so a typo is
+  still `no-undef`. Unused *top-level* names are not flagged in `bg/` — the
+  linter cannot see the sibling that calls them.
+
+## Rules that are not negotiable
+
+- **The worker decides entitlement.** `requireEntitlement()` and the `PAID` map
+  in `bg.js`. Pages hide locked UI as a courtesy; hiding is never the gate.
+- **Dates come out of signatures.** A trial's start date is read from the
+  issuer's `LCTT1` token, never from the local record — that record is writable
+  by whoever owns the browser.
+- **`chrome.alarms` is the only clock.** An MV3 worker is reclaimed constantly.
+  A module variable is not state; `storage.local` or `storage.session` is.
+- **No chat text leaves the machine.** The only outbound calls are to the
+  declared providers (to copy history in) and to the issuer (licence key hash,
+  device hash, identity token).
+- **A trial needs a verified address before it starts.** An unverified week is
+  anchored to a keypair an uninstall destroys, so it can never be recovered.
+- **The freeze copy is not the conversation.** `makeFreeze()` clones the whole
+  scroller to hold a still picture during a walk, and that clone carries every
+  marker the selectors match on. `adapter.messages()` drops anything inside
+  `#lct-freeze` — scoped to that one id, because an `lct-` prefix test also drops
+  a host element that happens to be named that way. Without it the count doubles,
+  the archive flush writes each message twice, and the walk's own "have we
+  reached the total?" test passes before a single request.
+- **One message is a conversation, in all three places.** `upsert`, `importBatch`
+  and the fill queue must agree on `>= 1`. They disagreed for a while: upsert
+  called a one-message chat a stub, the fill pass fetched it, threw the single
+  message away and marked it done — forever.
+- **Every archive read resolves both ids.** `recordFor()` in `bg/chat-index.js`
+  wraps `chatIdCandidates`; `chatStats` did and `chatArchive`/`chatMessage`/
+  `chatSearch` did not, so the card said "archived" and opening it said "missing".
+
+The popup's headline number is live: `stats()` in `bg/store.js` is cached
+against an in-memory write counter (`archiveChanged()` on every upsert, import,
+drop and wipe), so the popup can ask every few seconds while it is open and pay
+nothing when nothing was written. It used to be read once per open, so the count
+only moved if you closed the panel and opened it again.
+
+**A reload is not an install.** `firstRunBootstrap()` lets `reason === "install"`
+override the already-ran flag, because a reinstall wipes storage and an upgrade
+from an older build must still get the pass. But pressing Reload on an unpacked
+extension is ALSO reported as an install, and storage survives it — so every
+reload started the whole sweep again and the panel went back to "Capturing 35 of
+498" on a browser that already held them. The stored bootstrap record carries
+the extension VERSION, and that is what tells the two apart; an empty archive
+still runs, so a first pass that failed is not left stuck.
+
+## Background work
+
+Everything archives itself. Nothing waits to be asked, and nothing reads
+whether the browser is focused.
+
+- `firstRunBootstrap()` runs a pass the moment the extension is installed.
+- `lct-auto-sync` — every 3 h. Steady state.
+- `lct-auto-sync-resume` — 1 min, **repeating**, booked BEFORE the first request
+  of a pass and cleared only when a pass ends with nothing left. This is what
+  carries a pass across the worker being reclaimed mid-fetch.
+- `resumeIfUnfinished()` on `wake()` — a browser restart clears alarms, so
+  outstanding work is rebooked from what the last pass wrote about itself.
+- `lct-fill-resume` — 1 min, repeating, for the text-fill queue.
+- Budget: `BG_PASS_BUDGET_MS` (4 min) covers the **listing and the fetching**
+  together, with `BG_MIN_FETCH_MS` (60 s) guaranteed to the fetch loop so a slow
+  listing can never starve it.
+- An open tab of the site only drops the pass to one request at a time. It is
+  never a reason to defer. Window focus is read nowhere.
+- **A pass must never sleep past its own budget.** The hourly cap
+  (`BG_HOURLY_CAP`, per host) used to be enforced by sleeping out the rest of
+  the hour INSIDE `hostSlot()` — holding `bgSyncRunning`, so every later sync
+  and every manual "Check now" was answered "already-running" until Chrome
+  recycled the worker. A wait longer than `BG_SLOT_MAX_WAIT_MS` (90 s, above
+  every legitimate one: the polite interval, an open tab, `BG_YIELD_MS`) now
+  throws instead, the platform reports "cooling-down", the resume alarm stays
+  booked and the pass ENDS.
+- **Pacing is keyed per ORIGIN AUTHORITY, the allowlist per host.** `paceOf()`
+  keeps the port, `hostOf()` does not. In the browser every provider is on :443
+  so the two are identical; under test six providers share one loopback address
+  on six ports, and keyed by hostname alone they were one host sharing one
+  hourly budget — the later suites ran against a budget the earlier ones had
+  spent. A port is not a permission: `BG_ALLOWED_HOSTS` stays hostname-only.
+- **Six platforms run at once, so a read-modify-write on one key is a race.**
+  `editLocal()` (`bg/state.js`) chains them per key. The sweep state and the
+  trace ring were both read-then-written by every platform: the last writer
+  erased the rest, so the anomaly that explains "we saw your history vanish and
+  did not believe it" vanished whenever another platform swept in the same
+  moment, and the trace kept one platform's line out of six. Both are the
+  diagnostics, losing exactly when there is most to diagnose.
+- `trace()` writes a durable ring of what the worker did — pass starts, alarms,
+  per-platform results, budget stops. Read it with
+  `chrome.runtime.sendMessage({type:"bg-trace"}, console.log)` from the service
+  worker console. It is the only way to see a worker nobody is watching.
+
+## What plan the account is on, and how much is left
+
+Both come from a response the allowance probe was already fetching — a label is
+never worth a request of its own. `planFrom(path, json)` on an adapter
+(`bg/providers.js`) is where each provider states it, and what it says beats
+whatever the handshake inferred:
+
+- **ChatGPT** — `/backend-api/wham/usage` is the allowance its own clients read:
+  `rate_limit.primary_window` / `secondary_window`, each carrying
+  `used_percent`, `reset_at` and `limit_window_seconds`, plus `plan_type` at the
+  top level. Ahead of `conversation/init`, whose counters are side features.
+  `/backend-api/accounts/check/…` → `entitlement.subscription_plan`
+  (`chatgptplusplan`, `chatgptproplan`, …). `/api/auth/session` does NOT carry a
+  plan; the field the handshake used to read has never existed there, so every
+  ChatGPT account reported no plan at all.
+- **Claude** — `rate_limit_tier` on the organisation
+  (`default_claude_max_20x`), then `raven_type`, then the older `capabilities`
+  list. Capabilities alone called a Max account "Pro" and, on an org that lists
+  neither, a paying account "Free". `/api/organizations/{org}/usage` also states
+  `plan_name` outright, and carries `five_hour` / `seven_day` utilisation.
+- **Perplexity** — `/rest/user/settings` → `subscription_tier` gated on
+  `subscription_status`, so a lapsed Pro is not still called Pro. Its live
+  counters are at `/rest/rate-limit/all`.
+- **Gemini** — no REST API at all: the allowance is a batchexecute RPC
+  (`jSf9Qc`), answering `[status, [[remaining, usedRatio, type, [[s, ns]]], …]]`
+  with type 1 the five-hour window and type 2 the weekly one. The adapter's
+  `quotaJson()` translates that into the shape `lib/quota.js` already reads, and
+  `QUOTA_ENDPOINTS.gemini` marks it `native: true` because it is not a URL.
+
+`planName()` matches on SUBSTRINGS, never a table of exact strings: these tiers
+get renamed without notice, and a renamed tier reading as "Free" is the one
+wrong answer that looks like a real one.
+
+**A tier is one word, so match it as a token.** OpenAI spells them
+`chatgptgoplan` and `chatgptprolite`, not `chatgpt_go` — so `planName()` strips
+the product word and the `plan` suffix before testing. Without that, **Go**
+matched nothing and the account reported no plan at all, and **Pro Lite**
+matched `pro` and reported the tier above it. `go` is then tested only as a
+whole token: as a substring it lives inside google, cargo and django, and a
+badge invented out of one of those is worse than no badge.
+
+**A window that states its length in seconds states which window it is.**
+ChatGPT calls its two `primary` and `secondary` and says nothing else, so
+`limit_window_seconds` is the only thing separating the five-hour session limit
+from the week. `SPAN_SEC_KEYS` in `lib/quota.js` reads it BEFORE `LIMIT_KEYS` —
+`limit_window_seconds` matches those too, and taken as a ceiling it becomes a
+limit of 18000 of nothing.
+
+**Perplexity's answers are keyed by ID, not by class.** `id^="markdown-content-"`
+— one per answer — is the only hook on that host that is neither a hashed class
+nor a guess, and because every probe looked at CLASSES the whole platform fell
+through to nothing: no map at all. The layer lifts each answer to the turn that
+holds exactly one of them, then splits that turn into what was asked and what
+came back, or the strip would draw one tick per exchange and report "0 asked".
+`test/perplexity-turns.html` is two exchanges; four ticks, two each way.
+
+**A percentage is not a ratio.** Anthropic documents `utilization` as 0..100.
+Read through the generic "a value under 1 is a fraction" rule, a session 0.4%
+spent became "40% used" and the panel told somebody who had barely started that
+60% was left — under 1%, which is most of a fresh five-hour window, the figure
+was not imprecise, it was inverted. `PCT_KEYS` entries now carry `whole: true`
+for keys that name themselves percentages; only `ratio`/`fraction` keys scale.
+
+**The same limit, stated twice, is one limit.** Claude states its five-hour
+window as a percentage in `/usage` AND as remaining/limit headers on the send
+path, under two different keys — so both survived the merge and `rank()` picked
+between them by score. They disagree (headers count tokens, the page counts a
+weighted allowance), so the row flipped as each was refreshed: right one minute,
+wrong the next. `merge()` keeps ONE share per span — freshest, and on a tie the
+percentage the provider stated over one computed from a pair. Counts are
+untouched: a provider can meter several different things on one clock, but it
+never states two different shares of one allowance.
+
+**The session limit is the one that stops you.** A window now carries how long
+it IS (`spanSec`, from what the provider calls it — `five_hour`, `seven_day`,
+`weekly`), and `rank()` breaks a tie by preferring the SHORTER one. Claude
+publishes both; the weekly figure is usually the lower of the two, so ranking by
+urgency alone showed the week and hid the five-hour session limit — the one that
+stops you in the middle of an answer, which is the whole reason anybody opens
+this panel. The row names the window and says when it turns over: "76% left ·
+5h · resets 9:46 PM".
+
+**A side feature is not the allowance.** ChatGPT meters deep research, image
+generation and voice separately from the plan, and `rank()` led with "4 left ·
+deep research" while the figure the reader asked about sat behind it. Niche
+meters take a tie-break penalty, never an exclusion: where one is all the
+provider published, it is still the truth and it is still shown.
+
+Rules the panel cannot break:
+
+- **One login, one allowance row.** `accounts()` lists every ORGANISATION —
+  the archive is per organisation, a chat lives in one — but a subscription is
+  not. Polling each org stored each as its own account, so one subscriber saw
+  "Claude Pro" twice and the row that won was whichever org answered last,
+  usually the unused one at 100% left. `quotaSeats()` is the adapter naming the
+  seat that holds the allowance (`bestPlanSeat`, by `planRank`).
+- **A grab-bag is a plan source, not a meter.** `/api/bootstrap`,
+  `/api/organizations/{org}`, `/backend-api/accounts/check` carry the whole
+  app's start-up state, and any remaining/limit pair inside one reads as an
+  allowance — an untouched "30 of 30" scores HIGHER than the real meter,
+  because a computed percentage outranks a percentage with only a reset beside
+  it. Those candidates are `planOnly: true`: their plan is read, their numbers
+  are dropped. `quotaSig()` covers `planOnly` and `native`, or yesterday's
+  learned list keeps treating them as meters for a day.
+- **A row is about somebody who is signed in.** An auth failure
+  (`error.kind === "auth"`, never a timeout) clears that platform's readings,
+  and a pass that stores something retires readings for accounts the login no
+  longer has — the second organisation, or a free account replaced by a paid
+  one. Only where the adapter can name an account: where it cannot (Gemini,
+  DeepSeek, Grok) the tags come from the page and the seat list is not
+  authoritative.
+- **Asking directly means asking again.** A `manual` or `popup` refresh drops
+  the cached handshake first, because signing in as a different account is
+  exactly when a five-minute-old context describes the wrong person. The open
+  panel's own minute tick is `watch`, which goes through every floor there is.
+
+## Numbers move
+
+Everything in the popup is read at a glance, so a number that JUMPS reads as a
+glitch — the eye cannot tell a repaint from a change. `tweenNumber()` counts to
+the new value over ~420 ms, `setLine()` gives a changed sentence one beat of
+fade, and the dial's arcs travel from the geometry last drawn (the dial is
+rebuilt every paint, so a CSS transition has nothing to move from unless the
+node is born at the OLD value and moved on the next frame). First paint never
+animates a value it has not shown before, and `prefers-reduced-motion` turns all
+of it into a plain assignment.
+
+## Device sessions
+
+D1 owns who is signed in. `AccountDO` (`server/account-do.js`) holds one
+hibernatable WebSocket per device and is told **after** the kill commits, so a
+sign-out lands on the removed device in about a second and raises a system
+notification. The socket is an accelerator: a device that never connects still
+dies on its next heartbeat. See `docs/SESSIONS.md` §4 for the reversal that put
+it there.
+
+## Counting messages, and who wrote them
+
+- **The provider's transcript is ground truth.** `chatIndex()` fetches the whole
+  conversation; the DOM holds whatever the host felt like mounting, which on
+  these sites is a tail. Any count taken from the DOM is a lower bound and must
+  never be allowed to shrink a recorded one.
+- **Nothing about a message's text says who typed it.** Role heuristics that
+  read content ("markdown means the model", "short means the person") report a
+  prompt written as a numbered list as an answer. `adapter.role()` may return
+  `""` for unknown; `resolveRoles()` (`content/adapters.js`) fills gaps by
+  alternation from the nearest stated role. Only a stated role is ever memoized.
+- **Never coerce an unknown role.** `role(el) === "user" ? "user" : "assistant"`
+  writes every unmarked turn down as the model's, and it is what reaches the
+  archive. Resolve the whole list at once — the page flush (`content/recall.js`),
+  the diagnostics split (`content/main.js`) and the card all do.
+- **The archive already holds records written the old way.** `resolveMsgRoles()`
+  in `bg.js` re-derives a split that is every message one speaker, and it is
+  deliberately narrow: every role stated, all the same, four or more. Two
+  adjacent assistant turns are a real record, not a broken one.
+- **The minimap resolves the whole list too.** It used to ask `adapter.role()`
+  per element and `draw()` reads `""` as assistant — so on a surface that states
+  no role (a Claude Code session) every turn painted as the model's.
+- **A count it cannot vouch for says so.** `computeApprox()` compares the matched
+  turns against `adapter.canon`; off the primary selector the strip shows a `~`
+  badge and the aria-label reads "about N turns". The map always appears; the
+  number never lies about how sure it is.
+- **Counts and the split travel together.** Take the total from one source and
+  the split from another and a card reports nine messages of which eleven were
+  yours. `chatStats` returns `held` alongside `n` for the same reason: a record
+  can claim more messages than it holds.
+- **One tick per turn, whatever matched.** `outermost()` in
+  `content/adapters.js` is the last thing every adapter's list goes through: an
+  element contained by another in the same list is dropped, because a nested
+  match is never a message its ancestor does not already hold. It is one
+  `contains()` per element, not one per pair — `querySelectorAll` answers in
+  document order and nothing kept is inside anything else kept, so only the
+  last kept element can contain the next. Grok's layer 1 also refuses a
+  `[role="listitem"]` whose parent is a `<ul>`/`<ol>`: a bulleted list inside an
+  answer matched that selector once per bullet.
+- **A marker node is not a turn.** ChatGPT keys its DOM nodes by TRANSCRIPT
+  message id, and one visible answer carries several — a reasoning summary, a
+  browsing block, the answer itself. Its `<article>` is the turn, and
+  `chatgptTurns()` keeps one node per article. The same thing reaches the
+  archive: `chatgptMsgs` kept every mapping node it could not rule out, so
+  thoughts, browsing displays and streaming placeholders were stored as
+  messages. A two-message chat then mapped as FOUR ticks, two of them inside the
+  answer — which reads as parts of one long response being counted separately,
+  and is how it was reported.
+- **An empty message is only a turn when it is a picture.** The fetch keeps one
+  that carries a non-text part and marks it `m: 1`; everything else empty is
+  dropped. Records written before that still hold the placeholders, so
+  `turnMsgs()` (`bg/chat-index.js`) drops them again on every read — the map,
+  the card and the archive view all go through it, because a count and a split
+  that disagree is the bug the card is most often reported for.
+- **The densest container is one answer at least as often as it is the thread.**
+  `heuristicMessages` ranks by child count, and on a SHORT chat the winner is
+  the body of the longest reply — every paragraph a "message". It now refuses a
+  candidate whose texty children are mostly prose tags (`P`, `H*`, `UL`, `PRE`,
+  `TABLE`…) or that sits next to a paragraph. Refusing is the right answer:
+  no map is honest, a map of eight ticks for two messages is not.
+- **One message is a conversation.** No floor of two anywhere: not in
+  `importBatch`, not in the chat card, not in the page flush, and the minimap
+  paints from the first message. The last floor of four was in `minimap.js`'s
+  own `style.display` test, where nobody saw it because it hid the map rather
+  than shortening it: a two-message chat had no map at all, and the day its
+  count was corrected from four ticks to two the map would have disappeared —
+  the fix reading as the break.
+
+## What is free, and what the header says
+
+The speed engine, the **minimap** and the **hover card** are free everywhere:
+they are what the product looks like, and a platform where they silently never
+appear reads as broken rather than as locked. The card is four integers about
+the user's own conversation, which is why `chat-stats` is deliberately not in
+the worker's `PAID` map — gating it in the page contradicted that and made the
+card never appear on Claude. Search, outline, timestamps and backup stay Pro on
+Claude and Gemini (`FREE_TOOL_PLATFORMS`, `content/main.js`).
+
+`.rows` in the popup is a two-column grid, and **only a toggle row takes half
+the width** — everything else spans the pair by default (`popup/popup.css`). A
+panel left in one column sizes that column to its own content: the deletion
+panel opened, its buttons widened column one, and the right-hand toggles were
+pushed clean out of the popup while their row heights stayed. Spanning by
+default is what stops the next panel repeating it.
+
+The popup header says which plan is running in three ways at once: the word in
+`#plan-badge` (text unchanged — three harnesses match it exactly), the pill's
+colour, and the rim of the account circle, which for a trial is an arc that
+drains as the week does. Any one of them failing still leaves the state legible.
+
+## A rendered formula is not text
+
+KaTeX writes the MathML and the visual glyphs side by side, so `textContent`
+returns every symbol twice — `Q∈Rn×dk` — and MathJax's SVG output returns none
+at all, so a standalone equation is not mangled, it is silently gone. Both
+renderers keep the source they were handed.
+
+- `LCTRichText.textWithMath()` (`content/richtext.js`) walks an element and
+  STOPS at a math container, taking `annotation[encoding="application/x-tex"]`,
+  then `data-latex`, then `script[type=math/tex]`, then `aria-label`, then the
+  MathML text — and writes it back as `$…$`, or `$$…$$` for a display block. So
+  the archive holds LaTeX: searchable, exportable, and renderable again.
+- **Display maths is a block.** `BLOCK_SEL` in `content/recall.js` had no
+  `.katex-display` / `mjx-container`, and because it DID match the paragraphs
+  around them the whole-element fallback never ran — every standalone equation
+  was dropped from the archive while the prose either side survived.
+- The renderer's LaTeX subset covers what a chat actually contains, and an
+  unknown command is emitted verbatim rather than dropped. `mathvariant` goes on
+  the token, never on the `<mrow>` a braced argument produces — set there,
+  Chrome ignores it and `\mathbb{R}` renders as a plain R.
+- `test/richtext-harness.html` loads `content/richtext.js` as a PAGE script, so
+  the tests can call it: a content script's globals live in an isolated world
+  `page.evaluate` cannot reach. It is never shipped (`test/` is not in SHIP).
+
+Three more things a message is made of, all of them handled in `textWithMath`:
+
+- **Code keeps its fence and its indentation.** A `<pre>` becomes ```` ```lang ````
+  with the language the highlighter left on it. The tidy-up that collapses runs
+  of spaces is right for prose and wrong for Python, so code is parked under a
+  private-use marker and put back after it.
+- **A picture is a message.** An `<img>` becomes `![alt](src)`, and the panel
+  renders it (http/https/blob/`data:image` only — never a scheme that can run
+  something). Before, a message that was only an image arrived as an empty row.
+- **The model thinking out loud is not the message.** `SKIP_SEL` drops the
+  reasoning panel from the text, from the map's snippets, and — when something
+  survives the filter — from the turn list itself, so it can never draw a tick.
+  Attributes and element names only. DeepSeek's thinking chain sits behind a
+  per-deploy hashed class, but `.ds-think-content` is stable and is the hook —
+  it holds a second `.ds-markdown` of its own, which is why that host's messages
+  read as the reasoning followed by the answer.
+
+Two lists, not one. `THINK_SEL` is thinking alone and is the only one allowed to
+drop a whole TURN — a host that named its wrapper "reasoning-turn" would empty
+the map. `SKIP_SEL` adds the chrome nobody typed (buttons, icon buttons, the
+action bar, a code block's toolbar) and is used ONLY on text, where the worst
+case is a word less rather than a message less. **Neither skips a wrapper that
+holds an `<img>`**: these hosts wrap a picture in
+`<button aria-label="Open image: shot.png">`, so a blanket skip of buttons threw
+the message away with its own toolbar. An icon button holds an `<svg>`, never an
+`<img>`.
+
+`content/exporter.js` runs the same three rules, so a file and a preview of the
+same conversation cannot disagree.
+
+**A drawn diagram is the same trap as a rendered formula.** Mermaid, Graphviz
+and PlantUML render to an inline `<svg>`, and walking one returns its node
+labels welded together — "StartLoad dataDone". `diagramSource()` takes the
+source the host kept (`data-diagram-source`, `data-source`, or the `<pre>` still
+sitting behind a Code/Diagram toggle) and fences it; failing that the message
+says a diagram is here rather than spilling labels into a sentence. The `<pre>`
+and the `<svg>` are both in the DOM when there is a toggle, so whichever the
+walk reaches first emits the source and the other is skipped. An icon is an
+`<svg>` too: `svgIsDiagram()` separates them on structure — `<text>` inside, six
+children, or 120px — never on what the labels say.
+
+**Language, from wherever the host puts it**: `language-*` / `lang-*` classes,
+`data-language`, highlight.js's bare class beside its own marker (`hljs python`,
+filtered through `NOT_A_LANG`), or the strip above the block — DeepSeek's
+banner, Gemini's decoration bar — read from its OWN text nodes, because the Copy
+button lives in that strip and reading it whole named the language `rustcopy`.
+
+**An ultra-long block gets more room and is never cut open.** `boundFor()` gives
+a message holding a fence 16,000 characters instead of 4,000, and `clampText()`
+closes a fence the cut opened — otherwise every reader downstream renders the
+REST of the conversation as code. Past 20,000 characters the preview stops
+colouring and sets the text plainly: a node per token is thousands of nodes for
+a block nobody reads word by word.
+
+`\begin{…}\end{…}` becomes an `<mtable>` — a matrix or an aligned derivation is
+the centrepiece of exactly the answers this matters for, and it used to render
+as the word "begin" followed by its own letters. Cells are parsed WHOLE: fed one
+token at a time, `\frac{a}{b}` inside a matrix loses its arguments.
+
+The preview panel reads the ARCHIVE, not the DOM — so it is only ever as fresh
+as the last flush. `content/recall.js` bumps `self.LCTArchiveRev` on every write
+and the panel re-reads on it; while open it re-checks every 2.5 s, keeping the
+reader's scroll position and repainting only on a real change. An empty panel
+keeps asking: a brand-new conversation has nothing archived for a few seconds,
+and painting "not archived yet" once and stopping is what made a new chat look
+broken until the page was reloaded.
+
+## A deleted chat is a question, asked where the user is
+
+Deletion review is **not** on the Recall page. A yes/no question that costs a
+page visit is a question nobody answers.
+
+- The Chrome notification carries **Keep / Delete** as its own buttons
+  (`chrome.notifications.onButtonClicked` in `bg.js`).
+- `content/deletion-toast.js` shows the same decision in the page the moment the
+  worker notices, pushed by `tellTabs()`.
+- The popup's "chats deleted on the site" row opens the full list, one Keep and
+  one Delete per chat, plus the `deletionPolicy` setting that used to live on
+  the Recall page.
+- **Delete is instant and reversible.** A delete that waits is one the user
+  cannot trust, so the record is dropped at once and a full copy is set aside
+  under `lct-deletion-undo-v1` for ten minutes. The undo bar shows five seconds;
+  a slow hand still wins. Undo is `importBatch`, never a re-download — the
+  provider no longer has it.
+- `BG_SWEEP_MS` is 3 h, not 24: a chat deleted on another device stayed
+  reachable here for a day before anyone was asked.
+
+## How far back the archive reaches
+
+`settings.historyDays` (0 = everything, the default) floors the listing's
+`sinceMs` in `bg/sync.js`. It caps what future passes ASK for and removes
+nothing already held. `sweepVanished` takes the same floor: without it,
+choosing "last 30 days" would make every older chat look deleted and put the
+whole back-catalogue up for deletion in one dialog.
+
+## Claude Code
+
+Sessions live at `claude.ai/code/<id>` and are a different resource from
+`chat_conversations` — the chats adapter never saw them.
+
+- There is **no documented endpoint**. The Compliance API that lists them is
+  Enterprise-only with its own access key. A guessed private URL is how you ship
+  a feature that archives nothing while reporting success, so the `claude-code`
+  adapter stays dormant until it has a real one.
+- It learns that path from Resource Timing: `content/main.js` reports which
+  `/api/…` paths claude.ai already fetched — paths only, no bodies, no queries —
+  and `bg/state.js` keeps them. Not a hook; the browser publishes the list.
+- Meanwhile `noteCodeSessions()` records sessions straight off the page: every
+  one is a `/code/<id>` link.
+- `convPath` is `/^\/(chat|code)\//`. It gates every per-chat feature at once,
+  which is why no card appeared on a Code link.
+
+## One chat, two ids
+
+A page writes `location.hostname + location.pathname`. The sync writes
+`adapter.host + adapter.prefix + convId`. On three hosts those differ for the
+same conversation — DeepSeek serves `/a/chat/s/<id>` against a `/chat/` prefix,
+Perplexity serves `/search/` and `/thread/`, Grok `/c/` and `/chat/`. So the
+archive can hold a chat under one spelling while the reader arrives by the
+other. `chatIdCandidates()` resolves both on READ; canonicalising the write is
+the real fix and has to migrate what is already stored.
+
+## Reinstall
+
+`storage.sync` survives a local wipe; an uninstall takes it too. The durable
+anchors are on the issuer, keyed on the email hash: the trial (`trials_id`), the
+licence (`owners`), the device list. Signing in is what brings them back.
+
+The archive itself does not survive. `BG_RESTORE_HOLD_MS` (6 h) is how long a
+pending restore holds the history rebuild off — after that the pass re-fetches
+from the providers regardless, because a user who cannot or will not restore
+must not be left with an empty archive. A restore landing later merges.
+
+## Testing
+
+`npm test` runs everything; `npm run test:extension` is the Playwright suite
+that drives the real popup and worker. **Node 24+** is required (`node:sqlite`):
+
+```sh
+PATH="$HOME/.nvm/versions/node/v24.19.0/bin:$PATH" npm test
+```
+
+**The mock providers are six ports, one per provider.** Pacing, the hourly cap
+and the 429 cooldown are all per host. Served off one port these six WERE one
+host, so the whole suite spent a single provider's budget and the J block ran
+against a host that could not be asked for anything — three assertions that
+read as product bugs and, before the cap refused fast, a suite that hung.
+
+**Bundled Chromium, not branded Chrome.** Chrome removed `--load-extension` and
+`--disable-extensions-except` in M137, and the `DisableLoadExtensionCommandLineSwitch`
+kill switch that brought them back went in M139 — checked on 152. Playwright's
+own guidance is now "Google Chrome and Microsoft Edge removed the command-line
+flags needed to side-load extensions, so use Chromium that comes bundled with
+Playwright" (https://playwright.dev/docs/chrome-extensions). The suites default
+to `chromium`; `LCT_CHANNEL=chrome` / `PW_CHANNEL=chrome` still try the branded
+build and fall back rather than report a suite that never ran. One browser
+instance per run.
+
+`test/chatgpt-turns.html` is the two-message fixture with four `data-message-id`
+nodes in it: two ticks is the only right answer. `test/claude-code.html` is the
+fixture that proves a tick count: six real turns
+buried in six pieces of tool scaffolding, four code blocks, a nested `<pre>` and
+an image-only reply. Six is the only right answer. `?drift=1` strips the action
+bars and the role markers — the day Claude redesigns — and the count must still
+be six, marked approximate. Tests reach a specific adapter through
+`LCTAdapters.byId(id)`, and `?lctAdapter=claude` points a real provider adapter
+at a fixture page (localhost only, guarded by the host in `detect()`).
+
+`test/real-chrome-check.mjs` and `test/real-chrome-session-ui.mjs` are the
+exceptions: they ATTACH over CDP to a Chrome you loaded the extension into by
+hand. That is the only way branded Chrome runs this code now.

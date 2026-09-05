@@ -14,6 +14,50 @@
     $("updated").textContent = "Updated just now";
   }
 
+  /* What one row says, in words somebody who has never read an API doc can act
+     on. This used to be "Reading available" / "Not published" — the first is
+     not a state a reader can do anything with, and the second sounds like the
+     extension is broken when the usual cause is simply not being signed in to
+     that site in this browser. Every branch now either gives a number or names
+     the thing to go and do. */
+  function reading(record, tried, wasChecked, label) {
+    const win = record && record.window;
+    const pct = win && win.pctLeft;
+    if (pct !== null && pct !== undefined) {
+      return { text: `${Math.round(pct)}% left`, figure: true, pending: false,
+        why: win.resetAt ? "Resets " + new Date(win.resetAt).toLocaleString() : "" };
+    }
+    /* A count is a reading too. "3 pro searches left" is the most useful thing
+       this panel can say, and calling it "reading available" threw it away. */
+    if (win && win.remaining !== null && win.remaining !== undefined) {
+      const what = String(win.label || win.key || "").replace(/[_-]+/g, " ").trim();
+      return { text: `${win.remaining.toLocaleString()}${what ? " " + what : ""} left`,
+        figure: true, pending: false, why: "" };
+    }
+    const why = tried && tried.skipped ? String(tried.skipped) : "";
+    if (why === "tracking off") {
+      return { text: "Tracking is off", figure: false, pending: false,
+        why: "Turn Allowance tracking on in the Tvara popup to read this." };
+    }
+    if (why === "not signed in") {
+      return { text: `Not signed in to ${label}`, figure: false, pending: false,
+        why: `Sign in to ${label} in this browser and this fills in on its own.` };
+    }
+    if (why === "no working endpoint") {
+      return { text: "No limit to read", figure: false, pending: false,
+        why: `${label} does not publish an allowance figure this browser can read.` };
+    }
+    if (record || why === "provider reported nothing") {
+      return { text: "Signed in · nothing published", figure: false, pending: false,
+        why: `${label} answered, but told us nothing about your remaining allowance.` };
+    }
+    if (wasChecked) {
+      return { text: "Nothing published yet", figure: false, pending: false,
+        why: `${label} has been asked and has not published a figure yet.` };
+    }
+    return { text: "Checking…", figure: false, pending: true, why: "" };
+  }
+
   function paintQuota(state) {
     const records = (state && Array.isArray(state.records) ? state.records : []).filter((record) => record && names[record.id]);
     const best = new Map();
@@ -22,10 +66,11 @@
       if (!best.has(record.id) || (window && window.pctLeft !== null)) best.set(record.id, record);
     }
     const checked = state && state.checked || {};
+    const lastTry = state && state.lastTry || {};
     // quota-state exposes hostnames for diagnostics. The onboarding is a
     // provider view, so keep this stable six-provider list from first paint.
     const ids = Object.keys(names);
-    $("provider-count").textContent = best.size.toLocaleString();
+    let figures = 0;                 // rows that carry an actual number
     const list = $("quota-list");
     list.replaceChildren();
     for (const id of ids) {
@@ -34,16 +79,20 @@
       row.className = "quota-row";
       const name = document.createElement("span"); name.className = "quota-name"; name.textContent = names[id];
       const value = document.createElement("span"); value.className = "quota-value";
-      const pct = record && record.window && record.window.pctLeft;
-      if (pct !== null && pct !== undefined) value.textContent = `${Math.round(pct)}% left`;
-      else if (record) value.textContent = "Reading available";
-      else if (checked[id]) value.textContent = "Not published";
-      else value.textContent = "Checking…";
-      value.classList.toggle("pending", !record && !checked[id]);
+      const said = reading(record, lastTry[id], checked[id], names[id]);
+      value.textContent = said.text;
+      if (said.why) value.title = said.why;
+      value.classList.toggle("pending", said.pending);
+      if (said.figure) figures++;
       row.append(name, value); list.appendChild(row);
     }
-    $("updated").textContent = best.size
-      ? `Live · ${best.size} of ${ids.length} reporting`
+    /* Counted from rows that carry a NUMBER, not from rows that exist. It read
+       `best.size` before, so a provider that had answered with nothing usable
+       still went into "4 providers reporting" — and the four rows underneath
+       plainly reported nothing. */
+    $("provider-count").textContent = figures.toLocaleString();
+    $("updated").textContent = figures
+      ? `Live · ${figures} of ${ids.length} reporting`
       : "Checking your signed-in accounts…";
   }
 

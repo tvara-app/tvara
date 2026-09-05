@@ -43,9 +43,22 @@
        stalls, and runs to its ceiling on a conversation it already finished. */
     const BARE = q.get("bare") === "1";
     const STREAM = q.get("stream") === "1";
+    /* A host with no scrollable ancestor of its own, so the DOCUMENT scrolls.
+       findScroller() answers document.scrollingElement there, and the freeze
+       has to hide <body> rather than <html> — hiding <html> takes the freeze
+       shell down with it and blanks the page. */
+    const ROOT = q.get("root") === "1";
 
     const scroller = document.getElementById("virtual-scroller");
     const chat = document.getElementById("chat");
+    if (ROOT) {
+      document.documentElement.style.cssText = "height:auto;overflow:auto";
+      document.body.style.cssText = "height:auto;overflow:visible";
+      scroller.style.cssText = "height:auto;overflow:visible";
+    }
+    // What actually scrolls, and what dispatches the event for it.
+    const pane = ROOT ? document.scrollingElement : scroller;
+    const scrollHost = ROOT ? window : scroller;
     let first = Math.max(0, TOTAL - PAGE);
     let loading = false;
     let loads = 0;
@@ -81,7 +94,7 @@
         // A host that keeps the reader's content still when it prepends. The
         // loader has to notice it is no longer at the top and re-pin, and it
         // has to do that before the frame paints.
-        if (ANCHORS) scroller.scrollTop += chat.scrollHeight - before;
+        if (ANCHORS) pane.scrollTop += chat.scrollHeight - before;
         first = start;
         loads++;
         if (first === 0) {
@@ -100,8 +113,8 @@
        the whole claim of the provider seed, so it has to be measurable. */
     const motion = { events: 0, distance: 0, maxTop: 0, framesAboveTop: 0 };
     let lastTop = 0;
-    scroller.addEventListener("scroll", () => {
-      const top = scroller.scrollTop;
+    scrollHost.addEventListener("scroll", () => {
+      const top = pane.scrollTop;
       motion.events++;
       motion.distance += Math.abs(top - lastTop);
       motion.maxTop = Math.max(motion.maxTop, top);
@@ -110,8 +123,8 @@
       if (top <= 2) prependPage();
     }, { passive: true });
 
-    scroller.scrollTop = scroller.scrollHeight;
-    lastTop = scroller.scrollTop;
+    pane.scrollTop = pane.scrollHeight;
+    lastTop = pane.scrollTop;
 
     /* A NEW answer, still arriving, while the crawl runs above it.
        Modelled the way a real one behaves and not merely as "some text

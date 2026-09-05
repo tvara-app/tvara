@@ -22,13 +22,26 @@
         </span>
       </div>
       <div class="account" id="account">
-        <!-- Signed out this is absent, not a grey placeholder: an empty ring
-             where a face goes reads as a photo that failed to load. -->
-        <span class="account-ring" id="account-ring" hidden>
+        <!-- Signed out the circle holds a person glyph rather than an empty
+             rim, which would read as a photo that failed to load. -->
+        <!-- The plan, in a word, beside the circle it describes. It used to be
+             visually hidden and the rim alone carried it: three states told
+             apart by hue and dash at 26px, which is not a status anybody can
+             read. The text is unchanged — the store and install harnesses
+             match it exactly. -->
+        <span id="plan-badge" class="badge free">Free</span>
+        <span id="plan-days" class="plan-days" hidden></span>
+        <span class="account-ring" id="account-ring">
+          <!-- Trial time, drawn as the rim itself: the arc drains as the week
+               does, so the circle answers "how long left" without a number. -->
+          <svg class="account-arc" id="account-arc" viewBox="0 0 32 32" aria-hidden="true" hidden>
+            <circle class="account-arc-track" cx="16" cy="16" r="14.6"></circle>
+            <circle class="account-arc-live" id="account-arc-live" cx="16" cy="16" r="14.6"></circle>
+          </svg>
           <img id="account-photo" alt="" referrerpolicy="no-referrer" hidden>
           <span class="account-initial" id="account-initial" aria-hidden="true"></span>
+          <svg class="account-anon" id="account-anon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="8.5" r="3.5"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/></svg>
         </span>
-        <span id="plan-badge" class="badge free">Free</span>
       </div>
     </header>
 
@@ -139,6 +152,23 @@
             <span class="row-sub" id="deletion-alert-sub">Your backup still has them. Decide what to keep.</span>
           </span>
         </button>
+
+        <!-- The decision itself, here rather than on another page: a yes/no
+             question that costs a tab is a question nobody answers. -->
+        <div id="deletion-panel" hidden>
+          <div id="deletion-items"></div>
+          <div class="deletion-actions">
+            <button id="deletion-keep-all" class="deletion-keep" type="button">Keep all copies</button>
+            <button id="deletion-delete-all" class="deletion-drop" type="button">Delete all from backup</button>
+          </div>
+          <label class="field-label" for="deletion-policy">When a chat is deleted on the site</label>
+          <select id="deletion-policy">
+            <option value="ask">Ask me every time (recommended)</option>
+            <option value="keep">Always keep my backup copy, never ask</option>
+            <option value="mirror">Always delete it from my backup too</option>
+          </select>
+          <p id="deletion-undo" class="deletion-undo" hidden></p>
+        </div>
 
         <button class="row row-button alert" id="restore-alert" type="button" hidden>
           <span class="row-icon" aria-hidden="true">

@@ -1,13 +1,19 @@
 # Tvara · Complete User Guide
 
-**Version 0.6.0 · Chrome / Edge (Manifest V3)**
+**Version 1.0.0 · Chrome / Edge (Manifest V3)**
 
-Tvara fixes the thing every heavy AI user hits eventually: after a
-few hundred messages, ChatGPT, Claude and the rest grind to a halt. Typing
-lags, scrolling stutters, the fan spins up. This extension makes a
-2,000-message chat feel like a 20-message chat, and then gives you the
-navigation tools those sites never built: a minimap, search, an auto table of
-contents, starred messages, timestamps, one-click backup, and Total Recall, one search box for every AI conversation you've ever had.
+Tvara keeps **your own AI history on your machine** — every conversation across
+ChatGPT, Claude, Gemini, Perplexity, DeepSeek and Grok, searchable in one box,
+exportable whenever you want it, and still yours after a reinstall or after the
+provider deletes its copy.
+
+It also fixes the thing every heavy AI user hits eventually: after a few hundred
+messages those sites grind to a halt. Typing lags, scrolling stutters, the fan
+spins up. Tvara makes a 2,000-message chat feel like a 20-message chat, and adds
+the navigation those sites never built: a minimap, search, an auto table of
+contents, starred messages, timestamps and one-click backup.
+
+The archive is the product. The speed is what you feel first.
 
 Your archive, search index and backups stay **on your device**. When you ask
 Total Recall to check history, the background worker makes authenticated
@@ -212,12 +218,21 @@ paying for what you can't see. A safety zone above and below your viewport
 **How to use it:** nothing, it's automatic on chats longer than ~25 messages.
 The popup shows live proof: *"1,491 messages asleep right now"*, per site,
 as an honest **"1,491 of 1,500"** count.
-**Opening a chat is still:** the toolkit never scrolls the page on its own.
-On ChatGPT the map does not need it to, see *How the map is complete instantly*
-below. The **⤒** button on the minimap toolbar is only for mounting every older
-message in the page itself, which you want for the site's own Ctrl+F or a full
-backup; it scrolls while it runs, says how far along it is, and stops the moment
-you touch the page.
+**The engine itself never scrolls.** Windowing is pure CSS; it moves nothing.
+
+Putting the older messages *back* into the page is a separate feature —
+*Load full history on open*, which is on by default. On providers that publish
+a transcript endpoint (ChatGPT) it fetches the conversation in a single request
+and renders the older turns straight into the page, with no scrolling at all.
+On providers that publish none (Gemini, Perplexity) the only way up is to ask
+the site to page its own history, which does scroll — so it runs behind a
+freeze: a still copy of the page covers it, you keep the pixels you were
+looking at, and any input at all stops it and hands the live page straight
+back. A bar at the bottom says how far along it is, with a Stop button.
+
+The **⤒** button on the minimap toolbar does the same thing on demand.
+
+**Turn it off:** popup → *Load full history on open*.
 **Turn it off:** popup → *Speed engine* toggle.
 
 ### 🗺️ Minimap
@@ -339,8 +354,9 @@ your own scripts).
 - **Badge.** Your current plan: `Free`, `Trial` (amber) or `Pro`.
 - **Big number.** Messages asleep right now, with a per-site "N of total"
   breakdown. This is the engine's live proof of work.
-- **Three toggles.** Speed engine · Minimap · Timestamps. Changes apply
-  to open tabs instantly; no reload needed.
+- **Six toggles.** Speed engine · Minimap · Timestamps · Load full history on
+  open · Archive temporary chats · Allowance tracking. Changes apply to open
+  tabs instantly; no reload needed.
 - **Upgrade card** (when not Pro), the trial button, the license field, and
   what Pro includes.
 

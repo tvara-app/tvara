@@ -288,6 +288,33 @@ t("a figure about something else is not presented as your allowance",
     return Q.primary(record, { now: NOW }) === null;
   })());
 
+t("an unnamed figure still has to be metered in something the platform meters",
+  (() => {
+    /* Live on a real account: Claude's row read "100% left · 30 of 30 querys"
+       while the account's five-hour window was three-quarters spent. A
+       root-level remaining/limit pair with no key, so the per-platform
+       allowlist was skipped entirely — and the one word it did say about
+       itself, its unit, was never read. Claude does not meter chat in queries.
+       Grok does, so the same window is Grok's allowance and not Claude's:
+       the rule is per-platform, never a blanket rejection of counts. */
+    const w = { key: "", pctLeft: 100, remaining: 30, limit: 30, resetAt: 0,
+      label: "", unit: "query", basis: "remaining/limit", path: "$", observedAt: NOW };
+    const asClaude = Q.primary({ id: "claude", windows: [w] }, { now: NOW });
+    const asGrok = Q.primary({ id: "grok", windows: [w] }, { now: NOW });
+    return asClaude === null && asGrok && asGrok.pctLeft === 100;
+  })());
+
+t("…and Claude's own five-hour window still comes through",
+  (() => {
+    // The figure this displaced: 75% of the session spent, resetting in 45 min.
+    const record = { id: "claude", windows: [
+      { key: "five_hour", pctLeft: 25, resetAt: NOW + 45 * 60e3, label: "", unit: "",
+        basis: "provider-percentage(used)", path: "$.five_hour", observedAt: NOW }
+    ] };
+    const p = Q.primary(record, { now: NOW });
+    return p && p.pctLeft === 25;
+  })());
+
 t("a reading with no reset goes stale instead of living forever",
   (() => {
     /* Live, the panel showed "Grok 100% left" from a reading five days old,
@@ -469,6 +496,92 @@ t("a query-count payload keeps its unit",
     return w && w.pctLeft === 40 && w.unit === "query";
   })(),
   JSON.stringify(first(Q.fromJson({ remainingQueries: 8, totalQueries: 20 }, { now: NOW }))));
+
+/* ---- a percentage is not a ratio ----
+   Anthropic documents `utilization` as 0..100. Read through the 0-to-1 rule, a
+   session 0.4% spent became "40% used" and the panel told somebody who had
+   barely started that 60% was left. Under 1% — which is most of a fresh
+   five-hour window — the figure was not imprecise, it was inverted. */
+{
+  const one = (json) => first(Q.fromJson(json, { now: NOW }));
+  t("pct: a barely-touched session is barely touched",
+    one({ utilization: 0.4, resets_at: new Date(NOW + 3.6e6).toISOString() }).pctLeft === 100,
+    JSON.stringify(one({ utilization: 0.4 })));
+  t("pct: …and a real 24% is still 24%",
+    one({ utilization: 24, resets_at: new Date(NOW + 3.6e6).toISOString() }).pctLeft === 76);
+  t("pct: a RATIO still scales, because it says it is one",
+    one({ used_ratio: 0.4, resets_at: new Date(NOW + 3.6e6).toISOString() }).pctLeft === 60);
+  t("pct: a stated percentage of what is left is taken as given",
+    one({ percent_remaining: 12, resets_at: new Date(NOW + 3.6e6).toISOString() }).pctLeft === 12);
+}
+
+/* ---- Claude publishes two windows, and one of them is the session ----
+   The seven-day figure is usually the lower of the two, so ranking by urgency
+   alone showed the WEEK and hid the five-hour limit — which is the one that
+   stops you in the middle of an answer. */
+{
+  const windows = Q.fromJson({
+    five_hour: { utilization: 24, resets_at: new Date(Date.now() + 3.6e6).toISOString() },
+    seven_day: { utilization: 61, resets_at: new Date(Date.now() + 3 * 864e5).toISOString() }
+  }, {});
+  const first = windows[0];
+  t("claude: the five-hour session limit leads", first && first.span === "5h", JSON.stringify(first));
+  t("claude: …at the share the provider stated", first && first.pctLeft === 76, JSON.stringify(first));
+  t("claude: the week is still there, behind it",
+    windows.some((w) => w.span === "week" && w.pctLeft === 39), JSON.stringify(windows.map((w) => w.span)));
+  t("claude: both windows carry the moment they turn over",
+    windows.every((w) => w.resetAt > Date.now()), JSON.stringify(windows.map((w) => w.resetAt)));
+}
+
+/* ---- the same limit, stated twice ----
+   Claude states its five-hour window as a percentage in /usage and as
+   remaining/limit headers on the send path. Both survived, under different
+   keys, and rank() picked between them by score — so the row flipped as each
+   was refreshed: right one minute, wrong the next. */
+{
+  const older = {
+    id: "claude", acct: "a", observedAt: NOW - 60000, source: "polled",
+    windows: [{ key: "unified-5h", span: "5h", spanSec: 18000, pctLeft: 12, pctLeftExact: 12,
+      basis: "remaining/limit", resetAt: NOW + 3.6e6, remaining: 12, limit: 100, used: null, unit: "", path: "h" }]
+  };
+  const newer = {
+    id: "claude", acct: "a", observedAt: NOW, source: "polled",
+    windows: [{ key: "five-hour", span: "5h", spanSec: 18000, pctLeft: 76, pctLeftExact: 76,
+      basis: "provider-percentage(used)", resetAt: NOW + 3.6e6, remaining: null, limit: null, used: null, unit: "", path: "five_hour" }]
+  };
+  const merged = Q.merge(older, newer, { now: NOW, staleMs: 12 * 3600e3 });
+  t("claude: one share per window, and it is the fresher one",
+    merged.windows.filter((w) => w.spanSec === 18000).length === 1 &&
+    merged.windows[0].pctLeft === 76, JSON.stringify(merged.windows));
+}
+
+/* ---- ChatGPT states the window's LENGTH, never its name ----
+   /backend-api/wham/usage calls its two windows "primary" and "secondary", so
+   nothing in the key or the path says which is the session limit and which is
+   the week. `limit_window_seconds` is the only thing that does, and until it
+   was read both windows ranked alike: the panel led with whichever was closer
+   to empty, which is the WEEK, and hid the limit that stops you mid-answer. */
+{
+  const windows = Q.fromJson({
+    plan_type: "go",
+    rate_limit: {
+      primary_window:   { used_percent: 35, reset_at: NOW / 1000 + 4 * 3600, limit_window_seconds: 18000 },
+      secondary_window: { used_percent: 80, reset_at: NOW / 1000 + 5 * 86400, limit_window_seconds: 604800 }
+    }
+  }, { now: NOW });
+  const lead = windows[0];
+  t("chatgpt: the session window is named from its length in seconds",
+    lead && lead.span === "5h", JSON.stringify(lead));
+  t("chatgpt: …and leads even though the week is closer to empty",
+    lead && lead.pctLeft === 65, JSON.stringify(lead));
+  t("chatgpt: the week is still reported, behind it",
+    windows.some((w) => w.span === "week" && w.pctLeft === 20),
+    JSON.stringify(windows.map((w) => [w.span, w.pctLeft])));
+  t("chatgpt: the window length is not mistaken for a ceiling",
+    windows.every((w) => w.limit === null), JSON.stringify(windows.map((w) => w.limit)));
+  t("chatgpt: both windows carry the moment they turn over",
+    windows.every((w) => w.resetAt > NOW), JSON.stringify(windows.map((w) => w.resetAt)));
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) {

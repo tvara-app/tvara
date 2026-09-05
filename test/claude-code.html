@@ -1,0 +1,88 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Claude Code transcript fixture</title>
+<!--
+  A Claude Code session is not a chat: the transcript renders tool calls, tool
+  results and thinking blocks BETWEEN the turns. This fixture is deliberately
+  hostile — six real turns buried in six pieces of tool scaffolding, four code
+  blocks, a nested <pre>, and one turn whose body is an image.
+
+  Six is the only correct tick count. Anything that counts bodies, paragraphs,
+  code blocks or scaffolding gets a different number.
+
+  ?drift=1 strips the action bars AND the role markers, leaving the structural
+  layer as the only way through — the state we would be in the day Claude
+  redesigns. The count must still be six, and the map must say it is a reading
+  rather than a certainty.
+-->
+<style>
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; background: #1b1b1f; color: #eee; }
+  .transcript { max-width: 760px; margin: 0 auto; padding: 24px 16px 60vh; }
+  article { padding: 14px 16px; margin: 0 0 14px; border-radius: 10px; background: #26262c; }
+  pre { background: #131317; padding: 10px; border-radius: 8px; overflow-x: auto; }
+  .tool { padding: 8px 12px; margin: 0 0 14px; border-radius: 8px; background: #202028; color: #9aa; font-size: 12px; }
+</style>
+<div class="transcript" id="transcript"></div>
+<script>
+  const drift = new URLSearchParams(location.search).get("drift") === "1";
+
+  const bar = () => drift ? "" :
+    '<div role="group" aria-label="Message actions">' +
+    '<button data-testid="action-bar-copy" type="button">Copy</button>' +
+    '<button type="button">Retry</button></div>';
+
+  const user = (text) => '<article>' +
+    '<div ' + (drift ? '' : 'data-testid="user-message"') + '>' + text + '</div>' +
+    bar() + '</article>';
+
+  const claude = (inner) => '<article>' +
+    '<div class="' + (drift ? "prose" : "font-claude-response") + '">' + inner + '</div>' +
+    bar() + '</article>';
+
+  // Scaffolding. Never a turn, on any layer, in either mode.
+  const toolUse = (name) =>
+    '<div class="tool" data-testid="tool-use-block" aria-label="Tool call: ' + name + '">' +
+    'Running ' + name + '…</div>';
+  const toolResult = (text) =>
+    '<div class="tool" data-testid="tool-result-block" aria-label="Tool result">' + text + '</div>';
+  const thinking = () =>
+    '<div class="tool" data-testid="thinking-block" aria-label="Thinking">' +
+    'Considering the shape of the problem for a while…</div>';
+
+  const code = (lang, body) => '<pre data-lang="' + lang + '"><code>' + body + '</code></pre>';
+
+  document.getElementById("transcript").innerHTML = [
+    user("Split bg.js and keep the tests green."),
+
+    toolUse("Read"),
+    toolResult("bg.js — 7,596 lines"),
+    thinking(),
+
+    // One turn holding four code blocks and a nested pre. Still one turn.
+    claude("<p>Here is the split.</p>" +
+      code("js", "const a = 1;") +
+      code("js", "function b() { return 2; }") +
+      "<div>" + code("sh", "npm test") + "</div>" +
+      code("json", '{ "ok": true }')),
+
+    user("Now make the minimap honest."),
+    toolUse("Edit"),
+
+    // An image-only turn: no text at all, and still a turn.
+    claude('<img alt="a diagram" width="120" height="60" ' +
+      'src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==">'),
+
+    user("And prove the count in CI."),
+    toolUse("Bash"),
+    toolResult("2 files changed"),
+
+    claude("<p>Done — the fixture asserts it.</p>" + code("js", "t(\"ticks\", n === 6);"))
+  ].join("");
+
+  // What the assertions compare against, computed from the source above rather
+  // than typed twice.
+  window.__fixtureTurns = 6;
+  window.__fixtureUser = 3;
+  window.__fixtureAssistant = 3;
+  window.__fixtureDrift = drift;
+</script>

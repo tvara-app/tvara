@@ -87,6 +87,7 @@
       <button id="lct-mm-toggle" type="button" title="Collapse conversation navigator" aria-label="Collapse conversation navigator" aria-expanded="true">‹</button>
       <div id="lct-mm-stage">
         <canvas id="lct-mm-canvas" tabindex="0" role="slider" aria-label="Conversation position" aria-orientation="vertical"></canvas>
+        <span id="lct-mm-approx" hidden title="This page no longer matches the layout we recognise, so the number of turns is our best reading of it rather than a certainty.">~</span>
       </div>
     `;
     document.documentElement.appendChild(root);
@@ -136,8 +137,23 @@
       const idx = yToIndex(e.offsetY);
       if (idx >= 0) jumpToIndex(idx);
     });
+    /* Pointing at a mark asks what it says, and the tooltip can only answer in
+       one line. The panel answers in full, from the copy on this machine — no
+       request, no scrolling, and it works when the provider will not talk to us.
+       A short dwell so sweeping across the rail does not thrash it. */
+    let peekTimer = null;
+    const peek = (idx) => {
+      clearTimeout(peekTimer);
+      if (idx < 0) return;
+      peekTimer = setTimeout(() => {
+        try { self.LCTHistoryPanel.show(idx, { transient: true }); }
+        catch (_) { /* panel not up */ }
+      }, 140);
+    };
+
     canvas.addEventListener("mousemove", (e) => {
       const idx = yToIndex(e.offsetY);
+      if (idx !== hoverIdx) peek(idx);
       motion.hoverY = e.offsetY;
       if (idx !== hoverIdx) hoverIdx = idx;
       scheduleDraw();          // the magnifier follows the cursor, not the index
@@ -155,6 +171,9 @@
       }
     });
     canvas.addEventListener("mouseleave", () => {
+      clearTimeout(peekTimer);
+      // Hand the page back: a hover-opened panel must not outlive the hover.
+      try { self.LCTHistoryPanel.release(); } catch (_) { /* panel not up */ }
       tooltip.style.display = "none";
       hoverIdx = -1;
       motion.hoverY = -1;
@@ -318,6 +337,28 @@
             .replace(/^Open image:\s*/i, "").trim();
         out.push(name ? `🖼 ${name}` : "🖼 image");
       } else if (child.nodeType === 1) {
+        /* A rendered formula, taken as its source rather than walked. KaTeX
+           writes the MathML and the glyphs side by side, so walking it returns
+           every symbol twice; MathJax's SVG output returns none at all. */
+        let math = "";
+        try {
+          // The model thinking out loud is not the message, and it comes FIRST:
+          // every preview on Gemini opened with "Formulating the …".
+          // …unless it is holding a picture: these hosts wrap an image in a
+          // button, and skipping buttons wholesale hid the message itself.
+          if (child.matches && child.matches(self.LCTRichText.SKIP_SEL) &&
+              !child.querySelector("img")) continue;
+          if (child.matches && child.matches(self.LCTRichText.MATH_SEL)) {
+            math = self.LCTRichText.mathSource(child) || "…";
+          } else if ((String(child.tagName).toUpperCase() === "SVG" &&
+                      self.LCTRichText.svgIsDiagram(child)) ||
+                     child.matches(self.LCTRichText.DIAGRAM_SEL)) {
+            /* A drawn diagram's labels welded together — "StartLoad dataDone" —
+               is not a preview of anything. Name it instead. */
+            math = "🖼 diagram";
+          }
+        } catch (_) { math = ""; }
+        if (math) { out.push(" " + math + " "); continue; }
         const block = BLOCK.test(child.tagName);
         if (block && out.length && !/\s$/.test(out[out.length - 1])) out.push(" ");
         previewText(child, out, cap);
@@ -357,6 +398,12 @@
     catalogAdapter = adapter;
     const keys = msgEls.map(keyOf);
     const allStable = keys.length > 0 && keys.every(Boolean);
+    /* Roles for the WHOLE list at once. adapter.role() may answer "" for a turn
+       it cannot read — a Claude Code session states no role on either side —
+       and resolveRoles fills those by alternation from the nearest stated one.
+       Asked per element instead, every unmarked turn paints as the model. */
+    let resolved = [];
+    try { resolved = self.LCTAdapters.resolveRoles(adapter, msgEls); } catch (_) { resolved = []; }
 
     if (!allStable) {
       // Other platforms often keep their whole transcript mounted. Do not risk
@@ -368,7 +415,7 @@
         const meta = metaFor(el, adapter, i >= msgEls.length - 3);
         let row = rows.get(el);
         if (!row) { row = { el, key: "" }; rows.set(el, row); }
-        row.role = meta.role;
+        row.role = resolved[i] || meta.role;
         row.hasCode = meta.hasCode;
         row.snippet = meta.snippet;
         row.len = meta.len;
@@ -387,7 +434,7 @@
       let entry = catalog.get(key);
       if (!entry) { entry = { key }; projectDirty = true; }
       entry.el = el;
-      entry.role = meta.role;
+      entry.role = resolved[i] || meta.role;
       // The index guesses at code from a ``` in the text; a mounted row has the
       // actual <pre>. The mark can therefore appear or vanish on mount — the
       // DOM is what the reader can see, so it wins.
@@ -443,7 +490,13 @@
    * in updateMessages() as the host gets round to rendering them.
    */
   function seed(entries, route) {
-    if (!Array.isArray(entries) || entries.length < 4) return false;
+    /* ONE message is a conversation. A floor of four sat here and it is the
+       same mistake as the floor of two this codebase removed everywhere else:
+       somebody who has asked one question and got one answer has a chat, and
+       hiding the map from them hides the whole product on the first thing they
+       ever open. The map is honest about being short; it does not need to be
+       long to be true. */
+    if (!Array.isArray(entries) || !entries.length) return false;
     if (catalogRoute !== route) clearCatalog(route);
 
     const order = [];
@@ -480,7 +533,12 @@
     build();                              // paint before the engine's first tick
     canvas.setAttribute("aria-valuemin", "1");
     canvas.setAttribute("aria-valuemax", String(messages.length));
-    if (messages.length >= 4) root.style.display = "flex";
+    /* Shown from the FIRST message. The old floor was four, on the reasoning
+       that a map of three dots says nothing — but it also meant a chat had no
+       map until it had been going a while, which reads as the feature being
+       broken rather than as it waiting. A short map is honest; an absent one
+       is not. */
+    if (messages.length >= 1) root.style.display = "flex";
     scheduleDraw();
     return true;
   }
@@ -493,8 +551,15 @@
     // jank we sell against. Cache per element, and for ChatGPT retain metadata
     // across virtualized windows so loaded history remains represented.
     updateMessages(msgEls, adapter);
+    computeApprox(msgEls, adapter);
     canvas.setAttribute("aria-valuemin", "1");
     canvas.setAttribute("aria-valuemax", String(messages.length));
+    root.dataset.lctApprox = approx ? "1" : "0";
+    const badge = root.querySelector("#lct-mm-approx");
+    if (badge) badge.hidden = !approx;
+    canvas.setAttribute("aria-label", approx
+      ? "Conversation position — about " + messages.length + " turns"
+      : "Conversation position");
 
     if (msgEls.length) bindScroller(msgEls);
 
@@ -503,12 +568,35 @@
     const dlg = document.querySelector('dialog[open], [aria-modal="true"]');
     const modalOpen = !!(dlg && dlg.getBoundingClientRect().width > 0);
     const roomy = innerWidth > 640 && innerHeight > 320;
-    /* `held` is the tour pointing at this strip. Without it the four-message
-       floor hid the very thing the card was explaining, the anchor came back
-       null, and the card fell to the middle of the screen pointing at nothing
-       — which is what the tour looks like on a short chat. */
-    root.style.display = !modalOpen && roomy && (held || messages.length >= 4) ? "flex" : "none";
+    /* ONE message is a conversation — the last floor of four in this codebase,
+       and the one nobody saw, because it hid the map instead of shortening it.
+       A two-message chat had no map at all, and the day its count was corrected
+       from four ticks to two the map would have vanished, which reads as the
+       fix breaking it. The seed path has painted from the first message for a
+       while; this is the live path agreeing with it.
+       `held` is the tour pointing at this strip: it must outrank an empty list
+       too, or the card explains a thing that is not on screen. */
+    root.style.display = !modalOpen && roomy && (held || messages.length >= 1) ? "flex" : "none";
     scheduleDraw();
+  }
+
+  /* Did the turn detection match on the selector we know, or is it running on a
+     fallback? Same test the health probe uses (content/main.js). A fallback can
+     still be right; it cannot be CALLED right, so the count says so. */
+  let approx = false;
+  let approxAt = -1;
+
+  function computeApprox(msgEls, adapter) {
+    if (!adapter || !adapter.canon || !msgEls.length) { approx = false; approxAt = -1; return; }
+    if (approxAt === msgEls.length) return;          // only when the shape changes
+    approxAt = msgEls.length;
+    let hit = 0;
+    for (const el of msgEls) {
+      try {
+        if (el.matches?.(adapter.canon) || el.querySelector?.(adapter.canon) || el.closest?.(adapter.canon)) hit++;
+      } catch (_) { /* an unusable selector proves nothing either way */ }
+    }
+    approx = hit < msgEls.length;
   }
 
   function safeRole(adapter, el) {
@@ -901,6 +989,12 @@
     let el = null;
     try {
       el = document.querySelector('[data-message-id="' + CSS.escape(id) + '"]');
+      /* Rows mountArchive() rendered from the copy already on this machine.
+         They carry data-lct-turn-id and deliberately NOT data-message-id —
+         every adapter selects on that attribute and these are not the host's
+         turns — so a click could not see them, and the map paged the host for
+         a message that was already on the page. */
+      if (!el) el = document.querySelector('[data-lct-turn-id="' + CSS.escape(id) + '"]');
       if (!el && catalogAdapter) {
         el = catalogAdapter.messages().find((n) => keyOf(n) === entry.key) || null;
       }
@@ -938,14 +1032,25 @@
   function jumpToIndex(index) {
     const entry = messages[index];
     if (!entry) return;
+    /* First, always: hand the live page back. An automatic walk is running
+       behind a freeze that this click cannot otherwise release — see
+       standDown() — and every jump below is a scroll of the host's scroller,
+       which is invisible while that copy is over it. */
+    try { self.LCTHistoryLoader.standDown(); } catch (_) { /* loader not up */ }
+    /* Hovering already opened this message in the panel; clicking is the ask to
+       ARRIVE. Called anyway for the paths that reach here without a hover —
+       the outline's starred rows, and the keyboard. */
+    try { self.LCTHistoryPanel.show(index); } catch (_) { /* panel not up */ }
     if (mounted(entry) || remount(entry)) return jump(entry.el);
     if (!entry.key || !scroller) return;      // no stable id — nothing to seek to
 
-    // Reading it should not have to wait for the host to render it. The index
-    // already carries the text, so the message is on screen immediately and the
-    // real navigation happens behind the preview.
-    self.LCTPreview.open(entry, index, messages.length);
+    /* No preview panel. It was here so that reading a message did not have to
+       wait for the host to render it — but a copy of the text in a box beside
+       the map is not the thing anyone clicked for. They clicked to GO THERE.
+       Showing the words while the page stays where it was reads as the click
+       having failed, which is exactly how it read.
 
+       So: land on the message, or keep working until we can. Nothing else. */
     let above = -1;
     for (let i = index - 1; i >= 0; i--) if (mounted(messages[i])) { above = i; break; }
 
@@ -959,9 +1064,8 @@
         id: entry.key.slice(3),
         index,
         total: messages.length,
-        arrive: (reached) => {
-          if (mounted(entry) || remount(entry)) { self.LCTPreview.close(); return jump(entry.el); }
-          if (!reached) self.LCTPreview.note("This is as far back as the site will load.");
+        arrive: () => {
+          if (mounted(entry) || remount(entry)) jump(entry.el);
         }
       });
       if (began) return;
@@ -969,7 +1073,7 @@
 
     let rounds = 0;
     const seek = () => {
-      if (mounted(entry) || remount(entry)) { self.LCTPreview.close(); return jump(entry.el); }
+      if (mounted(entry) || remount(entry)) return jump(entry.el);
       if (++rounds > ROUNDS) return;          // host has no more history to give
       stepToward(index);
       setTimeout(seek, 110);
@@ -988,7 +1092,10 @@
   const jump = (el) => self.LCTNav.jumpTo(el, { scroller, block: "center" });
 
   self.LCTMinimap = {
-    update, destroy, jumpToKey, seed, setStaleHandler,
+    // jumpToIndex is what the history panel calls when a row is clicked; it was
+    // never exported, so every click threw into a swallowing catch and the page
+    // stayed where it was.
+    update, destroy, jumpToKey, jumpToIndex, seed, setStaleHandler,
     /** Pin the strip open while something is explaining it. */
     hold(on) { if (pin) pin(on); },
     get count() { return messages.length; }

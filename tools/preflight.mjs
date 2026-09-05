@@ -16,6 +16,7 @@ import { execFileSync } from "node:child_process";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
+import { workerSource } from "./worker-source.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const offline = process.argv.includes("--offline");
@@ -57,7 +58,7 @@ else {
      recall-page.js (40KB, shipped) or content/inject/quota-probe.js (a
      subdirectory, whose mtime does not move when a file inside it changes)
      left this printing "zip matches manifest" over a zip that predated the fix. */
-  const WATCH = ["bg.js", "manifest.json", "content", "popup", "lib", "icons",
+  const WATCH = ["bg.js", "bg", "manifest.json", "content", "popup", "lib", "icons",
                  "diag", "onboarding.html", "onboarding.css", "onboarding.js",
                  "recall.html", "recall.css", "recall-page.js"];
   const newestOf = (full) => {
@@ -107,7 +108,8 @@ else {
 
 /* ---------- 3. claims that drift ---------- */
 
-const period = Number((read("bg.js").match(/BG_AUTO_PERIOD_MIN\s*=\s*(\d+)/) || [])[1] || 0);
+// The constant moved to bg/schedule.js; read the worker, not just its entry.
+const period = Number((workerSource(root).match(/BG_AUTO_PERIOD_MIN\s*=\s*(\d+)/) || [])[1] || 0);
 const hours = period / 60;
 let drift = 0;
 for (const [name, text] of [["listing", listing], ["README", readme], ["docs", docs]]) {

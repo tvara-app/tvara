@@ -12,3 +12,7 @@ store/
 *.pem
 *.key
 .dev.vars
+*.mp4
+*.mkv
+*.mp3
+.claude/

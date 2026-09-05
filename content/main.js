@@ -17,13 +17,19 @@
     time: true,
     tempArchive: false,  // opt-in: the host was told not to keep these
 
-    history: false,    // mount older turns in the page — see history-loader.js
+    /* ON by default. It was opt-in, and opt-in meant off: the whole promise of
+       this extension is that a long conversation is all there, and a toggle
+       nobody finds does not keep that promise. Turning it off is still one
+       click — see "Load full history on open" in the popup. */
+    history: true,     // mount older turns in the page — see history-loader.js
     pro: false,
     trialUntil: 0      // ms epoch; 0 = no trial started
   };
 
-  // Pricing slice: the speed engine is FREE everywhere (our gift + reputation).
-  // Tools (minimap, search, outline, timestamps, backup) are free on ChatGPT;
+  // Pricing slice: the speed engine, the MINIMAP and the hover CARD are FREE
+  // everywhere — they are what the product looks like, and a platform where
+  // they silently never appear reads as broken rather than as locked.
+  // The rest (search, outline, timestamps, backup) are free on ChatGPT;
   // Pro (one payment, see lib/product.js) or the 7-day trial unlocks them on
   // Claude & Gemini.
   // Perplexity/DeepSeek/Grok support is experimental, so tools stay free there
@@ -95,7 +101,7 @@
      chats, and reserving space it isn't using would be its own kind of wrong. */
   const RAIL_MAX = 96;       // wider than this is content, not a rail
   let railAt = 0;
-  function syncRail(force) {
+  function syncRail(force, known) {
     // 9 hit-tests per pass, and the caller runs on every engine tick — a rail
     // appearing 2s late is invisible; the layout cost of checking wouldn't be.
     if (!force && Date.now() - railAt < 2000) return;
@@ -119,6 +125,24 @@
         }
       }
     }
+    /* The host's native scrollbar is not a DOM node, so elementsFromPoint above
+       cannot see it — and on ChatGPT the message scroller's own scrollbar sits
+       exactly where the strip wants to be, so the strip landed on top of it.
+       Measure it directly: offsetWidth minus clientWidth IS the scrollbar, and
+       it only matters when that scroller reaches the right edge. */
+    try {
+      /* The caller already has this list — re-querying the whole document here
+         cost a second messages() pass on every tick, and during a walk it also
+         walked the freeze copy. */
+      const msgs = (known && known.length ? known : lastMessages) || [];
+      const sc = msgs.length ? self.LCTAdapters.findScroller(msgs[0]) : null;
+      if (sc) {
+        const bar = sc.offsetWidth - sc.clientWidth;
+        if (bar > 0 && sc.getBoundingClientRect().right >= vw - RAIL_MAX) {
+          inset = Math.max(inset, Math.min(RAIL_MAX, bar));
+        }
+      }
+    } catch (_) { /* selector drift — the probe above still stands */ }
     const next = inset ? inset + 4 + "px" : "0px";   // 4px breathing room
     if (document.documentElement.style.getPropertyValue("--lct-rail-inset") !== next) {
       document.documentElement.style.setProperty("--lct-rail-inset", next);
@@ -177,10 +201,10 @@
     lastTickAt = Date.now();
     lastMessages = messages;
     syncTheme(); // hosts flip theme without reloading
-    syncRail();  // the host's rail shows up once the chat gets long (throttled)
+    syncRail(false, messages);  // the host's rail shows up once the chat gets long (throttled)
     if (routeId() !== currentRoute) onChatSwitch();
     self.LCTHistoryLoader.maybeStart(adapter, messages);
-    if (state.minimap && toolsUnlocked()) self.LCTMinimap.update(messages, adapter);
+    if (state.minimap) self.LCTMinimap.update(messages, adapter);
     else self.LCTMinimap.destroy();
     self.LCTTimeline.update(messages);
     self.LCTOutline.update(messages);
@@ -205,9 +229,16 @@
     loadedAt = Date.now(); // suppress save/offer while the host auto-scrolls
     resumeOffered = false;
     removeChip();
+    /* Before anything else on a new route. The full transcript is one request
+       and that request is the entire wait — starting it here rather than after
+       the engine's first tick is what makes the older turns already be there
+       when the reader arrives. */
+    try { self.LCTHistoryLoader.warm(adapter); } catch (_) { /* loader not up yet */ }
     seedFromProvider();
-    // The tour needs a minimap to point at, and the minimap hides under four
-    // messages. A short first chat must not cost someone the tour forever.
+    setTimeout(reportApiPaths, 3000);
+    setTimeout(noteCodeSessions, 1500);
+    // The tour needs a minimap to point at. The minimap now paints from the
+    // first message, so a short first chat no longer costs someone the tour.
     self.LCTTour.maybeStart();
   }
 
@@ -225,12 +256,15 @@
   let providerCount = null;
 
   function seedFromProvider() {
-    if (!state.enabled || !state.minimap || !toolsUnlocked()) return;
+    if (!state.enabled || !state.minimap) return;
     const route = routeId();
     self.LCTChatIndex.load(adapter, (entries) => {
       if (routeId() !== route) return;
       providerCount = Array.isArray(entries) ? entries.length : null;
       self.LCTMinimap.seed(entries, route);
+      // Same transcript, and the card's only source of a true message count —
+      // the DOM holds whatever the host felt like mounting.
+      self.LCTChatCard.seed(entries);
     });
   }
 
@@ -605,7 +639,11 @@
       state.enabled = settings.enabled !== false;
       state.minimap = settings.minimap !== false;
       state.time = settings.time !== false;
-      state.history = settings.history === true;   // opt-in; auto-walk is hidden-tab only
+      /* !== false, not === true. A stored settings object written before this
+         default flipped has no `history` key at all, and reading that as "off"
+         would leave every existing install opted out of the thing they
+         installed this for. */
+      state.history = settings.history !== false;
       state.tempArchive = settings.tempArchive === true;
     }
     // The worker holds the signed entitlement; content scripts only ask.
@@ -640,7 +678,12 @@
     self.LCTHistoryLoader.setAuto(state.enabled && state.history && toolsUnlocked());
     self.LCTTimeline.setDisplay(state.enabled && state.time && toolsUnlocked());
     self.LCTOutline.setEnabled(state.enabled && toolsUnlocked());
-    self.LCTChatCard.setEnabled(state.enabled && toolsUnlocked());
+    /* Free everywhere, like the minimap. The card shows four integers about the
+       user's OWN conversation, taken from their own local archive — the worker
+       keeps `chat-stats` out of the PAID map for exactly that reason, so gating
+       it in the page only made the card silently never appear on Claude and
+       Gemini, which reads as broken rather than as locked. */
+    self.LCTChatCard.setEnabled(state.enabled);
     if (state.enabled) {
       if (!self.LCTEngine.enabled) self.LCTEngine.start(adapter, onEngineUpdate);
       else self.LCTEngine.rescan();
@@ -720,6 +763,63 @@
     } catch (_) { /* extension context already invalidated */ }
   }
 
+  /* ---------- Claude Code sessions, from the page ----------
+     Code sessions have no documented listing endpoint, and the page showing
+     them is authoritative: each one is a /code/<id> link. Recording those needs
+     no API at all. Dates stay 0 — the card prints "—" rather than a wrong date,
+     and any real listing later wins on revision. */
+  /* ---------- which API paths this site actually calls ----------
+     Not a hook: Resource Timing already lists what the page fetched. Query
+     strings are dropped here, so no id or token leaves. Claude Code needs it. */
+  const apiSeen = new Set();
+  function reportApiPaths() {
+    try {
+      const fresh = [];
+      for (const e of performance.getEntriesByType("resource")) {
+        if (e.initiatorType !== "fetch" && e.initiatorType !== "xmlhttprequest") continue;
+        let url;
+        try { url = new URL(e.name, location.href); } catch (_) { continue; }
+        if (url.origin !== location.origin) continue;
+        if (!url.pathname.startsWith("/api")) continue;
+        if (apiSeen.has(url.pathname)) continue;
+        apiSeen.add(url.pathname);
+        fresh.push(url.pathname);
+      }
+      if (!fresh.length) return;
+      chrome.runtime.sendMessage({ type: "api-seen", paths: fresh.slice(0, 40) }, () => {
+        void chrome.runtime.lastError;
+      });
+    } catch (_) { /* timing API unavailable, or the context went away */ }
+  }
+
+  const codeSeen = new Set();
+  function noteCodeSessions() {
+    if (!/(^|\.)claude\.ai$/.test(location.hostname)) return;
+    const chats = [];
+    for (const a of document.querySelectorAll('a[href*="/code/"]')) {
+      let url;
+      try { url = new URL(a.href, location.href); } catch (_) { continue; }
+      if (url.origin !== location.origin) continue;
+      const m = /^\/code\/([^/?#]{6,})$/.exec(url.pathname);
+      if (!m) continue;
+      const title = (a.textContent || "").replace(/\s+/g, " ").trim().slice(0, 200);
+      const key = m[1] + "|" + title;
+      if (codeSeen.has(key)) continue;
+      codeSeen.add(key);
+      chats.push({
+        id: "claude.ai/code/" + m[1], host: "claude.ai", path: "/code/" + m[1],
+        platform: "Claude Code", title, createdAt: 0, updatedAt: 0,
+        sourceUpdatedAt: 0, msgs: [], meta: true
+      });
+    }
+    if (!chats.length) return;
+    try {
+      chrome.runtime.sendMessage({ type: "recall-import", chats }, () => {
+        void chrome.runtime.lastError;
+      });
+    } catch (_) { /* context gone */ }
+  }
+
   /* ---------- health check ----------
      These sites redesign without telling anyone, and our adapters are built to
      degrade quietly rather than break the page — which means the day ChatGPT
@@ -750,9 +850,21 @@
       }
     }
 
-    const roles = { user: 0, assistant: 0 };
-    for (const el of messages) {
-      try { roles[adapter.role(el) === "user" ? "user" : "assistant"]++; } catch { /* skip */ }
+    /* The split as the archive will record it — resolved, not coerced. Tallied
+       per element with `=== "user" ? "user" : "assistant"`, every unstated role
+       landed on the model, so this panel reported the same false split the card
+       did and agreed with it. The RAW measure of how many roles were actually
+       read is `roleRead` / `roleFrom` below, which is the number this check
+       exists to surface; it stays untouched. */
+    const roles = { user: 0, assistant: 0, unknown: 0 };
+    let splitRoles;
+    try { splitRoles = self.LCTAdapters.resolveRoles(adapter, messages); } catch { splitRoles = null; }
+    /* A resolver that threw knows nothing about this page. Counting its silence
+       as "assistant" reported a 0/195 split and the block below then blamed the
+       host for drift the diagnostics had invented. */
+    for (let i = 0; i < messages.length; i++) {
+      const r = splitRoles && splitRoles[i];
+      roles[r === "user" || r === "assistant" ? r : "unknown"]++;
     }
 
     /* A role split of 188 mine to 12 the model's is not a conversation — it is
@@ -965,6 +1077,8 @@
     applyState();
     seedFromProvider();
     if (state.enabled) kickVisitSync();
+    setTimeout(reportApiPaths, 4000);
+    setTimeout(noteCodeSessions, 2500);
     if (!entitlementAnswered) setTimeout(refreshLicence, 2000);
     self.LCTTour.maybeStart();
     // A handover staged by "Continue in a new chat" is waiting on the other
@@ -990,7 +1104,7 @@
     if (!contextAlive()) { showStaleNotice(); return; }
     if (!state.enabled) return;
     if (!self.LCTEngine.enabled) { applyState(); return; }
-    if (!state.minimap || !toolsUnlocked()) return;
+    if (!state.minimap) return;
     const strip = document.getElementById("lct-minimap");
     const gone = !strip || !strip.isConnected || strip.style.display === "none";
     if (gone && Date.now() - lastTickAt > 5000) self.LCTEngine.rescan();

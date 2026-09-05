@@ -23,8 +23,24 @@ const dist = join(root, "dist");
 const withFirefox = process.argv.includes("--firefox");
 
 const SHIP = ["manifest.json", "lib", "content", "popup", "diag",
-              "bg.js", "onboarding.html", "onboarding.css", "onboarding.js",
+              "bg.js", "bg", "onboarding.html", "onboarding.css", "onboarding.js",
               "recall.html", "recall.css", "recall-page.js"];
+
+/** The files bg.js pulls in, in call order. The Firefox background list and the
+ *  ship check both read this, so neither can drift from the worker itself. */
+function workerScripts(bgSource) {
+  const out = [];
+  const seen = new Set();
+  const push = (p) => { if (!seen.has(p)) { seen.add(p); out.push(p); } };
+  for (const call of bgSource.matchAll(/importScripts\(([^)]*)\)/g)) {
+    for (const arg of call[1].matchAll(/["'`]([^"'`]+)["'`]/g)) push(arg[1]);
+  }
+  // …and the module list the worker spreads into importScripts, which is where
+  // bg/ is spelled out. Deduped: the failure path imports the same list again.
+  const list = bgSource.match(/BG_MODULES\s*=\s*\[([^\]]*)\]/);
+  if (list) for (const arg of list[1].matchAll(/["'`]([^"'`]+)["'`]/g)) push(arg[1]);
+  return out;
+}
 
 /* ---------- integrity ---------- */
 
@@ -69,6 +85,9 @@ function referencedPaths(staging, mf) {
       const js = readFileSync(file, "utf8");
       // getURL("recall.html") — the runtime reference the manifest never sees.
       for (const m of js.matchAll(/getURL\(\s*["'`]([^"'`]+)["'`]/g)) add(m[1], rel);
+      // importScripts("bg/sync.js") — the worker's own modules. Left unchecked,
+      // a file dropped from SHIP ships a worker that loads half of itself.
+      for (const s of workerScripts(js)) add(resolve(s), rel);
     }
   }
   return refs;
@@ -113,7 +132,7 @@ function build({ name, tweak, label }) {
      name it before the extension is published. The store issues its own id, so
      shipping the field invites two identities for one product. */
   delete mf.key;
-  tweak(mf);
+  tweak(mf, staging);
   writeFileSync(mfPath, JSON.stringify(mf, null, 2) + "\n");
 
   /* Icons come from the manifest, not from the folder. icons/ also holds the
@@ -162,15 +181,21 @@ if (withFirefox) {
   build({
     name: `tvara-v${version}-firefox.zip`,
     label: "firefox (UNVERIFIED)",
-    tweak: (mf) => {
-      // Firefox has no MV3 background service worker. It runs the same file as
-      // an event page — which works only because bg.js's importScripts() calls
-      // are already wrapped in try/catch, so listing the libs here loads them
-      // and the failed importScripts is a no-op.
-      mf.background = {
-        scripts: ["lib/quota.js", "lib/license.js", "lib/dodo.js", "lib/entitlement.js", "bg.js"],
-        type: "module"
-      };
+    tweak: (mf, staging) => {
+      /* Firefox has no MV3 background service worker. It runs the same files as
+         an event page — which works only because bg.js's importScripts() calls
+         are wrapped in try/catch, so listing them here loads them and the failed
+         importScripts is a no-op.
+
+         Derived from bg.js rather than typed: a hand-written list silently drops
+         a module on Firefox alone, where nothing we run would catch it. (It was
+         already wrong — lib/backup-crypto.js was missing.)
+
+         NOT type:"module". Every file here declares plain top-level functions
+         and shares one global with bg.js, exactly as importScripts gives us on
+         Chrome. Module scope is per-file, so it would hide all of them. */
+      const bgSrc = readFileSync(join(staging, "bg.js"), "utf8");
+      mf.background = { scripts: [...workerScripts(bgSrc), "bg.js"] };
       /* Required for new Firefox extensions (addons-linter:
          MISSING_DATA_COLLECTION_PERMISSIONS). "none" is the literal truth here:
          there is no server to send anything to. */

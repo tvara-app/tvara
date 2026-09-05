@@ -2,6 +2,44 @@ import js from "@eslint/js";
 import globals from "globals";
 import noUnsanitized from "eslint-plugin-no-unsanitized";
 import security from "eslint-plugin-security";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
+/* bg.js and bg/*.js are one worker sharing ONE global scope — importScripts on
+   Chrome, plain background scripts on Firefox. ESLint lints files separately, so
+   every call across the split reads as no-undef. Derive the shared names from
+   the sources themselves rather than turning the rule off: a real typo is still
+   declared nowhere and still errors, and the list cannot drift from the code. */
+const WORKER_SCOPE = (() => {
+  const dir = import.meta.dirname;
+  const files = ["bg.js", ...readdirSync(join(dir, "bg")).filter((f) => f.endsWith(".js")).map((f) => "bg/" + f)];
+  const declared = new Map();   // file → { name: "readonly" | "writable" }
+  for (const rel of files) {
+    const own = {};
+    const src = readFileSync(join(dir, rel), "utf8");
+    for (const m of src.matchAll(/^(?:async\s+)?(function|class|const|let|var)\s+([A-Za-z_$][\w$]*)/gm)) {
+      own[m[2]] = m[1] === "let" || m[1] === "var" ? "writable" : "readonly";
+    }
+    declared.set(rel, own);
+  }
+  /* One config block per file, each seeing every OTHER file's top-level names
+     and none of its own — declaring a name it already owns would read as a
+     redeclaration of a built-in, and using one only from a sibling file would
+     read as dead code. */
+  return files.map((rel) => {
+    const globals = {};
+    for (const [other, names] of declared) if (other !== rel) Object.assign(globals, names);
+    for (const own of Object.keys(declared.get(rel))) delete globals[own];
+    /* vars:"local" — a function declared here and called only from a sibling
+       module is not dead code, and ESLint cannot see across the split to know
+       that. Unused locals and arguments are still caught. */
+    return {
+      files: [rel],
+      languageOptions: { globals },
+      rules: { "no-unused-vars": ["error", { vars: "local", args: "after-used", argsIgnorePattern: "^_", caughtErrors: "all", caughtErrorsIgnorePattern: "^_" }] },
+    };
+  });
+})();
 
 const SECURITY_RULES = {
   "no-unsanitized/method": "error",
@@ -34,6 +72,7 @@ export default [
       "popup/**/*.js",
       "diag/**/*.js",
       "bg.js",
+      "bg/**/*.js",
       "recall-page.js",
     ],
     plugins: { "no-unsanitized": noUnsanitized, security },
@@ -47,6 +86,9 @@ export default [
     },
     rules: { ...SECURITY_RULES, ...BASE_RULES },
   },
+  // Only the worker's own files see the worker's shared scope. A popup or
+  // content script naming bgSyncAll() is still an error, as it should be.
+  ...WORKER_SCOPE,
   {
     // MAIN-world injectors run inside the page's own JS context — no chrome.*
     // there by design; keeping it out of globals catches an accidental

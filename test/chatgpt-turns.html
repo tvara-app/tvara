@@ -1,0 +1,65 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>ChatGPT turn-counting fixture</title>
+<!--
+  Two messages. ChatGPT keys its DOM nodes by TRANSCRIPT message id, and one
+  visible answer arrives with a reasoning summary and a browsing block beside
+  it — three [data-message-id] nodes inside one <article>, all authored
+  "assistant". Counted as nodes that is four messages; the reader sees two, and
+  the extra ticks land inside the answer, so the map reads as if parts of one
+  long response were separate messages.
+
+  Two is the only correct tick count. Four marker nodes have to be really here
+  for the test to mean anything, so they are.
+-->
+<style>
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; background: #212121; color: #ececec; }
+  main { max-width: 760px; margin: 0 auto; padding: 24px 16px 60vh; }
+  article { padding: 14px 16px; margin: 0 0 18px; border-radius: 12px; background: #2a2a2a; }
+  .thoughts, .browsing { color: #9a9a9a; font-size: 12px; margin: 0 0 10px; }
+  table { border-collapse: collapse; margin: 12px 0; }
+  td, th { border: 1px solid #3a3a3a; padding: 4px 8px; text-align: left; }
+</style>
+<main>
+  <article data-testid="conversation-turn-2" data-turn="user">
+    <div data-message-id="req-1" data-message-author-role="user">
+      <div class="whitespace-pre-wrap">can i get any tld's with parts of the word 'extension'</div>
+    </div>
+  </article>
+
+  <article data-testid="conversation-turn-3" data-turn="assistant">
+    <div data-message-id="thoughts-1" data-message-author-role="assistant" class="thoughts">
+      Thought for 12 seconds — checking which of these are delegated in the IANA root.
+    </div>
+    <div data-message-id="browse-1" data-message-author-role="assistant" class="browsing">
+      Searched the IANA root zone database for delegated top-level domains.
+    </div>
+    <div data-message-id="answer-1" data-message-author-role="assistant">
+      <div class="markdown">
+        <p>Yes — and for <strong>“Tvara = an extension”</strong>, there are real TLDs that contain pieces of <em>extension</em>.</p>
+        <p>The important distinction is that the TLD itself doesn't have to literally mean “extension”.</p>
+        <h3>Best real TLDs I found</h3>
+        <table>
+          <tr><th>Domain</th><th>Why it works</th></tr>
+          <tr><td>.express</td><td>reads as “extension” visually</td></tr>
+          <tr><td>.exchange</td><td>starts with ex</td></tr>
+          <tr><td>.expert</td><td>starts with ex</td></tr>
+        </table>
+        <p>Unfortunately <code>.ex</code> isn't currently a delegated public TLD.</p>
+        <h3>My shortlist</h3>
+        <ol>
+          <li>tvara.express — the strongest of them</li>
+          <li>tvara.tech — plain, and nobody misreads it</li>
+          <li>tvara.tools — accurate about what this is</li>
+          <li>tvara.run — short, and it says motion</li>
+        </ol>
+        <p>If the requirement is that the TLD literally be a piece of EXTENSION, public DNS is much more restrictive than that.</p>
+      </div>
+      <div role="group" aria-label="Message actions"><button data-testid="copy-turn-action-button">Copy</button></div>
+    </div>
+  </article>
+</main>
+<script>
+  // What the reader sees. The map has to agree with it.
+  window.__fixtureTurns = 2;
+</script>

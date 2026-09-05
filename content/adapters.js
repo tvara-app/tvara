@@ -79,8 +79,40 @@
 
   const textyChildren = (el) => {
     const out = [];
-    for (const c of el.children) if ((c.textContent || "").trim().length > TEXTY) out.push(c);
+    for (const c of el.children) {
+      const text = (c.textContent || "").trim();
+      if (text.length > TEXTY) { out.push(c); continue; }
+      /* A turn that is a picture carries no text at all, and counting text
+         alone dropped it — one tick short, which is worse than no map because
+         it looks right. substantive() owns what counts as content. */
+      if (!text && substantive(c)) out.push(c);
+    }
     return out;
+  };
+
+  /* Tags a conversation never uses for its ROWS. They are what ONE message is
+     made of — a paragraph, a heading, a code block, a table — so a container
+     whose texty children are mostly these is one answer's body, not the thread.
+     On a short chat that body is the densest container on the page, which is
+     how two messages came back as eight ticks, "parts of a long response".
+     Structure only: nothing about the text says what a node is. */
+  const PROSE_TAG = /^(P|H[1-6]|UL|OL|DL|PRE|CODE|BLOCKQUOTE|TABLE|FIGURE|FIGCAPTION|HR|BR|SPAN|EM|STRONG|B|I|A|IMG|SVG)$/;
+  const mostlyProse = (els) => {
+    if (!els.length) return false;
+    let prose = 0;
+    for (const el of els) if (PROSE_TAG.test(el.tagName)) prose++;
+    return prose * 2 > els.length;
+  };
+  /* …and the other half of the same question, for a body whose parts are all
+     <div>: a message list's SIBLINGS are chrome — a header, a composer. Sitting
+     next to a paragraph is what being inside an answer looks like. */
+  const insideProse = (el) => {
+    const parent = el && el.parentElement;
+    if (!parent) return false;
+    for (const sib of parent.children) {
+      if (sib !== el && PROSE_TAG.test(sib.tagName) && (sib.textContent || "").trim().length > TEXTY) return true;
+    }
+    return false;
   };
 
   /**
@@ -124,6 +156,64 @@
     return depth >= 2 ? heuristicMessages(scope, minKids) : [];
   }
 
+  /* A Claude Code transcript renders tool calls, tool results and thinking
+     next to the turns. Those are not messages and must never become ticks.
+     Structure and ARIA only: text says nothing about what a node is. */
+  /* Scaffolding, named precisely. "*=tool" also matched Toolbar and Tooltip,
+     and one such ancestor anywhere above the transcript emptied the whole
+     message list. Anchored prefixes only, and the element itself — a turn
+     wrapper is never itself a tool block. */
+  const CLAUDE_TOOL = [
+    '[data-testid^="tool-"]', '[data-testid$="-tool"]',
+    '[data-testid*="tool-use" i]', '[data-testid*="tool-result" i]',
+    '[data-testid*="thinking" i]',
+    '[aria-label^="Tool call" i]', '[aria-label^="Tool result" i]', '[aria-label^="Thinking" i]'
+  ].join(",");
+  const CLAUDE_BODY = '[data-testid="user-message"], .font-user-message, .font-claude-message, .font-claude-response';
+
+  /* One turn is one message. ChatGPT keys its DOM nodes by TRANSCRIPT message
+     id, and one visible answer can hold several of them — a reasoning summary,
+     a browsing block, the answer — each carrying data-message-id and each
+     drawing its own tick, so a two-message chat mapped as four. The <article>
+     is the turn; keep one node per turn, the one holding the most of it. */
+  function chatgptTurns(els) {
+    if (els.length < 2) return els;
+    const stated = (el) => {
+      const n = el.closest && el.closest("[data-message-author-role]");
+      return (n && n.getAttribute("data-message-author-role")) || "";
+    };
+    const seen = new Map();               // turn element -> role -> the node kept
+    const out = [];
+    for (const el of els) {
+      const turn = el.closest && el.closest('article[data-testid^="conversation-turn"], article[data-turn]');
+      if (!turn) { out.push(el); continue; }
+      // Keyed by role as well as by turn: two speakers under one container are
+      // two messages whatever the container is called, and a build that grouped
+      // them would otherwise lose one of them here.
+      let roles = seen.get(turn);
+      if (!roles) { roles = new Map(); seen.set(turn, roles); }
+      const role = stated(el);
+      const prev = roles.get(role);
+      if (!prev) { roles.set(role, el); out.push(el); continue; }
+      if ((el.textContent || "").length > (prev.textContent || "").length) {
+        out[out.indexOf(prev)] = el;
+        roles.set(role, el);
+      }
+    }
+    /* A build that wrapped the whole thread in one article would collapse the
+       map to a single tick. Refuse the answer rather than report it. */
+    return (els.length >= 4 && out.length < 2) ? els : out;
+  }
+
+  function claudeTurns(els) {
+    return els.filter((el) => {
+      if (!el || !el.matches) return true;
+      if (!el.matches(CLAUDE_TOOL)) return true;
+      // A turn that USED a tool still holds a message body; a bare block does not.
+      return !!(el.querySelector && el.querySelector(CLAUDE_BODY));
+    });
+  }
+
   function heuristicMessages(scope, minKids) {
     const root = scope || document.querySelector("main") || document.body;
     const floor = minKids || 6;
@@ -145,7 +235,11 @@
     shortlist.sort((a, b) => b.childElementCount - a.childElementCount);
     for (const el of shortlist) {
       const kids = textyChildren(el);
-      if (kids.length >= 4) return kids;
+      if (kids.length < 4) continue;
+      // The densest container is the one answer with the most paragraphs at
+      // least as often as it is the thread. Say no rather than say eight.
+      if (mostlyProse(kids) || insideProse(el)) continue;
+      return kids;
     }
     return [];
   }
@@ -250,12 +344,12 @@
         // As of 2025–2026, ChatGPT wraps each message in a div with
         // data-message-id and data-message-author-role attributes.
         let els = Array.from(document.querySelectorAll('[data-message-id]'));
-        if (els.length) return els;
+        if (els.length) return chatgptTurns(els);
 
         // Layer 2: data-message-author-role without data-message-id
         // (in case the id attribute is dropped but role remains)
         els = Array.from(document.querySelectorAll('[data-message-author-role]'));
-        if (els.length) return els;
+        if (els.length) return chatgptTurns(els);
 
         // Layer 3 (legacy): article-based conversation turns
         els = Array.from(document.querySelectorAll('article[data-testid^="conversation-turn"]'));
@@ -285,11 +379,18 @@
         // data-testid may encode the role (legacy)
         const tid = el.getAttribute("data-testid") || "";
         if (/user/i.test(tid)) return "user";
-        // Structural heuristics
-        if (el.querySelector('.markdown, .prose, pre, code, [class*="markdown"]')) return "assistant";
-        const text = (el.textContent || "").trim();
-        if (text.length < 300 && !el.querySelector("pre, ol, ul, table")) return "user";
-        return "assistant";
+        /* No marker anywhere. What used to happen here was a guess from the
+           CONTENT — ".markdown or a code block means the model wrote it", then
+           "short and no list means the person did". Both are wrong about the
+           same message: somebody who writes their prompt as a numbered list is
+           rendered in the same markdown container as an answer, so a real user
+           turn was reported as the assistant's, and the card's "You asked"
+           counted the wrong half of the conversation.
+
+           Nothing about a message's text says who typed it. Answer "" —
+           unknown — and let resolveRoles() settle it from the one thing that
+           does hold: a thread alternates. */
+        return "";
       },
       composer() { return pickComposer(["#prompt-textarea", 'textarea[data-id]', 'div[contenteditable="true"]']); }
     },
@@ -297,12 +398,15 @@
       id: "claude",
       roleStable: true,   // the user-message testid, set at mount
       virtualizes: true,
-      convPath: /^\/chat\//,
+      /* /chat/ is a conversation; /code/ is a Claude Code session, which is
+         also one. convPath gates every per-chat feature, so leaving it out was
+         why no card appeared on a Code link. */
+      convPath: /^\/(chat|code)\//,
       label: "Claude",
       // The layer-1 selector, quoted for the health check: matched messages that
       // do NOT satisfy it mean this platform has drifted and we are running on
       // a fallback layer — working, but on borrowed time.
-      canon: '[data-test-render-count], [data-testid="transcript-row"], [data-testid="user-message"], .font-claude-message, .font-claude-response',
+      canon: '[role="group"][aria-label="Message actions"], [data-test-render-count], [data-testid="transcript-row"], [data-testid="user-message"], .font-claude-message, .font-claude-response',
       roleCanon: '[data-testid="user-message"], .font-user-message, .font-claude-message, .font-claude-response',
       hostRe: /(^|\.)claude\.ai$/,
       /* Found on the live site, 2026-08: Claude rebuilt the transcript. The turn
@@ -315,13 +419,24 @@
          The old selectors are kept above the new ones rather than replaced,
          because an older Claude build is still a Claude build. */
       messages() {
+        /* Layer 0: the action bar. One per rendered turn whatever the turn
+           holds — nine code blocks and four tool calls still have one — so it
+           is the only selector here that counts turns rather than bodies. */
+        let els = Array.from(document.querySelectorAll('[role="group"][aria-label="Message actions"]'))
+          .map((bar) => bar.closest('[data-test-render-count], [data-testid="transcript-row"], article') ||
+            bar.parentElement || bar);
+        els = claudeTurns(dedupe(els));
+        if (els.length) return els;
+
         // Layer 1: the historical turn wrapper.
-        let els = Array.from(document.querySelectorAll("[data-test-render-count]"));
-        if (els.length) return dedupe(els);
+        els = Array.from(document.querySelectorAll("[data-test-render-count]"));
+        els = claudeTurns(dedupe(els));
+        if (els.length) return els;
 
         // Layer 2: the current transcript row.
         els = Array.from(document.querySelectorAll('[data-testid="transcript-row"]'));
-        if (els.length) return dedupe(els);
+        els = claudeTurns(dedupe(els));
+        if (els.length) return els;
 
         // Layer 3: the message bodies, lifted to whichever wrapper exists.
         els = Array.from(document.querySelectorAll(
@@ -329,16 +444,22 @@
         )).map((el) =>
           el.closest('[data-test-render-count], [data-testid="transcript-row"]') ||
           el.parentElement || el);
-        if (els.length) return dedupe(els);
+        els = claudeTurns(dedupe(els));
+        if (els.length) return els;
 
         // Layer 4: structural, and only inside a conversation.
-        return heuristicInConversation(this);
+        return claudeTurns(heuristicInConversation(this));
       },
       role(el) {
         // A positive marker on either side, checked on the element and below it.
         if (el.matches && el.matches('[data-testid="user-message"], .font-user-message')) return "user";
         if (el.querySelector('[data-testid="user-message"], .font-user-message')) return "user";
-        return "assistant";
+        if (el.matches && el.matches('.font-claude-message, .font-claude-response')) return "assistant";
+        if (el.querySelector && el.querySelector('.font-claude-message, .font-claude-response')) return "assistant";
+        /* Neither marker. A Code session states no role on either side, and
+           "assistant" here writes every turn down as the model's — the coercion
+           the archive must never make. resolveRoles() alternates instead. */
+        return "";
       },
       composer() { return pickComposer(['div.ProseMirror[contenteditable="true"]', '[contenteditable="true"][role="textbox"]']); }
     },
@@ -410,7 +531,7 @@
       // The layer-1 selector, quoted for the health check: matched messages that
       // do NOT satisfy it mean this platform has drifted and we are running on
       // a fallback layer — working, but on borrowed time.
-      canon: "[data-testid*=message], [data-testid*=answer], [data-testid*=query]",
+      canon: '[data-testid*=message], [data-testid*=answer], [data-testid*=query], [id^="markdown-content-"]',
       hostRe: /(^|\.)perplexity\.ai$/,
       // Best-effort: Perplexity's React DOM shifts often with hashed class names.
       // Five fallback layers: data attrs → class partials → prose containers
@@ -421,6 +542,39 @@
           '[data-lct-message], [data-testid*="message"], [data-testid*="answer"], [data-testid*="query"]'
         ));
         if (els.length) return els;
+
+        /* Layer 1b: the answer's own id. Perplexity numbers them —
+           markdown-content-0, -1, -2 — one per answer, which is the only hook
+           on this host that is neither a hashed class nor a guess. Lifted to
+           the turn it sits in when that turn holds exactly one of them, so the
+           question above it is counted with it rather than lost. */
+        const bodies = Array.from(document.querySelectorAll('[id^="markdown-content-"]'));
+        if (bodies.length) {
+          const turns = bodies.map((body) => {
+            let up = body;
+            for (let i = 0; i < 6 && up.parentElement; i++) {
+              const parent = up.parentElement;
+              if (parent.querySelectorAll('[id^="markdown-content-"]').length !== 1) break;
+              if (parent.closest("nav, aside, header, footer")) break;
+              up = parent;
+            }
+            return up;
+          });
+          /* A turn here is a question AND an answer. Returned whole, the map
+             draws one tick for both and the split reads "0 asked" — so split
+             them: inside the turn, the child holding the answer body is the
+             answer, and the one before it is what was asked. */
+          const split = [];
+          for (const turn of dedupe(turns)) {
+            const holder = Array.from(turn.children)
+              .find((c) => c.querySelector && c.querySelector('[id^="markdown-content-"]'));
+            const asked = holder && Array.from(turn.children)
+              .filter((c) => c !== holder && (c.textContent || "").trim().length > 2);
+            if (holder && asked && asked.length) split.push(asked[0], holder);
+            else split.push(turn);
+          }
+          if (split.length) return dedupe(split);
+        }
 
         // Layer 2: original class-name partials (may still work on some deploys)
         els = Array.from(document.querySelectorAll(
@@ -437,12 +591,23 @@
            Mapping each prose block to its parent (the old layer) returned 22
            answer bodies and no questions at all, which is why every message on
            this platform was reported as the assistant's. */
-        const anchor = document.querySelector('[class*="prose"], [class*="markdown"]');
+        /* `id^="markdown-content-"` is what the app itself keys an answer by —
+           an ID, not a class, so the class probes above and below never saw it
+           and this whole host fell through to nothing: no map at all. */
+        const anchor = document.querySelector(
+          '[id^="markdown-content-"], [class*="prose"], [class*="markdown"]');
         let node = anchor;
         for (let depth = 0; node && node.parentElement && depth < 10; depth++) {
           const sibs = Array.from(node.parentElement.children)
             .filter((c) => (c.textContent || "").trim().length > 25);
-          if (sibs.length >= 4 && !node.parentElement.closest("nav, aside, header, footer")) {
+          /* Two, not four. A thread that has been asked ONE question has a
+             question and an answer, and demanding four children meant the map
+             never appeared until the third exchange. The guards below are what
+             make a low floor safe: mostlyProse() refuses one answer's own
+             paragraphs, insideProse() refuses a body sitting beside a
+             paragraph. */
+          if (sibs.length >= 2 && !node.parentElement.closest("nav, aside, header, footer") &&
+              !mostlyProse(sibs) && !insideProse(node.parentElement)) {
             return dedupe(sibs);
           }
           node = node.parentElement;
@@ -462,16 +627,19 @@
       },
       role(el) {
         if (el.hasAttribute("data-lct-message")) return el.getAttribute("data-lct-role") || "assistant";
+        // The answer's own id, and the only role marker this host really gives.
+        if (el.id && el.id.startsWith("markdown-content-")) return "assistant";
+        if (el.querySelector && el.querySelector('[id^="markdown-content-"]')) return "assistant";
         if (el.hasAttribute("data-testid")) {
           const tid = el.getAttribute("data-testid");
           if (/query|question|user|prompt/i.test(tid)) return "user";
         }
         if (/Prompt|Query|question|user/i.test(el.className)) return "user";
-        // Heuristic: short text without prose structure is likely a user question
-        const text = (el.textContent || "").trim();
-        const hasProse = !!el.querySelector('[class*="prose"], [class*="markdown"], pre, ol, ul, table');
-        if (!hasProse && text.length < 500) return "user";
-        return "assistant";
+        /* Was a content guess: "no prose structure and under 500 characters is
+           a question". A user who pastes a bulleted brief has prose structure
+           and is still the user. Unknown, and alternation decides — see
+           resolveRoles(). */
+        return "";
       },
       composer() {
         return pickComposer([
@@ -549,7 +717,15 @@
         // Layer 1: data attributes / ARIA roles
         let els = Array.from(document.querySelectorAll(
           '[data-testid*="message"], [role="listitem"], [data-message-id]'
-        ));
+        )).filter((el) => {
+          /* A bulleted list inside an ANSWER is a list of listitems, and this
+             layer matched every one of them as a turn — which is a long answer
+             arriving as eight ticks. A row of a virtualized thread is not the
+             child of a <ul>. */
+          const p = el.parentElement;
+          return !(el.getAttribute("role") === "listitem" && p &&
+            (p.tagName === "UL" || p.tagName === "OL" || p.getAttribute("role") === "list"));
+        });
         if (els.length >= 2) return els;
 
         // Layer 2: original class-name partials
@@ -578,7 +754,10 @@
           const style = getComputedStyle(el);
           if (style.justifyContent === "flex-end" || style.alignSelf === "flex-end") return "user";
         } catch {}
-        return "assistant";
+        /* Right-alignment is the only reliable signal this host gives, and it
+           is absent on plenty of rows. Unknown rather than "assistant": a
+           default here is a guess wearing a fact's clothes. */
+        return "";
       },
       composer() {
         return pickComposer([
@@ -597,7 +776,7 @@
          so a test page missing from it reads as a conversation with nothing in
          it — which is exactly how virtual-history.html broke when the gate
          landed. */
-      convPath: /(synthetic|demo|virtual-history)\.html$/,
+      convPath: /(synthetic|demo|virtual-history|claude-code)\.html$/,
       label: "Test Page",
       // The layer-1 selector, quoted for the health check: matched messages that
       // do NOT satisfy it mean this platform has drifted and we are running on
@@ -622,8 +801,21 @@
     }
   ];
 
+  const byId = (id) => ADAPTERS.find((a) => a.id === String(id)) || null;
+
   function detect() {
     const host = location.hostname;
+    /* Test hook, guarded by the host rather than by a flag: the suite drives
+       fixture pages on localhost and has to point a REAL provider adapter at
+       them. A query parameter, not a global — content scripts run in an
+       isolated world, where a page-set global is not visible. It cannot exist
+       on a provider page. */
+    if (/^(localhost|127\.0\.0\.1)$/.test(host)) {
+      let wanted;
+      try { wanted = new URLSearchParams(location.search).get("lctAdapter") || ""; } catch (_) { wanted = ""; }
+      const forced = wanted && byId(wanted);
+      if (forced) return forced;
+    }
     return ADAPTERS.find((a) => a.hostRe.test(host)) || null;
   }
 
@@ -694,6 +886,32 @@
     '[data-testid*="attachment" i]', '[class*="attachment" i]'
   ].join(",");
 
+  /**
+   * One tick per turn, however many selectors matched inside it.
+   *
+   * A layer that matches both a turn and something within it counts that turn
+   * twice — and the nested match is never a message the ancestor does not
+   * already contain, so dropping it can only ever remove an over-count. This
+   * is the last thing every adapter's list goes through, so no future selector
+   * can reintroduce the oldest bug in the map: one answer, several ticks.
+   *
+   * One comparison per element, not one per pair: querySelectorAll answers in
+   * document order and nothing kept is inside anything else kept, so the only
+   * element that can contain the next one is the last one kept. This runs on
+   * every engine tick over the whole message list, and a pairwise sweep of
+   * 1,500 messages is a million contains() calls a second.
+   */
+  function outermost(els) {
+    if (els.length < 2) return els;
+    const out = [];
+    for (const el of els) {
+      const prev = out[out.length - 1];
+      if (prev && prev.contains && prev !== el && prev.contains(el)) continue;
+      out.push(el);
+    }
+    return out;
+  }
+
   function substantive(el) {
     if (!el || !el.nodeType) return false;
     if ((el.textContent || "").trim()) return true;
@@ -709,7 +927,28 @@
     // heading with no body. A chat still mounting its first turns would flash
     // a full map of nothing and then collapse to the real count — which is the
     // phantom bug again, briefly. Nothing to show means show nothing.
-    a.messages = () => (raw() || []).filter(substantive);
+    /* …and never the freeze copy. makeFreeze() clones the whole scroller to hold a
+       still picture during a walk, and that copy carries every marker the
+       selectors match on — so for the length of the walk the count doubled,
+       the archive flush wrote each message twice, and the walk's own
+       "have we reached the total?" test passed before a single request.
+       Scoped to that one id on purpose: an id-prefix test would also drop a
+       host element that happens to be named lct-something. */
+    a.messages = () => {
+      const kept = (raw() || []).filter((el) =>
+        substantive(el) && !(el.closest && el.closest("#lct-freeze")));
+      /* …and never the model thinking out loud. It is not a turn: nobody wrote
+         it and nobody read it as a message, so a tick for it is a tick for
+         something that is not there. Dropped only when something survives —
+         a host that names its turn wrapper "reasoning-turn" would otherwise
+         empty the whole list, which is the mistake the tool filter made once. */
+      let list = kept;
+      try {
+        const real = kept.filter((el) => !(el.matches && el.matches(self.LCTRichText.THINK_SEL)));
+        if (real.length) list = real;
+      } catch (_) { /* richtext not up yet — the list stands */ }
+      return outermost(list);
+    };
   }
 
   // adapters without an explicit composer() use the generic resolver
@@ -728,13 +967,64 @@
      the moment the element mounts. Perplexity is deliberately not one — its
      role() decides from text length, so a streaming answer reads as "user"
      until it grows, and caching that would make the guess permanent. */
+/**
+   * Who wrote each message, for a whole list at once.
+   *
+   * `role(el)` answers for one element and is allowed to say "" — unknown —
+   * when the host gives it no marker. That is the honest answer, and it used to
+   * be a guess from the message's own text: markdown or a code block meant the
+   * model, short and plain meant the person. Both are wrong about the same
+   * message, because a prompt written as a numbered list looks exactly like an
+   * answer written as one. That is what reported somebody's own point-wise
+   * prompts as the assistant's replies.
+   *
+   * What actually holds on every one of these hosts is that a thread
+   * ALTERNATES. So: keep every role the host stated, and fill the gaps by
+   * walking out from the nearest stated one. A single marker anywhere in the
+   * list pins the whole parity; with none at all, the first message is the
+   * person's, which is true of every conversation that exists — somebody had
+   * to start it.
+   *
+   * Returns an array parallel to `els`. Never throws: a broken adapter costs a
+   * guess, not a render.
+   */
+  function resolveRoles(adapter, els) {
+    const list = Array.isArray(els) ? els : [];
+    const out = new Array(list.length).fill("");
+    for (let i = 0; i < list.length; i++) {
+      let r;
+      try { r = adapter && typeof adapter.role === "function" ? adapter.role(list[i]) : ""; }
+      catch { r = ""; }
+      out[i] = r === "user" || r === "assistant" ? r : "";
+    }
+    let anchorAt = -1;
+    for (let i = 0; i < out.length; i++) if (out[i]) { anchorAt = i; break; }
+    if (anchorAt === -1) {
+      // Nothing stated anywhere. Somebody started the conversation.
+      for (let i = 0; i < out.length; i++) out[i] = i % 2 === 0 ? "user" : "assistant";
+      return out;
+    }
+    // Backwards from the first stated role, then forwards from every gap.
+    for (let i = anchorAt - 1; i >= 0; i--) out[i] = out[i + 1] === "user" ? "assistant" : "user";
+    for (let i = anchorAt + 1; i < out.length; i++) {
+      if (!out[i]) out[i] = out[i - 1] === "user" ? "assistant" : "user";
+    }
+    return out;
+  }
+
   const roleMemo = new WeakMap();
   for (const a of ADAPTERS) {
     if (!a.roleStable) continue;
     const read = a.role;
     a.role = function (el) {
       let r = roleMemo.get(el);
-      if (r === undefined) { r = read.call(this, el); roleMemo.set(el, r); }
+      /* Only a STATED role is cached. "" means the host had not painted its
+         marker yet, and remembering that would make a temporary gap permanent
+         — the element mounts, we look too early, and it is unknown forever. */
+      if (r === undefined) {
+        r = read.call(this, el);
+        if (r === "user" || r === "assistant") roleMemo.set(el, r);
+      }
       return r;
     };
   }
@@ -794,5 +1084,5 @@
     };
   }
 
-  self.LCTAdapters = { detect, findScroller, pickComposer, accountHint, stableKey, ephemeral };
+  self.LCTAdapters = { detect, byId, findScroller, pickComposer, accountHint, stableKey, ephemeral, resolveRoles };
 })();

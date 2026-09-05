@@ -366,6 +366,7 @@
     });
     list.push({
       id: "recall",
+      offPage: true,   // not on this page — see the filter in start()
       anchor: () => null,
       title: "\"I solved this before — but where?\"",
       body: "Total Recall searches every chat you have had, across all of these sites, from one box. Click a result and it opens that conversation with your words already highlighted.",
@@ -393,6 +394,7 @@
     });
     list.push({
       id: "allowance",
+      offPage: true,   // not on this page — see the filter in start()
       anchor: () => null,
       title: "Told before the wall, not after it",
       body: "These apps warn you about your limit by cutting you off. This reads the figure their own responses already carry and warns at 20%, then at 10%, on whichever model is running down.",
@@ -400,6 +402,7 @@
     });
     list.push({
       id: "archive",
+      offPage: true,   // not on this page — see the filter in start()
       anchor: () => null,
       title: "Your archive, and what guards it",
       body: "Chats are archived to this machine so Recall has something to search. If one is deleted at the provider, you are told and you decide — a deletion there is never a deletion here.",
@@ -407,6 +410,7 @@
     });
     list.push({
       id: "temp",
+      offPage: true,   // not on this page — see the filter in start()
       anchor: () => null,
       title: "Temporary chats stay out unless you say otherwise",
       body: "A temporary or incognito chat is you telling that platform not to keep it, so Tvara does not keep it either. Switch it on and those chats are archived here too — labelled as temporary, with a badge on the page the whole time one is being archived.",
@@ -414,6 +418,7 @@
     });
     list.push({
       id: "plan",
+      offPage: true,   // not on this page — see the filter in start()
       anchor: () => null,
       title: "What is free, and what is not",
       body: "Everything you have just seen in the page is free and stays free. The archive search, the bridge and carrying a chat forward are Pro — a 7-day trial with no card, then a one-time purchase that covers five devices and every future update.",
@@ -421,6 +426,7 @@
     });
     list.push({
       id: "settings",
+      offPage: true,   // not on this page — see the filter in start()
       anchor: () => null,
       title: "Your extension window has the defaults",
       body: "Open the Tvara icon in your browser toolbar to switch the speed engine, minimap, timestamps, full-history loading, temporary-chat archiving and allowance tracking on or off.",
@@ -443,7 +449,21 @@
       foot: "Everything you have just seen is behind the Tvara icon in your toolbar — including this walkthrough, under Show me around, whenever you want it again.",
       skipText: ""
     });
-    return list;
+    /* WHAT THIS PAGE CAN ACTUALLY SHOW THEM.
+
+       Eight of these steps described things that live in the extension window —
+       the archive, the allowance dial, temporary-chat handling, the plan, the
+       settings — and they ran here, on a chat site, pointing at nothing. That
+       is a walkthrough that stops walking: six screens of prose in the middle
+       of a tour about a strip on the right-hand side, with no control to look
+       at and nothing to try. It is also where people quit.
+
+       So the in-page tour is what is in the page: the map, the strip, and the
+       tools underneath it. The rest belongs in the popup, which is where those
+       controls are and where the tour can point at them. The keyboard step and
+       the closing step stay — one is about the tools just demonstrated, and the
+       other says where to find everything else. */
+    return list.filter((step) => !step.offPage);
   }
 
   /* ---------- drawing ---------- */

@@ -44,22 +44,34 @@
      would, and the store screenshot harness compares without trimming. */
   const paintBadge = (el, pro, trialActive) => self.LCTProduct.paintBadge(el, pro, trialActive);
 
-  /* The face on the header. `accountProfile` is whatever the last Google
-     sign-in put in local storage — picture, display name, address — and it is
-     read here only. Absent, signed out, or a photo that will not load: the
-     circle falls back to a monogram and then to nothing, and the plan pill
-     beside it is unaffected either way. */
+  /* The face on the header, and the only plan indicator on it.
+     `accountProfile` is whatever the last Google sign-in put in local storage —
+     picture, display name, address — read here and nowhere else.
+
+     The circle is always drawn. It used to disappear when signed out, on the
+     grounds that an empty ring reads as a broken photo; that is true of an
+     EMPTY one, so signed out now shows a person glyph instead. The ring around
+     it carries free / trial / pro, which is what the pill beside it used to say
+     in words — and the pill is still there, visually hidden, because a status
+     told only in colour is not told at all. Both come off ONE class on
+     `.account`, so they cannot disagree. */
   function paintAccount() {
     const acct = $("account");
     if (!acct) return;
-    acct.className = "account " + currentPlan;
     const ring = $("account-ring");
     const who = String((accountProfile && (accountProfile.name || accountProfile.email)) || "").trim();
     const src = String((accountProfile && accountProfile.picture) || "");
-    ring.hidden = !(who || src);
-    if (ring.hidden) return;
+    /* Signed IN with nothing to show is not the same as signed out. A verified
+       identity with no stored picture — an OTP sign-in, or a Google one from
+       before the profile was kept — drew the anonymous glyph, which says
+       "nobody is here" about somebody who is. The monogram below covers it. */
+    const anon = !identityVerified && !(who || src);
+    acct.className = "account " + currentPlan + (anon ? " anon" : "");
+    const plan = currentPlan === "pro" ? "Pro" : currentPlan === "trial" ? "Trial" : "Free";
+    ring.title = anon ? plan + " \u00b7 not signed in"
+      : who ? plan + " \u00b7 " + who : plan + " \u00b7 signed in";
+    if (anon) { $("account-photo").hidden = true; return; }
     $("account-initial").textContent = who ? who.slice(0, 1) : "\u2022";
-    ring.title = who ? "Signed in as " + who : "Signed in";
     const img = $("account-photo");
     if (!src) { img.hidden = true; img.removeAttribute("src"); return; }
     if (img.getAttribute("src") === src) return;
@@ -84,6 +96,32 @@
        A licence 200 days past its check-in showed a plain "Pro" badge and no
        hint that anything was pending. It still works, and it still says so:
        this is a nudge, not a threat. */
+    /* The tooltip moved to the ring with the rest of the plan. Kept on the
+       label too: it is still the element an assistive reader lands on. */
+    /* How much of the week is left, drawn as the rim. TRIAL_MS is seven days
+       in the worker; the fraction is the honest one — a trial two hours old
+       shows a nearly full circle, not a full one. */
+    const TRIAL_MS = 7 * 864e5;
+    const leftMs = trialActive ? Math.max(0, trialUntil - Date.now()) : 0;
+    const arc = $("account-arc");
+    const live = $("account-arc-live");
+    const days = $("plan-days");
+    if (trialActive && arc && live) {
+      const frac = Math.max(0, Math.min(1, leftMs / TRIAL_MS));
+      const circumference = 2 * Math.PI * 14.6;
+      live.style.strokeDasharray = String(circumference);
+      live.style.strokeDashoffset = String(circumference * (1 - frac));
+      arc.hidden = false;
+      const whole = Math.max(1, Math.ceil(leftMs / 864e5));
+      days.textContent = whole === 1 ? "1 day left" : whole + " days left";
+      days.hidden = false;
+    } else {
+      if (arc) arc.hidden = true;
+      if (days) { days.hidden = true; days.textContent = ""; }
+    }
+
+    $("account-ring").dataset.note = pro && overdueDays > 0
+      ? `Last checked in ${overdueDays} day${overdueDays === 1 ? "" : "s"} ago.` : "";
     badge.title = pro && overdueDays > 0
       ? `Pro. Last checked in ${overdueDays} day${overdueDays === 1 ? "" : "s"} ago. ` +
         `Connect once and it refreshes itself.`
@@ -106,12 +144,24 @@
     if (buy) buy.classList.toggle("primary", !pro && !trialActive && trialUntil > 0);
     if (pro) return;
     if (trialActive) {
-      const days = Math.max(1, Math.ceil((trialUntil - Date.now()) / 864e5));
+      /* Whole days remaining, and a day only goes when a full 24 hours have
+         actually passed — ceil does that: seven days at the moment it starts,
+         still seven an hour later, six once the first day is genuinely spent.
+
+         The Math.max(1, ...) that used to wrap this was wrong in the one place
+         it mattered: inside the last day it reported "1 day left" from the
+         final 24 hours all the way to zero, so the trial appeared to end a day
+         after it said it would. The final stretch says what it is instead. */
+      const msLeft = trialUntil - Date.now();
+      const days = Math.ceil(msLeft / 864e5);
+      const left = days >= 1
+        ? `${days} day${days === 1 ? "" : "s"} left`
+        : msLeft > 36e5 ? `${Math.max(1, Math.round(msLeft / 36e5))} hours left` : "less than an hour left";
       startBtn.hidden = true;
       note.hidden = false;
       note.className = "pro-note active";
-      note.textContent = `Trial active: ${days} day${days === 1 ? "" : "s"} left, everything unlocked`;
-      $("trial-status").textContent = `${days} day${days === 1 ? "" : "s"} left in your free trial`;
+      note.textContent = `Trial active: ${left}, everything unlocked`;
+      $("trial-status").textContent = `${left} in your free trial`;
       paintTrialBuy();
     } else if (trialUntil > 0) {
       startBtn.hidden = true;
@@ -155,7 +205,8 @@
     $("toggle-enabled").checked = !s || s.enabled !== false;
     $("toggle-minimap").checked = !s || s.minimap !== false;
     $("toggle-time").checked = !s || s.time !== false;
-    $("toggle-history").checked = !!(s && s.history === true);
+    // Default ON, and a settings object saved before that flip has no key.
+    $("toggle-history").checked = !s || s.history !== false;
     $("toggle-temp").checked = !!(s && s.tempArchive === true);
     // Default on. It is the mechanism that makes the allowance panel truthful
     // rather than decorative, so the panel is meaningless with it off.
@@ -292,11 +343,58 @@
     return `${Math.round(hrs / 24)} d ago`;
   }
 
+  /* When a reading stops being a fair statement about right now.
+
+     A figure is not wrong because it is old — it is wrong because the user has
+     been using the platform since, and nothing here saw that. A 7-day window
+     read twelve hours ago has had an eighth of its life to move. So the row
+     stops presenting the number as current and says how old it is instead.
+
+     Scaled to the window it describes: a quarter of the way to its own reset,
+     capped at two hours, floored at ten minutes so a reading is not called
+     stale the moment after it lands. A window with no reset falls back to the
+     cap. This is a DISPLAY rule — lib/quota.js already discards a window whose
+     reset has actually passed. */
+  function staleAfterMs(item) {
+    const life = item.resetAt && item.observedAt ? item.resetAt - item.observedAt : 0;
+    return Math.max(10 * 60e3, Math.min(2 * 3600e3, life > 0 ? life / 4 : 2 * 3600e3));
+  }
+  const isStale = (item) =>
+    !!item.observedAt && Date.now() - item.observedAt > staleAfterMs(item);
+
+  /* Four words for an empty row, chosen so the reader knows whose move it is.
+     The column is narrow, so this is the short form; provenance() carries the
+     sentence. */
+  function whyBlank(item) {
+    const why = item.lastTry && item.lastTry.skipped ? String(item.lastTry.skipped) : "";
+    if (why === "tracking off") return "tracking off";
+    if (why === "not signed in") return "not signed in";
+    if (why === "no working endpoint") return "no limit published";
+    if (why === "provider reported nothing") return "none published";
+    return item.checked ? "none published" : "checking\u2026";
+  }
+
   /** The tooltip that makes a number auditable: which mechanism read it, which
    *  arithmetic produced it, and when. Every figure on this panel can be traced
    *  to a provider field, and this is where the user sees that. */
   function provenance(item) {
     if (!item.reported) {
+      /* Say whose move it is. "This provider published no allowance figure"
+         was true of a signed-out account and of a signed-in one that publishes
+         nothing, and those need opposite things from the reader. */
+      const why = item.lastTry && item.lastTry.skipped ? String(item.lastTry.skipped) : "";
+      if (why === "tracking off") {
+        return "Allowance tracking is switched off. Turn it on above to read this.";
+      }
+      if (why === "not signed in") {
+        return `Not signed in to ${item.label} in this browser. Sign in and this fills in on its own.`;
+      }
+      if (why === "no working endpoint") {
+        return `${item.label} publishes no allowance figure this browser can read.`;
+      }
+      if (why === "provider reported nothing") {
+        return `${item.label} answered, but said nothing about your remaining allowance.`;
+      }
       return item.checked
         ? "This provider published no allowance figure for your account."
         : "Not checked yet. Open the site, or run Check now in the diagnostics panel.";
@@ -312,6 +410,20 @@
     bits.push(`Source: ${item.source === "observed" ? "read from the site's own response" : "asked the provider directly"}.`);
     if (item.basis) bits.push(`Derived as ${item.basis}.`);
     bits.push(`Read ${agoLabel(item.observedAt)}.`);
+    /* Why it has not been read since. A figure that cannot be refreshed keeps
+       its old timestamp, and without this the panel showed a number from half a
+       day ago with no way to tell whether the poller was signed out, refused,
+       or simply told nothing. */
+    const why = item.lastTry;
+    if (why && why.at && why.skipped) {
+      const said = {
+        "tracking off": "Allowance tracking is switched off.",
+        "not signed in": "Could not refresh: not signed in to this provider.",
+        "no working endpoint": "Could not refresh: this provider publishes no allowance endpoint we can read.",
+        "provider reported nothing": "Refreshed, but the provider returned no allowance figure."
+      }[why.skipped] || `Could not refresh: ${why.skipped}.`;
+      bits.push(`${said} Last tried ${agoLabel(why.at)}.`);
+    }
     if (item.resetAt) bits.push(`Window resets ${resetLabel(item.resetAt)}.`);
     return bits.join(" ");
   }
@@ -347,25 +459,28 @@
       // Rotated so every ring starts at twelve o'clock and counts clockwise.
       const g = svgEl("g", { transform: `rotate(-90 ${c} ${c})` });
 
+      /* `reported` is not the same question as "is there a share to draw".
+         A count-only window (25 remaining, no limit) reports a real figure but
+         no proportion, and drawing it as a solid ring with no lit arc makes it
+         pixel-identical to an untouched allowance — while the legend beside it
+         says "25 left". So the dotted track belongs to every ring with no
+         share, not only to the ones that reported nothing at all: it was keyed
+         on `reported` and ChatGPT's count-only ring drew a full solid circle. */
+      const open = !(it.reported && it.pctLeft !== null);
       const track = svgEl("circle", {
         cx: c, cy: c, r: r.toFixed(2),
-        /* `reported` is not the same question as "is there a share to draw".
-           A count-only window (25 remaining, no limit) reports a real figure
-           but no proportion, and drawing it as a solid track with no lit arc
-           made it pixel-identical to an exhausted allowance — while the legend
-           beside it said "25 left". The dotted track is the honest shape for
-           "a real reading, of an unknown share". */
-        class: "usage-track" + (it.reported && it.pctLeft !== null ? "" : " open") +
-               (it.out ? " spent" : "")
+        class: "usage-track" + (open ? " open" : "") + (it.out ? " spent" : "")
       });
       // Out of allowance: the channel is left dim — it is empty, and that is
       // the point — and only its colour changes.
       track.style.stroke = it.out ? "var(--danger)" : it.color;
-      // A reported share gets a full-width channel to empty out of. A row with
-      // nothing reported gets a dotted guideline at half weight — a path, not a
-      // vessel, and it stays empty.
-      track.style.strokeWidth = it.reported ? w : (w * .44).toFixed(2);
-      if (!it.reported) track.style.strokeDasharray = `.1 ${(w * .72).toFixed(2)}`;
+      /* A share gets a full-width channel to empty out of. Everything else is a
+         dotted path, weighted by how much the provider actually said: a real
+         count carries more of its colour than a ring still waiting on a reply.
+         Both stay thick enough to name their platform — at .44 the dot ring was
+         a grey hair and the dial read as one colour with five shadows. */
+      track.style.strokeWidth = open ? (w * (it.reported ? .78 : .62)).toFixed(2) : w;
+      if (open) track.style.strokeDasharray = `.1 ${(w * .72).toFixed(2)}`;
       g.append(track);
 
       if (it.left > 0) {
@@ -375,8 +490,31 @@
         const arc = svgEl("circle", { cx: c, cy: c, r: r.toFixed(2), class: "usage-arc" });
         arc.style.stroke = it.color;
         arc.style.strokeWidth = w;
-        arc.style.strokeDasharray = `${len.toFixed(2)} ${(circ - len).toFixed(2)}`;
-        arc.style.strokeDashoffset = (-circ * it.spent).toFixed(2);
+        /* The dial is rebuilt from scratch on every paint, so a CSS transition
+           has nothing to move from: the new node is born at its final size.
+           Start it where the user last saw this ring and let the next frame
+           carry it — which is the difference between a ring that moved and a
+           ring that was replaced. */
+        const ringKey = "arc:" + it.id + "|" + (it.acct || "");
+        const was = seenArc.get(ringKey);
+        seenArc.set(ringKey, { left: it.left, spent: it.spent });
+        const to = {
+          dash: `${len.toFixed(2)} ${(circ - len).toFixed(2)}`,
+          offset: (-circ * it.spent).toFixed(2)
+        };
+        if (was && smoothOK() && (was.left !== it.left || was.spent !== it.spent)) {
+          const wasLen = circ * was.left;
+          arc.style.strokeDasharray = `${wasLen.toFixed(2)} ${(circ - wasLen).toFixed(2)}`;
+          arc.style.strokeDashoffset = (-circ * was.spent).toFixed(2);
+          requestAnimationFrame(() => requestAnimationFrame(() => {
+            if (!arc.isConnected) return;
+            arc.style.strokeDasharray = to.dash;
+            arc.style.strokeDashoffset = to.offset;
+          }));
+        } else {
+          arc.style.strokeDasharray = to.dash;
+          arc.style.strokeDashoffset = to.offset;
+        }
         arc.style.setProperty("--circ", circ.toFixed(2));   // the sweep-in's start
         arc.style.setProperty("--i", i);                    // stagger, outermost first
         g.append(arc);
@@ -457,8 +595,8 @@
       // Every figure is auditable: hovering a row says where it came from.
       row.title = provenance(it);
 
-      // A hollow pip, and a broken one where the track is dotted: the legend
-      // repeats the dial's own vocabulary at 9px.
+      // A hollow pip, lighter where the track is dotted: the legend repeats the
+      // dial's own vocabulary at 9px. Never a broken ring — see popup.css.
       const pip = document.createElement("span");
       pip.className = "usage-pip" + (it.reported ? "" : " open");
       pip.style.color = it.color;
@@ -479,24 +617,48 @@
          number there is the exact dishonesty this rewrite removes. */
       const val = document.createElement("span");
       val.className = "usage-val";
+      // Set by the tween below when this row's figure is one the reader has
+      // already seen at a different value — see the sweep in popup.css.
+      let moved = false;
       if (it.pctLeft !== null) {
+        const stale = isStale(it);
         const num = document.createElement("b");
-        num.textContent = it.pctLeft + "%";
+        moved = tweenNumber(num, "pct:" + it.id + "|" + (it.acct || ""), it.pctLeft, (n) => n + "%");
+        if (stale) num.className = "usage-stale";
         const cap = document.createElement("span");
-        cap.className = "usage-cap";
-        cap.textContent = it.resetAt ? ` left · ${resetLabel(it.resetAt)}` : " left";
+        cap.className = "usage-cap" + (stale ? " muted" : "");
+        /* Stale: the reading's AGE, not the window's reset. Which is the thing
+           the reader has to know — a reset two days out says nothing about
+           whether this number survived the last twelve hours of use, and
+           printing only the reset made a half-day-old figure look live. */
+        /* Which window, and when it turns over. Claude publishes a five-hour
+           session limit and a seven-day one; a bare percentage with neither
+           says nothing about what it is a percentage OF, and the reset is the
+           thing people actually plan around. */
+        const bits = [];
+        if (it.span) bits.push(it.span);
+        if (it.resetAt) bits.push("resets " + resetLabel(it.resetAt));
+        if (stale) bits.push("read " + agoLabel(it.observedAt));
+        cap.textContent = " left" + (bits.length ? " · " + bits.join(" · ") : "");
         val.append(num, cap);
       } else if (it.remaining !== null && it.remaining !== undefined) {
         /* A count with no ceiling. ChatGPT meters several features this way —
            "deep_research: 25 remaining" — and there is no honest percentage to
            make of it without inventing the denominator. The count IS the
            figure, so it is shown as one, with what it is counting. */
+        const stale = isStale(it);
         const num = document.createElement("b");
-        num.textContent = it.remaining.toLocaleString();
+        moved = tweenNumber(num, "left:" + it.id + "|" + (it.acct || ""), it.remaining);
+        if (stale) num.className = "usage-stale";
         const cap = document.createElement("span");
-        cap.className = "usage-cap";
+        cap.className = "usage-cap" + (stale ? " muted" : "");
         const what = (it.meter || "").replace(/[_-]+/g, " ").trim();
-        cap.textContent = ` left${what ? " · " + what : ""}${it.resetAt ? " · " + resetLabel(it.resetAt) : ""}`;
+        const bits = [];
+        if (what) bits.push(what);
+        if (it.span) bits.push(it.span);
+        if (it.resetAt) bits.push("resets " + resetLabel(it.resetAt));
+        if (stale) bits.push("read " + agoLabel(it.observedAt));
+        cap.textContent = " left" + (bits.length ? " · " + bits.join(" · ") : "");
         val.append(num, cap);
       } else if (it.resetAt) {
         /* A reset with no figure behind it. Printing the clock alone reads as
@@ -509,13 +671,22 @@
         cap.textContent = `not reported · resets ${resetLabel(it.resetAt)}`;
         val.append(cap);
       } else {
+        /* The reason, not the jargon. "not published" and "not reported" are
+           the same sentence to a reader and neither says what to do; the usual
+           cause is simply not being signed in to that site in this browser,
+           which is a thing somebody can go and fix. The full sentence is in the
+           row's tooltip — see provenance(). */
         const cap = document.createElement("span");
         cap.className = "usage-cap muted";
-        cap.textContent = it.checked ? "not published" : "not reported";
+        cap.textContent = whyBlank(it);
         val.append(cap);
       }
 
       row.append(pip, name, val);
+      /* A number that changed is the only thing on this panel worth looking
+         for, and a repaint looks exactly like one. One sweep across the row
+         says which line moved without the reader hunting for it. */
+      if (moved) row.classList.add("moved");
       legend.append(row);
     }
 
@@ -528,6 +699,61 @@
    * @param {number} windowedTotal — speed-engine figure, unrelated to allowance
    * @param {Object} quota — the worker's quota-state reply
    */
+  /* ---------- numbers that move ----------
+     Everything here is read at a glance, and a number that JUMPS reads as a
+     glitch: the eye cannot tell a repaint from a change. The same number
+     arriving over a few hundred milliseconds reads as the panel working. All
+     of it is off under prefers-reduced-motion, where jumping IS the answer. */
+  const smoothOK = () => {
+    try { return !matchMedia("(prefers-reduced-motion: reduce)").matches; }
+    catch { return true; }
+  };
+  const seenNumber = new Map();          // key -> the number the user last saw
+  const seenArc = new Map();             // ring key -> the geometry last drawn
+
+  function tweenNumber(el, key, to, format) {
+    if (!el) return;
+    const fmt = format || ((n) => n.toLocaleString());
+    const from = seenNumber.has(key) ? seenNumber.get(key) : null;
+    seenNumber.set(key, to);
+    if (from === null || from === to || !Number.isFinite(from) || !smoothOK()) {
+      el.textContent = fmt(to);
+      // A first paint has not "changed" — only a value the reader already saw.
+      return from !== null && from !== to;
+    }
+    const started = performance.now();
+    const dur = 420;
+    const step = (now) => {
+      const p = Math.min(1, (now - started) / dur);
+      const eased = 1 - Math.pow(1 - p, 3);          // ease-out cubic
+      el.textContent = fmt(Math.round(from + (to - from) * eased));
+      if (p < 1 && el.isConnected) requestAnimationFrame(step);
+      else el.textContent = fmt(to);
+    };
+    el.textContent = fmt(from);
+    requestAnimationFrame(step);
+    return true;
+  }
+
+  /* A line of prose that changed. Not a tween — words do not interpolate — but
+     the change is still worth seeing happen rather than finding. */
+  function setLine(el, next) {
+    if (!el) return;
+    const text = String(next == null ? "" : next);
+    if (el.textContent === text) return;
+    /* Fade the line only when the SENTENCE changed. "33 done, 481 to go"
+       becomes "34 done, 480 to go" every 1.2 seconds while a download runs,
+       and animating that read as a light blinking on and off under the
+       heading — motion where nothing was happening but arithmetic. */
+    const skeleton = (v) => String(v).replace(/[\d.,%]+/g, "#");
+    const sameSentence = skeleton(el.textContent) === skeleton(text);
+    el.textContent = text;
+    if (!smoothOK() || sameSentence) return;
+    el.classList.remove("swap");
+    void el.offsetWidth;                             // restart the animation
+    el.classList.add("swap");
+  }
+
   /* ---------- the headline ----------
      It used to read "0 messages asleep right now" whenever the popup was
      opened anywhere but inside a huge conversation — which is most of the
@@ -541,18 +767,19 @@
     const label = $("stat-label");
     num.hidden = false;
     if (windowedTotal > 0) {
-      num.textContent = windowedTotal.toLocaleString();
+      tweenNumber(num, "pulse", windowedTotal);
       label.textContent = "messages asleep right now";
       return;
     }
     if (archive && archive.chats > 0) {
-      num.textContent = (archive.msgs || archive.chats).toLocaleString();
+      tweenNumber(num, "pulse", archive.msgs || archive.chats);
       label.textContent = archive.msgs ? "messages" : "chats archived";
       return;
     }
     /* A giant "0" is the first thing in the panel on a fresh install, and zero
        of something is not a statistic. Drop the number and let the sentence
        carry the line: it is the only thing here with anything to say. */
+    seenNumber.delete("pulse");
     num.textContent = "";
     num.hidden = true;
     label.textContent = "Open a long chat and watch it work.";
@@ -569,6 +796,8 @@
       // known providers is not rendered, whatever wrote it.
       .filter((rec) => rec && KNOWN_IDS.has(rec.id));
     const checked = (quota && quota.checked) || {};
+    // Why each figure is as old as it is — the worker records every refusal.
+    const lastTry = (quota && quota.lastTry) || {};
 
     const rowMap = new Map();
     const unseen = [];                // supported, but never opened here
@@ -597,6 +826,8 @@
         reported: !!win,
         pctLeft: win && win.pctLeft !== null && win.pctLeft !== undefined ? win.pctLeft : null,
         resetAt: (win && win.resetAt) || 0,
+        // Which window the figure belongs to: "5h", "week".
+        span: (win && win.span) || "",
         remaining: win && win.remaining !== undefined && win.remaining !== null ? win.remaining : null,
         limit: win && win.limit !== undefined ? win.limit : null,
         /* The window's own name ("deep_research"). NOT `label` — that is the
@@ -610,6 +841,7 @@
         basis: (win && win.basis) || "",
         source: (win && win.source) || rec.source || "",
         observedAt: (win && win.observedAt) || rec.observedAt || 0,
+        lastTry: lastTry[rec.id] || null,
         checked: !!checked[rec.id]
       });
     }
@@ -622,12 +854,18 @@
       // A platform never seen on this install is not news, it is a catalogue.
       // Summarised below the legend instead of costing a row each — unless it
       // is all we have, in which case the catalogue IS the panel.
-      if (!checked[p.id]) { unseen.push(p); continue; }
+      /* A platform we TRIED and could not read is news, even though it was
+         never "checked" in the sense of having answered. "Not signed in to
+         Perplexity" is the single most useful line this panel can show a new
+         install, and summarising it into "Also covered:" hid the one thing the
+         reader could have acted on. */
+      if (!checked[p.id] && !lastTry[p.id]) { unseen.push(p); continue; }
       seat(p.id);
       rowMap.set(p.id + "|", {
         id: p.id, acct: "", label: p.label, plan: "", account: "", ordinal: 0,
-        reported: false, pctLeft: null, resetAt: 0, remaining: null, limit: null,
+        reported: false, pctLeft: null, resetAt: 0, span: "", remaining: null, limit: null,
         meter: "", unit: "", basis: "", source: "", observedAt: 0,
+        lastTry: lastTry[p.id] || null,
         checked: !!checked[p.id]
       });
     }
@@ -639,7 +877,7 @@
         seat(p.id);
         rowMap.set(p.id + "|", {
           id: p.id, acct: "", label: p.label, plan: "", account: "", ordinal: 0,
-          reported: false, pctLeft: null, resetAt: 0, remaining: null, limit: null,
+          reported: false, pctLeft: null, resetAt: 0, span: "", remaining: null, limit: null,
           meter: "", unit: "", basis: "", source: "", observedAt: 0, checked: false
         });
       }
@@ -792,6 +1030,13 @@
      photo URL is cached with the rest of the first-paint mirror so a signed-in
      header does not pop a face in one round trip after it opens. */
   let accountProfile = (cache && cache.profile) || null;
+  /* Here, not beside paintIdentity() where it is written. paintAccount() reads
+     it during the synchronous first paint, and a `let` declared further down
+     the module made that read a TDZ throw — which aborted the whole parse, so
+     the usage panel never painted at all and the popup opened with an empty
+     dial. Seeded from the same cached flag as devicesAccount: a signed-in
+     header should not blink through "not signed in" on every open. */
+  let identityVerified = !!(cache && cache.identity);
   let currentPlan = "free";
   let devicesPro = !!(cache && cache.pro && cache.licenseKind === "dodo");
   let devicesAccount = !!(cache && cache.identity);
@@ -847,6 +1092,23 @@
     return [...out];
   })();
 
+  /* The headline number, kept live.
+     A background pass archives chats while the popup sits open, and this used
+     to be read once per open — so the count only moved if you closed the panel
+     and opened it again. The worker caches stats() against its own write
+     counter, so asking again with nothing written between costs nothing. */
+  let lastWindowed = 0;
+  let lastQuota = null;
+  async function refreshPulse() {
+    try {
+      const st = await send({ type: "recall-stats" });
+      if (!st || st.err) return;
+      const archive = { chats: st.chats || 0, msgs: st.msgs || 0 };
+      saveCache({ archive });
+      paintPulse(lastWindowed, archive);
+    } catch { /* the panel keeps the number it has */ }
+  }
+
   /* Bumped whenever this popup settles the entitlement itself — activating a
      licence, starting a trial. A load() carries the value it started with, and
      drops its own plan paint if that moved underneath it. See the guard below
@@ -885,6 +1147,7 @@
        "request" platform: this popup no longer derives providers from key
        names at all. */
     const quota = await quotaAsked;
+    lastQuota = quota;                    // what the open-panel refresher works from
     paintUsage(total, quota);
 
     /* The headline needs something true to say when you are not sitting in a
@@ -896,15 +1159,13 @@
        and if that call failed the zero simply stayed. It is also not the free
        call the old comment claimed: stats() cursors every record and sums every
        message length, on most opens. */
+    lastWindowed = total;
     paintPulse(total, (cache && cache.archive) || null);
-    if (total === 0) {
-      send({ type: "recall-stats" }).then((st) => {
-        if (!st || st.err) return;
-        const archive = { chats: st.chats || 0, msgs: st.msgs || 0 };
-        saveCache({ archive });
-        paintPulse(0, archive);
-      });
-    }
+    /* Asked on EVERY load, not only when there is no windowed figure: the
+       archive count is the headline most of the time, and it grows the whole
+       time a background pass is running. It used to be fetched once, so the
+       number only ever changed when the popup was closed and opened again. */
+    refreshPulse();
 
     /* Opening the popup is exactly when a stale percentage matters, so ask the
        provider for a fresh one — but only for platforms we already have a
@@ -916,8 +1177,20 @@
     );
     for (const id of Object.keys((quota && quota.checked) || {})) refreshable.add(id);
     if (refreshable.size) {
+      /* A platform whose figure is ALREADY old asks as "manual", which skips
+         the worker's one-per-minute floor. That floor exists to stop a burst of
+         opens hammering a provider; it is the wrong rule for the one case the
+         user is complaining about — staring at a figure from twelve hours ago
+         while the panel politely declines to ask again. Everything fresh still
+         goes through the floor. */
+      const oldOnes = new Set(
+        ((quota && quota.records) || [])
+          .filter((r) => r && r.id && (!r.observedAt || Date.now() - r.observedAt > 10 * 60e3))
+          .map((r) => r.id)
+      );
       for (const id of refreshable) {
-        send({ type: "quota-refresh", platform: id, reason: "popup" });
+        send({ type: "quota-refresh", platform: id,
+          reason: oldOnes.has(id) ? "manual" : "popup" });
       }
     } else {
       /* Nothing has ever been read here — a fresh install whose bootstrap
@@ -1073,28 +1346,28 @@
 
     if (running) {
       const done = state.done || 0;
-      title.textContent = "Downloading your chats' text…";
-      sub.textContent = state.running
+      setLine(title, "Downloading your chats' text…");
+      setLine(sub, state.running
         ? `${done.toLocaleString()} done, ${left.toLocaleString()} to go. Tap to stop.`
-        : `${done.toLocaleString()} done, ${left.toLocaleString()} to go. The browser paused it; picking up again.`;
+        : `${done.toLocaleString()} done, ${left.toLocaleString()} to go. The browser paused it; picking up again.`);
       row.classList.add("busy");
       return;
     }
     row.classList.remove("busy");
-    title.textContent = `Download the text of ${left.toLocaleString()} chat${left === 1 ? "" : "s"}`;
+    setLine(title, `Download the text of ${left.toLocaleString()} chat${left === 1 ? "" : "s"}`);
     /* The worker already worked out why it stopped — "ChatGPT: signed out",
        "Perplexity: not signed in" — and this row used to throw it away and
        return to "Download the text of 2,300 chats", so the user clicked again
        and watched the same nothing happen. Say what it said. */
     if (state && state.note) {
-      sub.textContent = `${state.note}. Sign in, then tap to continue.`;
+      setLine(sub, `${state.note}. Sign in, then tap to continue.`);
       row.classList.add("stalled");
       return;
     }
     row.classList.remove("stalled");
     if (state && state.failed) {
       const mins0 = Math.max(1, Math.round((left * 1.5) / 60));
-      sub.textContent = `${state.failed.toLocaleString()} couldn't be fetched. Tap to retry. About ${mins0} min.`;
+      setLine(sub, `${state.failed.toLocaleString()} couldn't be fetched. Tap to retry. About ${mins0} min.`);
       return;
     }
     /* Measured, not guessed: 30 chats took 45 seconds against a real account,
@@ -1102,7 +1375,7 @@
        not just the pause between them. Stated as "about", because the number
        that decides it is the provider's latency and that is not ours. */
     const mins = Math.max(1, Math.round((left * 1.5) / 60));
-    sub.textContent = `Recall can only search what it has downloaded. About ${mins} min.`;
+    setLine(sub, `Recall can only search what it has downloaded. About ${mins} min.`);
   }
 
   /* Set when we have asked the worker to start and have not yet seen it say so.
@@ -1220,8 +1493,6 @@
      The address is the anchor: the trial ledger and licence ownership hang off
      it, so reinstalling — or moving to another browser — brings both back. The
      extension never stores the address, only the token the issuer returns. */
-
-  let identityVerified = false;
 
   function identityMsg(text, cls = "") {
     const el = $("identity-status");
@@ -2129,9 +2400,11 @@
   const ALL_POPUP_STEPS = [
     {
       id: "plan",
-      anchor: () => $("plan-badge"),
-      title: "Your plan, always visible",
-      body: "Free, Trial or Pro. Everything in a chat page is free; the archive search and the tools built on it are Pro, after a 7-day trial that needs no card."
+      // The pill it used to point at is visually hidden now; the ring around
+      // the account circle is what says which plan is running.
+      anchor: () => $("account-ring"),
+      title: "Your plan, around your face",
+      body: "Free, Trial or Pro — the ring around your account circle says which: dim, dashed amber, or solid ember. Everything in a chat page is free; the archive search and the tools built on it are Pro, after a 7-day trial that needs no card."
     },
     {
       id: "pulse",
@@ -2633,8 +2906,11 @@
 
   function updateSyncStatus(text, cls) {
     const el = $("sync-status");
-    el.textContent = readableSyncMessage(text);
-    el.className = "row-sub" + (cls ? " sync-status-" + cls : "");
+    // The line changes while a pass runs — "Capturing 35 of 498" — and a
+    // sentence that swaps under the eye without a beat reads as a flicker.
+    setLine(el, readableSyncMessage(text));
+    el.className = "row-sub" + (cls ? " sync-status-" + cls : "") +
+      (el.classList.contains("swap") ? " swap" : "");
   }
 
   function setSyncBusy(busy) {
@@ -2713,10 +2989,95 @@
     window.close();
   });
 
-  $("deletion-alert").addEventListener("click", () => {
-    chrome.tabs.create({ url: chrome.runtime.getURL("recall.html#deletions") });
-    window.close();
+  /* The row opens the decision, it does not delegate it. Built with
+     createElement/textContent: a chat title is somebody else's text. */
+  const fmtAgo = (ms) => {
+    const mins = Math.max(0, Math.round((Date.now() - (ms || 0)) / 60000));
+    if (mins < 60) return mins + "m ago";
+    const hrs = Math.round(mins / 60);
+    return hrs < 24 ? hrs + "h ago" : Math.round(hrs / 24) + "d ago";
+  };
+
+  function undoLine(answer) {
+    const line = $("deletion-undo");
+    if (!answer || !answer.undo) { line.hidden = true; return; }
+    line.replaceChildren();
+    line.hidden = false;
+    line.append(document.createTextNode(
+      (answer.count > 1 ? answer.count + " copies deleted. " : "Deleted. ")));
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "deletion-undo-btn";
+    btn.textContent = "Undo";
+    btn.addEventListener("click", async () => {
+      const back = await send({ type: "recall-deletions-undo", token: answer.undo });
+      line.replaceChildren(document.createTextNode(
+        back && back.ok ? "Restored to your backup." : "That copy has already gone."));
+      paintDeletions();
+    });
+    line.appendChild(btn);
+    // Five seconds, then the offer stops claiming to be available.
+    setTimeout(() => { if (!line.hidden) line.hidden = true; }, 5000);
+  }
+
+  async function resolveAnd(ids, action) {
+    const answer = await send({ type: "recall-deletions-resolve", ids, action });
+    if (action === "delete") undoLine(answer);
+    await paintDeletions();
+    return answer;
+  }
+
+  async function paintDeletions() {
+    const list = await send({ type: "recall-deletions" });
+    const items = (list && list.items) || [];
+    const host = $("deletion-items");
+    host.replaceChildren();
+    $("deletion-policy").value = (list && list.policy) || "ask";
+    /* Answering the last one empties the list — but the undo offer lives in
+       this panel, so closing it here took away the way back. */
+    /* One chat already carries its own Keep and Delete on its row. A second
+       pair underneath, asking the same question about the same chat, is not a
+       bulk action — it is the same two options twice. */
+    const bulk = document.querySelector(".deletion-actions");
+    if (bulk) bulk.hidden = items.length < 2;
+    if (!items.length) { $("deletion-panel").hidden = $("deletion-undo").hidden; return; }
+    for (const item of items.slice(0, 25)) {
+      const row = document.createElement("div");
+      row.className = "deletion-item";
+      const text = document.createElement("span");
+      text.className = "deletion-text";
+      const title = document.createElement("span");
+      title.className = "deletion-title";
+      title.textContent = item.title || "Untitled chat";
+      const meta = document.createElement("span");
+      meta.className = "deletion-meta";
+      meta.textContent = [item.platform, item.messages ? item.messages + " messages" : "",
+        "noticed " + fmtAgo(item.detectedAt)].filter(Boolean).join(" · ");
+      text.append(title, meta);
+      const keep = document.createElement("button");
+      keep.type = "button"; keep.className = "deletion-keep"; keep.textContent = "Keep";
+      keep.addEventListener("click", () => resolveAnd([item.id], "keep"));
+      const drop = document.createElement("button");
+      drop.type = "button"; drop.className = "deletion-drop"; drop.textContent = "Delete";
+      drop.addEventListener("click", () => resolveAnd([item.id], "delete"));
+      row.append(text, keep, drop);
+      host.appendChild(row);
+    }
+  }
+
+  $("deletion-alert").addEventListener("click", async () => {
+    const panel = $("deletion-panel");
+    panel.hidden = !panel.hidden;
+    if (!panel.hidden) await paintDeletions();
   });
+  $("deletion-policy").addEventListener("change", async () => {
+    const { settings } = await chrome.storage.local.get("settings");
+    await chrome.storage.local.set({
+      settings: { ...(settings || {}), deletionPolicy: $("deletion-policy").value }
+    });
+  });
+  $("deletion-keep-all").addEventListener("click", () => resolveAnd([], "keep"));
+  $("deletion-delete-all").addEventListener("click", () => resolveAnd([], "delete"));
 
   async function checkFreshness(retry = true) {
     const status = await send({ type: "recall-sync-status" });
@@ -2759,6 +3120,27 @@
   checkFreshness();
 
   load();
+
+  /* Five seconds, for as long as the panel is open. The storage signals below
+     cover a tab reporting its own numbers; they do NOT cover the worker
+     archiving in the background, which writes to IndexedDB and nothing else. */
+  setInterval(refreshPulse, 5000);
+
+  /* And the allowances, while the panel is open. The user is chatting in
+     another tab while this sits there, so a percentage read when the popup
+     opened is a figure from before the last three questions.
+     Deliberately narrow: only platforms this browser already has a reading for
+     — asking about one nobody is signed into costs a handshake to be told so —
+     and only when that reading is over five minutes old. The reply lands as a
+     storage change and repaints itself. */
+  setInterval(() => {
+    const records = (lastQuota && lastQuota.records) || [];
+    for (const rec of records) {
+      if (!rec || !rec.id) continue;
+      if (rec.observedAt && Date.now() - rec.observedAt < 5 * 60e3) continue;
+      send({ type: "quota-refresh", platform: rec.id, reason: "watch" });
+    }
+  }, 60000);
 
   // Live repaint
   try {

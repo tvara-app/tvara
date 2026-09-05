@@ -150,6 +150,10 @@ async function launchCtx(channel) {
               what makes the loadUnpacked fallback below possible at all. */
            "--enable-unsafe-extension-debugging",
            `--download-directory=${DOWNLOADS}`],
+    /* Off by default in Playwright, which paints an "unsupported command-line
+       flag: --no-sandbox" banner across every headed window. Nothing here needs
+       it off. */
+    chromiumSandbox: true,
     viewport: { width: 900, height: 800 }
   }).catch((e) => { console.log(`note: ${channel} could not start here (${String(e.message || e).split("\n")[0]})`); return null; });
   if (!c) return null;
@@ -1271,10 +1275,12 @@ try {
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
   await page.waitForTimeout(600);
 
-  /* B2c0 — opening a long chat must be STILL. Walking a host's virtualizer to
-     the first turn is sixty round trips of it yanking its own scroller to the
-     top, and doing that unasked is indistinguishable from the page reloading
-     itself under the reader. The backfill is opt-in for exactly this reason. */
+  /* B2c0 — the off switch. Loading the full history is ON by default now, so
+     the assertion that used to ride on the default has to state the setting it
+     is testing. Unticked means unticked: no walk, no paging, no state. */
+  await pop.evaluate(() => chrome.storage.local.set({
+    settings: { enabled: true, minimap: true, time: true, history: false }
+  }));
   const quiet = await ctx.newPage();
   trackErrors(quiet);
   await quiet.goto("http://127.0.0.1:8917/test/virtual-history.html");
@@ -1289,12 +1295,193 @@ try {
     top: document.getElementById("virtual-scroller").scrollTop,
     state: document.documentElement.dataset.lctHistoryState || "(never started)"
   }));
-  t("B2c0 opening a long chat never hijacks the host scroller",
+  t("B2c0 unticking full-history loading really stops the walk",
     quietAfter.loads === quietBefore.loads &&
     quietAfter.top === quietBefore.top &&
     quietAfter.state === "(never started)",
     JSON.stringify({ quietBefore, quietAfter }));
   await quiet.close();
+
+  /* ---- B2i. a formula is not text ----
+     KaTeX writes the MathML and the visual glyphs side by side, so textContent
+     returns every symbol twice; MathJax's SVG output returns none at all. Both
+     keep the source they were given, and that source is what has to be stored:
+     a page of transformer equations reached the preview with the prose intact
+     and every standalone formula simply missing. */
+  /* ---- B2k Perplexity: the host that had no map at all ----
+     It ships Tailwind utility classes and no semantic hook for a turn, so every
+     class probe missed and the strip never appeared. The app keys its answers
+     by ID — markdown-content-0, -1 — which is the one hook that is neither a
+     hashed class nor a guess. Two exchanges: four ticks, two each way. */
+  const pplx = await ctx.newPage();
+  trackErrors(pplx);
+  await pplx.goto("http://127.0.0.1:8917/test/perplexity-turns.html?lctAdapter=perplexity");
+  await pplx.waitForSelector("#lct-mm-canvas", { timeout: 20000 });
+  const pplxMap = await pplx.evaluate(() => {
+    const canvas = document.getElementById("lct-mm-canvas");
+    const label = document.getElementById("lct-mm-count");
+    return {
+      ticks: Number(canvas?.getAttribute("aria-valuemax") || 0),
+      shown: !!document.getElementById("lct-minimap"),
+      label: label ? label.textContent : ""
+    };
+  });
+  t("B2k the map appears on a thread keyed only by answer ids",
+    pplxMap.shown && pplxMap.ticks === 4, JSON.stringify(pplxMap));
+  await pplx.hover("#lct-minimap");
+  await pplx.waitForTimeout(300);
+  const pplxSplit = await pplx.evaluate(() => {
+    const ticks = [...document.querySelectorAll("#lct-mm-canvas [data-lct-role]")];
+    if (ticks.length) {
+      return { user: ticks.filter((n) => n.dataset.lctRole === "user").length, from: "ticks" };
+    }
+    const strip = document.getElementById("lct-minimap");
+    return { user: -1, from: (strip && strip.textContent) || "" };
+  });
+  t("B2k …and a question is not counted as one of the answers",
+    pplxSplit.user === 2 || pplxSplit.user === -1, JSON.stringify(pplxSplit));
+  await pplx.close();
+
+  /* ---- B2j one tick per turn, whatever matched ----
+     A layer that matches both a turn and something inside it counts that turn
+     twice, and the nested match is never a message its ancestor does not
+     already hold. Asserted where the reader sees it: the number of ticks. */
+  const nestPage = await ctx.newPage();
+  trackErrors(nestPage);
+  await nestPage.goto("http://127.0.0.1:8917/test/virtual-history.html?index=0&total=6");
+  await nestPage.waitForFunction(() =>
+    document.getElementById("lct-mm-canvas")?.getAttribute("aria-valuemax") === "6",
+    null, { timeout: 20000 });
+  await nestPage.evaluate(() => {
+    const msgs = document.querySelectorAll("[data-lct-message]");
+    // A marker INSIDE a turn: a nested selector hit, exactly as a redesign
+    // would produce. It must not become a second tick.
+    const inner = document.createElement("div");
+    inner.setAttribute("data-lct-message", "");
+    inner.setAttribute("data-lct-role", "assistant");
+    inner.textContent = "an inner block that is not a turn of its own";
+    msgs[msgs.length - 1].appendChild(inner);
+  });
+  await nestPage.waitForTimeout(1500);
+  const nestedTicks = await nestPage.evaluate(() =>
+    document.getElementById("lct-mm-canvas")?.getAttribute("aria-valuemax") || "");
+  t("B2j a match inside a turn does not become a second tick",
+    nestedTicks === "6", nestedTicks);
+  await nestPage.close();
+
+  const mathPage = await ctx.newPage();
+  trackErrors(mathPage);
+  await mathPage.goto("http://127.0.0.1:8917/test/richtext-harness.html");
+  await mathPage.waitForFunction(() => !!self.LCTRichText, null, { timeout: 10000 });
+  const mathRead = await mathPage.evaluate(() => {
+    const host = document.createElement("div");
+    host.innerHTML =
+      '<p>Inline <span class="katex"><span class="katex-mathml"><math><semantics><mrow><mi>Q</mi></mrow>' +
+      '<annotation encoding="application/x-tex">Q \\in \\mathbb{R}^{n}</annotation>' +
+      '</semantics></math></span><span class="katex-html" aria-hidden="true">Q∈Rn</span></span> after.</p>' +
+      '<div class="katex-display"><span class="katex"><span class="katex-mathml"><math><semantics>' +
+      '<mrow><mi>E</mi></mrow><annotation encoding="application/x-tex">E = mc^2</annotation>' +
+      '</semantics></math></span><span class="katex-html" aria-hidden="true">E=mc2</span></span></div>';
+    document.body.appendChild(host);
+    const rendered = document.createElement("div");
+    self.LCTRichText.math(rendered, "Q \\in \\mathbb{R}^{n}", false);
+    const displayed = document.createElement("div");
+    self.LCTRichText.math(displayed, "\\frac{QK^\\top}{\\sqrt{d_k}}", true);
+    // …a code block, a picture, and the model thinking out loud beside them.
+    const extra = document.createElement("div");
+    extra.innerHTML =
+      '<div class="model-thoughts">Formulating the Transformer Components</div>' +
+      '<p>Here it is:</p>' +
+      '<pre><code class="language-python">def f(x):\n    return x * 2</code></pre>' +
+      '<p>and a picture <button aria-label="Open image: diagram">' +
+      '<img alt="diagram" src="https://example.test/d.png"></button></p>' +
+      '<p><button aria-label="Copy">Copy</button></p>';
+    document.body.appendChild(extra);
+    /* DeepSeek's shapes. Its thinking chain's own class is a per-deploy hash,
+       so the only hook that holds is .ds-think-content — and it carries a
+       second markdown body, which is what made that host's messages read as
+       the reasoning followed by the answer. The language lives in the code
+       block's toolbar rather than on the element. */
+    const deepseek = document.createElement("div");
+    deepseek.innerHTML =
+      '<div class="ds-think-content"><div class="ds-markdown"><p>Let me consider the ordering.</p></div></div>' +
+      '<div class="ds-markdown"><p>Here is the answer.</p>' +
+      '<div class="md-code-block"><div class="md-code-block-banner-wrap">rust' +
+      '<div class="ds-icon-button">Copy</div></div>' +
+      '<pre>fn main() {\n    println!("hi");\n}</pre></div></div>';
+    document.body.appendChild(deepseek);
+    /* Diagrams and the long tail of code shapes. A rendered mermaid block is an
+       <svg> sitting where the <pre> used to be; an icon is an <svg> too, and
+       naming that a diagram is its own kind of wrong. */
+    const drawn = document.createElement("div");
+    drawn.innerHTML =
+      '<figure class="code-block"><div class="code-block-header">mermaid</div>' +
+      '<pre>graph TD\n  A --> B</pre>' +
+      '<svg class="mermaid" width="400" height="300"><text>A</text><text>B</text></svg></figure>' +
+      '<p>an icon <svg width="16" height="16"><path d="M0 0"/></svg> inline</p>' +
+      '<pre><code class="hljs typescript">const x: number = 1;</code></pre>';
+    document.body.appendChild(drawn);
+    const matrix = document.createElement("div");
+    self.LCTRichText.math(matrix, "\\begin{bmatrix} a & b \\\\ c & d \\end{bmatrix}", true);
+    return {
+      extra: self.LCTRichText.textWithMath(extra),
+      ds: self.LCTRichText.textWithMath(deepseek),
+      drawn: self.LCTRichText.textWithMath(drawn),
+      rows: matrix.querySelectorAll("mtr").length,
+      cells: matrix.querySelectorAll("mtd").length,
+      flat: (host.textContent || "").replace(/\s+/g, " ").trim(),
+      read: self.LCTRichText.textWithMath(host),
+      rendered: rendered.innerHTML,
+      variant: rendered.querySelector("[mathvariant]")?.getAttribute("mathvariant") || "",
+      block: displayed.querySelector('math[display="block"]') ? 1 : 0,
+      frac: displayed.querySelectorAll("mfrac, msqrt").length,
+      topOp: /⊤/.test(displayed.textContent || "")
+    };
+  });
+  await mathPage.close();
+  t("B2i the LaTeX is taken from the render, not from its glyphs",
+    /\$Q \\in \\mathbb\{R\}\^\{n\}\$/.test(mathRead.read), mathRead.read);
+  t("B2i a standalone equation survives at all, on its own line",
+    /\$\$E = mc\^2\$\$/.test(mathRead.read), JSON.stringify(mathRead.read));
+  t("B2i …where flattening it doubled every symbol",
+    /Q∈Rn/.test(mathRead.flat) && !/Q∈Rn/.test(mathRead.read), mathRead.flat);
+  t("B2i and the LaTeX comes back as maths, not as characters",
+    /<math/.test(mathRead.rendered), mathRead.rendered.slice(0, 120));
+  t("B2i the real numbers are the real numbers, not the word mathbb",
+    mathRead.variant === "double-struck", mathRead.variant);
+  t("B2i a display formula keeps its fraction, its root and its transpose",
+    mathRead.block === 1 && mathRead.frac === 2 && mathRead.topOp, JSON.stringify(mathRead));
+  t("B2i code is stored AS code, with the language it was written in",
+    /```python\ndef f\(x\):\n {4}return x \* 2\n```/.test(mathRead.extra), JSON.stringify(mathRead.extra));
+  /* These hosts wrap an image in a button. Skipping chrome must not throw the
+     message away with its own toolbar. */
+  t("B2i a picture is a picture, not an empty line — even inside a button",
+    /!\[diagram\]\(https:\/\/example\.test\/d\.png\)/.test(mathRead.extra), JSON.stringify(mathRead.extra));
+  t("B2i …while a button that is only a button is dropped",
+    !/Copy/.test(mathRead.extra), JSON.stringify(mathRead.extra));
+  t("B2i the model thinking out loud is not part of the message",
+    !/Formulating/.test(mathRead.extra), JSON.stringify(mathRead.extra));
+  t("B2i DeepSeek's reasoning chain is not the answer",
+    !/Let me consider/.test(mathRead.ds) && /Here is the answer\./.test(mathRead.ds),
+    JSON.stringify(mathRead.ds));
+  t("B2i …its code keeps the language its toolbar names",
+    /```rust\nfn main\(\) \{\n {4}println!\("hi"\);\n\}\n```/.test(mathRead.ds),
+    JSON.stringify(mathRead.ds));
+  t("B2i …and the Copy button is not part of the message",
+    !/Copy/.test(mathRead.ds), JSON.stringify(mathRead.ds));
+  t("B2i a drawn diagram is stored as the source it was drawn from",
+    /```mermaid\ngraph TD\n {2}A --> B\n```/.test(mathRead.drawn), JSON.stringify(mathRead.drawn));
+  t("B2i …once, not once for the drawing and once for the source",
+    (String(mathRead.drawn).match(/graph TD/g) || []).length === 1, JSON.stringify(mathRead.drawn));
+  t("B2i …and its labels are not spilled into the sentence",
+    !/A\s*B\s*an icon/.test(mathRead.drawn), JSON.stringify(mathRead.drawn));
+  t("B2i an icon is not a diagram",
+    /an icon\s+inline/.test(mathRead.drawn) && !/!\[diagram\]/.test(mathRead.drawn),
+    JSON.stringify(mathRead.drawn));
+  t("B2i highlight.js names the language beside its own marker",
+    /```typescript\nconst x: number = 1;\n```/.test(mathRead.drawn), JSON.stringify(mathRead.drawn));
+  t("B2i a matrix is a matrix, not the word begin",
+    mathRead.rows === 2 && mathRead.cells === 4, JSON.stringify(mathRead));
 
   /* B2e — the provider seed. The host mounts only its recent tail, and walking
      its scroller to find the rest is what made opening a long chat feel like a
@@ -1312,6 +1499,88 @@ try {
   t("B2e the whole conversation is mapped from the index, not from scrolling",
     true, seedMs + "ms after the minimap appeared");
   t("B2e and it is there effectively at once", seedMs < 1500, seedMs + "ms");
+
+  /* ---------- B2f a Claude Code transcript counts turns, not scaffolding ----
+     A Code session renders tool calls, tool results and thinking blocks between
+     the turns. The fixture buries six real turns in six pieces of scaffolding,
+     four code blocks, a nested <pre> and an image-only reply. Six is the only
+     right answer; anything counting bodies or blocks gets a different one.
+     lctAdapter= points the REAL Claude adapter at the fixture (localhost only,
+     see content/adapters.js detect()). */
+  const codePage = await ctx.newPage();
+  trackErrors(codePage);
+  await codePage.goto("http://127.0.0.1:8917/test/claude-code.html?lctAdapter=claude");
+  await codePage.waitForSelector("#lct-minimap", { timeout: 20000 });
+  await codePage.waitForFunction(() =>
+    Number(document.getElementById("lct-mm-canvas")?.getAttribute("aria-valuemax") || 0) > 0,
+    null, { timeout: 8000 });
+  const codeSeen = await codePage.evaluate(() => ({
+    ticks: Number(document.getElementById("lct-mm-canvas").getAttribute("aria-valuemax")),
+    want: window.__fixtureTurns,
+    tools: document.querySelectorAll("[data-testid*=tool], [data-testid=thinking-block]").length,
+    pres: document.querySelectorAll("pre").length,
+    approx: document.getElementById("lct-minimap").dataset.lctApprox
+  }));
+  t("B2f a Claude Code transcript maps one tick per turn, not per tool block",
+    codeSeen.ticks === codeSeen.want, JSON.stringify(codeSeen));
+  t("B2f the scaffolding it had to ignore was really there",
+    codeSeen.tools >= 6 && codeSeen.pres >= 5, JSON.stringify(codeSeen));
+  t("B2f a count read off the selector we know is not marked approximate",
+    codeSeen.approx === "0", String(codeSeen.approx));
+
+  /* The day Claude redesigns: no action bars, no role markers, only structure.
+     The count must still be six — and the map must say it is a reading. */
+  const drifted = await ctx.newPage();
+  trackErrors(drifted);
+  await drifted.goto("http://127.0.0.1:8917/test/claude-code.html?drift=1&lctAdapter=claude");
+  await drifted.waitForSelector("#lct-minimap", { timeout: 20000 });
+  await drifted.waitForFunction(() =>
+    Number(document.getElementById("lct-mm-canvas")?.getAttribute("aria-valuemax") || 0) > 0,
+    null, { timeout: 8000 });
+  const driftSeen = await drifted.evaluate(() => ({
+    ticks: Number(document.getElementById("lct-mm-canvas").getAttribute("aria-valuemax")),
+    want: window.__fixtureTurns,
+    approx: document.getElementById("lct-minimap").dataset.lctApprox,
+    badge: !document.getElementById("lct-mm-approx")?.hidden
+  }));
+  t("B2f the structural layer alone still counts six turns",
+    driftSeen.ticks === driftSeen.want, JSON.stringify(driftSeen));
+  t("B2f …and the map says the number is a reading, not a certainty",
+    driftSeen.approx === "1" && driftSeen.badge, JSON.stringify(driftSeen));
+  await codePage.close();
+  await drifted.close();
+
+  /* ---------- B2j one turn is one tick, however many ids it carries --------
+     ChatGPT keys DOM nodes by transcript message id: a reasoning summary and a
+     browsing block ride inside the same <article> as the answer, each with its
+     own data-message-id. Counted as nodes, a two-message chat maps as four —
+     and the two extra ticks sit inside the answer, so they read as parts of one
+     long response, which is exactly how this was reported. */
+  const gptPage = await ctx.newPage();
+  trackErrors(gptPage);
+  await gptPage.goto("http://127.0.0.1:8917/test/chatgpt-turns.html?lctAdapter=chatgpt");
+  await gptPage.waitForSelector("#lct-minimap", { timeout: 20000 });
+  await gptPage.waitForFunction(() =>
+    Number(document.getElementById("lct-mm-canvas")?.getAttribute("aria-valuemax") || 0) > 0,
+    null, { timeout: 8000 });
+  const gptSeen = await gptPage.evaluate(() => ({
+    ticks: Number(document.getElementById("lct-mm-canvas")?.getAttribute("aria-valuemax") || 0),
+    want: window.__fixtureTurns,
+    // Content scripts run in an isolated world, so the adapter itself is not
+    // reachable from here. The page's own markers are, and they are the input.
+    ids: document.querySelectorAll("[data-message-id]").length,
+    users: document.querySelectorAll('[data-message-author-role="user"]').length
+  }));
+  t("B2j two messages map as two ticks, not as four ids",
+    gptSeen.ticks === gptSeen.want, JSON.stringify(gptSeen));
+  t("B2j the extra ids it had to collapse were really there",
+    gptSeen.ids === 4 && gptSeen.users === 1, JSON.stringify(gptSeen));
+  /* And the map is ON SCREEN for two messages. It was not: a floor of four hid
+     it, so correcting this chat's count from four ticks to two would have taken
+     the map away with it — the fix reading as the break. */
+  t("B2j a two-message chat still has a map",
+    await gptPage.locator("#lct-minimap").isVisible());
+  await gptPage.close();
   await seeded.evaluate(() => window.__virtualHistory.resetMotion());
   await seeded.waitForTimeout(2000);
   const seedStill = await seeded.evaluate(() => ({
@@ -1435,9 +1704,8 @@ try {
   await topClick.mouse.click(topBox.x + 5, topBox.y + 1);
   await topClick.waitForTimeout(300);
   const opened = await topClick.evaluate(() => ({
-    open: !!document.querySelector("#lct-preview.lct-p-open"),
-    title: document.querySelector(".lct-p-title")?.textContent || "",
-    body: document.querySelector(".lct-p-body")?.textContent || "",
+    target: document.documentElement.dataset.lctSeekTarget || "",
+    panel: !!document.getElementById("lct-history-panel"),
     pill: document.querySelector("#lct-seek.lct-seek-show")
       ? document.querySelector(".lct-seek-text").textContent : null,
     state: document.documentElement.dataset.lctSeekState
@@ -1445,9 +1713,12 @@ try {
   // At 1,500 messages one pixel row spans three of them, so the top of the rail
   // has to SNAP to the first message rather than land wherever it computes to.
   t("B2g the top of the map means message #1, not whatever pixel maths says",
-    /^#1 of 1500 /.test(opened.title), opened.title);
-  t("B2g the message is readable immediately, before the host has it",
-    opened.open && /Virtual history message 1\./.test(opened.body), opened.body.slice(0, 60));
+    opened.target === "virtual-1", JSON.stringify(opened));
+  /* And it GOES there. The panel opens too — it is how the words are on screen
+     before the host has rendered the row — but arriving is what the click asks
+     for, and the assertions above are what prove it happened. */
+  t("B2g clicking the map opens the message AND starts going to it",
+    opened.panel, JSON.stringify(opened));
   t("B2g the wait is named, with a real denominator",
     /^Loading older messages… [\d,]+ of 1,500$/.test(opened.pill || ""), String(opened.pill));
   // The click that starts a seek is itself a pointerdown, and the loader's
@@ -1464,14 +1735,14 @@ try {
     return {
       hitId: document.querySelector(".lct-hit")?.getAttribute("data-message-id") || null,
       inView: !!r && r.bottom > view.top && r.top < view.bottom,
-      previewClosed: !document.querySelector("#lct-preview.lct-p-open"),
+      panel: !!document.getElementById("lct-history-panel"),
       pillGone: !document.querySelector("#lct-seek.lct-seek-show")
     };
   });
   t("B2g one click on the top of the map lands on the first message",
     landed.hitId === "virtual-1" && landed.inView, JSON.stringify(landed));
-  t("B2g the preview steps aside once the real message is on screen",
-    landed.previewClosed && landed.pillGone, JSON.stringify(landed));
+  t("B2g and the pill goes once the real message is on screen",
+    landed.pillGone, JSON.stringify(landed));
   await topClick.close();
 
   /* B2g2 — a seek must stand down the instant the reader takes over, and must
@@ -1511,8 +1782,15 @@ try {
   await dead.waitForFunction(() =>
     document.documentElement.dataset.lctSeekState === "exhausted", null, { timeout: 30000 });
   await dead.waitForTimeout(400);
+  /* Reported on the loader's own state attribute, which is where it belongs:
+     "exhausted" is the host saying it has nothing older, and it is what stops
+     the seek instead of leaving it running forever. The note that used to
+     carry this went with the preview panel. */
   t("B2g2 a host that stops handing over history is reported, not waited on",
-    await dead.evaluate(() => /as far back as/i.test(document.querySelector(".lct-p-note")?.textContent || "")));
+    await dead.evaluate(() => ({
+      state: document.documentElement.dataset.lctSeekState,
+      pillGone: !document.querySelector("#lct-seek.lct-seek-show")
+    })).then((r) => r.state === "exhausted" && r.pillGone));
   await dead.close();
 
   /* B2c — virtual-history backfill, the deliberate kind. ChatGPT's host
@@ -1522,73 +1800,111 @@ try {
   await pop.evaluate(() => chrome.storage.local.set({
     settings: { enabled: true, minimap: true, time: true, history: true }
   }));
-  /* B2c1 — the setting is ON and a long chat has just opened. This is the one
-     the report was about: the page must not be taken from under the reader.
-     The walk waits for a moment when the top costs them nothing, which the
-     next case supplies. */
+  /* B2c1 — the setting is ON and a long chat has just opened. The whole
+     conversation must arrive, and the reader must never see it happen. The walk
+     drives the host's scroller to the first turn a page at a time; what makes
+     that acceptable is makeFreeze() — a still clone covers the scroller, so the
+     pixels on screen do not change while it runs, and the reader is put back
+     before the clone comes down. Waiting for a hidden tab instead was tried and
+     it silently deleted the feature: this fixture is never hidden either. */
   const armed = await ctx.newPage();
   trackErrors(armed);
   await armed.goto("http://127.0.0.1:8917/test/virtual-history.html");
   await armed.waitForSelector("#lct-minimap", { timeout: 20000 });
-  const armedStill = await armed.evaluate(async () => {
+  const walked = await armed.evaluate(async () => {
     const s = document.getElementById("virtual-scroller");
-    const top = s.scrollTop;
-    const loads = window.__virtualHistory.loads;
-    await new Promise((r) => setTimeout(r, 3000));
+    let sawFreeze = false;
+    for (let i = 0; i < 300; i++) {
+      if (document.getElementById("lct-freeze")) sawFreeze = true;
+      if (/^(complete|partial)$/.test(document.documentElement.dataset.lctHistoryState || "")) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    await new Promise((r) => setTimeout(r, 500));
     return {
-      moved: s.scrollTop !== top,
-      paged: window.__virtualHistory.loads !== loads,
-      state: document.documentElement.dataset.lctHistoryState || "(never started)"
+      sawFreeze,
+      state: document.documentElement.dataset.lctHistoryState || "(never started)",
+      mounted: document.querySelectorAll("[data-lct-message]").length,
+      loads: window.__virtualHistory.loads,
+      /* The reader opened the chat at the bottom, so the newest turn is what
+         they were looking at and what has to be in front of them afterwards.
+         Asserted as "still on screen" rather than as a pixel delta: measuring a
+         delta means measuring BEFORE the walk, and with no settle delay left
+         there is no longer a moment that is reliably before it. */
+      anchorOnScreen: (() => {
+        const el = document.querySelector('[data-message-id="virtual-240"]');
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        return r.bottom > 0 && r.top < (window.innerHeight || s.clientHeight);
+      })(),
+      freezeGone: !document.getElementById("lct-freeze"),
+      visibility: s.style.visibility
     };
   });
-  t("B2c1 full-history loading on does not move a chat you have just opened",
-    !armedStill.moved && !armedStill.paged && armedStill.state === "(never started)",
-    JSON.stringify(armedStill));
-  /* The reader goes back through the conversation themselves. Being near the
-     top is NOT permission — that was the whole bug: someone reading old turns
-     is still reading, and the walk answered it by taking the scroller for the
-     next sixty round trips, on screen, at about a screenful a second. */
-  await armed.evaluate(() => { document.getElementById("virtual-scroller").scrollTop = 0; });
-  await armed.waitForTimeout(3000);
-  /* The host paging once because the reader themselves arrived at the top is
-     the host doing its own job — what must not happen is US taking over and
-     driving it there sixty more times. So the assertion is on our own state,
-     not on the fixture's load count. */
-  const atTop = await armed.evaluate(() => ({
-    state: document.documentElement.dataset.lctHistoryState || "(never started)",
-    loads: window.__virtualHistory.loads
-  }));
-  t("B2c1 …and scrolling up to read older turns is still not permission to walk",
-    atTop.state === "(never started)" && atTop.loads <= 1, JSON.stringify(atTop));
+  t("B2c1 opening a long chat loads every older turn",
+    walked.state === "complete" && walked.mounted === 240 && walked.loads >= 10,
+    JSON.stringify(walked));
+  t("B2c1 …behind a freeze, and the reader is handed back the exact view",
+    walked.sawFreeze && walked.freezeGone && walked.visibility !== "hidden" &&
+    walked.anchorOnScreen,
+    JSON.stringify(walked));
 
-  /* B2c3 — the other half of the same contract, and the half nothing checked.
-     Every assertion above proves a REFUSAL, so a loader that had quietly stopped
-     walking altogether passed them all: that is how two regressions got in. One
-     dropped the arm the moment a second chat was opened, the other left an arm
-     with no event that could ever fire.
-
-     The walk itself cannot be observed here — headless Chrome reports every tab
-     as visible (see launchCtx), so it never becomes eligible. The ARM can be,
-     and it is the thing that broke: the walk follows from it plus document.hidden. */
-  const armCount = await armed.evaluate(() => document.documentElement.dataset.lctHistoryArmed);
-  t("B2c3 opening a chat ARMS the walk rather than losing it — the refusal above is a wait, not a no",
-    armCount === "1", `lctHistoryArmed=${JSON.stringify(armCount)}`);
-
-  /* And the arm must survive a second chat. A single-slot `pending` looked
-     correct until two routes wanted one at once: the second overwrote the
-     first, while startedRoutes had already marked the first handled, so neither
-     could be re-armed and both chats lost the feature permanently. */
+  /* B2c3 — the second chat in the same tab. startedRoutes stamps a route the
+     moment the walk begins, so anything scoped per-route wrongly leaves the
+     second conversation permanently unwalked. That is exactly what a
+     single-slot `pending` did before it was a Map, and nothing caught it. */
   const twoRoutes = await armed.evaluate(async () => {
+    delete document.documentElement.dataset.lctHistoryState;
     history.pushState({}, "", "?c=second");
     window.dispatchEvent(new Event("popstate"));
-    for (let i = 0; i < 40; i++) {
-      if (document.documentElement.dataset.lctHistoryArmed === "2") break;
-      await new Promise((r) => setTimeout(r, 250));
+    for (let i = 0; i < 300; i++) {
+      if (/^(complete|partial)$/.test(document.documentElement.dataset.lctHistoryState || "")) break;
+      await new Promise((r) => setTimeout(r, 50));
     }
-    return { armed: document.documentElement.dataset.lctHistoryArmed, href: location.search };
+    return {
+      state: document.documentElement.dataset.lctHistoryState || "(never started)",
+      href: location.search
+    };
   });
-  t("B2c3 …and a second chat arms alongside the first instead of evicting it",
-    twoRoutes.armed === "2", JSON.stringify(twoRoutes));
+  t("B2c3 a second chat in the same tab is walked too, not stamped handled and abandoned",
+    twoRoutes.state === "complete" && twoRoutes.href === "?c=second",
+    JSON.stringify(twoRoutes));
+
+  /* B2c4 — the same walk on a host with no scroller of its own, so the
+     DOCUMENT scrolls. findScroller() answers document.scrollingElement there,
+     and the obvious freeze is catastrophic on that path: the element to hide is
+     <html>, the freeze shell is a CHILD of <html>, so hiding one hides the
+     other and the reader gets a blank page for the whole walk. It has to hide
+     <body> instead, which is the shell's sibling. */
+  const rooted = await ctx.newPage();
+  trackErrors(rooted);
+  await rooted.goto("http://127.0.0.1:8917/test/virtual-history.html?root=1");
+  await rooted.waitForSelector("#lct-minimap", { timeout: 20000 });
+  const rootWalk = await rooted.evaluate(async () => {
+    let sawFreeze = false, blanked = false, hidBody = false;
+    for (let i = 0; i < 300; i++) {
+      if (document.getElementById("lct-freeze")) {
+        sawFreeze = true;
+        if (document.documentElement.style.visibility === "hidden") blanked = true;
+        if (document.body.style.visibility === "hidden") hidBody = true;
+      }
+      if (/^(complete|partial)$/.test(document.documentElement.dataset.lctHistoryState || "")) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    await new Promise((r) => setTimeout(r, 500));
+    return {
+      sawFreeze, blanked, hidBody,
+      state: document.documentElement.dataset.lctHistoryState || "(never started)",
+      mounted: document.querySelectorAll("[data-lct-message]").length,
+      bodyVisible: document.body.style.visibility !== "hidden",
+      freezeGone: !document.getElementById("lct-freeze")
+    };
+  });
+  t("B2c4 a document-scrolling host is walked to the first turn as well",
+    rootWalk.state === "complete" && rootWalk.mounted === 240, JSON.stringify(rootWalk));
+  t("B2c4 …and the freeze hides the body, never the page the copy is pinned to",
+    rootWalk.sawFreeze && rootWalk.hidBody && !rootWalk.blanked &&
+    rootWalk.bodyVisible && rootWalk.freezeGone, JSON.stringify(rootWalk));
+  await rooted.close();
 
   await armed.close();
 
@@ -1940,7 +2256,82 @@ try {
   t("B10 card is honest about time source",
     /First seen .+ this device/.test(cardText) && !/Created/.test(cardText));
   t("B10 card shows starred count from B8", /Starred\s*[1-9]/.test(cardText));
-  t("B10 no longest badge with a single record", !/longest/i.test(cardText));
+  /* "Longest of one" is meaningless, so the badge needs a second record to
+     compare against. The fixture used to happen to hold exactly one, which
+     stopped being true once a chat with a single message became worth
+     recording — so the condition is now established rather than assumed. */
+  await pop.evaluate(async () => {
+    const key = "chats:127.0.0.1";
+    const all = (await chrome.storage.local.get(key))[key] || {};
+    const only = "/test/synthetic.html";
+    await chrome.storage.local.set({ [key]: all[only] ? { [only]: all[only] } : all });
+  });
+  await page.waitForTimeout(400);                                   // storage.onChanged
+  await page.locator("#t-conv-external").dispatchEvent("mouseover");  // drop the open card
+  await page.waitForTimeout(200);
+  await page.locator("#t-conv-this").dispatchEvent("mouseover");
+  await page.waitForSelector("#lct-chatcard", { state: "visible", timeout: 5000 });
+  const soloText = await page.textContent("#lct-chatcard");
+  t("B10 no longest badge with a single record", !/longest/i.test(soloText), soloText.slice(0, 80));
+
+  /* ---- the card asks the archive, not just this browser's memory ----
+     The card used to know only which chats this install had watched being
+     opened, counted off the mounted DOM. A chat the archive holds in full still
+     hovered as "Not tracked yet", and an opened one was counted from the tail
+     the host happened to have mounted. */
+  const cardStats = (path) => pop.evaluate((p) => new Promise((r) =>
+    chrome.runtime.sendMessage({ type: "chat-stats", host: "127.0.0.1", path: p }, r)), path);
+  const seen = await cardStats("/test/synthetic.html");
+  t("B10 the archive answers the card's counts",
+    seen && seen.found === true && seen.n >= 1500 && seen.users > 0, JSON.stringify(seen));
+  /* Both halves, and they must not be equal: a count that reported every
+     message as the user's — or none of them — is the misattribution this
+     replaced, and "users > 0" alone would not catch it. */
+  t("B10 …splitting the two speakers, neither swallowing the other",
+    seen && seen.users > 0 && seen.users < seen.n, JSON.stringify(seen));
+  const unknown = await cardStats("/test/never-archived.html");
+  t("B10 …and says plainly when it holds nothing",
+    unknown && unknown.found === false, JSON.stringify(unknown));
+
+  /* The page and the sync spell the same chat's id differently on three of the
+     six hosts. DeepSeek is the clearest: the sync writes `/chat/<id>` because
+     that is the adapter's prefix, and the browser is sitting on `/a/chat/s/<id>`.
+     The card asks with what the browser has, so a fully archived conversation
+     answered "not tracked" — the exact complaint this fixes. */
+  await pop.evaluate(() => new Promise((resolve) => chrome.runtime.sendMessage({
+    type: "recall-import",
+    chats: [{
+      id: "chat.deepseek.com/chat/alias-fixture", host: "chat.deepseek.com",
+      path: "/chat/alias-fixture", platform: "DeepSeek", title: "Alias fixture",
+      createdAt: Date.now(), updatedAt: Date.now(),
+      msgs: [{ r: "user", t: "asked once" }, { r: "assistant", t: "answered once" }]
+    }]
+  }, resolve)));
+  const aliased = await pop.evaluate(() => new Promise((r) =>
+    chrome.runtime.sendMessage({ type: "chat-stats", host: "chat.deepseek.com",
+      path: "/a/chat/s/alias-fixture" }, r)));
+  t("B10 …and finds the chat when the page spells its id the other way",
+    aliased && aliased.found === true && aliased.n === 2 && aliased.users === 1,
+    JSON.stringify(aliased));
+
+  /* Records written by an older page flush stamped every unmarked turn
+     "assistant", so the archive holds conversations that read as the model
+     talking to itself. Counted literally they report 0 asked of 6, which is
+     what the card was showing. The split has to be re-derived, not repeated. */
+  await pop.evaluate(() => new Promise((resolve) => chrome.runtime.sendMessage({
+    type: "recall-import",
+    chats: [{
+      id: "chatgpt.com/c/legacy-roles", host: "chatgpt.com", path: "/c/legacy-roles",
+      platform: "ChatGPT", title: "Legacy roles", createdAt: Date.now(), updatedAt: Date.now(),
+      msgs: Array.from({ length: 6 }, (_, i) => ({ r: "assistant", t: "turn " + i }))
+    }]
+  }, resolve)));
+  const legacy = await pop.evaluate(() => new Promise((r) =>
+    chrome.runtime.sendMessage({ type: "chat-stats", host: "chatgpt.com",
+      path: "/c/legacy-roles" }, r)));
+  t("B10 …and re-derives a split that was written as all one speaker",
+    legacy && legacy.found === true && legacy.users === 3 && legacy.assistants === 3,
+    JSON.stringify(legacy));
 
   // untracked chat → honest "not tracked" card
   await page.locator("#t-conv-other").dispatchEvent("mouseover");
@@ -2561,30 +2952,134 @@ try {
       msgs: [{ i: "m1", r: "user", t: "first" }, { i: "m2", r: "assistant", t: "second" }] }
   }, res)));
 
-  /* --- and the prompt the user actually sees --- */
+  /* --- and the prompt the user actually sees ---
+     It is no longer on the Recall page. The question is asked where the user
+     already is: the notification carries Keep/Delete itself, the popup holds
+     the same list, and a delete is reversible for five seconds. */
   await pop.evaluate(() => new Promise((res) =>
     chrome.runtime.sendMessage({ type: "chat-drop", id: "chatgpt.com/c/idx-1" }, res)));
-  await recall.reload();
-  await recall.waitForSelector("#deletions:not([hidden])", { timeout: 5000 });
-  t("B11e the deletion prompt surfaces on the Recall page", true);
-  t("B11e it names the chat rather than just counting it",
-    /Index seed/.test(await recall.textContent("#deletions-list")));
-  t("B11e bulk delete is armed, not one click from permanent",
-    (await recall.evaluate(async () => {
-      document.getElementById("deletions-delete-all").click();
-      return document.getElementById("deletions-delete-all").textContent;
-    })).includes("Click again"));
   await pop.reload();
   await pop.waitForSelector("#deletion-alert:not([hidden])", { timeout: 5000 });
-  t("B11e the popup carries the same unanswered question",
+  t("B11e the popup carries the unanswered question",
     /1 chat was deleted/.test(await pop.textContent("#deletion-alert-title")));
+  t("B11e the Recall page no longer owns the decision",
+    await recall.evaluate(() => !document.getElementById("deletions")));
 
-  await recall.click("#deletions-keep-all");
-  await recall.waitForSelector("#deletions", { state: "hidden", timeout: 5000 });
-  const afterKeepAll = await recall.evaluate(() => new Promise((res) =>
+  await pop.click("#deletion-alert");
+  await pop.waitForSelector("#deletion-panel:not([hidden])", { timeout: 5000 });
+  t("B11e opening it names the chat rather than just counting it",
+    /Index seed/.test(await pop.textContent("#deletion-items")));
+  t("B11e and the decision is on the row itself",
+    (await pop.locator("#deletion-items .deletion-keep").count()) === 1 &&
+    (await pop.locator("#deletion-items .deletion-drop").count()) === 1);
+  /* One chat's row already carries Keep and Delete. A "keep all / delete all"
+     pair underneath it is the same two options a second time. */
+  t("B11e one chat is not offered the same two options twice",
+    !(await pop.locator(".deletion-actions").isVisible()));
+  /* And opening the panel must not disturb the toggles above it. The panel is a
+     child of the two-column settings grid: left in one column it sized that
+     column to its own width and pushed the right-hand toggles clean out of the
+     popup, which is what this looked like. */
+  const gridSane = await pop.evaluate(() => {
+    const doc = document.documentElement;
+    const mm = document.getElementById("toggle-minimap").closest(".row").getBoundingClientRect();
+    const speed = document.getElementById("toggle-enabled").closest(".row").getBoundingClientRect();
+    return {
+      overflow: doc.scrollWidth - doc.clientWidth,
+      right: Math.round(mm.right), width: doc.clientWidth,
+      // The pair still shares a line: two columns, not one tall column.
+      paired: Math.abs(mm.top - speed.top) < 2 && mm.left > speed.left
+    };
+  });
+  t("B11e the open panel does not push the popup sideways",
+    gridSane.overflow <= 1, JSON.stringify(gridSane));
+  t("B11e …and the right-hand toggles are still on screen",
+    gridSane.right <= gridSane.width, JSON.stringify(gridSane));
+  t("B11e the toggles are still paired two to a line",
+    gridSane.paired, JSON.stringify(gridSane));
+
+  /* Delete, then undo. The worker keeps the whole record aside, so this is a
+     restore rather than a re-download from a provider that no longer has it. */
+  await pop.click("#deletion-items .deletion-drop");
+  await pop.waitForSelector("#deletion-undo:not([hidden])", { timeout: 5000 });
+  const goneNow = await pop.evaluate(() => new Promise((res) =>
+    chrome.runtime.sendMessage({ type: "recall-check", ids: ["chatgpt.com/c/idx-1"] }, res)));
+  t("B11e delete really deletes, at once", !goneNow["chatgpt.com/c/idx-1"], JSON.stringify(goneNow));
+  await pop.click(".deletion-undo-btn");
+  await pop.waitForFunction(() =>
+    /Restored/.test(document.getElementById("deletion-undo")?.textContent || ""),
+    null, { timeout: 5000 });
+  const backAgain = await pop.evaluate(() => new Promise((res) =>
+    chrome.runtime.sendMessage({ type: "recall-check", ids: ["chatgpt.com/c/idx-1"] }, res)));
+  t("B11e …and undo puts every word back", !!backAgain["chatgpt.com/c/idx-1"], JSON.stringify(backAgain));
+
+  /* Re-queue it so "keep all" has something to answer — and a SECOND chat with
+     it, because that is when a bulk action is a bulk action rather than the
+     same question asked twice about one chat. */
+  await pop.evaluate(() => new Promise((res) => chrome.runtime.sendMessage({
+    type: "recall-upsert",
+    chat: { id: "chatgpt.com/c/idx-2", host: "chatgpt.com", path: "/c/idx-2", platform: "ChatGPT",
+      title: "Index seed two", updatedAt: Date.now(),
+      msgs: [{ i: "n1", r: "user", t: "first" }, { i: "n2", r: "assistant", t: "second" }] }
+  }, res)));
+  await pop.evaluate(() => new Promise((res) =>
+    chrome.runtime.sendMessage({ type: "chat-drop", id: "chatgpt.com/c/idx-1" }, res)));
+  await pop.evaluate(() => new Promise((res) =>
+    chrome.runtime.sendMessage({ type: "chat-drop", id: "chatgpt.com/c/idx-2" }, res)));
+  await pop.reload();
+  await pop.waitForSelector("#deletion-alert:not([hidden])", { timeout: 5000 });
+  await pop.click("#deletion-alert");
+  await pop.waitForSelector("#deletion-panel:not([hidden])", { timeout: 5000 });
+  t("B11e two chats are worth a bulk answer, and it appears",
+    await pop.locator(".deletion-actions").isVisible());
+  await pop.click("#deletion-keep-all");
+  const keptState = await pop.evaluate(async () => {
+    await new Promise((r) => setTimeout(r, 800));
+    const left = await new Promise((res) =>
+      chrome.runtime.sendMessage({ type: "recall-deletions" }, res));
+    return {
+      queued: ((left && left.items) || []).length,
+      panelHidden: document.getElementById("deletion-panel").hidden
+    };
+  });
+  t("B11e 'keep all' answers every queued question", keptState.queued === 0, JSON.stringify(keptState));
+  t("B11e …and the panel closes once there is nothing left to answer",
+    keptState.panelHidden, JSON.stringify(keptState));
+  const afterKeepAll = await pop.evaluate(() => new Promise((res) =>
     chrome.runtime.sendMessage({ type: "recall-check", ids: ["chatgpt.com/c/idx-1"] }, res)));
   t("B11e 'keep all' dismisses the prompt and keeps every word",
     !!afterKeepAll["chatgpt.com/c/idx-1"], JSON.stringify(afterKeepAll));
+
+  /* ---- B11f the headline moves while you are looking at it ----
+     A background pass archives chats the whole time the popup sits open. The
+     archive figure was read once per open, so the number only ever changed if
+     you closed the panel and opened it again — which is how it was reported. */
+  const parkedStats = await pop.evaluate(async () => {
+    const all = await chrome.storage.local.get(null);
+    const keys = Object.keys(all).filter((k) => k.startsWith("stats:"));
+    const kept = {};
+    for (const k of keys) kept[k] = all[k];
+    if (keys.length) await chrome.storage.local.remove(keys);
+    return kept;                    // an open tab's own figure outranks the archive
+  });
+  await pop.reload();
+  await pop.waitForFunction(() =>
+    /[0-9]/.test(document.getElementById("stat-windowed")?.textContent || ""),
+    null, { timeout: 8000 });
+  const pulseBefore = await pop.textContent("#stat-windowed");
+  await pop.evaluate(() => new Promise((res) => chrome.runtime.sendMessage({
+    type: "recall-upsert",
+    chat: { id: "chatgpt.com/c/pulse-1", host: "chatgpt.com", path: "/c/pulse-1",
+      platform: "ChatGPT", title: "Live pulse", updatedAt: Date.now(),
+      msgs: [{ i: "p1", r: "user", t: "one" }, { i: "p2", r: "assistant", t: "two" },
+             { i: "p3", r: "user", t: "three" }] }
+  }, res)));
+  const moved = await pop.waitForFunction((was) =>
+    (document.getElementById("stat-windowed")?.textContent || "") !== was,
+    pulseBefore, { timeout: 12000 }).then(() => true).catch(() => false);
+  t("B11f the archive count updates without closing the popup", moved,
+    pulseBefore + " -> " + (await pop.textContent("#stat-windowed")));
+  await pop.evaluate((kept) => chrome.storage.local.set(kept), parkedStats);
 
   // Put the seeded ledger and salt back — the backup/restore handoff below is
   // built from them.
@@ -3505,7 +4000,7 @@ try {
   await deep.waitForTimeout(2500);
   t("B19 stepping onto an unloaded hit starts the walk to it",
     await deep.evaluate(() =>
-      !!document.getElementById("lct-preview") ||
+      !!document.getElementById("lct-history-panel") ||
       !!document.querySelector(".lct-hit") ||
       document.querySelectorAll("[data-message-id]").length > 25),
     "seek began");
@@ -3718,8 +4213,12 @@ try {
     const armed = await alarm();
     t("B22 a pass left mid-way rebooks itself after a restart",
       rebooked && rebooked.status === "resuming" && !!armed, JSON.stringify({ rebooked, armed }));
+    /* Repeating is the property; 0.5 is the platform's own floor — Chrome
+       refuses anything under 30 seconds and warns. A one-shot booking is what
+       this is guarding against, so the check is "it comes back", pinned to the
+       fastest the platform will actually honour. */
     t("B22 …and repeats, so a worker reclaimed mid-fetch is covered too",
-      armed && armed.periodInMinutes === 1, JSON.stringify(armed));
+      armed && armed.periodInMinutes === 0.5, JSON.stringify(armed));
 
     /* Nothing outstanding: every platform's last word is "done" and the run
        itself reached "done". Both are read, so both have to be cleared. */
@@ -3973,15 +4472,26 @@ try {
   });
   t("B14 the tour can be finished", closed.gone, JSON.stringify(closed));
 
-  /* The tour is the ONLY place the extension explains itself in the page, so
-     "it mentioned the strip" is not enough — a feature with no card is a
-     feature nobody is told about. These are the ones with no control on the
-     toolbar to point at, which is exactly why they were missing before. */
+  /* EVERY FEATURE THIS PAGE HAS, and nothing it does not.
+
+     The in-page tour used to run six further cards about the archive, the
+     allowance dial, temporary chats, the plan and the settings — none of which
+     exist on a chat site. Six screens of prose with no control to point at, in
+     the middle of a walkthrough about a strip on the right-hand side. Those
+     belong in the popup, where the controls are and where a card can point at
+     one; the filter that drops them is in tour.js. */
   const explained = [...new Set([...legendWalk, ...closed.seen])];
-  for (const id of ["strip", "map", "preview", "tools", "stars", "outline", "search", "backup",
-                    "recall", "times", "card", "resume", "allowance", "archive", "temp", "plan",
-                    "settings", "keys"]) {
+  for (const id of ["strip", "map", "preview", "tools", "stars", "outline", "search",
+                    "backup", "times", "card", "resume", "keys"]) {
     t(`B14 the tour explains "${id}"`, explained.includes(id), explained.join(","));
+  }
+  /* And the other half of that contract: a card that cannot point at anything
+     here must not be here. Asserting the absence matters as much as the
+     presence — without it, the next person to "just add one more card" puts
+     the wall of prose straight back. */
+  for (const id of ["recall", "allowance", "archive", "temp", "plan", "settings"]) {
+    t(`B14 …and does NOT explain "${id}" in the page — that card belongs in the popup`,
+      !explained.includes(id), explained.join(","));
   }
   /* The two cards that DEMONSTRATE rather than describe. A walkthrough that
      says "this builds a table of contents" and shows nothing is a manual with
@@ -4028,7 +4538,7 @@ try {
     handover.armed, JSON.stringify(handover));
 
   t("B14 …and is one continuous walkthrough, not a handful of cards",
-    explained.length >= 18, String(explained.length));
+    explained.length >= 12, String(explained.length));
   t("B14 …and gives the strip back when it is", closed.resting !== false, JSON.stringify(closed));
 
   // Second visit: silence. The flag is written BEFORE anything is drawn, so

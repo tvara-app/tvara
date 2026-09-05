@@ -55,6 +55,29 @@
     if (node.id && String(node.id).startsWith("lct-")) return; // our own UI
 
     const tag = node.tagName.toLowerCase();
+
+    /* The same three rules the archive is written under, so a file and a
+       preview of the same conversation cannot disagree: the model thinking out
+       loud is not the message, a rendered formula is stored as the LaTeX it was
+       made from, and a code block keeps the language it was written in.
+       See content/richtext.js. */
+    try {
+      const rich = self.LCTRichText;
+      if (rich) {
+        // Chrome, unless it is holding a picture — see richtext's note.
+        if (node.matches(rich.SKIP_SEL) && !node.querySelector("img")) return;
+        if (node.matches(rich.MATH_SEL)) {
+          const tex = rich.mathSource(node);
+          if (tex) out.push(node.matches(rich.DISPLAY_SEL) ? `\n\n$$${tex}$$\n\n` : ` $${tex}$ `);
+          return;
+        }
+        if (tag === "pre") {
+          const fenced = rich.fencedCode(node);
+          if (fenced) { out.push("\n" + fenced + "\n"); return; }
+        }
+      }
+    } catch (_) { /* richtext not up — the plain paths below still hold */ }
+
     if (tag === "pre") {
       out.push("\n\n```\n" + (node.textContent || "").replace(/\n$/, "") + "\n```\n\n");
       return;
@@ -73,7 +96,13 @@
       const name = (node.getAttribute("alt") || "").trim() ||
         (node.closest("[aria-label]")?.getAttribute("aria-label") || "")
           .replace(/^Open image:\s*/i, "").trim();
-      out.push(name ? `[image: ${name}]` : "[image]");
+      /* Markdown, not a label: an exported .md then SHOWS the picture in any
+         viewer instead of naming it. The alt these hosts write is the file
+         name, which is the best handle a person has on their own screenshots. */
+      const src = node.getAttribute("src") || "";
+      out.push(/^(https?:|blob:)/i.test(src)
+        ? `![${name || "image"}](${src})`
+        : (name ? `[image: ${name}]` : "[image]"));
       return;
     }
     const isBlock = BLOCK_RE.test(tag);

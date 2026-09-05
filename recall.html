@@ -76,28 +76,10 @@
         <p id="restore-status" class="status-copy" role="status"></p>
       </section>
 
-      <section id="deletions" class="panel urgent" hidden aria-labelledby="deletions-title">
-        <div class="panel-head">
-          <div>
-            <div class="kicker">Deleted where you use them</div>
-            <h2 id="deletions-title">Chats removed from the provider</h2>
-          </div>
-          <span class="price-pill" id="deletions-count"></span>
-        </div>
-        <p class="dim">These conversations no longer exist on the site. Your backup still has every word of them. Nothing is removed here unless you say so.</p>
-        <div id="deletions-list" class="deletion-list"></div>
-        <div class="actions">
-          <button id="deletions-keep-all" type="button">Keep all backup copies</button>
-          <button id="deletions-delete-all" class="secondary danger-action" type="button">Delete all from backup</button>
-        </div>
-        <label class="field-label" for="deletion-policy">When a chat is deleted on the site</label>
-        <select id="deletion-policy" class="secure-input">
-          <option value="ask">Ask me every time (recommended)</option>
-          <option value="keep">Always keep my backup copy, never ask</option>
-          <option value="mirror">Always delete it from my backup too</option>
-        </select>
-        <p id="deletions-status" class="status-copy" role="status"></p>
-      </section>
+      <!-- Deleted-on-the-site review lives on the notification and in the
+           popup now: the decision is asked where the user already is, not on a
+           page they have to be sent to. See content/deletion-toast.js and
+           popup/popup.html #deletion-panel. -->
 
       <div class="rail">
         <section class="panel" id="sync-panel">
@@ -113,6 +95,17 @@
             <input type="checkbox" id="auto-sync" checked />
             <span>Keep the archive current by itself. A check runs about every 3 hours, and shortly after the browser starts. Turn this off to check only when you press the button.</span>
           </label>
+          <label class="field-label" for="history-window">How far back to archive</label>
+          <select id="history-window" class="secure-input">
+            <option value="0">Everything, however old (recommended)</option>
+            <option value="7">The last 7 days</option>
+            <option value="30">The last 30 days</option>
+            <option value="90">The last 3 months</option>
+            <option value="180">The last 6 months</option>
+            <option value="365">The last year</option>
+            <option value="730">The last 2 years</option>
+          </select>
+          <p class="dim">This limits what future passes ASK the provider for. Chats already in your archive stay, whatever you pick — narrowing this never deletes anything.</p>
           <p id="sync-summary" class="sync-summary" role="status" hidden></p>
           <div id="sync-rows"></div>
           <label class="file-control wide" for="import-file">Import an export file: ChatGPT, Claude or Gemini Takeout (.zip / .json)</label>

@@ -1,0 +1,47 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Perplexity thread fixture</title>
+<!--
+  Perplexity ships Tailwind utility classes and no semantic hook for a turn, so
+  every class probe missed and the map never appeared on that host at all. The
+  one thing the app keys itself by is the answer's ID: markdown-content-0,
+  markdown-content-1, one per answer.
+
+  Two exchanges here. Four ticks is the only right answer — a question and an
+  answer each — and the split must be two asked, two replied. Counting the
+  answer bodies alone gives two, all of them the model's; counting paragraphs
+  gives nine.
+-->
+<style>
+  body { font: 14px/1.6 system-ui, sans-serif; margin: 0; background: #101116; color: #e8e8ea; }
+  .thread { max-width: 720px; margin: 0 auto; padding: 24px 16px 60vh; }
+  .turn { padding: 8px 0 22px; border-bottom: 1px solid #23242c; }
+  .ask { font-size: 20px; font-weight: 600; margin: 0 0 14px; }
+  .answer { color: #c9cad2; }
+  pre { background: #16171d; padding: 10px; border-radius: 8px; overflow-x: auto; }
+</style>
+<div class="thread" id="thread"></div>
+<script>
+  const answers = [
+    "<p>The short answer is that it depends on the workload you are running.</p>" +
+    "<p>Throughput scales with the number of shards, and latency does not.</p>" +
+    "<p>In practice, three shards is where most teams stop.</p>",
+
+    "<p>Yes — the same reasoning applies to reads.</p>" +
+    "<pre><code class=\"language-sql\">SELECT id, name\n  FROM users\n WHERE active = true;</code></pre>" +
+    "<p>That query is served from one shard, so it does not fan out.</p>" +
+    "<p>Fan-out only happens when the predicate leaves the shard key out.</p>"
+  ];
+  const asks = [
+    "how many shards should a small service run",
+    "does the same hold for read-heavy traffic"
+  ];
+
+  document.getElementById("thread").innerHTML = asks.map((ask, i) => `
+    <div class="turn">
+      <div class="ask">${ask}</div>
+      <div class="answer-wrap">
+        <div id="markdown-content-${i}" class="answer">${answers[i]}</div>
+      </div>
+    </div>`).join("");
+</script>

@@ -19,14 +19,25 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { chromium } from "playwright";
-import { startProviders, makeChats } from "./mock-providers.mjs";
+import { startProviders, makeChats, PLATFORM_PORT_OFFSET } from "./mock-providers.mjs";
+import { workerFiles } from "../tools/worker-source.mjs";
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SCRATCH = join(SRC, "test", ".work-accounts");
 const PROFILE = join(SCRATCH, "chrome-profile");
 const EXT = join(SCRATCH, "ext");
 const PORT = Number(process.env.LCT_MOCK_PORT || 8931);
-const CHANNEL = process.env.LCT_CHANNEL || "chrome";
+/* Bundled Chromium, per Playwright's own guidance: "Google Chrome and Microsoft
+   Edge removed the command-line flags needed to side-load extensions, so use
+   Chromium that comes bundled with Playwright."
+   (https://playwright.dev/docs/chrome-extensions)
+   This defaulted to branded Chrome, which meant every run opened a HEADED
+   Chrome window, waited out a 20-second service-worker timeout that could never
+   arrive because the extension was never loaded, and only then fell back. The
+   window on somebody's screen and the wasted half-minute bought nothing: the
+   flags were removed in M137 and the M139 kill switch is gone too. Chrome is
+   still reachable with LCT_CHANNEL=chrome for the day that changes. */
+const CHANNEL = process.env.LCT_CHANNEL || "chromium";
 /* Headless unless a human explicitly asks otherwise.
    
    This used to default to `CHANNEL === "chrome"`, which is true by default —
@@ -49,22 +60,32 @@ const sync = spawnSync("rsync", ["-a", "--exclude", ".git", "--exclude", "node_m
   SRC + "/", EXT + "/"]);
 if (sync.status !== 0) { console.error("FATAL: could not mirror the extension"); process.exit(1); }
 
-const bgPath = join(EXT, "bg.js");
-let bg = readFileSync(bgPath, "utf8");
+/* One port per provider — see PLATFORM_PORT_OFFSET. Pacing, the hourly cap and
+   the 429 cooldown are all per HOST, and served off one port these six WERE one
+   host: the whole suite spent a single provider's hourly budget and every later
+   block ran against a host that could not be asked for anything. */
+const at = (id, path) => `http://127.0.0.1:${PORT + PLATFORM_PORT_OFFSET[id]}/${path || id}`;
 const bases = {
-  "https://chatgpt.com": `http://127.0.0.1:${PORT}/chatgpt`,
-  "https://claude.ai": `http://127.0.0.1:${PORT}/claude`,
-  "https://chat.deepseek.com": `http://127.0.0.1:${PORT}/deepseek`,
-  "https://grok.com": `http://127.0.0.1:${PORT}/grok`,
-  "https://www.perplexity.ai": `http://127.0.0.1:${PORT}/perplexity`,
-  "https://gemini.google.com": `http://127.0.0.1:${PORT}/gemini`
+  "https://chatgpt.com": at("chatgpt"),
+  "https://claude.ai": at("claude"),
+  "https://chat.deepseek.com": at("deepseek", "deepseek"),
+  "https://grok.com": at("grok"),
+  "https://www.perplexity.ai": at("perplexity"),
+  "https://gemini.google.com": at("gemini")
 };
+// The adapter table lives in bg/providers.js now; rewrite wherever it is.
 for (const [from, to] of Object.entries(bases)) {
   const needle = `base: "${from}"`;
-  if (!bg.includes(needle)) { console.error(`FATAL: adapter base ${from} not found in bg.js`); process.exit(1); }
-  bg = bg.replace(needle, `base: "${to}"`);
+  let hit = false;
+  for (const rel of workerFiles(EXT)) {
+    const path = join(EXT, rel);
+    const src = readFileSync(path, "utf8");
+    if (!src.includes(needle)) continue;
+    writeFileSync(path, src.replaceAll(needle, `base: "${to}"`));
+    hit = true;
+  }
+  if (!hit) { console.error(`FATAL: adapter base ${from} not found in the worker`); process.exit(1); }
 }
-writeFileSync(bgPath, bg);
 
 const manPath = join(EXT, "manifest.json");
 const manifest = JSON.parse(readFileSync(manPath, "utf8"));
@@ -131,6 +152,11 @@ async function launch(channel) {
         `--load-extension=${EXT}`,
         "--disable-features=DisableLoadExtensionCommandLineSwitch"
       ],
+      /* Playwright disables Chromium's sandbox by default, which paints an
+         "unsupported command-line flag: --no-sandbox — stability and security
+         will suffer" banner across every window a headed run opens. Nothing
+         here needs the sandbox off. */
+      chromiumSandbox: true,
       viewport: { width: 900, height: 800 }
     });
   } catch (error) {
@@ -176,9 +202,27 @@ await page.waitForSelector("#usage-bars");
 
 /* ---------- talking to the worker and the archive ---------- */
 
-const send = (msg) => page.evaluate((m) => new Promise((res) => {
+/* Nothing in Playwright puts a deadline on `evaluate`, so a page that has gone
+   away — or a worker that cannot be woken — parks the whole suite forever with
+   its last PASS on screen and reports nothing at all. Every call that crosses
+   into the browser goes through this. A suite that fails is diagnosable; a
+   suite that hangs is not. */
+/* Two minutes, not twenty seconds: a real sync pass fetches a whole history
+   here, and a deadline tight enough to cut one short turns every count in the
+   J and P blocks into a zero — a green suite reporting the wrong thing, which
+   is worse than the hang this exists to stop. Long enough for the work, finite
+   enough that nothing parks forever. */
+const withDeadline = (work, what, ms = 120000) => Promise.race([
+  Promise.resolve(work).catch((e) => "THREW " + String((e && e.message) || e)),
+  new Promise((res) => {
+    const timer = setTimeout(() => res("TIMED OUT: " + what), ms);
+    if (timer.unref) timer.unref();
+  })
+]);
+
+const send = (msg) => withDeadline(page.evaluate((m) => new Promise((res) => {
   chrome.runtime.sendMessage(m, (reply) => { void chrome.runtime.lastError; res(reply); });
-}), msg);
+}), msg), "worker message " + (msg && msg.type));
 
 /* The worker opens an archive pass of its own as it wakes (firstRunBootstrap
    in bg.js). A sync asked for while that one holds the run is answered
@@ -774,8 +818,16 @@ try {
       tx.onerror = () => rej(tx.error);
     };
   }));
+  /* Conversation DOWNLOADS, which is what these assertions are about.
+     The prefix alone also matches "/conversation/init" — a POST the quota probe
+     makes to read the account's remaining allowance (see BG_QUOTA probes in
+     bg.js). It downloads no history and must not be counted as if it did; it
+     only started showing up here because the resume alarm now runs on the
+     platform's real 30-second floor, so an ordinary sweep lands inside the
+     window being measured. */
   const chatgptDetails = async () => (await providers.calls())
-    .filter((c) => c.startsWith("/chatgpt/backend-api/conversation/")).length;
+    .filter((c) => c.startsWith("/chatgpt/backend-api/conversation/") &&
+                   !c.startsWith("/chatgpt/backend-api/conversation/init")).length;
   const coverageOfAlice = async () =>
     (await checkpointsFor("chatgpt")).map(([, c]) => c.coverage).sort((a, b) => b - a)[0];
 
@@ -856,15 +908,34 @@ try {
      from host_permissions at runtime — this proves the derivation actually
      refuses something, because an allowlist that never says no is decoration.
      Every A-to-M test above already proves it says yes to the real providers. */
-  const sw = ctx.serviceWorkers()[0] ||
-    await ctx.waitForEvent("serviceworker", { timeout: 10000 }).catch(() => null);
+  /* The wipe above is the last thing this suite does, and it can take the
+     worker down with it: `serviceWorkers()[0]` then hands back a handle to a
+     dead worker and `evaluate()` on that never settles — no error, no timeout,
+     the whole run parked forever with its last PASS on screen. Wake the worker
+     through the page first, and put a deadline on every call into it. A suite
+     that hangs reports nothing at all, which is worse than one that fails. */
+  const woke = await send({ type: "bg-trace" });
+  t("I1 the worker still answers after the wipe", !/^TIMED OUT|^THREW/.test(String(woke)), String(woke));
+  /* The wipe can take the worker down with it, and `serviceWorkers()[0]` then
+     hands back a handle to a target that is gone — "Target page, context or
+     browser has been closed" at best, and a call that never settles at worst.
+     The message above has already asked Chrome to start a fresh one; take
+     whichever handle answers a trivial evaluate, not whichever is first. */
+  let sw = null;
+  for (const w of ctx.serviceWorkers()) {
+    const alive = await withDeadline(w.evaluate(() => true), "worker liveness", 5000);
+    if (alive === true) { sw = w; break; }
+  }
+  if (!sw) {
+    sw = await ctx.waitForEvent("serviceworker", { timeout: 10000 }).catch(() => null);
+  }
   if (!sw) {
     t("I1 the service worker is reachable for the network-guard check", false);
   } else {
-    const probe = async (url) => sw.evaluate(async (u) => {
+    const probe = async (url) => withDeadline(sw.evaluate(async (u) => {
       try { await self.bgFetch(u); return "ALLOWED"; }
       catch (e) { return String((e && e.message) || e); }
-    }, url);
+    }, url), "bgFetch " + url);
     const foreign = await probe("https://evil.example/steal");
     t("I1 bgFetch refuses a host outside host_permissions",
       /refusing to call evil\.example/.test(foreign), foreign);

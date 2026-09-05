@@ -11,6 +11,17 @@
  * them for real and a mock that agreed only in spirit would test nothing. */
 import { createServer } from "node:http";
 
+/* One port per provider, and it matters.
+   Every request the worker makes is paced and budgeted PER HOST — a polite
+   interval, an hourly cap, a 429 cooldown. Six providers served off one port
+   are one host, so the whole suite shared a single provider's hourly budget
+   and the later blocks ran with it already spent: passes that archived
+   nothing, and assertions that read as product bugs. In the real browser these
+   are six origins with six budgets, so the mock is six ports. */
+export const PLATFORM_PORT_OFFSET = {
+  chatgpt: 1, claude: 2, deepseek: 3, grok: 4, perplexity: 5, gemini: 6
+};
+
 export function startProviders(port = 8931) {
   /* Each platform: which account is signed in, and what each account holds.
      `chats` are [{ id, title, createdAt, updatedAt, msgs:[{r,t}] }]. */
@@ -75,7 +86,7 @@ export function startProviders(port = 8931) {
     };
   };
 
-  const server = createServer((req, res) => {
+  const handler = (req, res) => {
     const url = new URL(req.url, `http://127.0.0.1:${port}`);
     const q = url.searchParams;
     const parts = url.pathname.split("/").filter(Boolean);
@@ -397,12 +408,21 @@ export function startProviders(port = 8931) {
       return json(res, { error: "no route" }, 404);
     }
     return json(res, { error: "no platform" }, 404);
-  });
+  };
 
-  return new Promise((resolve) => {
-    server.listen(port, "127.0.0.1", () => resolve({
+  // The control port plus one per provider. All of them share `state` and the
+  // `calls` recorder, so a test still asks one place what was served.
+  const ports = [port, ...Object.values(PLATFORM_PORT_OFFSET).map((o) => port + o)];
+  const servers = ports.map(() => createServer(handler));
+
+  return Promise.all(servers.map((s, i) => new Promise((done, failed) => {
+    s.once("error", failed);
+    s.listen(ports[i], "127.0.0.1", done);
+  }))).then(() => ({
       port,
-      close: () => new Promise((done) => server.close(done)),
+      ports: Object.fromEntries(
+        Object.entries(PLATFORM_PORT_OFFSET).map(([id, o]) => [id, port + o])),
+      close: () => Promise.all(servers.map((s) => new Promise((done) => s.close(done)))),
       async control(patch) {
         const r = await fetch(`http://127.0.0.1:${port}/__control`, {
           method: "POST", body: JSON.stringify(patch)
@@ -413,8 +433,7 @@ export function startProviders(port = 8931) {
         const r = await fetch(`http://127.0.0.1:${port}/__calls`);
         return (await r.json()).calls;
       }
-    }));
-  });
+  }));
 }
 
 /** Chats with the shape the mock expects, so a test can say "four chats". */
