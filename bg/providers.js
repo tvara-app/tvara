@@ -211,6 +211,20 @@ function geminiText(list) {
   return parts.length ? parts[parts.length - 1] : "";
 }
 
+/** Gemini's tier code, as a plan name. The usage payload's first element, and
+ *  the only statement of a plan this host makes anywhere. Codes from two
+ *  independent readers of the same RPC; an unknown code names nothing rather
+ *  than guessing at a tier that may not exist. */
+function geminiTierName(code) {
+  switch (Number(code)) {
+    case 1: return "Free";
+    case 2: return "Pro";
+    case 3: case 6: return "Ultra";
+    case 4: return "Plus";
+    default: return "";
+  }
+}
+
 function geminiAt(node, path) {
   let at = node;
   for (const step of path) {
@@ -358,6 +372,7 @@ function planName(raw) {
   if (v.includes("max")) {
     return v.includes("20x") ? "Max (20x)" : v.includes("5x") ? "Max (5x)" : "Max";
   }
+  if (v.includes("ultra")) return "Ultra";
   // Before Pro, which it contains.
   if (/pro[\s_-]?lite/.test(tier)) return "Pro Lite";
   // "chatgptproplan" and "claude pro" are both Pro; "chatgptplusplan" is Plus.
@@ -409,10 +424,11 @@ function planRank(plan) {
     case "Plus": return 3;
     case "Pro Lite": return 4;
     case "Pro": return 5;
-    case "Team": return 6;
-    case "Max": case "Max (5x)": return 7;
-    case "Max (20x)": return 8;
-    case "Enterprise": return 9;
+    case "Ultra": return 6;
+    case "Team": return 7;
+    case "Max": case "Max (5x)": return 8;
+    case "Max (20x)": return 9;
+    case "Enterprise": return 10;
     default: return 0;
   }
 }
@@ -850,26 +866,50 @@ const BG_ADAPTERS = [
       let payloads;
       try {
         payloads = geminiPayloads(
-          await this.rpc(ctx, GEMINI_RPC_USAGE, [], { sourcePath: "/usage", ext: "[0]" }),
+          await this.rpc(ctx, GEMINI_RPC_USAGE, [], { sourcePath: "/usage" }),
           GEMINI_RPC_USAGE);
       } catch { return null; }
-      const buckets = payloads.map((p) => (Array.isArray(p) ? p[1] : null)).find(Array.isArray);
+      /* A metric is [something, fractionSpent, period, [[epochSeconds, nanos]]].
+         Found STRUCTURALLY rather than at a fixed index: Google appends new
+         buckets with layouts of their own, and rejecting the whole array
+         because one sibling is unfamiliar loses the two that are not. */
+      const isMetric = (m) => Array.isArray(m) && m.length >= 4 &&
+        typeof m[1] === "number" && m[1] >= 0 && m[1] <= 1.5 &&
+        typeof m[2] === "number" &&
+        Array.isArray(m[3]) && Array.isArray(m[3][0]);
+      const buckets = payloads
+        .map((p) => (Array.isArray(p) ? p.find((x) => Array.isArray(x) && x.some(isMetric)) : null))
+        .find(Array.isArray);
       if (!Array.isArray(buckets) || !buckets.length) return null;
+      /* payload[0] is the account's tier code, and it is the ONLY place Gemini
+         states a plan at all — there is no REST endpoint to read one from. */
+      const tier = payloads.map((p) => (Array.isArray(p) ? p[0] : null))
+        .find((n) => typeof n === "number");
       const out = {};
+      const named = geminiTierName(tier);
+      if (named) out.plan_name = named;
       for (const bucket of buckets) {
-        if (!Array.isArray(bucket)) continue;
-        const remaining = Number(bucket[0]);
-        const ratio = Number(bucket[1]);          // the share already SPENT, 0..1
-        const type = Number(bucket[2]);
-        if (!Number.isFinite(remaining) || !Number.isFinite(ratio)) continue;
+        /* Kind 3 is not a window: it is the AI-credit balance, and index 0
+           there IS a remaining count — the one place in this payload that
+           carries one. It has no ceiling and no reset, which lib/quota.js
+           already knows how to report without inventing a denominator. */
+        if (Array.isArray(bucket) && Number(bucket[2]) === 3 && typeof bucket[0] === "number") {
+          out.credits = { remaining: bucket[0] };
+          continue;
+        }
+        if (!isMetric(bucket)) continue;
         const window = {
-          remaining,
-          // The parser reads `utilization` as a used percentage — the same
-          // field name Anthropic sends, and the same meaning.
-          utilization: Math.max(0, Math.min(100, ratio * 100))
+          /* Only the share and the reset. The first element of the tuple is
+             NOT a remaining count — the implementations that read this RPC
+             call it a limit and none of them uses it — so publishing it as
+             "N left" would be a confident wrong number, which is the one
+             thing this panel must never do. */
+          utilization: Math.max(0, Math.min(100, Number(bucket[1]) * 100))
         };
-        const resetAt = geminiTime(Array.isArray(bucket[3]) ? bucket[3][0] : null);
+        const resetAt = geminiTime(bucket[3][0]);
         if (resetAt) window.resets_at = resetAt;
+        // Real captures: period 1 is the rolling five-hour window, 2 the week.
+        const type = Number(bucket[2]);
         out[type === 1 ? "five_hour" : type === 2 ? "seven_day" : "bucket_" + type] = window;
       }
       return Object.keys(out).length ? out : null;

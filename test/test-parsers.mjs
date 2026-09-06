@@ -46,11 +46,11 @@ const grab = (name) => {
   throw new Error("unbalanced braces reading " + name);
 };
 
-const NAMES = ["geminiValueEnd", "geminiFrames", "geminiPayloads", "geminiTime", "geminiAt", "geminiText",
+const NAMES = ["geminiValueEnd", "geminiFrames", "geminiPayloads", "geminiTime", "geminiAt", "geminiText", "geminiTierName",
   "pplxTime", "pplxFromTrace", "pplxAnswer", "xaiTime", "chatBranch", "chatgptMsgs", "turnMsgs", "planName", "claudeOrgCtx", "planRank", "bestPlanSeat", "clampText", "planFromAny", "pickAllowanceSeat"];
 const {
-  geminiFrames, geminiPayloads, geminiTime, geminiAt, geminiText, pplxTime, pplxFromTrace, pplxAnswer, xaiTime,
-  chatgptMsgs, turnMsgs, planName, claudeOrgCtx, bestPlanSeat, clampText, planFromAny, pickAllowanceSeat
+  geminiFrames, geminiPayloads, geminiTime, geminiAt, geminiText, geminiTierName, pplxTime, pplxFromTrace, pplxAnswer, xaiTime,
+  chatgptMsgs, turnMsgs, planName, claudeOrgCtx, bestPlanSeat, planRank, clampText, planFromAny, pickAllowanceSeat
 } = await import("data:text/javascript," + encodeURIComponent(
   NAMES.map(grab).join("\n") + `\nexport {${NAMES.join(",")}};`));
 
@@ -271,6 +271,15 @@ t("gemini: nothing is nothing, never a guess",
     pickAllowanceSeat([{ acct: "a", windows: [{ remaining: 3 }] },
       { acct: "b", windows: [{ remaining: 9 }] }]).acct === "a");
 }
+/* Gemini states a plan in exactly one place: the tier code at the head of the
+   usage RPC payload. There is no REST endpoint to read one from. */
+t("gemini: the tier code names the plan",
+  geminiTierName(1) === "Free" && geminiTierName(2) === "Pro" &&
+  geminiTierName(4) === "Plus" && geminiTierName(3) === "Ultra" && geminiTierName(6) === "Ultra");
+t("gemini: an unknown code names nothing, never a guess",
+  geminiTierName(99) === "" && geminiTierName(null) === "" && geminiTierName(undefined) === "");
+t("plan: Ultra is above Pro, not a kind of it",
+  planName("ultra") === "Ultra" && planRank("Ultra") > planRank("Pro"));
 t("plan: nothing said is not 'Free'", planName("") === "" && planName(null) === "");
 
 /* The org list is where Claude states this, and `capabilities` alone called a

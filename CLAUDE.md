@@ -196,9 +196,16 @@ whatever the handshake inferred:
   proof-of-work challenge, not with a quota endpoint. "no limit published" on
   that row is the true answer, not a gap to be filled with an estimate.
 - **Gemini** — no REST API at all: the allowance is a batchexecute RPC
-  (`jSf9Qc`), answering `[status, [[remaining, usedRatio, type, [[s, ns]]], …]]`
-  with type 1 the five-hour window and type 2 the weekly one. The adapter's
-  `quotaJson()` translates that into the shape `lib/quota.js` already reads, and
+  (`jSf9Qc`, args `[]`), answering `[tierCode, [window, …], overageFlag]` where
+  a window is `[?, fractionSpent, kind, [[epochSeconds, nanos]]]`, kind 1 the
+  five-hour window and 2 the week. Read `fractionSpent` and the reset and
+  NOTHING ELSE: index 0 is not a remaining count — two independent readers of
+  this RPC never use it for a window — and publishing it as "N left" is exactly
+  the confident wrong number this panel exists to avoid. Kind 3 is not a window
+  at all; it is the AI-credit balance, and index 0 there IS a remaining count.
+  `tierCode` (1 free, 2 pro, 3/6 ultra, 4 plus) is the ONLY statement of a plan
+  this host makes anywhere. Windows are found structurally, so a new bucket
+  with a layout of its own cannot reject the two that parse.
   `QUOTA_ENDPOINTS.gemini` marks it `native: true` because it is not a URL.
 
 `planName()` matches on SUBSTRINGS, never a table of exact strings: these tiers
