@@ -141,39 +141,107 @@
     paintQuota(await send({ type: "quota-state" }) || {});
   }
 
-  async function checkPin() {
-    const result = await send({ type: "toolbar-pinned" });
-    const pinned = !!(result && result.pinned);
-    /* Firefox has no chrome.action.getUserSettings, so the answer there is
-       "cannot tell" — not "not pinned". Blocking Continue on it left every
-       Firefox install stuck on this step with a button that never enabled. */
-    const known = !!(result && result.known);
-    $("pin-status").textContent = pinned
-      ? "Pinned. Tvara is ready whenever you need it."
-      : known
-        ? "Chrome has not confirmed the pin yet. Open the puzzle menu and pin Tvara first."
-        : "Pin Tvara from your browser's extensions menu, then carry on — this browser cannot confirm it for us.";
-    $("pin-status").classList.toggle("confirmed", pinned);
-    $("check-pin").disabled = pinned || !known;
-    $("continue").disabled = known && !pinned;
-    if ((pinned || !known) && pinTimer) { clearInterval(pinTimer); pinTimer = null; }
+  /* ---------- pick a site, and be shown around on it ----------
+
+     The walkthrough is a content script, so it needs a chat page to run in.
+     One button used to send everybody to ChatGPT, which is the wrong site for
+     most people and a redirect nobody asked for. This asks instead.
+
+     A colour and an initial, not a wordmark: the palette is the one the rest
+     of the product already uses for these six — recognisably theirs,
+     deliberately not theirs exactly — and shipping somebody else's logo in our
+     own UI is a thing to be licensed, not borrowed. */
+  const SITES = [
+    { id: "chatgpt", url: "https://chatgpt.com/" },
+    { id: "claude", url: "https://claude.ai/" },
+    { id: "gemini", url: "https://gemini.google.com/app" },
+    { id: "grok", url: "https://grok.com/" },
+    { id: "perplexity", url: "https://www.perplexity.ai/" },
+    { id: "deepseek", url: "https://chat.deepseek.com/" }
+  ];
+
+  const picker = $("picker");
+  let lastFocus = null;
+
+  /* Built once, on first open. Rebuilding a list under a reader is the thing
+     that throws away focus and restarts every animation mid-flight. */
+  function buildBubbles() {
+    const host = $("bubbles");
+    if (host.childElementCount) return;
+    const frag = document.createDocumentFragment();
+    for (const site of SITES) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "bubble";
+      b.dataset.platform = site.id;
+      b.setAttribute("aria-label", `Show me around on ${names[site.id]}`);
+      const disc = document.createElement("span");
+      disc.className = "bubble-disc";
+      disc.setAttribute("aria-hidden", "true");
+      disc.textContent = names[site.id].slice(0, 1);
+      const label = document.createElement("span");
+      label.className = "bubble-name";
+      label.textContent = names[site.id];
+      b.append(disc, label);
+      b.addEventListener("click", () => start(site));
+      frag.append(b);
+    }
+    host.append(frag);
   }
 
-  $("check-pin").addEventListener("click", checkPin);
-  $("continue").addEventListener("click", () => window.close());
-  /* The walkthrough is a content script, so it needs a chat page to run in.
-     The install listener has already armed it; this is the shortest path from
-     "installed" to seeing it, for a user who has no chat open yet. */
-  $("tour-now").addEventListener("click", () => {
-    try { window.open("https://chatgpt.com/", "_blank", "noopener"); } catch { /* popup blocked */ }
+  async function start(site) {
+    /* The tour reads these when the content script wakes on the site. DONE is
+       cleared as well as ARMED: somebody asking to be shown around has asked,
+       whatever a previous run recorded. */
+    try {
+      await chrome.storage.local.set({ "lct-tour-armed-v1": Date.now() });
+      await chrome.storage.local.remove("lct-tour-v1");
+    } catch { /* the site still opens; the tour simply may not arm */ }
+    picker.classList.add("leaving");
+    try { window.open(site.url, "_blank", "noopener"); } catch { /* popup blocked */ }
     window.close();
+  }
+
+  function openPicker() {
+    buildBubbles();
+    lastFocus = document.activeElement;
+    picker.hidden = false;
+    /* Two frames: one for `hidden` to come off and the layer to be laid out,
+       one for the class that animates it. Adding both in the same frame gives
+       the browser no "before" to animate from, which is exactly the jump this
+       is here to avoid. */
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      picker.classList.add("open");
+      if (M) M.stagger(picker.querySelectorAll(".bubble"), "bubble-in", 34, 6);
+      const first = picker.querySelector(".bubble");
+      if (first) first.focus({ preventScroll: true });
+    }));
+  }
+
+  function closePicker() {
+    if (picker.hidden) return;
+    picker.classList.remove("open");
+    for (const b of picker.querySelectorAll(".bubble")) b.classList.remove("bubble-in");
+    const done = () => { picker.hidden = true; };
+    // Matches --picker-out in the stylesheet. A timer rather than
+    // transitionend: a layer the reader closed twice quickly must still end up
+    // hidden, and transitionend does not fire for a transition that is
+    // interrupted.
+    setTimeout(done, M && M.reduced ? 0 : 180);
+    if (lastFocus && lastFocus.isConnected) lastFocus.focus({ preventScroll: true });
+  }
+
+  $("use-tvara").addEventListener("click", openPicker);
+  $("picker-close").addEventListener("click", closePicker);
+  $("picker-scrim").addEventListener("click", closePicker);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closePicker();
   });
   refreshStats();
   refreshQuota();
   // The install listener already started this. Calling again joins that run if
   // it is still active, or gives a restored worker a new chance to fetch.
   send({ type: "quota-sweep", reason: "install" });
-  let pinTimer = setInterval(checkPin, 1000);
   const statsTimer = setInterval(refreshStats, 5000);
   const quotaTimer = setInterval(refreshQuota, 5000);
   try {
@@ -182,9 +250,7 @@
       if (Object.keys(changes).some((key) => key.startsWith("quota:") || key === "lct-quota-probe-v1")) refreshQuota();
     });
   } catch { /* a context that is closing simply stops polling */ }
-  checkPin();
   window.addEventListener("pagehide", () => {
     clearInterval(statsTimer); clearInterval(quotaTimer);
-    if (pinTimer) clearInterval(pinTimer);
   }, { once: true });
 })();

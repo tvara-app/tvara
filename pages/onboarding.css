@@ -19,7 +19,7 @@ body::before { content: ""; position: fixed; inset: 0; pointer-events: none; opa
 .mark img, .tiny-mark img { width: 100%; height: 100%; object-fit: cover; }
 .status { color: #9ee4b7; font-size: 12px; }.status i { display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: #70dc9a; box-shadow: 0 0 12px #70dc9a; }
 .welcome { max-width: 680px; padding: 82px 0 46px; }.eyebrow, .step { margin: 0 0 11px; color: var(--ember); font-size: 11px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; }.welcome h1 { margin: 0; font-size: clamp(42px, 7vw, 76px); line-height: .98; letter-spacing: -.045em; font-weight: 500; }.welcome h1 em { color: var(--ember); font-style: normal; }.lede { max-width: 570px; margin: 24px 0 0; color: var(--muted); font-size: 16px; line-height: 1.55; }
-.pin-panel, .stats { border-top: 1px solid var(--line); }.pin-panel { display: grid; grid-template-columns: minmax(0, .9fr) minmax(360px, 1.1fr); gap: 34px; padding: 34px 0; }.pin-copy h2, .stats h2 { margin: 0; font-size: 25px; font-weight: 500; letter-spacing: -.02em; }.pin-copy > p:not(.step) { max-width: 350px; color: var(--muted); line-height: 1.55; }.pin-copy strong { color: var(--ink); }button { border: 0; border-radius: 8px; padding: 12px 17px; color: #291018; background: var(--ember); font: inherit; font-weight: 700; cursor: pointer; }button:disabled { cursor: default; opacity: .42; }.pin-status { color: var(--faint) !important; font-size: 12px; }
+.pin-panel, .stats { border-top: 1px solid var(--line); }.pin-panel { display: grid; grid-template-columns: minmax(0, .9fr) minmax(360px, 1.1fr); gap: 34px; padding: 34px 0; }.pin-copy h2, .stats h2 { margin: 0; font-size: 25px; font-weight: 500; letter-spacing: -.02em; }.pin-copy > p:not(.step) { max-width: 350px; color: var(--muted); line-height: 1.55; }.pin-copy strong { color: var(--ink); }button { border: 0; border-radius: 8px; padding: 12px 17px; color: #291018; background: var(--ember); font: inherit; font-weight: 700; cursor: pointer; }button:disabled { cursor: default; opacity: .42; }
 .toolbar-art { position: relative; min-height: 220px; border: 1px solid var(--line); border-radius: 12px; background: linear-gradient(145deg, rgb(255 255 255 / .12), rgb(255 255 255 / .035)); overflow: hidden; }.browser-bar { display: flex; align-items: center; gap: 18px; height: 58px; padding: 0 22px; background: rgb(255 255 255 / .1); }.address { flex: 1; height: 23px; border-radius: 13px; background: rgb(255 255 255 / .12); }.puzzle, .more { font-size: 21px; }.puzzle { color: var(--ember); filter: drop-shadow(0 0 9px var(--ember)); }.menu { position: absolute; top: 69px; right: 40px; width: 245px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: #2b1b26; box-shadow: 0 18px 35px rgb(0 0 0 / .35); }.menu-title { margin-bottom: 12px; color: var(--muted); font-size: 12px; }.extension-row { display: flex; align-items: center; gap: 10px; padding: 10px 7px; border-radius: 7px; background: rgb(255 255 255 / .08); }.tiny-mark { width: 23px; height: 23px; font-size: 11px; }.pin { margin-left: auto; color: var(--ember); font-size: 18px; filter: drop-shadow(0 0 7px rgb(255 155 117 / .8)); }.puzzle-arrow, .pin-arrow { position: absolute; color: var(--ember); font-size: 34px; font-weight: 600; filter: drop-shadow(0 0 7px rgb(255 155 117 / .72)); }.puzzle-arrow { top: 26px; right: 81px; transform: rotate(-25deg); }.pin-arrow { top: 100px; right: 76px; }.callout { position: absolute; color: var(--ember); font-size: 12px; font-weight: 700; }.callout-menu { bottom: 15px; left: 20px; }.callout-pin { top: 155px; right: 20px; }
 .stats { padding: 33px 0 24px; }.section-heading { align-items: end; }.section-heading > span { color: var(--faint); font-size: 12px; }.stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; margin-top: 22px; border: 1px solid var(--line); background: var(--line); }.stat { padding: 18px; background: var(--panel); }.stat strong { display: block; font-size: 30px; font-weight: 500; }.stat span { color: var(--muted); font-size: 12px; }.quota-list { margin-top: 16px; }.quota-row { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--line); }.quota-name { flex: 1; }.quota-value { color: var(--ember); font-variant-numeric: tabular-nums; }.quota-value.pending { color: var(--faint); }.loading { color: var(--faint); font-size: 12px; }footer { padding-top: 22px; color: var(--faint); font-size: 12px; }footer button { margin-left: 20px; }
 @media (max-width: 700px) { .shell { width: min(100% - 30px, 560px); padding-top: 20px; }.welcome { padding: 60px 0 38px; }.pin-panel { grid-template-columns: 1fr; }.toolbar-art { min-height: 205px; }.stats { padding-top: 26px; }.stat { padding: 13px; }.stat strong { font-size: 24px; }footer { align-items: flex-start; gap: 14px; }footer button { margin-left: 0; } }
@@ -87,3 +87,150 @@ button:active:not(:disabled) { transform: scale(.97); }
   color: inherit;
 }
 .foot-actions .ghost:hover { background: rgb(255 255 255 / .06); }
+
+/* ---------- pick a site ----------
+   A FIXED layer over the page. Nothing behind it moves when it opens, which
+   is the only way to promise there is no jump: a panel that pushes the page
+   is a jump however smoothly it is animated.
+
+   Transform and opacity throughout — no width, height, top or left anywhere
+   in here — so every frame is the compositor's and none of it is layout. */
+
+/* `display` is declared on :not([hidden]) ON PURPOSE. `hidden` is only a UA
+   rule of `display: none`, and any display of our own beats it — so a layer
+   like this one stays laid out at inset:0 while claiming to be hidden, and its
+   scrim quietly eats every click on the page behind it. Nothing looks wrong;
+   the page simply stops responding. */
+.picker:not([hidden]) {
+  display: grid;
+  place-items: center;
+}
+.picker {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  padding: 24px;
+}
+.picker-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgb(8 4 7 / .72);
+  backdrop-filter: blur(3px);
+  opacity: 0;
+  transition: opacity .18s var(--ease, cubic-bezier(.22, 1, .36, 1));
+}
+.picker.open .picker-scrim { opacity: 1; }
+
+.picker-sheet {
+  position: relative;
+  width: min(560px, 100%);
+  padding: 26px 26px 20px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: #140b12;
+  box-shadow: 0 28px 80px rgb(6 2 5 / .6);
+  text-align: center;
+  /* The sheet itself only ever scales and fades. 0.98 rather than something
+     larger: a panel that grows from small reads as a notification arriving,
+     and this is the reader's own click being answered. */
+  opacity: 0;
+  transform: scale(.98);
+  transition: opacity .18s var(--ease, cubic-bezier(.22, 1, .36, 1)),
+              transform .18s var(--ease, cubic-bezier(.22, 1, .36, 1));
+}
+.picker.open .picker-sheet { opacity: 1; transform: none; }
+
+.picker-sheet h2 { margin: 0; font-size: 20px; font-weight: 500; letter-spacing: -.02em; }
+.picker-sub { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
+
+.bubbles {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px 10px;
+  margin: 22px 0 18px;
+}
+
+.bubble {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  padding: 10px 4px;
+  border: 0;
+  border-radius: 14px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+  /* The hover and the press are transforms on the DISC, not on this box:
+     moving the box would move the label under the pointer. */
+  transition: background .16s var(--ease, cubic-bezier(.22, 1, .36, 1));
+}
+.bubble:hover { background: rgb(255 255 255 / .04); }
+.bubble:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+
+.bubble-disc {
+  display: grid;
+  place-items: center;
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--tint) 55%, transparent);
+  background: color-mix(in srgb, var(--tint) 16%, transparent);
+  color: var(--tint);
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: -.02em;
+  transition: transform .18s var(--ease, cubic-bezier(.22, 1, .36, 1)),
+              background .18s var(--ease, cubic-bezier(.22, 1, .36, 1));
+}
+.bubble:hover .bubble-disc { transform: scale(1.06); background: color-mix(in srgb, var(--tint) 26%, transparent); }
+.bubble:active .bubble-disc { transform: scale(.97); }
+.bubble-name { color: var(--muted); font-size: 12px; }
+.bubble:hover .bubble-name { color: var(--ink); }
+
+/* Their colour, one step off the real one — the same palette the popup and
+   the archive rows use, so a platform is the same colour wherever this
+   product talks about it. */
+.bubble[data-platform="chatgpt"]    { --tint: #19b884; }
+.bubble[data-platform="claude"]     { --tint: #e0805c; }
+.bubble[data-platform="gemini"]     { --tint: #4a8ef6; }
+.bubble[data-platform="deepseek"]   { --tint: #7b82fd; }
+.bubble[data-platform="grok"]       { --tint: #dcdce4; }
+.bubble[data-platform="perplexity"] { --tint: #1fadc6; }
+
+/* Each bubble arrives just after the one before it. The delay is a custom
+   property set by lib/motion.js and the animation lives here, so six bubbles
+   cost six compositor animations and no timers. */
+.bubble-in { animation: bubble-in .26s var(--ease, cubic-bezier(.22, 1, .36, 1)) both; animation-delay: var(--stagger, 0ms); }
+@keyframes bubble-in {
+  from { opacity: 0; transform: translateY(6px) scale(.96); }
+  to   { opacity: 1; transform: none; }
+}
+
+.picker-close {
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 14px;
+  background: transparent;
+  color: var(--faint);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.picker-close:hover { color: var(--ink); }
+
+/* Chosen. The sheet steps back rather than vanishing, so the new tab opening
+   over it reads as the same movement continuing. */
+.picker.leaving .picker-sheet { opacity: 0; transform: scale(.99); }
+.picker.leaving .picker-scrim { opacity: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .picker-scrim, .picker-sheet, .bubble, .bubble-disc { transition: none; }
+  .bubble-in { animation: none; }
+  .picker.open .picker-sheet { transform: none; }
+}
+
+@media (max-width: 520px) {
+  .bubbles { grid-template-columns: repeat(2, 1fr); }
+}
