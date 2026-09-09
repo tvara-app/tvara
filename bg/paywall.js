@@ -393,11 +393,26 @@ async function identityConfirmCode(email, code) {
  * is checked against the signature on the request that presents it — so an
  * id_token obtained anywhere else cannot be posted here.
  */
-async function identityGoogleSignIn() {
-  if (!googleSignInAvailable()) return { branch: "unavailable" };
+/* ---------- everything that does not need the click ----------
+   Opening Google's window is the slow part of signing in and nothing here can
+   make it faster. What CAN come off the critical path is the rest: the service
+   worker waking up (it is reclaimed constantly, and a cold start is parsing
+   the whole worker before a single line of this runs) and minting the nonce.
+
+   The popup asks for this the moment the pointer lands on the button, which is
+   a hundred milliseconds or so before the click, and by then the worker is
+   alive and the URL is built. Held in a module variable on purpose: it is an
+   optimisation, not state, and losing it to a reclaim costs nothing but the
+   old path. The nonce it was built with is in storage.session either way, so
+   whichever URL is used, the value the issuer verifies against is the one that
+   was stored with it. */
+let _googlePrepared = null;                 // { url, at }
+const GOOGLE_PREPARE_TTL = 2 * 60 * 1000;
+
+async function identityGoogleUrl() {
   const nonce = await self.LCTEntitlement.identityGoogleNonce();
   const redirect = chrome.identity.getRedirectURL();
-  const url = "https://accounts.google.com/o/oauth2/v2/auth"
+  return "https://accounts.google.com/o/oauth2/v2/auth"
     + "?client_id=" + encodeURIComponent(GOOGLE_CLIENT_ID)
     + "&response_type=id_token"
     /* `profile` buys exactly one thing: the picture and display name in the
@@ -409,7 +424,25 @@ async function identityGoogleSignIn() {
     // Always ask which account. Silently reusing whichever one the browser is
     // signed into is how a person anchors their trial to the wrong mailbox.
     + "&prompt=select_account";
+}
 
+async function identityGooglePrepare() {
+  if (!googleSignInAvailable()) return { branch: "unavailable" };
+  try { _googlePrepared = { url: await identityGoogleUrl(), at: Date.now() }; }
+  catch { return { ok: false }; }
+  return { ok: true };
+}
+
+async function identityGoogleSignIn() {
+  if (!googleSignInAvailable()) return { branch: "unavailable" };
+  const ready = _googlePrepared && Date.now() - _googlePrepared.at < GOOGLE_PREPARE_TTL
+    ? _googlePrepared.url : null;
+  _googlePrepared = null;                   // one launch per prepared nonce
+  const url = ready || await identityGoogleUrl();
+  return identityGoogleLaunch(url);
+}
+
+async function identityGoogleLaunch(url) {
   let landed;
   try {
     landed = await chrome.identity.launchWebAuthFlow({ url, interactive: true });

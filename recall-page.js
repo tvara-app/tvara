@@ -25,8 +25,14 @@
   // allowlist lives at the point of use. Exact match only: a suffix/contains
   // check admits "evil-claude.ai" or "claude.ai@evil.com".
 
+  /* Two pages share this file: Total Recall (search) and Archive (operations,
+     backup, restore, delete). Every top-level hook is therefore optional —
+     a control that lives on the other page is absent, not broken. */
+  const on = (id, ev, fn) => { const el = $(id); if (el) el.addEventListener(ev, fn); };
+
   const setStatus = (id, text, kind = "") => {
     const node = $(id);
+    if (!node) return;
     node.className = "status-copy" + (kind ? " " + kind : "");
     node.textContent = text || "";
   };
@@ -75,16 +81,18 @@
     // different mark for one licence is how a user starts wondering which of
     // them is lying.
     const badge = $("plan-badge");
-    self.LCTProduct.paintBadge(badge, pro, trialOn);
-    badge.title = pro ? "Pro — purchased. A one-time licence, yours forever." : "";
+    if (badge) {
+      self.LCTProduct.paintBadge(badge, pro, trialOn);
+      badge.title = pro ? "Pro — purchased. A one-time licence, yours forever." : "";
+    }
 
     // The lock lives inside the archive core rather than replacing it: the
     // stats below stay visible so a locked archive still looks alive, and the
     // trial can be started here instead of only from the popup.
-    $("core-locked").hidden = unlocked;
-    $("searchbox").hidden = !unlocked;
-    $("trial-start").hidden = !!trialSpent;
-    if (trialSpent) {
+    if ($("core-locked")) $("core-locked").hidden = unlocked;
+    if ($("searchbox")) $("searchbox").hidden = !unlocked;
+    if ($("trial-start")) $("trial-start").hidden = !!trialSpent;
+    if (trialSpent && $("core-locked")) {
       $("core-locked").querySelector(".locked-title").textContent = "Your trial has ended";
       $("core-locked").querySelector(".locked-copy").textContent =
         `The archive kept building the whole time, so nothing was lost. ${self.LCTProduct.PRICE} once, from the extension popup, unlocks search again forever.`;
@@ -152,7 +160,7 @@
 
   self.LCTProduct.applyTo(document);
 
-  $("trial-start").addEventListener("click", async () => {
+  on("trial-start", "click", async () => {
     /* The precondition the popup has and this page did not: an unverified week
        runs its seven days and unlocks nothing, so starting one from here was a
        button that looked like it worked and granted nothing. */
@@ -180,7 +188,7 @@
      popup. Same route the popup takes: the issuer opens the session, the
      background opens the tab and owns the wait — so this page does not navigate
      away from a search someone was in the middle of. */
-  $("buy-pro").addEventListener("click", async () => {
+  on("buy-pro", "click", async () => {
     const btn = $("buy-pro");
     const label = btn.textContent;
     btn.disabled = true;
@@ -198,6 +206,7 @@
   /* ---------- search ---------- */
 
   let queryTimer = null;
+  const M = self.LCTMotion;
 
   function fmtWhen(ms) {
     if (!ms) return "";
@@ -244,31 +253,70 @@
     return div;
   }
 
+  /** Placeholder rows at the geometry of real ones, for the first search only —
+   *  after that the previous results stay on screen and are the placeholder. */
+  function resultSkeleton(host, n = 4) {
+    const frag = document.createDocumentFragment();
+    for (let i = 0; i < n; i++) {
+      const item = document.createElement("div");
+      /* NOT .r-item. A placeholder that wears the class meaning "a result" is
+         counted as one by everything downstream — the empty-archive notice
+         reads it as a hit, and a test waiting for the first result matched a
+         grey box with no text in it. */
+      item.className = "r-skeleton";
+      item.style.setProperty("--stagger", (i * 80) + "ms");
+      const a = document.createElement("span"), b = document.createElement("span");
+      item.append(a, b);
+      frag.append(item);
+    }
+    host.replaceChildren(frag);
+  }
+
   async function runQuery() {
     const q = $("q").value.trim();
+    const host = $("results");
     if (q.length < 2) {
-      $("results").replaceChildren();
+      host.style.minHeight = "";
+      host.classList.remove("searching");
+      host.replaceChildren();
       $("q-meta").textContent = "";
       paintArchiveState();
       return;
     }
+    /* The results the reader is already looking at stay where they are while
+       the next query runs — dimmed, not deleted. Emptying them collapses the
+       page to nothing and grows it back a moment later, on every keystroke,
+       and what that looks like is the page jumping while you type.
+
+       The height is pinned across the swap for the same reason: a five-result
+       query followed by a one-result query must not drag the footer up the
+       screen mid-read. */
+    if (!host.querySelector(".r-item")) resultSkeleton(host);
+    else host.style.minHeight = host.offsetHeight + "px";
+    host.classList.add("searching");
     $("q-meta").textContent = "searching…";
     const res = await send({ type: "recall-search", q });
-    if (lockedResponse(res)) { $("q-meta").textContent = ""; return; }
+    if (lockedResponse(res)) { $("q-meta").textContent = ""; host.classList.remove("searching"); return; }
     // A slower earlier query must never repaint over a newer one.
     if (!res || res.err || q !== $("q").value.trim()) return;
-    $("results").replaceChildren(...res.results.map(row));
+    const rows = res.results.map(row);
+    host.classList.remove("searching");
+    host.replaceChildren(...rows);
+    if (M) M.stagger(rows, "r-item-in", 24, 8);
+    // Released on the next frame, once the new rows have been laid out: the
+    // floor was only ever there to cover the gap between the two paints.
+    requestAnimationFrame(() => { host.style.minHeight = ""; });
     $("q-meta").textContent = res.results.length
       ? `${res.results.length} chat${res.results.length === 1 ? "" : "s"}`
       : `no matches in ${res.scanned.toLocaleString()} chats`;
     paintArchiveState();
   }
 
-  $("q").addEventListener("input", () => {
+  on("q", "input", () => {
     clearTimeout(queryTimer);
     queryTimer = setTimeout(runQuery, 180);
   });
-  $("q").addEventListener("keydown", (e) => {
+  on("q", "keydown", (e) => {
     if (e.key !== "Escape") return;
     e.preventDefault();
     $("q").value = "";
@@ -281,7 +329,8 @@
 
   function paintArchiveState() {
     const note = $("archive-empty");
-    const hasResults = $("results").childElementCount > 0;
+    if (!note) return;                       // the Archive page has no result list
+    const hasResults = !!$("results").querySelector(".r-item");
     if (archivedChats === null || archivedChats > 0 || hasResults) { note.hidden = true; return; }
     note.hidden = false;
     note.textContent = unlocked
@@ -295,6 +344,7 @@
     archivedChats = s.chats;
     paintArchiveState();
     const wrap = $("stats");
+    if (!wrap) return;
     wrap.replaceChildren();
     const mk = (num, label) => {
       const d = document.createElement("div");
@@ -495,7 +545,7 @@
     throw new Error("unrecognized export format: expected ChatGPT, Claude, or Gemini Takeout");
   }
 
-  $("import-file").addEventListener("change", async (e) => {
+  on("import-file", "change", async (e) => {
     const file = e.target.files && e.target.files[0];
     if (!file) return;
     setStatus("import-status", "Reading " + file.name + "…");
@@ -551,6 +601,7 @@
   }
 
   function paintStrength() {
+    if (!$("backup-passphrase")) return;
     const value = $("backup-passphrase").value;
     const confirmation = $("backup-passphrase-confirm").value;
     const meter = $("backup-strength");
@@ -572,16 +623,16 @@
     }
     $("create-backup").disabled = !canBackup || !rated.ok || value !== confirmation;
   }
-  $("backup-passphrase").addEventListener("input", paintStrength);
-  $("backup-passphrase-confirm").addEventListener("input", paintStrength);
-  for (const id of ["protect-password", "protect-none"]) $(id).addEventListener("change", paintProtection);
-  $("backup-auto").addEventListener("change", paintProtection);
+  on("backup-passphrase", "input", paintStrength);
+  on("backup-passphrase-confirm", "input", paintStrength);
+  for (const id of ["protect-password", "protect-none"]) on(id, "change", paintProtection);
+  on("backup-auto", "change", paintProtection);
 
   /* A password the user did not invent is the strongest one they will ever
      use here: 125 bits, uniform, and no reuse of anything they type elsewhere.
      Revealed on purpose — a generated secret nobody can read is a secret
      nobody keeps. */
-  $("backup-generate").addEventListener("click", () => {
+  on("backup-generate", "click", () => {
     const value = crypt.generatePassphrase();
     $("backup-passphrase").value = value;
     $("backup-passphrase-confirm").value = value;
@@ -609,7 +660,7 @@
   }
   wireReveal("backup-reveal", "backup-passphrase", "backup-passphrase-confirm");
   wireReveal("restore-reveal", "restore-passphrase");
-  paintProtection();
+  if ($("backup-panel")) paintProtection();
 
   async function collectSnapshot() {
     const state = await send({ type: "recall-sync-status" });
@@ -710,7 +761,7 @@
      button is the one thing on this page that a locked, lapsed or refunded
      install must still be able to press. See the "recall-export" case in bg.js
      for why. */
-  $("export-archive").addEventListener("click", async () => {
+  on("export-archive", "click", async () => {
     const button = $("export-archive");
     button.disabled = true;
     setStatus("export-status", "Reading your archive…");
@@ -764,7 +815,7 @@
     } finally { button.disabled = false; }
   });
 
-  $("create-backup").addEventListener("click", async () => {
+  on("create-backup", "click", async () => {
     const button = $("create-backup");
     button.disabled = true;
     setStatus("backup-status", "Encrypting your local archive…");
@@ -807,7 +858,7 @@
     }
   }
 
-  $("autobackup-run").addEventListener("click", async () => {
+  on("autobackup-run", "click", async () => {
     const button = $("autobackup-run");
     button.disabled = true;
     setStatus("autobackup-status", "Writing an encrypted backup…");
@@ -817,18 +868,18 @@
     button.disabled = false;
   });
 
-  $("autobackup-off").addEventListener("click", async () => {
+  on("autobackup-off", "click", async () => {
     await send({ type: "recall-autobackup-disable" });
     await paintAutoBackup();
   });
 
-  $("backup-forget").addEventListener("click", async () => {
+  on("backup-forget", "click", async () => {
     await send({ type: "recall-backup-forget-key" });
     setStatus("backup-status", "The saved password is gone from this browser. Files already written still open with it; automatic backups are off until you enter it again.", "");
     await paintAutoBackup();
   });
 
-  paintAutoBackup();
+  if ($("backup-panel")) paintAutoBackup();
 
   /* A hint, not a decision: open() is what actually enforces which kind of file
      this is. Reading the head of the file is enough to stop asking for a
@@ -838,7 +889,7 @@
     catch { return false; }
   }
 
-  $("restore-file").addEventListener("change", async (event) => {
+  on("restore-file", "change", async (event) => {
     restoreFile = event.target.files && event.target.files[0];
     $("restore-file-name").textContent = restoreFile ? restoreFile.name : "No backup selected";
     $("restore-run").disabled = !restoreFile || !canRestore;
@@ -918,7 +969,7 @@
     send({ type: "recall-bg-sync" });
   }
 
-  $("restore-run").addEventListener("click", async () => {
+  on("restore-run", "click", async () => {
     const button = $("restore-run");
     button.disabled = true;
     try { await restoreReinstallBackup(); }
@@ -926,7 +977,7 @@
     finally { button.disabled = !restoreFile || !canRestore; }
   });
 
-  $("recovery-skip").addEventListener("click", async () => {
+  on("recovery-skip", "click", async () => {
     await send({ type: "recall-recovery-skip" });
     setStatus("restore-status", "Dismissed. The archive keeps rebuilding itself from your providers.", "ok");
     await initSyncUI();
@@ -1023,12 +1074,22 @@
     if (value !== "ask") await resolveDeletion([], value === "mirror" ? "delete" : "keep");
   });
 
-  paintDeletions();
+  if ($("deletion-list")) paintDeletions();
   /* The section moved to the popup and the notification. An old #deletions link
      — a bookmark, or the popup before it was updated — must not throw here. */
   const deletionsAnchor = $("deletions");
   if (location.hash === "#deletions" && deletionsAnchor) {
     deletionsAnchor.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+  /* The popup's backup row lands here. Scrolled to AND focused: arriving at the
+     right panel with the cursor still at the top of the page is most of the way
+     to not finding it, which is how the password came to be invisible. */
+  const backupAnchor = $("backup-panel");
+  if (location.hash === "#backup-panel" && backupAnchor) {
+    backupAnchor.scrollIntoView({ behavior: "smooth", block: "start" });
+    backupAnchor.classList.add("panel-landed");
+    const first = $("backup-passphrase");
+    if (first && !first.disabled) setTimeout(() => { try { first.focus(); } catch { /* not mounted */ } }, 420);
   }
 
   /* ---------- background-owned history sync ---------- */
@@ -1163,7 +1224,7 @@
     }
   }
 
-  initSyncUI();
+  if ($("sync-rows")) initSyncUI();
 
   chrome.storage.onChanged.addListener((changes, area) => {
     // Plan changes have to land here too: without this an open Recall tab keeps
@@ -1172,7 +1233,7 @@
     if ((area === "local" && APPS.some((a) => changes[progKey(a.id)])) ||
         (area === "local" && changes[activeAccountKey]) ||
         (area === "sync" && changes["lct-recall-sync-ledger-v2"])) {
-      refreshSyncRows();
+      if ($("sync-rows")) refreshSyncRows();
       loadStats();
     }
   });
@@ -1186,7 +1247,7 @@
     } catch { /* storage unavailable */ }
   })();
 
-  $("auto-sync").addEventListener("change", async () => {
+  on("auto-sync", "change", async () => {
     const { settings } = await chrome.storage.local.get("settings");
     await chrome.storage.local.set({
       settings: { ...(settings || {}), autoSync: $("auto-sync").checked }
@@ -1212,13 +1273,13 @@
     } catch { /* storage unavailable — the default option stands */ }
   })();
 
-  $("history-window").addEventListener("change", async () => {
+  on("history-window", "change", async () => {
     const days = Math.max(0, Math.floor(Number($("history-window").value) || 0));
     const { settings } = await chrome.storage.local.get("settings");
     await chrome.storage.local.set({ settings: { ...(settings || {}), historyDays: days } });
   });
 
-  $("sync-all").addEventListener("click", async () => {
+  on("sync-all", "click", async () => {
     const status = await send({ type: "recall-sync-status" });
     if (status && status.running) {
       refreshSyncRows();
@@ -1233,7 +1294,7 @@
   /* ---------- wipe (two clicks — no confirm() popups) ---------- */
 
   let armed = false;
-  $("wipe").addEventListener("click", async () => {
+  on("wipe", "click", async () => {
     const btn = $("wipe");
     if (!armed) {
       armed = true;
@@ -1251,10 +1312,10 @@
     btn.classList.remove("armed");
     btn.textContent = "Delete my archive";
     loadStats();
-    initSyncUI();
-    $("results").replaceChildren();
-    $("q-meta").textContent = "";
+    if ($("sync-rows")) initSyncUI();
+    if ($("results")) $("results").replaceChildren();
+    if ($("q-meta")) $("q-meta").textContent = "";
   });
 
-  loadPlan().then(() => { loadStats(); $("q").focus(); });
+  loadPlan().then(() => { loadStats(); const q = $("q"); if (q) q.focus(); });
 })();

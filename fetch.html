@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="color-scheme" content="dark" />
+  <title>Message text · Tvara</title>
+  <link rel="icon" type="image/png" href="icons/icon32.png" />
+  <link rel="stylesheet" href="recall.css" />
+</head>
+<body>
+  <div class="field" aria-hidden="true"></div>
+  <div class="grain" aria-hidden="true"></div>
+
+  <div class="shell">
+    <header>
+      <div class="brand">
+        <span class="mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 21h16"/></svg>
+        </span>
+        <span class="brand-name">Tvara</span>
+      </div>
+    </header>
+
+    <main>
+        <section class="panel" id="fill-picker" aria-labelledby="fill-picker-title">
+          <div class="kicker">Message text</div>
+          <h2 id="fill-picker-title">Choose what to fetch</h2>
+          <p class="dim">Search needs the words, not just the titles. Pick the providers &mdash; or open one and pick the chats. Nothing outside your choice is fetched.</p>
+          <div id="fill-picker-list" class="pick-list"></div>
+          <p id="fill-picker-empty" class="status-copy dim" hidden>Nothing is archived yet, so there is nothing to fetch. Open a chat on any provider, or run a check from the Archive page.</p>
+          <div class="pick-actions">
+            <button id="fill-pick-all" class="secondary" type="button">Select all</button>
+            <button id="fill-pick-none" class="secondary" type="button">Select none</button>
+            <button id="fill-pick-go" type="button" disabled>Fetch selected</button>
+          </div>
+          <p id="fill-pick-status" class="status-copy" role="status"></p>
+        </section>
+    </main>
+  </div>
+
+  <script src="lib/motion.js"></script>
+  <script src="fetch-page.js"></script>
+</body>
+</html>

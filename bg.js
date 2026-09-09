@@ -52,6 +52,11 @@ const BG_MODULES = [
   "bg/bootstrap.js",
   "bg/paywall.js"
 ];
+/* Which of them did not load, for the health report below. A page asking a
+   dead worker gets silence, and silence is indistinguishable from every
+   feature being separately broken — which is exactly how a worker that never
+   started came to be reported as "the allowance is not showing". */
+const BG_MODULES_FAILED = [];
 try {
   importScripts(...BG_MODULES);
 } catch (_) {
@@ -64,16 +69,63 @@ try {
   if (typeof db !== "function") {
     for (const m of BG_MODULES) {
       try { importScripts(m); }
-      catch (err) { console.error("[tvara] worker module failed:", m, (err && err.message) || err); }
+      catch (err) {
+        BG_MODULES_FAILED.push(m);
+        console.error("[tvara] worker module failed:", m, (err && err.message) || err);
+      }
     }
   }
 }
 
 /* A caught importScripts is how Firefox and the test loader work, so a typo
    here would otherwise produce a silently half-dead worker. Say so instead. */
-if (typeof db !== "function" || typeof requireEntitlement !== "function") {
+const BG_ALIVE = typeof db === "function" && typeof requireEntitlement === "function";
+if (!BG_ALIVE) {
   console.error("[tvara] worker modules did not load — bg/ is missing or unreadable");
 }
+
+/* ---------- recovery ----------
+   A worker that lost its modules answers worker-health and nothing else, and
+   it stays that way until somebody presses Reload — which nobody does, because
+   the symptom reads as six separate features being broken at once rather than
+   as one worker being dead. Every time this has been seen the files were on
+   disk and readable, so what is stale is the service-worker registration, and
+   reloading the extension is what rebuilds it.
+
+   Bounded per VERSION and cleared by a healthy start: a build that really is
+   missing bg/ stops after two attempts and leaves the banner up, instead of
+   reloading itself forever. Chrome 137+ re-checks developer mode whenever an
+   unpacked extension reloads and disables one outright when it is off — which
+   is not a hazard here, because an unpacked extension whose worker is running
+   at all was already loaded with developer mode on. */
+const BG_HEAL_KEY = "lct-worker-heal-v1";
+
+/** What this start should do about the heal record it found: clear a spent
+ *  one, reload once more, or stop and let the banner stand. Pure, so the
+ *  bound is provable without a browser — the one thing here that must never
+ *  be wrong is the loop guard. */
+function bgHealNext(held, version, alive) {
+  const tries = held && held.version === version ? (held.tries | 0) : 0;
+  if (alive) return held ? "clear" : "";
+  return tries >= 2 ? "stop" : "reload";   // two attempts, then the banner stands
+}
+
+async function bgHeal(alive) {
+  let held;
+  try { held = (await chrome.storage.local.get(BG_HEAL_KEY))[BG_HEAL_KEY]; }
+  catch (_) { return; }                  // no storage: no bookkeeping, no reload
+  const version = chrome.runtime.getManifest().version;
+  const next = bgHealNext(held, version, alive);
+  if (next === "clear") { chrome.storage.local.remove(BG_HEAL_KEY).catch(() => {}); return; }
+  if (next !== "reload") return;
+  const tries = held && held.version === version ? (held.tries | 0) : 0;
+  // Written BEFORE the reload: an unrecorded attempt is an unbounded loop.
+  try { await chrome.storage.local.set({ [BG_HEAL_KEY]: { version, tries: tries + 1, at: Date.now() } }); }
+  catch (_) { return; }
+  console.warn("[tvara] restarting the extension to rebuild the worker (attempt " + (tries + 1) + ")");
+  chrome.runtime.reload();
+}
+try { bgHeal(BG_ALIVE).catch(() => {}); } catch (_) { /* runtime/storage unavailable */ }
 
 
 try {
@@ -173,7 +225,7 @@ try {
     chrome.notifications.clear(id);
     // The buttons carry the decision; the body opens the list for a closer look.
     chrome.action?.openPopup?.().catch(() => {
-      chrome.tabs.create({ url: chrome.runtime.getURL("recall.html#deletions") });
+      chrome.tabs.create({ url: chrome.runtime.getURL("archive.html#deletions") });
     });
   });
 } catch (_) { /* notifications API unavailable */ }
@@ -253,6 +305,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!_senderAllowed(sender)) return false;
 
   const run = async () => {
+    /* Answered BEFORE anything else, and without touching a module: it is the
+       one question a half-loaded worker can still answer about itself. A page
+       that gets silence from a dead worker cannot tell it apart from every
+       feature being separately broken, which is how a worker that never
+       started was reported as "the allowance is not showing". */
+    if ((msg && msg.type) === "worker-health") {
+      return { ok: BG_ALIVE, failed: BG_MODULES_FAILED.slice(0, 20),
+        modules: BG_MODULES.length };
+    }
+    if (!BG_ALIVE) return { err: "worker-modules-missing", failed: BG_MODULES_FAILED.slice(0, 20) };
+
     /* Somebody is using the extension, so this is a cheap moment to find out
        whether this device is still signed in. Fire and forget: nothing below
        waits on it, and a failure changes nothing. */
@@ -350,6 +413,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case "identity-state":    return identityState();
       case "identity-send":     return identitySendCode(msg && msg.email);
       case "identity-confirm":  return identityConfirmCode(msg && msg.email, msg && msg.code);
+      /* Fired when the pointer lands on the sign-in button, not when it is
+         clicked: this is what wakes the worker and mints the nonce, so the
+         click itself has nothing left to do but ask Chrome for the window. */
+      case "identity-google-prepare": return identityGooglePrepare();
       case "identity-google":   return identityGoogleSignIn();
       case "identity-restore":  return identityRestore();
       case "identity-signout":  return identitySignOut();
@@ -380,7 +447,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case "recall-wipe":        return wipeRecall();
       case "recall-bg-sync":     return bgSyncAll({ reason: "manual" });
       case "archive-fill-state": return fillState();
-      case "archive-fill-start": { fillStart(); return { started: true }; }
+      // What is waiting, per provider, with titles — so a person can choose.
+      case "archive-fill-queue": return fillQueue();
+      case "archive-fill-start": {
+        /* An optional choice: { chatgpt: ["id", …], claude: null }. A provider
+           left out is not fetched; one named with no list is fetched whole;
+           no choice at all means everything, which is what every earlier
+           caller sent and still means. Persisted with the queue, because the
+           watchdog restarts this run with nothing in hand. */
+        const pick = msg && msg.pick && typeof msg.pick === "object" ? msg.pick : null;
+        await writeFill(pick ? { pick } : { pick: null });
+        /* A run already in flight took its choice before the loop began, so it
+           would go on fetching the old one. Stop it and start on this one, and
+           answer with what actually happened — "started" on a queue that never
+           moved is the whole complaint. */
+        const how = await fillRestart();
+        return { started: how !== "busy", how, picked: pick ? Object.keys(pick).length : 0 };
+      }
       /* Opening the popup is not a request to start a download, so this is the
          auto path and not fillStart(): it declines on a queue the user stopped.
          It exists so a queue is never left waiting for a click. */
@@ -388,6 +471,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case "archive-fill-stop":  return fillStop();
       case "recall-auto-tick":   return autoSyncTick();
       case "recall-visit-sync":  return visitSync(msg.platform);
+      /* "I just opened a conversation." Sent before the page asks for anything
+         of its own, so the backfill stands down from the CLICK rather than from
+         our first foreground request — by which time the host has already been
+         spent and answers the reader with "Too many requests". */
+      case "reader-here":        readerHere(String(msg.host || "")); return { ok: true };
       case "chat-index":         return chatIndex(msg.host, msg.path, { force: msg.force, foreground: !!msg.foreground });
       // Counts and dates for the hover card. No text — see chatStats().
       case "chat-stats":         return chatStats(msg.host, msg.path);

@@ -60,7 +60,7 @@ else {
      left this printing "zip matches manifest" over a zip that predated the fix. */
   const WATCH = ["bg.js", "bg", "manifest.json", "content", "popup", "lib", "icons",
                  "diag", "onboarding.html", "onboarding.css", "onboarding.js",
-                 "recall.html", "recall.css", "recall-page.js"];
+                 "recall.html", "archive.html", "recall.css", "recall-page.js"];
   const newestOf = (full) => {
     let st;
     try { st = statSync(full); } catch { return 0; }

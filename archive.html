@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="color-scheme" content="dark" />
+  <title>Archive operations · Tvara</title>
+  <link rel="icon" type="image/png" href="icons/icon32.png" />
+  <link rel="stylesheet" href="recall.css" />
+</head>
+<body>
+  <div class="field" aria-hidden="true"></div>
+  <div class="grain" aria-hidden="true"></div>
+
+  <div class="shell">
+    <header>
+      <div class="brand">
+        <span class="mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M5 7h14M5 12h9M5 17h11"/><circle cx="18.5" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg>
+        </span>
+        <span class="brand-name">Tvara</span>
+      </div>
+      <span id="plan-badge" class="badge">…</span>
+    </header>
+
+    <main>
+      <section class="masthead">
+        <h1>Archive</h1>
+        <p class="lede">Check the providers, carry the archive to a new install,<br />or delete it. None of this needs a licence to reach.</p>
+      </section>
+
+      <p class="ops-back"><a class="page-link secondary" href="recall.html">&larr; Total Recall (search)</a> <a class="page-link secondary" href="fetch.html">Choose what text to fetch</a></p>
+
+      <section id="recovery" class="panel" hidden aria-labelledby="recovery-title">
+        <div class="kicker">Archive continuity</div>
+        <h2 id="recovery-title">Restore your archive before syncing</h2>
+        <p id="recovery-copy" class="dim">This browser has a previous encrypted archive backup. Restore it first so only chats created after the backup are fetched.</p>
+        <div class="form-grid">
+          <label class="file-control" for="restore-file">Choose encrypted backup</label>
+          <input id="restore-file" type="file" accept=".lctbackup,application/json" hidden />
+          <span id="restore-file-name" class="file-name" aria-live="polite">No backup selected</span>
+          <p id="restore-unprotected" class="status-copy" hidden>This file has no password on it. Its signature is still checked before anything is imported.</p>
+          <label class="field-label" for="restore-passphrase" id="restore-passphrase-label">Backup passphrase</label>
+          <input id="restore-passphrase" class="secure-input" type="password" autocomplete="current-password" />
+          <label class="auto-sync" for="restore-reveal">
+            <input type="checkbox" id="restore-reveal" />
+            <span>Show the passphrase while I type it.</span>
+          </label>
+          <div class="actions">
+            <button id="restore-run" type="button" disabled>Restore and check the gap</button>
+            <button id="recovery-skip" class="secondary" type="button">Continue without restoring</button>
+          </div>
+        </div>
+        <p id="restore-status" class="status-copy" role="status"></p>
+      </section>
+
+      <!-- Deleted-on-the-site review lives on the notification and in the
+           popup now: the decision is asked where the user already is, not on a
+           page they have to be sent to. See content/deletion-toast.js and
+           popup/popup.html #deletion-panel. -->
+
+      <div class="rail">
+        <section class="panel" id="sync-panel">
+          <div class="panel-head">
+            <div>
+              <div class="kicker">Provider delta</div>
+              <h2>Archive operations</h2>
+            </div>
+            <button id="sync-all">Check for new chats</button>
+          </div>
+          <p class="dim">Each pass compares your signed-in history against what this browser already holds, then downloads only what is missing. Reloading the extension never repeats finished work.</p>
+          <label class="auto-sync" for="auto-sync">
+            <input type="checkbox" id="auto-sync" checked />
+            <span>Keep the archive current by itself. A check runs about every 3 hours, and shortly after the browser starts. Turn this off to check only when you press the button.</span>
+          </label>
+          <label class="field-label" for="history-window">How far back to archive</label>
+          <select id="history-window" class="secure-input">
+            <option value="0">Everything, however old (recommended)</option>
+            <option value="7">The last 7 days</option>
+            <option value="30">The last 30 days</option>
+            <option value="90">The last 3 months</option>
+            <option value="180">The last 6 months</option>
+            <option value="365">The last year</option>
+            <option value="730">The last 2 years</option>
+          </select>
+          <p class="dim">This limits what future passes ASK the provider for. Chats already in your archive stay, whatever you pick — narrowing this never deletes anything.</p>
+          <p id="sync-summary" class="sync-summary" role="status" hidden></p>
+          <div id="sync-rows"></div>
+          <label class="file-control wide" for="import-file">Import an export file: ChatGPT, Claude or Gemini Takeout (.zip / .json)</label>
+          <input id="import-file" type="file" accept=".zip,.json" hidden />
+          <p id="import-status" class="status-copy" role="status"></p>
+        </section>
+
+        <section class="panel" id="backup-panel" aria-labelledby="backup-title">
+          <div class="kicker">Reinstall backup</div>
+          <h2 id="backup-title">Carry this archive to a new install</h2>
+          <p class="dim">A snapshot you can restore into any browser. With a password it is AES-256-GCM under a key stretched from that password, which is never stored, never synced, and not recoverable. Lose it and the file is unreadable, by us or anyone.</p>
+          <div class="form-grid">
+            <span class="field-label">Password on this backup</span>
+            <label class="auto-sync" for="protect-password">
+              <input type="radio" name="backup-protect" id="protect-password" value="password" checked />
+              <span>Lock it with a password &mdash; nobody opens the file without it. Recommended.</span>
+            </label>
+            <label class="auto-sync" for="protect-none">
+              <input type="radio" name="backup-protect" id="protect-none" value="none" />
+              <span>No password. The file is readable JSON you can open in any text editor &mdash; and so can anyone else who finds it.</span>
+            </label>
+            <p id="protect-warning" class="status-copy err" hidden>This file will <strong>not be encrypted</strong>. Every message in your archive will be readable by anyone who opens it. It is still signed, so a restore will refuse it if it has been edited.</p>
+          </div>
+          <div class="form-grid" id="backup-secret">
+            <label class="field-label" for="backup-passphrase">New backup passphrase</label>
+            <input id="backup-passphrase" class="secure-input" type="password" autocomplete="new-password" spellcheck="false" />
+            <div id="backup-strength" class="strength" hidden><span class="strength-bar"><i></i></span><span class="strength-text"></span></div>
+            <label class="field-label" for="backup-passphrase-confirm">Confirm passphrase</label>
+            <input id="backup-passphrase-confirm" class="secure-input" type="password" autocomplete="new-password" spellcheck="false" />
+            <label class="auto-sync" for="backup-reveal">
+              <input type="checkbox" id="backup-reveal" />
+              <span>Show the passphrase while I type it &mdash; a long one is far easier to get right when you can see it.</span>
+            </label>
+            <div class="actions">
+              <button id="backup-generate" class="secondary" type="button">Generate a strong password</button>
+            </div>
+            <p id="backup-generated" class="status-copy" hidden></p>
+            <label class="auto-sync" for="backup-auto">
+              <input type="checkbox" id="backup-auto" checked />
+              <span>Remember this password, so backups keep writing themselves and a reinstall never costs you an archive.</span>
+            </label>
+            <div id="backup-remember" class="form-grid inset">
+              <label class="auto-sync" for="remember-device">
+                <input type="radio" name="backup-remember" id="remember-device" value="device" checked />
+                <span><strong>Permanent</strong> &mdash; remember it on this device until I clear it. Automatic backups keep running after a restart.</span>
+              </label>
+              <label class="auto-sync" for="remember-session">
+                <input type="radio" name="backup-remember" id="remember-session" value="session" />
+                <span><strong>Temporary</strong> &mdash; forget it when I close the browser. Nothing is written to disk; you type it again next time.</span>
+              </label>
+              <p class="status-copy dim">Either way the password itself is never stored. What is kept is a key wrapped under it, and the file still opens only with the password you typed.</p>
+            </div>
+          </div>
+          <div class="form-grid">
+            <div class="actions">
+              <button id="create-backup" type="button">Create reinstall backup</button>
+              <button id="backup-forget" class="secondary" type="button" hidden>Forget the saved password</button>
+            </div>
+          </div>
+          <p id="backup-status" class="status-copy" role="status"></p>
+          <div class="actions">
+            <button id="export-archive" class="secondary" type="button">Export archive (JSON)</button>
+          </div>
+          <p class="status-copy dim">Your conversations, as a plain file, whenever you want them &mdash; this one never needs a licence. It is <strong>not encrypted</strong>, so keep it somewhere you would keep the chats themselves. For an unattended, reinstall-proof copy, use the encrypted backup above.</p>
+          <p id="export-status" class="status-copy" role="status"></p>
+          <p id="autobackup-status" class="status-copy dim" role="status"></p>
+          <div class="actions" id="autobackup-actions" hidden>
+            <button id="autobackup-run" class="secondary" type="button">Back up now</button>
+            <button id="autobackup-off" class="secondary" type="button">Turn automatic backup off</button>
+          </div>
+        </section>
+      </div>
+
+      <section class="panel danger">
+        <div class="panel-head">
+          <div>
+            <div class="kicker">Irreversible</div>
+            <h2>Delete everything</h2>
+          </div>
+          <button id="wipe">Delete my archive</button>
+        </div>
+        <p class="dim">Wipes the entire local archive from this browser. Backup files you exported are untouched.</p>
+      </section>
+    </main>
+
+    <footer>
+      <span>Local archive · no telemetry, no chat data ever uploaded</span>
+      <span class="kbd-hint">Press <kbd>⌘⇧K</kbd> on any chat site to search from where you are</span>
+    </footer>
+  </div>
+
+  <script src="lib/motion.js"></script>
+  <script src="lib/product.js"></script>
+  <script src="lib/license.js"></script>
+  <script src="lib/dodo.js"></script>
+  <script src="lib/entitlement.js"></script>
+  <script src="lib/backup-crypto.js"></script>
+  <script src="recall-page.js"></script>
+</body>
+</html>

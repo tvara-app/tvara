@@ -24,7 +24,8 @@ const withFirefox = process.argv.includes("--firefox");
 
 const SHIP = ["manifest.json", "lib", "content", "popup", "diag",
               "bg.js", "bg", "onboarding.html", "onboarding.css", "onboarding.js",
-              "recall.html", "recall.css", "recall-page.js"];
+              "recall.html", "recall.css", "recall-page.js",
+              "fetch.html", "fetch-page.js", "archive.html"];
 
 /** The files bg.js pulls in, in call order. The Firefox background list and the
  *  ship check both read this, so neither can drift from the worker itself. */
@@ -142,7 +143,7 @@ function build({ name, tweak, label }) {
   const wanted = new Set([...Object.values(mf.icons || {}),
                           ...Object.values(mf.action?.default_icon || {})]);
   // The pages show the icon too, so ship whatever any of them asks for.
-  for (const html of ["recall.html", "popup/popup.html"]) {
+  for (const html of ["recall.html", "archive.html", "popup/popup.html"]) {
     const p = join(staging, html);
     if (!existsSync(p)) continue;
     for (const m of readFileSync(p, "utf8").matchAll(/(?:src|href)="((?:\.\.\/)?icons\/[^"]+)"/g)) {

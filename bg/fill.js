@@ -25,7 +25,14 @@ const BG_FILL_BEAT = "lct-fill-beat";
 let fillCancel = false;
 let fillRunning = false;
 
-const FILL_PAUSE_MS = 350;          // between chats; the provider is not ours to hammer
+/* No second pace here.
+   bg/fetch.js is the ONE authority on how fast a host is asked — hostSlot()
+   serialises request starts and holds intervalFor(host) between them, which is
+   the figure that host has actually earned. A fixed sleep on top of it was a
+   second floor nobody could see from the pacing code, and it made every chat
+   cost the interval PLUS the latency PLUS this: about 1.6s each, for a rate
+   limit of one request per 500ms. Removing it changes no rate; it stops the
+   queue waiting twice for the same permission. */
 const FILL_REPORT_EVERY = 3;
 
 /* ---------- and the ones that were already there ----------
@@ -63,24 +70,17 @@ async function ensureStubIndex() {
 
   const map = {};
   try {
-    const d = await db();
-    await new Promise((resolve, reject) => {
-      const cur = tx(d, "readonly").openCursor();
-      cur.onerror = () => reject(cur.error);
-      cur.onsuccess = () => {
-        const c = cur.result;
-        if (!c) return resolve();
-        const v = c.value;
-        const platform = PAGE_PLATFORMS[v.host] || "";
-        // A record with no messages is a title and a promise. One message is
-        // a conversation, and re-queueing it every pass was a provider request
-        // per one-message chat, forever.
-        if (platform && !(Array.isArray(v.msgs) && v.msgs.length >= 1)) {
-          (map[platform] = map[platform] || []).push(v.id);
-        }
-        count++;
-        c.continue();
-      };
+    // Paged, on one transaction — see scanChats. This walk reads every record
+    // in the archive and used to be a request per chat.
+    await scanChats((v) => {
+      const platform = PAGE_PLATFORMS[v.host] || "";
+      // A record with no messages is a title and a promise. One message is
+      // a conversation, and re-queueing it every pass was a provider request
+      // per one-message chat, forever.
+      if (platform && !(Array.isArray(v.msgs) && v.msgs.length >= 1)) {
+        (map[platform] = map[platform] || []).push(v.id);
+      }
+      count++;
     });
   } catch { return; }
 
@@ -115,8 +115,17 @@ async function fillState() {
        Spread first — a stale persisted key must not overwrite what was just
        counted. */
     const resuming = !fillRunning && extra.state === "running" && total > 0;
-    return { ...extra, running: fillRunning, resuming, remaining, total };
-  } catch { return { running: fillRunning, resuming: false, remaining: {}, total: 0 }; }
+    /* Asked to stop, still draining. `running` used to stay true until the last
+       in-flight fetch returned, so the row went on saying "tap to stop" after
+       the user had — nothing on screen changed and the click read as dead. The
+       moment a cancel is pending nothing new will be fetched, which is what the
+       user asked for, so say so: not running, stopping. */
+    const stopping = fillRunning && fillCancel;
+    return { ...extra, running: fillRunning && !fillCancel, stopping, resuming, remaining, total };
+  } catch {
+    return { running: fillRunning && !fillCancel, stopping: fillRunning && fillCancel,
+      resuming: false, remaining: {}, total: 0 };
+  }
 }
 
 async function writeFill(patch) {
@@ -132,6 +141,99 @@ async function writeFill(patch) {
     const prev = (got && got[BG_FILL]) || {};
     await chrome.storage.local.set({ [BG_FILL]: { ...prev, ...next, at: Date.now() } });
   } catch { /* the UI falls back to the queue length */ }
+}
+
+/* Which chats this run is allowed to fetch, or null for all of them.
+ *
+ * Persisted with the queue rather than passed as an argument: an MV3 worker is
+ * reclaimed mid-run and the watchdog alarm restarts fillStart() with nothing in
+ * hand, so a choice held in a variable would quietly widen back to everything
+ * the first time the browser took the worker away. */
+async function fillPick() {
+  try {
+    const got = await chrome.storage.local.get(BG_FILL);
+    const pick = got && got[BG_FILL] && got[BG_FILL].pick;
+    return pick && typeof pick === "object" && Object.keys(pick).length ? pick : null;
+  } catch { return null; }
+}
+
+/**
+ * The queue, as something a person can choose from: what is waiting, per
+ * provider, with the titles that are already archived.
+ *
+ * Titles only — never message text. This answers "which of these do I want the
+ * words for", and the words are the thing that has not been fetched yet.
+ */
+async function fillQueue(limitPerPlatform = 400) {
+  /* Kept current for fillStart(), which still resumes from the stub list. This
+     walk is what the PAGE is built from. */
+  await ensureStubIndex();
+
+  /* One pass over the archive, not a stub list plus a batched re-read of it.
+     The page needs every chat a provider holds, not only the ones still
+     waiting: text that is already here can be fetched AGAIN — a conversation
+     you carried on after it was archived has messages this copy does not — and
+     a list that offers that for one provider and refuses it for five is a
+     control that looks broken. Only the small fields are kept, never `msgs`. */
+  const per = new Map();
+  await scanChats((v) => {
+    const platform = PAGE_PLATFORMS[v.host] || "";
+    if (!platform) return;
+    let e = per.get(platform);
+    if (!e) per.set(platform, (e = { archived: 0, waiting: 0, chats: [] }));
+    e.archived++;
+    // One message is a conversation — see upsert/importBatch. Anything less is
+    // a title and a promise, and that is what "waiting" means.
+    const held = Array.isArray(v.msgs) && v.msgs.length >= 1;
+    if (!held) e.waiting++;
+    e.chats.push({
+      id: v.id,
+      title: String(v.title || "").slice(0, 140),
+      updatedAt: Number(v.updatedAt) || 0,
+      held
+    });
+  });
+
+  const out = [];
+  for (const adapter of BG_ADAPTERS) {
+    const e = per.get(adapter.id);
+    if (!e || !e.archived) continue;
+    /* Waiting first, then newest. Somebody who opens a provider to pick chats
+       is nearly always after the ones that have no text yet; a re-fetch is the
+       deliberate case and it can scroll. */
+    e.chats.sort((a, b) =>
+      (a.held === b.held ? 0 : a.held ? 1 : -1) || (b.updatedAt - a.updatedAt));
+    out.push({
+      id: adapter.id,
+      label: adapter.label,
+      total: e.waiting,          // what the row leads with: still to be fetched
+      archived: e.archived,
+      chats: e.chats.slice(0, limitPerPlatform)
+    });
+  }
+  return { platforms: out, at: Date.now() };
+}
+
+/**
+ * Stop whatever is running, then start again on the choice just written.
+ *
+ * A run reads its choice ONCE, before the loop. So handing a new one to a run
+ * already in flight changed nothing, and the router answered "started" anyway —
+ * pick three chats while a download is going, press Fetch selected, and the page
+ * said it had begun while the old queue carried on. That is the button that
+ * looks like it does nothing.
+ *
+ * @returns {"started"|"restarted"|"busy"} what actually happened, so the page
+ *          can say it rather than guess.
+ */
+async function fillRestart() {
+  if (!fillRunning) { fillStart(); return "started"; }
+  await fillStop();
+  // The loop checks fillCancel between chats; one in flight still has to land.
+  for (let i = 0; i < 30 && fillRunning; i++) await sleep(200);
+  if (fillRunning) return "busy";       // still unwinding: say so, do not lie
+  fillStart();
+  return "restarted";
 }
 
 async function fillStop() {
@@ -208,18 +310,10 @@ async function fillStart() {
   try { await chrome.alarms.create(BG_FILL_ALARM, { delayInMinutes: 0.5, periodInMinutes: 0.5 }); }
   catch { /* no alarms: the popup button still restarts it */ }
 
-  try {
-    for (const adapter of BG_ADAPTERS) {
-      if (fillCancel) break;
-      const ids = ((await readStubs())[adapter.id] || []).slice();
-      if (!ids.length) continue;
-      // A chat's text can only be fetched by the account that owns it; a
-      // signed-out platform is skipped rather than failed.
-      try { await idxPrepare(adapter); }
-      catch { await writeFill({ state: "running", note: `${adapter.label}: not signed in` }); continue; }
-
-      for (const recordId of ids) {
-        if (fillCancel) break;
+  /* One chat. Lifted out of the loop so several can be in flight at once —
+     see runPlatform(). Returns "stop" when the whole platform should give up
+     (a session that is really gone), and nothing otherwise. */
+  const fetchOne = async (adapter, recordId) => {
         /* MV3 workers get reclaimed. A full queue is about an hour of work and
            nothing re-entered this function, so a reclaim ended the run silently
            after welcome.js had told the user "you can close this page; it keeps
@@ -237,10 +331,13 @@ async function fillStart() {
            to a user who was signed in the whole time. */
         let ctx;
         try { ctx = await idxPrepare(adapter); }
-        catch { await writeFill({ state: "running", note: `${adapter.label}: signed out` }); break; }
+        catch {
+          await writeFill({ state: "running", note: `${adapter.label}: signed out` });
+          return "stop";
+        }
         const convId = recordId.startsWith(adapter.host + adapter.prefix)
           ? recordId.slice((adapter.host + adapter.prefix).length) : "";
-        if (!convId) { await noteStub(recordId, adapter.host, true); continue; }
+        if (!convId) { await noteStub(recordId, adapter.host, true); return ""; }
         try {
           const msgs = await adapter.detail(ctx, convId);
           // One message IS a conversation — CLAUDE.md, and importBatch agrees.
@@ -259,6 +356,12 @@ async function fillStart() {
         } catch (error) {
           failed++;
           const kind = (error && error.kind) || "net";
+          if (kind === "challenge") {
+            // The edge refused the request shape, not the session. Preparing
+            // again would be refused the same way; stop and say what it was.
+            await writeFill({ note: `${adapter.label} blocked the fetch. Open ${adapter.host} in a tab.` });
+            return "stop";
+          }
           if (kind === "auth") {
             /* Believe it only on the second try. A token that expired mid-run
                is indistinguishable here from a user who signed out, and the
@@ -266,24 +369,106 @@ async function fillStart() {
                prepare a fresh one, and stop only if that fails too. */
             let recovered = false;
             try { idxForget(adapter); await idxPrepare(adapter); recovered = true; } catch { /* really gone */ }
-            if (recovered) { failed--; continue; }
+            if (recovered) { failed--; return ""; }
             await writeFill({ note: `${adapter.label}: signed out` });
-            break;
+            return "stop";
           }
           if (kind === "gone") await noteStub(recordId, adapter.host, true);
-          if (kind === "rate") await sleep(5000);
+          /* A refusal is already answered where refusals are handled:
+             noteRateLimit() halves this host's concurrency and DOUBLES its
+             interval on the first one, and trips the circuit on the third.
+             Sleeping here as well only idles the lanes that are already being
+             paced by it. */
         }
         if ((done + failed) % FILL_REPORT_EVERY === 0) {
           await writeFill({ state: "running", done, failed, platform: adapter.label });
         }
-        await sleep(FILL_PAUSE_MS);
+        return "";
+  };
+
+  /* One platform, several chats in flight.
+   *
+   * Sequential, this loop paid the interval AND the round trip for every chat:
+   * about 1.6 seconds each against a host that permits a request every 500ms.
+   * The lanes do not make it faster than that permission — hostSlot() holds the
+   * interval between request STARTS whatever is waiting on it — they stop the
+   * pipe standing empty while a response is in the air. targetConcurrency() is
+   * the same adaptive figure the history pass uses, re-read per chat, so a 429
+   * narrows this queue on the next one rather than at the end of it. */
+  const runPlatform = async (adapter, ids) => {
+    let at = 0, stopped = false;
+    const lane = async (index) => {
+      while (!fillCancel && !stopped && at < ids.length) {
+        /* Re-read per chat, not once per run. A host that has just refused us
+           has its concurrency halved by noteRateLimit(), and a lane above the
+           new target retires here instead of finishing the queue at a width
+           the host has already objected to. Lane 0 always survives, so a
+           narrowed queue slows down rather than stopping. */
+        if (index > 0 && index >= targetConcurrency(adapter.host)) return;
+        /* Somebody is reading this host. The pacing yield would make every lane
+           SLEEP through their visit and then resume together in one burst; this
+           retires the lanes instead. The watchdog alarm brings the queue back a
+           minute later, and the stub list is the resume point, so standing down
+           costs nothing but the wait. */
+        if (readerActive(adapter.host)) { stopped = true; return; }
+        const recordId = ids[at++];
+        if (await fetchOne(adapter, recordId) === "stop") { stopped = true; return; }
       }
-    }
+    };
+    const lanes = Math.max(1, Math.min(targetConcurrency(adapter.host), ids.length));
+    await Promise.all(Array.from({ length: lanes }, (_, i) => lane(i)));
+  };
+
+  try {
+    const pick = await fillPick();
+    /* Every provider at once. These are six different hosts with six
+       independent budgets and six independent pacers, and one signed-out or
+       cooling provider used to hold every queue behind it — the same reasoning
+       that made bgSyncAll parallel. */
+    await Promise.all(BG_ADAPTERS.map(async (adapter) => {
+      if (fillCancel) return;
+      // A provider left out of the choice is not fetched at all; one named with
+      // no list is fetched whole. Absent choice means everything, as before.
+      if (pick && !Object.prototype.hasOwnProperty.call(pick, adapter.id)) return;
+      const only = pick ? pick[adapter.id] : null;
+      /* An explicit list is the whole instruction, not a filter over the stubs.
+         Intersecting the two meant a chat somebody deliberately ticked was
+         silently dropped whenever its text was already here — so re-fetching a
+         conversation that had grown since it was archived did nothing at all,
+         which is exactly what "I can only select ChatGPT" looked like from the
+         outside. Bounded, and confined to this adapter's own host. */
+      let ids;
+      if (Array.isArray(only)) {
+        /* Host, not host+prefix: the same conversation is stored under two
+           spellings on three providers (DeepSeek /a/chat/s/, Perplexity
+           /thread/, Grok /c/ — see chatIdCandidates), so a prefix test would
+           reject the very ids the archive handed this page. fetchOne() still
+           resolves the conversation id, and skips what it cannot. */
+        const host = adapter.host + "/";
+        ids = only.filter((id) => typeof id === "string" && id.startsWith(host)).slice(0, 5000);
+      } else {
+        ids = ((await readStubs())[adapter.id] || []).slice();
+      }
+      if (!ids.length) return;
+      // A chat's text can only be fetched by the account that owns it; a
+      // signed-out platform is skipped rather than failed.
+      try { await idxPrepare(adapter); }
+      catch { await writeFill({ state: "running", note: `${adapter.label}: not signed in` }); return; }
+      await runPlatform(adapter, ids);
+    }));
     const left = (await fillState()).total;
     // Ended on its own terms: no watchdog until the next start.
     try { await chrome.alarms.clear(BG_FILL_ALARM); } catch { /* no alarms */ }
+    /* A choice describes ONE pass, and this is the end of it.
+       It is persisted (not held in a variable) so a worker reclaimed mid-run
+       resumes the same choice — that path never reaches here. Left behind after
+       a pass that DID finish, it silently narrowed every later fetch to the
+       same handful for good: the auto queue re-ran two chats, reported
+       "partial" because five hundred were still waiting, and came back to run
+       the same two again. From the outside that is a fetch button that does
+       nothing, forever, and it is what one visit to the picker cost. */
     await writeFill({ state: fillCancel ? "stopped" : (left ? "partial" : "done"),
-      done, failed, finishedAt: Date.now() });
+      done, failed, finishedAt: Date.now(), pick: null });
     return { status: "ok", done, failed, left };
   } finally {
     // Every exit, not only the tidy one: a throw or a budget stop that left the

@@ -87,7 +87,16 @@ const BG_MIN_INTERVAL_MS = 500;
    which costs nobody anything — nothing is waiting on it. The foreground is
    exempt: it is a handful of requests and it is the one the reader is sitting
    in front of. */
-const BG_HOURLY_CAP = 400;
+/* A self-imposed ceiling on requests per host per hour.
+   It is NOT what protects a session from being rate-limited — that is
+   intervalFor(), which doubles on the FIRST refusal, and the circuit breaker
+   that trips on the third. Both react to the provider's own signal. This is a
+   blunt daily budget, and at 400 it was the binding constraint on every large
+   archive: a 2,300-chat queue took six hours no matter how fast the fetch got,
+   because the hour ran out long before the work did. 1,200 is one request per
+   three seconds averaged over an hour — still far below the one-per-500ms this
+   code already permits in a burst, and the adaptive floor above is untouched. */
+const BG_HOURLY_CAP = 1200;
 const BG_HOUR_MS = 60 * 60 * 1000;
 /* The longest a single request may be held in the pacing queue.
    Everything legitimate is under it — the polite interval tops out at
