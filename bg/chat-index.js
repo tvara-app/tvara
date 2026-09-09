@@ -295,17 +295,27 @@ const CHAT_SEARCH_PAD = 70;      // characters of context on each side of a hit
  *  DeepSeek serves /a/chat/s/<id> against a /chat/ prefix, Perplexity /search/
  *  and /thread/, Grok /c/ and /chat/ — chatStats already resolves both, and a
  *  reader that does not answers "missing" for a chat the card just counted. */
+/** Fold the candidate spellings of one chat down to the fullest record found.
+ *  Order matters on a tie: the first spelling asked for wins, which is the
+ *  page's own `host + path`. */
+function bestCandidate(cands, lookup) {
+  let best = null;
+  for (const cand of cands) {
+    const hit = lookup(cand);
+    if (!hit) continue;
+    if (!best || Number(hit.n || 0) > Number(best.n || 0)) best = hit;
+    if (Number(best.n || 0) > 0) break;
+  }
+  return best;
+}
+
 async function recordFor(host, path) {
   try {
-    const d = await db();
-    let best = null;
-    for (const cand of chatIdCandidates(host, path)) {
-      const hit = await reqP(tx(d, "readonly").get(cand));
-      if (!hit) continue;
-      if (!best || Number(hit.n || 0) > Number(best.n || 0)) best = hit;
-      if (Number(best.n || 0) > 0) break;
-    }
-    return best;
+    // Both spellings on one transaction. It was one transaction each, which on
+    // the three hosts that serve a chat under two paths meant opening two.
+    const cands = chatIdCandidates(host, path);
+    const found = await recordsByIds(cands);
+    return bestCandidate(cands, (id) => found.get(id));
   } catch { return undefined; }        // undefined = could not read, not "absent"
 }
 

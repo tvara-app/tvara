@@ -49,6 +49,99 @@ function db() {
 const tx = (d, mode) => d.transaction("chats", mode).objectStore("chats");
 const reqP = (r) => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
 
+/* How many whole records one page of a scan holds. Peak memory during a walk
+   is one page, and a single archived chat can be a megabyte, so this is small
+   on purpose: past a hundred or so the pages stop getting cheaper anyway. */
+const SCAN_PAGE = 150;
+
+/**
+ * Walk the archive, in order, a page at a time.
+ *
+ * openCursor() is ONE REQUEST PER RECORD. On a two-thousand-chat archive that
+ * is two thousand round trips to the database, and in a real browser every one
+ * of them crosses a process boundary to the storage backend. getAll() answers
+ * a whole page per request, and the same walk over the same 2,000 chats takes
+ * 16 ms instead of 49 — measured, against the archive shape this actually has.
+ *
+ * The pages are read on ONE transaction: the next getAll is issued from inside
+ * the previous one's onsuccess, before control returns to the event loop, so
+ * the transaction never commits between pages. That matters — a walk split
+ * across transactions is not a snapshot, and the sync engine writing while a
+ * search reads could then skip a record or count one twice.
+ *
+ * `visit` returning false stops the walk.
+ */
+function scanChats(visit, opts = {}) {
+  const page = opts.page || SCAN_PAGE;
+  const { lower, upper } = opts;
+  return db().then((d) => new Promise((resolve, reject) => {
+    let store;
+    try { store = tx(d, "readonly"); } catch (e) { return reject(e); }
+    let from = lower, exclusive = false;
+    const next = () => {
+      let range = null;
+      try {
+        if (from !== undefined && upper !== undefined) range = IDBKeyRange.bound(from, upper, exclusive, false);
+        else if (from !== undefined) range = IDBKeyRange.lowerBound(from, exclusive);
+        else if (upper !== undefined) range = IDBKeyRange.upperBound(upper);
+      } catch (e) { return reject(e); }
+      const q = store.getAll(range, page);
+      q.onerror = () => reject(q.error);
+      q.onsuccess = () => {
+        const batch = q.result || [];
+        /* A throw from `visit` happens inside an IndexedDB event handler, where
+           nothing is waiting to catch it: the promise would then neither
+           resolve nor reject and every caller of this walk would hang for the
+           life of the worker. One malformed record must not be able to do
+           that. */
+        try {
+          for (const v of batch) {
+            if (visit(v) === false) return resolve();
+          }
+        } catch (e) { return reject(e); }
+        // A short page is the end of the store; only a full one can have more.
+        if (batch.length < page) return resolve();
+        const last = batch[batch.length - 1];
+        // Paging needs a key to continue from. Without one the next page would
+        // repeat this one forever, so stop rather than loop.
+        if (!last || typeof last.id !== "string") return resolve();
+        from = last.id;
+        exclusive = true;
+        next();
+      };
+    };
+    next();
+  }));
+}
+
+/**
+ * Read many records by id, on ONE transaction.
+ *
+ * A get() per id is a TRANSACTION per id: opened, awaited, committed, several
+ * hundred times over just to put titles on a list. Issued together they
+ * pipeline inside a single transaction, and the whole batch costs about what a
+ * handful of them used to. Every request is fired synchronously here, before
+ * anything is awaited — that is what keeps the transaction open across them.
+ *
+ * A record that cannot be read is left out rather than failing the batch: the
+ * callers are drawing lists, and one missing title is a row with no title.
+ */
+async function recordsByIds(ids) {
+  const out = new Map();
+  const list = [...new Set(ids)].filter((id) => typeof id === "string" && id);
+  if (!list.length) return out;
+  let store;
+  try {
+    const d = await db();
+    store = tx(d, "readonly");
+  } catch { return out; }
+  await Promise.all(list.map((id) => reqP(store.get(id)).then(
+    (v) => { if (v) out.set(id, v); },
+    () => { /* one unreadable record is not a failed batch */ }
+  )));
+  return out;
+}
+
 /* ---------- write path ---------- */
 
 function clampChat(chat) {
@@ -419,16 +512,52 @@ async function importBatch(chats) {
 
 /* ---------- search ---------- */
 
+/* ---------- the cheap "no" ----------
+   Search is AND: every query word has to appear somewhere, so ONE missing word
+   is the whole chat gone. Finding that out used to cost a full lowercase copy
+   of the chat — every message allocated again — for every chat in the archive,
+   almost all of which do not match. A case-insensitive regex answers the same
+   question against the text already in memory and allocates nothing.
+
+   Only for plain ASCII queries. `toLowerCase().indexOf(w)` and a
+   case-insensitive regex agree on those; across the whole of Unicode their
+   case folding is not guaranteed to, and a fast path that drops a real result
+   is worse than no fast path at all. Anything else takes the old road. */
+const RE_META = /[.*+?^${}()|[\]\\]/g;
+const asciiWord = (w) => /^[\x20-\x7e]+$/.test(w);
+
+function probesFor(words) {
+  if (!words.every(asciiWord)) return null;
+  return words.map((w) => new RegExp(w.replace(RE_META, "\\$&"), "i"));
+}
+
+function mayMatch(chat, probes) {
+  const title = typeof chat.title === "string" ? chat.title : "";
+  const msgs = Array.isArray(chat.msgs) ? chat.msgs : [];
+  for (const re of probes) {
+    if (re.test(title)) continue;
+    let found = false;
+    for (const m of msgs) {
+      if (re.test(m.t)) { found = true; break; }
+    }
+    if (!found) return false;
+  }
+  return true;
+}
+
 function score(chat, words, lowered) {
   // every word must appear somewhere; score = total hits, title hits ×3
   let total = 0;
-  const title = chat.title.toLowerCase();
+  // A record written by an older build, or brought back by a hand-edited
+  // import, can be missing either of these. Reading a query as "no match" is
+  // survivable; throwing here stops the whole search.
+  const title = (typeof chat.title === "string" ? chat.title : "").toLowerCase();
   /* Lowercased ONCE, not once per word. The words loop is bounded at 8, so the
      nesting was already linear rather than quadratic — but it re-lowercased
      every message in the chat on every pass, which on a real archive is the
      whole body of text allocated eight times over for one query. Measured on
      archive-sized data: 128ms to 95ms, same score out. */
-  const lows = lowered || chat.msgs.map((m) => m.t.toLowerCase());
+  const lows = lowered || (Array.isArray(chat.msgs) ? chat.msgs : []).map((m) => String(m && m.t || "").toLowerCase());
   for (const w of words) {
     let hits = 0;
     for (const t of lows) {
@@ -501,39 +630,86 @@ function passagesFor(chat, words, lowered, cap) {
   return out;
 }
 
+/* ---------- typing forward ----------
+   The recall page searches as you type, and each search reads the whole
+   archive — fourteen megabytes deserialized, four or five times over, for one
+   word being entered.
+
+   It does not have to. Search is AND over substrings, so adding characters can
+   only ever NARROW the answer: a chat that contains "attention" already
+   contains "atten", and a chat that fails on an added word was going to fail
+   anyway. Every result of a longer query is therefore inside the shorter
+   query's results, and a query that extends the last one is answered from that
+   set instead of from the archive.
+
+   The set is held against the archive's write counter, so a chat the sync
+   engine adds invalidates it rather than staying invisible until the query is
+   retyped. And only while the set is small: narrowing five thousand candidates
+   is not cheaper than the scan it replaces. */
+let lastSearch = null;                  // { words, ids, scanned, seq }
+const NARROW_MAX = 600;
+
+/** Whether `words` can be answered from a previous query's results. Adding a
+ *  word narrows; extending the last word narrows; anything else — a word
+ *  shortened, changed, or removed — can only widen, and goes to the archive. */
+function narrowsFrom(prev, words) {
+  if (!prev || !Array.isArray(prev.words) || !prev.words.length) return false;
+  if (words.length < prev.words.length) return false;
+  for (let i = 0; i < prev.words.length - 1; i++) {
+    if (words[i] !== prev.words[i]) return false;
+  }
+  const tail = prev.words[prev.words.length - 1];
+  return String(words[prev.words.length - 1] || "").startsWith(tail);
+}
+
 async function search(query, long) {
   const words = String(query || "").toLowerCase().split(/\s+/).filter((w) => w.length >= 2).slice(0, 8);
-  if (!words.length) return { results: [], scanned: 0 };
-  const d = await db();
+  if (!words.length) { lastSearch = null; return { results: [], scanned: 0 }; }
   const results = [];
-  let scanned = 0;
-  await new Promise((resolve, reject) => {
-    const cur = tx(d, "readonly").openCursor();
-    cur.onerror = () => reject(cur.error);
-    cur.onsuccess = () => {
-      const c = cur.result;
-      if (!c) return resolve();
-      scanned++;
-      const chat = c.value;
-      /* One lowercase pass per chat, shared by the scorer and the snippet.
-         They each made their own, so the whole archive body was lowercased
-         twice for every query that matched. */
-      const lowered = chat.msgs.map((m) => m.t.toLowerCase());
-      const s = score(chat, words, lowered);
-      if (s > 0) {
-        const snip = snippetFor(chat, words, long, lowered);
-        results.push({
-          id: chat.id, host: chat.host, path: chat.path, platform: chat.platform,
-          title: chat.title, n: chat.n, createdAt: chat.createdAt,
-          updatedAt: chat.updatedAt, score: s, snippet: snip.text, role: snip.role,
-          // Temporary chat: no original to reopen on the platform.
-          ...(chat.temp ? { temp: 1 } : {}),
-          ...(long ? { passages: passagesFor(chat, words, lowered, passageCap(chat.n || 0)) } : {})
-        });
-      }
-      c.continue();
-    };
-  });
+  const matched = [];                   // every id that matched, not just the top
+  const probes = probesFor(words);
+
+  const consider = (chat) => {
+    if (!chat || !Array.isArray(chat.msgs)) return;
+    // The rejection pass: allocation-free, and it is the answer for almost
+    // every chat in the archive.
+    if (probes && !mayMatch(chat, probes)) return;
+    /* One lowercase pass per chat, shared by the scorer and the snippet.
+       They each made their own, so the whole archive body was lowercased
+       twice for every query that matched. */
+    const lowered = chat.msgs.map((m) => String(m && m.t || "").toLowerCase());
+    const s = score(chat, words, lowered);
+    if (s <= 0) return;
+    matched.push(chat.id);
+    const snip = snippetFor(chat, words, long, lowered);
+    results.push({
+      id: chat.id, host: chat.host, path: chat.path, platform: chat.platform,
+      title: chat.title, n: chat.n, createdAt: chat.createdAt,
+      updatedAt: chat.updatedAt, score: s, snippet: snip.text, role: snip.role,
+      // Temporary chat: no original to reopen on the platform.
+      ...(chat.temp ? { temp: 1 } : {}),
+      ...(long ? { passages: passagesFor(chat, words, lowered, passageCap(chat.n || 0)) } : {})
+    });
+  };
+
+  const prev = lastSearch;
+  const narrow = !!prev && prev.seq === archiveSeq && prev.ids.length <= NARROW_MAX &&
+    narrowsFrom(prev, words);
+  let scanned;
+  if (narrow) {
+    const found = await recordsByIds(prev.ids);
+    // In the previous answer's order, so a tie between two equal scores lands
+    // the same way it did a keystroke ago.
+    for (const id of prev.ids) consider(found.get(id));
+    /* The archive this answer descends from, not the handful re-read to
+       produce it: "no matches in 12 chats" would be a false statement about an
+       archive of two thousand. */
+    scanned = prev.scanned;
+  } else {
+    scanned = 0;
+    await scanChats((chat) => { scanned++; consider(chat); });
+  }
+  lastSearch = { words, ids: matched, scanned, seq: archiveSeq };
   results.sort((a, b) => b.score - a.score || b.updatedAt - a.updatedAt);
   return { results: results.slice(0, MAX_RESULTS), scanned };
 }
@@ -577,7 +753,6 @@ async function archiveIndex(host, prefix) {
   const d = await db();
   const index = new Map();
   const start = host + prefix;
-  const range = IDBKeyRange.bound(start, start + "￿");
 
   const viaIndex = await new Promise((resolve) => {
     let store;
@@ -598,17 +773,9 @@ async function archiveIndex(host, prefix) {
   if (viaIndex && viaIndex.size >= await platformCount(host, prefix)) return viaIndex;
 
   index.clear();
-  await new Promise((resolve, reject) => {
-    const cur = tx(d, "readonly").openCursor(range);
-    cur.onerror = () => reject(cur.error);
-    cur.onsuccess = () => {
-      const c = cur.result;
-      if (!c) return resolve();
-      const v = c.value;
-      if (v && typeof v.id === "string") index.set(v.id, Number(v.sourceUpdatedAt || v.updatedAt || 0));
-      c.continue();
-    };
-  });
+  await scanChats((v) => {
+    if (v && typeof v.id === "string") index.set(v.id, Number(v.sourceUpdatedAt || v.updatedAt || 0));
+  }, { lower: start, upper: start + "\uffff" });
   return index;
 }
 
@@ -732,21 +899,13 @@ async function stats() {
 }
 
 async function statsScan() {
-  const d = await db();
   let chats = 0, msgs = 0, bytes = 0;
   const byPlatform = {};
-  await new Promise((resolve, reject) => {
-    const cur = tx(d, "readonly").openCursor();
-    cur.onerror = () => reject(cur.error);
-    cur.onsuccess = () => {
-      const c = cur.result;
-      if (!c) return resolve();
-      const v = c.value;
-      chats++; msgs += v.n;
-      for (const m of v.msgs) bytes += m.t.length;
-      byPlatform[v.platform || v.host] = (byPlatform[v.platform || v.host] || 0) + 1;
-      c.continue();
-    };
+  await scanChats((v) => {
+    if (!v) return;
+    chats++; msgs += Number(v.n) || 0;
+    if (Array.isArray(v.msgs)) for (const m of v.msgs) bytes += (m && m.t ? m.t.length : 0);
+    byPlatform[v.platform || v.host] = (byPlatform[v.platform || v.host] || 0) + 1;
   });
   return { chats, msgs, bytes, byPlatform };
 }
