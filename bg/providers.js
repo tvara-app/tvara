@@ -568,8 +568,8 @@ const BG_ADAPTERS = [
         updatedAt: conv.update_time ? Math.round(conv.update_time * 1000) : 0
       };
     },
-    async detail(ctx, id) {
-      return (await this.detailFull(ctx, id)).msgs;
+    async detail(ctx, id, opts) {
+      return (await this.detailFull(ctx, id, opts)).msgs;
     }
   },
   {
@@ -673,7 +673,7 @@ const BG_ADAPTERS = [
       }
       return best;
     },
-    async get(ctx, path) { return bgJson(await bgFetch(this.base + path)); },
+    async get(ctx, path, opts) { return bgJson(await bgFetch(this.base + path, opts)); },
     async list(ctx, sinceMs, progress) {
       return pageThrough(this, {
         pageSize: 100, sinceMs, progress,
@@ -689,8 +689,8 @@ const BG_ADAPTERS = [
         })
       });
     },
-    async detail(ctx, id) {
-      const conv = await this.get(ctx, `/api/organizations/${ctx.org}/chat_conversations/${id}`);
+    async detail(ctx, id, opts) {
+      const conv = await this.get(ctx, `/api/organizations/${ctx.org}/chat_conversations/${id}`, opts);
       const msgs = [];
       for (const m of (conv.chat_messages || [])) {
         const role = m.sender === "human" ? "user" : "assistant";
@@ -715,7 +715,7 @@ const BG_ADAPTERS = [
       // after the listing instead — see resolveAnchor().
       return { identified: false };
     },
-    async get(ctx, path) { return bgJson(await bgFetch(this.base + path)); },
+    async get(ctx, path, opts) { return bgJson(await bgFetch(this.base + path, opts)); },
     async list(ctx, sinceMs, progress) {
       return pageThrough(this, {
         pageSize: 100, sinceMs, progress,
@@ -730,8 +730,8 @@ const BG_ADAPTERS = [
         })
       });
     },
-    async detail(ctx, id) {
-      const data = await this.get(ctx, "/api/v0/chat/history/" + id);
+    async detail(ctx, id, opts) {
+      const data = await this.get(ctx, "/api/v0/chat/history/" + id, opts);
       const msgs = [];
       for (const m of (data.data?.messages || data.messages || [])) {
         const role = /user|human/i.test(m.role) ? "user" : "assistant";
@@ -751,7 +751,7 @@ const BG_ADAPTERS = [
       await bgFetch(this.base + "/rest/app-chat/conversations?limit=1");
       return { identified: false };   // as DeepSeek — resolveAnchor() separates them
     },
-    async get(ctx, path) { return bgJson(await bgFetch(this.base + path)); },
+    async get(ctx, path, opts) { return bgJson(await bgFetch(this.base + path, opts)); },
     async list(ctx, sinceMs, progress) {
       return pageThrough(this, {
         pageSize: 100, sinceMs, progress,
@@ -780,9 +780,9 @@ const BG_ADAPTERS = [
      * in it whatsoever, so `data.messages || data.turns` was always empty and
      * every Grok chat archived as a title with nothing under it.
      */
-    async detail(ctx, id) {
+    async detail(ctx, id, opts) {
       const conv = "/rest/app-chat/conversations/" + encodeURIComponent(id);
-      const nodes = await this.get(ctx, conv + "/response-node?includeThreads=true");
+      const nodes = await this.get(ctx, conv + "/response-node?includeThreads=true", opts);
       const ids = (nodes.responseNodes || nodes.response_nodes || [])
         .map((n) => n && String(n.responseId || n.response_id || ""))
         .filter(Boolean);
@@ -887,6 +887,8 @@ const BG_ADAPTERS = [
       const prefix = (ctx && ctx.prefix) || "";
       const r = await bgFetch(this.base + prefix + GEMINI_BATCH_PATH + "?" + params.toString(), {
         method: "POST",
+        // The caller's cancellation, so a Stop reaches this one too.
+        ...(opts && opts.signal ? { signal: opts.signal } : {}),
         headers: {
           "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
           "X-Same-Domain": "1",
@@ -1025,9 +1027,9 @@ const BG_ADAPTERS = [
       metas.sort((a, b) => b.updatedAt - a.updatedAt);
       return { metas, complete: !truncated, unreadable: sawRows > 0 && named === 0 };
     },
-    async detail(ctx, id) {
+    async detail(ctx, id, opts) {
       const payloads = geminiPayloads(
-        await this.rpc(ctx, GEMINI_RPC_READ, [id, GEMINI_TURN_MAX, null, 1, [1], [4], null, 1]),
+        await this.rpc(ctx, GEMINI_RPC_READ, [id, GEMINI_TURN_MAX, null, 1, [1], [4], null, 1], opts),
         GEMINI_RPC_READ);
       if (!payloads.length) throw new BgError("shape", "provider conversation not understood");
 
@@ -1113,7 +1115,7 @@ const BG_ADAPTERS = [
         })
       });
     },
-    async detail(ctx, id) {
+    async detail(ctx, id, opts) {
       const msgs = [];
       let cursor = "";
       for (let page = 0; page < BG_LIST_MAX_PAGES; page++) {
@@ -1123,7 +1125,7 @@ const BG_ADAPTERS = [
           j = await bgJson(await bgFetch(
             this.base + "/rest/thread/" + encodeURIComponent(id) + PPLX_Q +
             (cursor ? "&cursor=" + encodeURIComponent(cursor) : ""),
-            { headers: PPLX_HEADERS }));
+            { headers: PPLX_HEADERS, ...(opts || {}) }));
         } catch (error) {
           // Perplexity purges threads after roughly three months, and says so
           // with a 400 (ENTRY_EXPIRED / ENTRY_DELETED) rather than a 404. Left
@@ -1196,9 +1198,9 @@ const BG_ADAPTERS = [
         }
       });
     },
-    async detail(ctx, id) {
+    async detail(ctx, id, opts) {
       const path = claudeFillOrg(ctx.listPath, ctx.org);
-      const body = await bgJson(await bgFetch(`${this.base}${path}/${encodeURIComponent(id)}`));
+      const body = await bgJson(await bgFetch(`${this.base}${path}/${encodeURIComponent(id)}`, opts));
       const turns = [body && body.chat_messages, body && body.messages, body && body.events,
                      body && body.transcript, body && body.turns].find(Array.isArray) || [];
       const msgs = [];

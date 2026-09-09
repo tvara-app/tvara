@@ -361,6 +361,18 @@ async function bgFetch(url, opts = {}) {
     let r;
     const timeoutCtl = new AbortController();
     const timeoutTimer = setTimeout(() => timeoutCtl.abort(), timeoutMs);
+    /* The caller's own signal, folded in beside the timeout. Without this a
+       request already in the air cannot be called back: pressing Stop set a
+       flag that the queue only reads BETWEEN chats, so the run kept going
+       until whatever was in flight came home — up to the full timeout, across
+       every lane and every provider at once. A flag stops the next request; a
+       signal stops this one. */
+    const caller = init && init.signal;
+    const relay = caller && !caller.aborted
+      ? () => { try { timeoutCtl.abort(); } catch (_) { /* already done */ } }
+      : null;
+    if (caller && caller.aborted) timeoutCtl.abort();
+    if (relay) caller.addEventListener("abort", relay, { once: true });
     try {
       r = await fetch(url, {
         ...init, headers, credentials: "include",
@@ -369,11 +381,17 @@ async function bgFetch(url, opts = {}) {
         signal: timeoutCtl.signal
       });
     } catch (_) {
+      /* Called back on purpose. Retrying an aborted signal burns every attempt
+         on a request that can only abort again, and reporting it as a network
+         failure turns a Stop the reader asked for into "couldn't be fetched".
+         It is neither a failure nor worth a retry. */
+      if (caller && caller.aborted) throw new BgError("cancelled", "stopped");
       if (attempt === attempts - 1) throw new BgError("net", "network unavailable");
       await sleep(backoffDelay(attempt, 0));
       continue;
     } finally {
       clearTimeout(timeoutTimer);
+      if (relay && caller) caller.removeEventListener("abort", relay);
     }
     if (r.status === 429 || (r.status === 503 && r.headers.get("Retry-After"))) {
       const retryAfterMs = parseRetryAfter(r.headers.get("Retry-After"));

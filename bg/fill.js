@@ -23,7 +23,21 @@ const BG_FILL_ALARM = "lct-fill-resume";
 // Written only to reset the worker's idle timer. Nothing reads it.
 const BG_FILL_BEAT = "lct-fill-beat";
 let fillCancel = false;
+/* Re-entry guard: true from the moment a run is claimed until its very last
+   write. Two clicks inside that window must not both start a loop. */
 let fillRunning = false;
+/* Whether anything is still being FETCHED. Not the same question, and the
+   panel asks this one: after a stop the loop lets go at once, but the run
+   still has a tail — clearing the alarm, counting what is left, which walks
+   the archive when it has changed. Reporting "stopping" across that tail is
+   how a Stop that had already stopped went on saying so for two seconds. */
+let fillWorking = false;
+/* What a Stop actually pulls. The cancel flag is only read BETWEEN chats, so
+   on its own it leaves every request already in the air running to completion
+   — up to the full fetch timeout, on several lanes, across every provider at
+   once. That is the wait behind "Stopping…". This is handed to bgFetch as the
+   caller's signal, and aborting it ends those requests where they stand. */
+let fillAbort = null;
 
 /* No second pace here.
    bg/fetch.js is the ONE authority on how fast a host is asked — hostSlot()
@@ -120,10 +134,10 @@ async function fillState() {
        the user had — nothing on screen changed and the click read as dead. The
        moment a cancel is pending nothing new will be fetched, which is what the
        user asked for, so say so: not running, stopping. */
-    const stopping = fillRunning && fillCancel;
-    return { ...extra, running: fillRunning && !fillCancel, stopping, resuming, remaining, total };
+    const stopping = fillWorking && fillCancel;
+    return { ...extra, running: fillWorking && !fillCancel, stopping, resuming, remaining, total };
   } catch {
-    return { running: fillRunning && !fillCancel, stopping: fillRunning && fillCancel,
+    return { running: fillWorking && !fillCancel, stopping: fillWorking && fillCancel,
       resuming: false, remaining: {}, total: 0 };
   }
 }
@@ -238,6 +252,8 @@ async function fillRestart() {
 
 async function fillStop() {
   fillCancel = true;
+  // Stop means now, not "after whatever is in the air comes home".
+  try { if (fillAbort) fillAbort.abort(); } catch (_) { /* already aborted */ }
   // Stop means stop: without this the resume alarm restarts the run a minute
   // after the user asked it not to.
   try { await chrome.alarms.clear(BG_FILL_ALARM); } catch { /* no alarms */ }
@@ -285,6 +301,7 @@ async function fillStart() {
   if (fillRunning) return { status: "already-running" };
   fillRunning = true;
   fillCancel = false;
+  fillAbort = new AbortController();
   await ensureStubIndex();
   const started = Date.now();
   let done = 0, failed = 0;
@@ -339,7 +356,7 @@ async function fillStart() {
           ? recordId.slice((adapter.host + adapter.prefix).length) : "";
         if (!convId) { await noteStub(recordId, adapter.host, true); return ""; }
         try {
-          const msgs = await adapter.detail(ctx, convId);
+          const msgs = await adapter.detail(ctx, convId, fillAbort ? { signal: fillAbort.signal } : undefined);
           // One message IS a conversation — CLAUDE.md, and importBatch agrees.
           // At >= 2 the single message was discarded and the stub marked done,
           // so that chat stayed bodiless for good.
@@ -354,8 +371,13 @@ async function fillStart() {
             await noteStub(recordId, adapter.host, true);
           }
         } catch (error) {
-          failed++;
           const kind = (error && error.kind) || "net";
+          /* The reader pressed Stop. Not a failure, and not this chat's fault:
+             counting it would leave the row saying "N couldn't be fetched"
+             about work nobody wanted done, and the stub stays in the queue so
+             the next run simply picks it up. */
+          if (kind === "cancelled" || fillCancel) return "stop";
+          failed++;
           if (kind === "challenge") {
             // The edge refused the request shape, not the session. Preparing
             // again would be refused the same way; stop and say what it was.
@@ -395,6 +417,15 @@ async function fillStart() {
    * pipe standing empty while a response is in the air. targetConcurrency() is
    * the same adaptive figure the history pass uses, re-read per chat, so a 429
    * narrows this queue on the next one rather than at the end of it. */
+  /** Rejects the moment this run is stopped, so an await can be raced against it. */
+  const untilStopped = () => new Promise((_, reject) => {
+    const signal = fillAbort && fillAbort.signal;
+    if (!signal) return;                       // nothing to race: never settles
+    if (signal.aborted) return reject(new BgError("cancelled", "stopped"));
+    signal.addEventListener("abort",
+      () => reject(new BgError("cancelled", "stopped")), { once: true });
+  });
+
   const runPlatform = async (adapter, ids) => {
     let at = 0, stopped = false;
     const lane = async (index) => {
@@ -412,7 +443,20 @@ async function fillStart() {
            costs nothing but the wait. */
         if (readerActive(adapter.host)) { stopped = true; return; }
         const recordId = ids[at++];
-        if (await fetchOne(adapter, recordId) === "stop") { stopped = true; return; }
+        /* Raced, because the wait is not only the request. hostSlot() holds
+           each lane for the interval this host has earned before it is allowed
+           to send at all, and a sleep has nothing to abort — so with four lanes
+           queued behind one polite interval, a Stop that had already cancelled
+           every request in flight still took two seconds to say so. The lane
+           lets go here; the pacing chain unwinds on its own with nobody
+           waiting on it. */
+        let outcome;
+        try { outcome = await Promise.race([fetchOne(adapter, recordId), untilStopped()]); }
+        catch (error) {
+          if ((error && error.kind) === "cancelled") return;
+          throw error;
+        }
+        if (outcome === "stop") { stopped = true; return; }
       }
     };
     const lanes = Math.max(1, Math.min(targetConcurrency(adapter.host), ids.length));
@@ -425,6 +469,7 @@ async function fillStart() {
        independent budgets and six independent pacers, and one signed-out or
        cooling provider used to hold every queue behind it — the same reasoning
        that made bgSyncAll parallel. */
+    fillWorking = true;
     await Promise.all(BG_ADAPTERS.map(async (adapter) => {
       if (fillCancel) return;
       // A provider left out of the choice is not fetched at all; one named with
@@ -450,12 +495,28 @@ async function fillStart() {
         ids = ((await readStubs())[adapter.id] || []).slice();
       }
       if (!ids.length) return;
-      // A chat's text can only be fetched by the account that owns it; a
-      // signed-out platform is skipped rather than failed.
-      try { await idxPrepare(adapter); }
-      catch { await writeFill({ state: "running", note: `${adapter.label}: not signed in` }); return; }
+      /* A chat's text can only be fetched by the account that owns it; a
+         signed-out platform is skipped rather than failed.
+
+         Raced against the stop. Six providers enter this loop at once, so when
+         somebody presses Stop the other five are already inside their
+         handshake — and a handshake carries no cancellation, so the run could
+         not report itself finished until every one of them had timed out on
+         its own. Two seconds of "Stopping…" after the fetching had, in fact,
+         stopped. The stray handshake still completes somewhere and is
+         discarded; what matters is that nothing waits for it. */
+      try { await Promise.race([idxPrepare(adapter), untilStopped()]); }
+      catch (error) {
+        if ((error && error.kind) === "cancelled") return;
+        await writeFill({ state: "running", note: `${adapter.label}: not signed in` });
+        return;
+      }
       await runPlatform(adapter, ids);
     }));
+    /* Nothing else will be fetched. Said BEFORE the tally below, which walks
+       the archive when it has changed and is the reason a finished stop went
+       on reading as "Stopping…". */
+    fillWorking = false;
     const left = (await fillState()).total;
     // Ended on its own terms: no watchdog until the next start.
     try { await chrome.alarms.clear(BG_FILL_ALARM); } catch { /* no alarms */ }
@@ -474,6 +535,7 @@ async function fillStart() {
     // Every exit, not only the tidy one: a throw or a budget stop that left the
     // pulse running would keep waking the worker for a run that has ended.
     clearInterval(pulse);
+    fillWorking = false;                 // every exit, including a throw
     fillRunning = false;
   }
 }
