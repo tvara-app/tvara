@@ -141,7 +141,7 @@ async function openChat(html, tag) {
    page shares the worker's origin, so it sees the same database. */
 async function archive() {
   const p = await ctx.newPage();
-  await p.goto(`chrome-extension://${EXT_ID}/recall.html`);
+  await p.goto(`chrome-extension://${EXT_ID}/pages/recall.html`);
   const rows = await p.evaluate(() => new Promise((res) => {
     let done = false;
     const finish = (v) => { if (!done) { done = true; res(v); } };

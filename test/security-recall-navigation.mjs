@@ -15,9 +15,9 @@
    entitlement required.
 
    The allowlist lives at EVERY point of use — three of them now:
-     recall-page.js  — window.open(url, "_blank", "noopener")
+     pages/pages.js  — window.open(url, "_blank", "noopener")
      popup/popup.js  — chrome.tabs.create({ url })
-     content/recall.js — location.href = url
+     content/indexer.js — location.href = url
    and all three get `url` from one place, LCTProduct.chatUrl(host, path).
 
    Checking the host and then CONCATENATING the two halves — which is what
@@ -102,7 +102,7 @@ try {
       const origOpen = window.open;
       window.open = (...args) => { window.__openedUrls.push(args[0]); return origOpen ? null : null; };
     });
-    await page.goto(`chrome-extension://${id}/recall.html`);
+    await page.goto(`chrome-extension://${id}/pages/recall.html`);
     await page.waitForSelector("#q", { timeout: 10000 });
     await page.fill("#q", searchTitle);
     // #q's "input" listener debounces 180ms before firing recall-search, plus

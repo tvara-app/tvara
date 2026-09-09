@@ -485,7 +485,7 @@
     /* Refuse to navigate rather than drop the record — the click just does
        nothing. chatUrl() resolves the path against the host and re-checks the
        origin, so an allowlisted host cannot be turned into userinfo for
-       somebody else's. Same guard as recall-page.js and popup.js. */
+       somebody else's. Same guard as pages/pages.js and popup.js. */
     const url = self.LCTProduct.chatUrl(res.host, res.path);
     if (!url) return;
     // other chat (possibly other platform): stash the query, then navigate.

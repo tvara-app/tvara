@@ -53,7 +53,7 @@ try {
      one tab that names the exact puzzle-menu and pin controls. The extension
      cannot make that browser-level click for the user. */
   await new Promise((r) => setTimeout(r, 1500));
-  const onboarding = ctx.pages().find((p) => p.url().includes(`chrome-extension://${id}/onboarding.html`));
+  const onboarding = ctx.pages().find((p) => p.url().includes(`chrome-extension://${id}/pages/onboarding.html`));
   t("first run: pin setup opens immediately", !!onboarding,
     ctx.pages().map((p) => p.url()).join(", "));
   if (onboarding) {

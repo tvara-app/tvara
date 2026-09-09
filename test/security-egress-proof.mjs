@@ -87,7 +87,7 @@ const id = idFromManifestKey(ROOT) || (() => {
 // about the extension) — reusing one page's lifetime across the whole run is
 // both simpler and reliably captures every request.
 const page = await ctx.newPage();
-await page.goto(`chrome-extension://${id}/recall.html`); // a page that itself pulls in most of lib/*
+await page.goto(`chrome-extension://${id}/pages/recall.html`); // a page that itself pulls in most of lib/*
 async function send(msg) {
   return page.evaluate((m) => new Promise((resolve) => {
     chrome.runtime.sendMessage(m, (r) => { void chrome.runtime.lastError; resolve(r); });

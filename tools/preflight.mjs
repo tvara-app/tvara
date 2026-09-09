@@ -55,12 +55,11 @@ else {
   // Older than the newest source file = a zip that predates a change.
   /* Everything pack.mjs ships, walked to the leaves. This used to watch five
      entries and stat only a directory's immediate children, so editing
-     recall-page.js (40KB, shipped) or content/inject/quota-probe.js (a
+     pages/pages.js (40KB, shipped) or content/inject/quota-probe.js (a
      subdirectory, whose mtime does not move when a file inside it changes)
      left this printing "zip matches manifest" over a zip that predated the fix. */
   const WATCH = ["bg.js", "bg", "manifest.json", "content", "popup", "lib", "icons",
-                 "diag", "onboarding.html", "onboarding.css", "onboarding.js",
-                 "recall.html", "archive.html", "recall.css", "recall-page.js"];
+                 "diag", "pages"];
   const newestOf = (full) => {
     let st;
     try { st = statSync(full); } catch { return 0; }

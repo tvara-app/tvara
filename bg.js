@@ -197,7 +197,7 @@ try {
     // Create before awaiting any provider. This is the install prompt, not a
     // reward for a network request completing.
     try {
-      await chrome.tabs.create({ url: chrome.runtime.getURL("onboarding.html?install=1"), active: true });
+      await chrome.tabs.create({ url: chrome.runtime.getURL("pages/onboarding.html?install=1"), active: true });
     } catch (_) { /* a managed browser may prohibit extension tabs */ }
     firstRunBootstrap("install").catch(() => {});
   });
@@ -214,7 +214,7 @@ try {
          openPopup() is the only thing that lands on the button itself; it is
          not available on every Chrome, so the Recall page is the fallback
          rather than the destination. */
-      const fallback = () => chrome.tabs.create({ url: chrome.runtime.getURL("recall.html") });
+      const fallback = () => chrome.tabs.create({ url: chrome.runtime.getURL("pages/recall.html") });
       try {
         if (chrome.action && chrome.action.openPopup) chrome.action.openPopup().catch(fallback);
         else fallback();
@@ -225,7 +225,7 @@ try {
     chrome.notifications.clear(id);
     // The buttons carry the decision; the body opens the list for a closer look.
     chrome.action?.openPopup?.().catch(() => {
-      chrome.tabs.create({ url: chrome.runtime.getURL("archive.html#deletions") });
+      chrome.tabs.create({ url: chrome.runtime.getURL("pages/archive.html#deletions") });
     });
   });
 } catch (_) { /* notifications API unavailable */ }

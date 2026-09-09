@@ -2,7 +2,7 @@
   "ci": {
     "collect": {
       "staticDistDir": ".",
-      "url": ["http://localhost/recall.html"],
+      "url": ["http://localhost/pages/recall.html"],
       "numberOfRuns": 3
     },
     "assert": {

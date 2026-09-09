@@ -43,7 +43,7 @@ product is the archive — the tools exist to make what it holds usable.
 | `content/richtext.js` | Code highlighting and LaTeX → MathML for archived text. No library: the CSP blocks every CDN. |
 | `content/deletion-toast.js` | "A chat was deleted", asked in the page, with Keep/Delete on it and a 5s undo. |
 | `popup/` | The popup, the device screen, the account card. |
-| `recall-page.js`, `recall.html` | Full-page archive: search, export, restore, the history window. NOT deletions — see below. |
+| `pages/` | Every full-page surface: `recall.html` (search), `archive.html` (check, backup, restore, delete), `fetch.html` (what text to fetch), `onboarding.html`. `pages.css` and `pages.js` are named for the SET they serve — `recall.css` styled three pages and `recall-page.js` drove two. |
 | `content/chatcard.js` | The hover card. Reads the archive via `chat-stats`, never the DOM alone. |
 | `server/` | Cloudflare Worker (`entitlement-worker.js`), D1 schema, `AccountDO`. |
 | `docs/SESSIONS.md` | The device-session design, including decisions that were reversed. |
@@ -169,9 +169,9 @@ the real challenge.
 **Total Recall is the search, and nothing else.** Checking providers for new
 chats, the encrypted reinstall backup, restoring one, choosing what text to
 fetch and deleting the archive are all FREE, and a free control reached only
-through a paid page reads as a thing you have not bought. `fetch.html` took the
-picker; `archive.html` takes the rest, and `recall.html` keeps a door to both.
-One script (`recall-page.js`) still serves both pages, so every top-level hook
+through a paid page reads as a thing you have not bought. `pages/fetch.html` took
+the picker; `pages/archive.html` takes the rest, and `pages/recall.html` keeps a
+door to both. One script (`pages/pages.js`) still serves both pages, so every top-level hook
 goes through `on(id, ev, fn)` and every paint tolerates an absent node — a
 control that lives on the other page is missing, not broken.
 
@@ -203,7 +203,7 @@ When there is nothing to choose the control is WITHDRAWN, not removed
 (`visibility`, never `hidden`): its column stays, so the sub-line cannot rewrap
 and the row cannot change height under a reaching hand. B21a measures it.
 
-**Choosing what to fetch is its own page (`fetch.html`), not a Recall panel.**
+**Choosing what to fetch is its own page (`pages/fetch.html`), not a Recall panel.**
 Recall is the SEARCH feature and it is gated. Deciding what the archive should
 hold is neither, and burying a free control inside a paid page is how a thing
 that works comes to look like a thing you have not bought.
@@ -514,7 +514,7 @@ reaching for the button below it. Three rules, in order of preference:
    empty-archive notice read one as a hit, and a test waiting for the first
    search result matched a grey box with no text in it.
 
-The picker (`fetch-page.js`) is built once and EDITED. Rebuilding it on every
+The picker (`pages/fetch.js`) is built once and EDITED. Rebuilding it on every
 tick throws away the checkbox that has focus and the reader's place in a list of
 a thousand titles — for a checkbox, which is the smallest interaction there is.
 
@@ -604,7 +604,7 @@ it there.
   alternation from the nearest stated role. Only a stated role is ever memoized.
 - **Never coerce an unknown role.** `role(el) === "user" ? "user" : "assistant"`
   writes every unmarked turn down as the model's, and it is what reaches the
-  archive. Resolve the whole list at once — the page flush (`content/recall.js`),
+  archive. Resolve the whole list at once — the page flush (`content/indexer.js`),
   the diagnostics split (`content/main.js`) and the card all do.
 - **The archive already holds records written the old way.** `resolveMsgRoles()`
   in `bg.js` re-derives a split that is every message one speaker, and it is
@@ -705,7 +705,7 @@ renderers keep the source they were handed.
   then `data-latex`, then `script[type=math/tex]`, then `aria-label`, then the
   MathML text — and writes it back as `$…$`, or `$$…$$` for a display block. So
   the archive holds LaTeX: searchable, exportable, and renderable again.
-- **Display maths is a block.** `BLOCK_SEL` in `content/recall.js` had no
+- **Display maths is a block.** `BLOCK_SEL` in `content/indexer.js` had no
   `.katex-display` / `mjx-container`, and because it DID match the paragraphs
   around them the whole-element fallback never ran — every standalone equation
   was dropped from the archive while the prose either side survived.
@@ -805,7 +805,7 @@ as the word "begin" followed by its own letters. Cells are parsed WHOLE: fed one
 token at a time, `\frac{a}{b}` inside a matrix loses its arguments.
 
 The preview panel reads the ARCHIVE, not the DOM — so it is only ever as fresh
-as the last flush. `content/recall.js` bumps `self.LCTArchiveRev` on every write
+as the last flush. `content/indexer.js` bumps `self.LCTArchiveRev` on every write
 and the panel re-reads on it; while open it re-checks every 2.5 s, keeping the
 reader's scroll position and repainting only on a real change. An empty panel
 keeps asking: a brand-new conversation has nothing archived for a few seconds,

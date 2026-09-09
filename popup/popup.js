@@ -274,7 +274,7 @@
 
   // Ring colour per provider. Each sits a step off its brand hue — near enough
   // that the ring is read as that platform without the legend, far enough that
-  // it is our mark and not theirs. Kept in step with --p-* in recall.css.
+  // it is our mark and not theirs. Kept in step with --p-* in pages/pages.css.
   const PROVIDERS = {
     chatgpt:    { color: "#19b884" },
     claude:     { color: "#e0805c" },
@@ -1705,13 +1705,13 @@
 
   $("fill-choose").addEventListener("click", (e) => {
     e.stopPropagation();
-    chrome.tabs.create({ url: chrome.runtime.getURL("fetch.html") });
+    chrome.tabs.create({ url: chrome.runtime.getURL("pages/fetch.html") });
     window.close();
   });
 
   $("backup-archive").addEventListener("click", () => {
     // Straight to the panel that owns the password, not the top of the page.
-    chrome.tabs.create({ url: chrome.runtime.getURL("archive.html#backup-panel") });
+    chrome.tabs.create({ url: chrome.runtime.getURL("pages/archive.html#backup-panel") });
     window.close();
   });
   refreshBackup();
@@ -2522,7 +2522,7 @@
   }
 
   $("open-recall").addEventListener("click", () => {
-    chrome.tabs.create({ url: chrome.runtime.getURL("recall.html") });
+    chrome.tabs.create({ url: chrome.runtime.getURL("pages/recall.html") });
   });
 
   /* ---------- Total Recall in the popup ---------- */
@@ -2641,7 +2641,7 @@
     info.textContent = `${res.n} messages${res.updatedAt ? ` · ${recallWhen(res.updatedAt)}` : ""}`;
     button.append(title, snippet, info);
     button.addEventListener("click", async () => {
-      // Same guard as recall-page.js: refuse to navigate rather than drop
+      // Same guard as pages/pages.js: refuse to navigate rather than drop
       // the record — the click just does nothing for an unrecognised host.
       // Host and path resolved together — see chatUrl() in lib/product.js.
       const url = self.LCTProduct.chatUrl(res.host, res.path);
@@ -3304,7 +3304,7 @@
   }
 
   $("restore-alert").addEventListener("click", () => {
-    chrome.tabs.create({ url: chrome.runtime.getURL("archive.html#recovery") });
+    chrome.tabs.create({ url: chrome.runtime.getURL("pages/archive.html#recovery") });
     window.close();
   });
 

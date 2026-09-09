@@ -37,7 +37,7 @@ const SITES = [
   { file: "content/history-loader.js", pattern: /pill\.innerHTML\s*=/ },
   { file: "content/main.js", pattern: /bar\.innerHTML\s*=/ },
   { file: "diag/quota.js", pattern: /\$\("out"\)\.innerHTML\s*=/ },
-  { file: "content/recall.js", pattern: /icon\.innerHTML\s*=/ },
+  { file: "content/indexer.js", pattern: /icon\.innerHTML\s*=/ },
 ];
 
 // From the `=` after a matched site, capture the RHS up to its real end:
@@ -86,7 +86,7 @@ function definitionHasInterpolation(src, name) {
 for (const { file, pattern } of SITES) {
   const path = join(ROOT, file);
   const src = readFileSync(path, "utf8"); // utf8, not shell text tools — this
-  // codebase has at least one file (content/recall.js, a NUL-byte separator
+  // codebase has at least one file (content/indexer.js, a NUL-byte separator
   // used deliberately as a dedupe key delimiter) that shell `grep` silently
   // treats as binary and skips; Node's fs handles embedded \0 in a string
   // fine, so reading here rather than shelling out avoids that trap.

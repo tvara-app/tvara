@@ -83,7 +83,7 @@
         "content/timeline.js",
         "content/outline.js",
         "content/chatcard.js",
-        "content/recall.js",
+        "content/indexer.js",
         "content/bridge.js",
         "content/distil.js",
         "content/carry.js",

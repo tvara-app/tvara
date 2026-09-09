@@ -93,9 +93,9 @@ const SURFACE_CHECKS = {
   async ["recall-page"](page, row, { ctx, id }) {
     const rp = await ctx.newPage();
     try {
-      await rp.goto(`chrome-extension://${id}/recall.html`);
+      await rp.goto(`chrome-extension://${id}/pages/recall.html`);
       const qPresent = await rp.locator("#q").count() > 0;
-      if (!qPresent) return { ok: false, detail: "recall.html's #q search input never mounted" };
+      if (!qPresent) return { ok: false, detail: "pages/recall.html's #q search input never mounted" };
       // recall-search is Pro-gated (archive.search) — on a non-pro State the
       // box exists in the DOM but sits behind a paywall prompt and is
       // legitimately not fillable. Only exercise the fill+search path when

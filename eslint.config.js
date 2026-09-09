@@ -73,7 +73,7 @@ export default [
       "diag/**/*.js",
       "bg.js",
       "bg/**/*.js",
-      "recall-page.js",
+      "pages/pages.js",
     ],
     plugins: { "no-unsanitized": noUnsanitized, security },
     languageOptions: {

@@ -107,7 +107,7 @@
   async function load(force) {
     build();
     const route = location.host + location.pathname;
-    /* The archive moves under this panel. content/recall.js bumps the revision
+    /* The archive moves under this panel. content/indexer.js bumps the revision
        every time it writes the open conversation, which on a chat being typed
        into is every few seconds — so a cached copy from the first read is a
        half-written answer, and that is what a brand-new conversation showed

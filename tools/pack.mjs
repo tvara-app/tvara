@@ -23,9 +23,7 @@ const dist = join(root, "dist");
 const withFirefox = process.argv.includes("--firefox");
 
 const SHIP = ["manifest.json", "lib", "content", "popup", "diag",
-              "bg.js", "bg", "onboarding.html", "onboarding.css", "onboarding.js",
-              "recall.html", "recall.css", "recall-page.js",
-              "fetch.html", "fetch-page.js", "archive.html"];
+              "bg.js", "bg", "pages"];
 
 /** The files bg.js pulls in, in call order. The Firefox background list and the
  *  ship check both read this, so neither can drift from the worker itself. */
@@ -84,7 +82,7 @@ function referencedPaths(staging, mf) {
       for (const m of html.matchAll(/<img[^>]+src="([^"]+)"/g)) add(resolve(m[1]), rel);
     } else if (rel.endsWith(".js")) {
       const js = readFileSync(file, "utf8");
-      // getURL("recall.html") — the runtime reference the manifest never sees.
+      // getURL("pages/recall.html") — the runtime reference the manifest never sees.
       for (const m of js.matchAll(/getURL\(\s*["'`]([^"'`]+)["'`]/g)) add(m[1], rel);
       // importScripts("bg/sync.js") — the worker's own modules. Left unchecked,
       // a file dropped from SHIP ships a worker that loads half of itself.
@@ -143,7 +141,7 @@ function build({ name, tweak, label }) {
   const wanted = new Set([...Object.values(mf.icons || {}),
                           ...Object.values(mf.action?.default_icon || {})]);
   // The pages show the icon too, so ship whatever any of them asks for.
-  for (const html of ["recall.html", "archive.html", "popup/popup.html"]) {
+  for (const html of ["pages/recall.html", "pages/archive.html", "popup/popup.html"]) {
     const p = join(staging, html);
     if (!existsSync(p)) continue;
     for (const m of readFileSync(p, "utf8").matchAll(/(?:src|href)="((?:\.\.\/)?icons\/[^"]+)"/g)) {

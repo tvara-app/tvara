@@ -981,7 +981,7 @@
 #lct-bridge .lct-b-insert:hover { background: #ff86a6; }
 /* ===== Total Recall overlay — the cross-chat command surface =============
    Sized by measurement, not by a fixed max-height: the list animates open to
-   exactly what the results need (see sizeList in content/recall.js), so a
+   exactly what the results need (see sizeList in content/indexer.js), so a
    six-result query shows six results instead of two and a scrollbar.        */
 #lct-recall {
   position: fixed;

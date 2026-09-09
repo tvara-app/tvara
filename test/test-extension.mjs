@@ -2714,7 +2714,7 @@ try {
   // 5) the Recall page: unlocked under trial, searches, shows stats
   const recall = await ctx.newPage();
   trackErrors(recall);
-  await recall.goto(POPUP.replace("popup/popup.html", "recall.html"));
+  await recall.goto(POPUP.replace("popup/popup.html", "pages/recall.html"));
   /* #searchbox carries no `hidden` in the markup — loadPlan() is what puts one
      there — so waiting on ":not([hidden])" matched the very first paint and
      every assertion below raced the entitlement round-trip. Wait for the badge
@@ -2736,7 +2736,7 @@ try {
   /* The operations left Total Recall: search is the Recall page, and checking
      providers, backup, restore and delete are the Archive page. Same script on
      both, so every selector below still resolves — only the URL moves. */
-  const ARCHIVE_URL = POPUP.replace("popup/popup.html", "archive.html");
+  const ARCHIVE_URL = POPUP.replace("popup/popup.html", "pages/archive.html");
   await recall.goto(ARCHIVE_URL);
 
   // A reinstall offers the previous backup — and must NOT hold archiving
@@ -2764,7 +2764,7 @@ try {
     "lct-recall-recovery-v1": { state: "ready" }
   }));
   // Recall unlocks with the trial once the restore prompt is cleared…
-  await recall.goto(POPUP.replace("popup/popup.html", "recall.html"));
+  await recall.goto(POPUP.replace("popup/popup.html", "pages/recall.html"));
   await recall.waitForFunction(() =>
     (document.getElementById("plan-badge")?.textContent || "…").trim() !== "…",
     null, { timeout: 10000 });
@@ -3438,7 +3438,7 @@ try {
   await recall.setInputFiles("#import-file", fixPath);
   await recall.waitForSelector("#import-status.ok", { timeout: 10000 });
   t("B11 import reports success", /Imported 2 chats/.test(await recall.textContent("#import-status")));
-  await recall.goto(POPUP.replace("popup/popup.html", "recall.html"));
+  await recall.goto(POPUP.replace("popup/popup.html", "pages/recall.html"));
   await recall.waitForFunction(() =>
     (document.getElementById("plan-badge")?.textContent || "…").trim() !== "…",
     null, { timeout: 10000 });
@@ -3749,7 +3749,7 @@ try {
   t("B12 locked command explains why (not a silent no-op)",
     /Context Bridge is a Pro feature/.test(await page.textContent("#lct-note").catch(() => "")));
   // The lock lives on the SEARCH page; this handle was last on Archive.
-  await recall.goto(POPUP.replace("popup/popup.html", "recall.html"));
+  await recall.goto(POPUP.replace("popup/popup.html", "pages/recall.html"));
   await recall.waitForSelector("#core-locked:not([hidden])", { timeout: 5000 });
   t("B11 recall page shows upsell when locked", await recall.isVisible("#core-locked"));
   // A locked page must offer both doors: the free week AND the way to pay.
@@ -3870,7 +3870,7 @@ try {
     await chrome.storage.sync.remove("lct-trial-v2");
   });
   const recall2 = await ctx.newPage();
-  await recall2.goto(`${POPUP.replace("/popup/popup.html", "/recall.html")}`);
+  await recall2.goto(`${POPUP.replace("/popup/popup.html", "/pages/recall.html")}`);
   await recall2.waitForSelector("#core-locked:not([hidden])");
 
   const probe = await recall2.evaluate(async () => {
@@ -4908,7 +4908,7 @@ try {
        bought. */
     const fetchPage = await ctx.newPage();
     trackErrors(fetchPage);
-    await fetchPage.goto(POPUP.replace("popup/popup.html", "fetch.html"));
+    await fetchPage.goto(POPUP.replace("popup/popup.html", "pages/fetch.html"));
     await fetchPage.waitForSelector("#fill-picker", { timeout: 10000 });
     const picker = await fetchPage.evaluate(() => ({
       shown: !document.getElementById("fill-picker").hidden,
