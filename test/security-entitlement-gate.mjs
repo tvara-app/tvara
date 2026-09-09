@@ -30,6 +30,7 @@
    reference across a suspend/wake cycle, so introspecting it directly would
    be testing the wrong thing). */
 import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import { generateKeyPairSync, sign } from "node:crypto";
 import {
   SCRATCH, reporter, mirrorExtension, mirrorExtensionWithMismatchedIntegrity,
@@ -37,6 +38,7 @@ import {
   launchExtension, sendFromExtensionPage, setStorage
 } from "./security-fixtures.mjs";
 
+const ROOT = join(import.meta.dirname, "..");
 const { t, done } = reporter();
 const DEVICE_ID = "test-device-0001-static";
 const LICENSE_KEY = "TESTKEY123456789ABCDEF"; // dodo-shaped: alnum, 8-64 chars, matches lib/dodo.js's looksLikeKey
@@ -160,6 +162,91 @@ async function seedLicenseAndDevice(ctx, extId, licenseKey = LICENSE_KEY) {
     t("D: a genuinely-valid signature under a swapped key is rejected when _KEY_INTEGRITY wasn't updated to match",
       !!res && res.err === "locked", `response: ${JSON.stringify(res)}`);
   } finally { await ctx.close(); }
+}
+
+/* ============ E. the whole map, not one entry of it ============
+
+   Section A proved ONE gated message refuses on a locked install. That is a
+   spot check: a feature added to PAID and spelled slightly wrong gates nothing
+   and looks exactly like a feature that is gated. So every key in the map is
+   asserted against a locked install, and every key is asserted to be a message
+   the router actually answers — a PAID entry for a type nothing handles is a
+   lock on a door that is not there. */
+{
+  const { EXT } = mirrorExtension("gate-everykey");
+  const { ctx, id } = await launchExtension(EXT, join(SCRATCH, "gate-everykey-profile"));
+  try {
+    const src = readFileSync(join(ROOT, "bg", "paywall.js"), "utf8");
+    const router = readFileSync(join(ROOT, "bg.js"), "utf8");
+    const paid = [...src.matchAll(/^\s*"([a-z-]+)":\s*"archive\./gm)].map((m) => m[1]);
+    t("E: the PAID map was read, and it is not empty", paid.length >= 10, `${paid.length} entries`);
+
+    const handled = new Set([...router.matchAll(/case "([a-z-]+)"/g)].map((m) => m[1]));
+    const orphans = paid.filter((k) => !handled.has(k));
+    t("E: every gated feature is a message the router answers",
+      orphans.length === 0, `unhandled: ${orphans.join(", ")}`);
+
+    /* Nothing is seeded: no licence, no trial. This is the address typed into
+       the bar by somebody who has not paid. */
+    const leaked = [];
+    for (const type of paid) {
+      const res = await sendFromExtensionPage(ctx, id, { type, q: "x", long: false,
+        host: "chatgpt.com", path: "/c/x" }, "pages/recall.html");
+      if (!(res && res.err === "locked")) leaked.push(`${type} → ${JSON.stringify(res)}`);
+    }
+    t("E: every gated feature refuses a locked install, asked from the Recall page",
+      leaked.length === 0, leaked.join(" | ").slice(0, 300));
+  } finally { await ctx.close(); }
+}
+
+/* ============ F. reach a provider tab must not have ============
+
+   The sender allowlist admits six provider origins so our content script can
+   reach the worker. Page script in those tabs cannot — an isolated world has
+   no chrome.runtime — so this is depth rather than a patched hole: a bug in
+   our own content script must not be able to read another provider's records
+   or the archive as a whole, and a handler added later must not inherit six
+   origins of reach because nobody thought about it.
+
+   Asserted structurally, because the sender cannot be forged from a test: the
+   two sets must name real router cases, and every archive-wide handler must be
+   in PAGE_ONLY. That last one is what fails when somebody adds the next
+   `recall-dump`. */
+{
+  const router = readFileSync(join(ROOT, "bg.js"), "utf8");
+  const setOf = (name) => {
+    const m = new RegExp(`const ${name} = Object.freeze\\(new Set\\(\\[([^\\]]*)\\]`).exec(router);
+    return m ? [...m[1].matchAll(/"([a-z-]+)"/g)].map((x) => x[1]) : [];
+  };
+  const pageOnly = setOf("PAGE_ONLY");
+  const ownHost = setOf("OWN_HOST_ONLY");
+  const handled = new Set([...router.matchAll(/case "([a-z-]+)"/g)].map((m) => m[1]));
+
+  t("F: PAGE_ONLY was read, and it is not empty", pageOnly.length >= 10, `${pageOnly.length} entries`);
+  t("F: OWN_HOST_ONLY was read, and it is not empty", ownHost.length >= 4, `${ownHost.length} entries`);
+  t("F: every restricted type is a message the router answers",
+    [...pageOnly, ...ownHost].every((k) => handled.has(k)),
+    [...pageOnly, ...ownHost].filter((k) => !handled.has(k)).join(", "));
+
+  /* The archive as a whole: export it, wipe it, sign it, count it, back it up,
+     restore it. None of these is ever sent by a content script — grep content/
+     — and each one either hands back every chat or changes every chat. */
+  const ARCHIVE_WIDE = ["recall-export", "recall-snapshot", "recall-wipe", "recall-stats",
+    "chat-message", "archive-stamp", "recall-backup-mark", "recall-restore-ledger",
+    "recall-autobackup-run", "chat-drop"];
+  const missing = ARCHIVE_WIDE.filter((k) => !pageOnly.includes(k));
+  t("F: every archive-wide handler is reachable only from our own pages",
+    missing.length === 0, `not in PAGE_ONLY: ${missing.join(", ")}`);
+
+  /* Per-chat reads are scoped to the asking tab's own host. chat-mount does it
+     inline — it is the one that was written first and the reason the rest are
+     here — so it is allowed to be absent from the set. */
+  const PER_CHAT = ["chat-archive", "chat-search", "chat-stats", "chat-index"];
+  const unscoped = PER_CHAT.filter((k) => !ownHost.includes(k));
+  t("F: every per-chat read is scoped to the tab's own host",
+    unscoped.length === 0, `not in OWN_HOST_ONLY: ${unscoped.join(", ")}`);
+  t("F: chat-mount still carries its own host check",
+    /case "chat-mount"[\s\S]{0,1400}fromHost !== wantHost/.test(router));
 }
 
 done();

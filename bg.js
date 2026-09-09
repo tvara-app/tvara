@@ -290,6 +290,81 @@ function _senderAllowed(sender) {
   return false;
 }
 
+/* ---------- what a PROVIDER PAGE may ask for ----------
+
+   _senderAllowed has to admit six provider origins, or the content script
+   cannot reach the worker at all.
+
+   What that permission is NOT: a way in for the page itself. A content script
+   runs in an isolated world, so script in the provider's own page has no
+   `chrome.runtime` and cannot send anything here — measured, not assumed. And
+   another extension cannot either: sender.id is checked first.
+
+   What it IS: the permission our own content script carries, on six origins,
+   for the life of the tab. So the rules below are depth, not a patched hole —
+   a bug in our own page code (a host read out of a URL, a path taken from the
+   DOM) must not be able to reach another provider's records or the archive as
+   a whole, and a handler added later must not quietly inherit six origins of
+   reach because nobody thought about it. chat-mount enforced exactly this
+   inline and was the only one that did; the rule now lives in one place and
+   applies to everything it should. */
+
+/** Only our own surfaces: the popup, the pages, the worker itself. */
+function _ownPage(sender) {
+  const url = (sender && sender.url) || "";
+  return !url || /^(chrome|moz)-extension:\/\//i.test(url);
+}
+
+/* Reads or moves the WHOLE archive rather than one conversation. No content
+   script sends any of these — checked against every `type:` in content/ — and
+   none should. `recall-export` is the one that matters most: it hands back
+   every message of every chat with no licence needed, deliberately, because it
+   is the user's own data asked for by the user's own page. That reasoning is
+   about WHO is asking, so it has to be enforced and not just intended.
+
+   `chat-message` is here for a different reason: it returned any message's
+   text with no gate and no host check, and nothing in the product has ever
+   called it. Reach nobody uses is reach worth removing. */
+const PAGE_ONLY = Object.freeze(new Set([
+  "recall-export", "recall-snapshot", "recall-wipe", "recall-stats",
+  "recall-check", "chat-drop", "chat-message",
+  "archive-stamp", "recall-backup-mark", "recall-backup-state",
+  "recall-backup-forget-key", "recall-autobackup-state", "recall-autobackup-enable",
+  "recall-autobackup-disable", "recall-autobackup-run",
+  "recall-restore-ledger", "recall-restore-guard", "recall-restore-guard-fail",
+  "recall-restore-guard-reset", "recall-deletions", "recall-deletions-undo-state",
+  "bg-trace", "bg-trace-clear"
+]));
+
+/* Per-chat reads. Our content script on one provider may ask about the host it
+   is sitting on and no other. chat-mount has enforced exactly this inline for
+   a while — see its own comment, which is also the record of what happens when
+   the check is written per case: it was the only case that had it. */
+const OWN_HOST_ONLY = Object.freeze(new Set([
+  "chat-archive", "chat-search", "chat-stats", "chat-stats-by-title", "chat-index"
+]));
+
+/* HOSTNAME, not host, on both sides.
+
+   Our own content scripts spell it both ways — history-loader.js sends
+   `location.host`, chat-index.js and chatcard.js send `location.hostname` —
+   and every provider is on :443, so in the browser the two are the same
+   string. Under test six providers share one loopback address on six ports,
+   and comparing a ported spelling against an unported one would refuse the
+   tab its own records. A port is not an identity here: the allowlist is
+   hostname-only for the same reason. */
+function _hostnameOf(value) {
+  const v = String(value || "");
+  if (!v) return "";
+  try { return new URL(/^[a-z-]+:\/\//i.test(v) ? v : "http://" + v).hostname; }
+  catch { return ""; }
+}
+
+/** "" when the sender is one of our own pages, which are not host-scoped. */
+function _senderHost(sender) {
+  return _hostnameOf((sender && sender.url) || "");
+}
+
 // ---------- closure-captured gate ----------
 // The message handler captures this reference at definition time. Reassigning
 // the global `requireEntitlement` from DevTools changes nothing — the router
@@ -303,6 +378,20 @@ const _gate = typeof requireEntitlement === "function"
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!_senderAllowed(sender)) return false;
+
+  /* Answered, not dropped: a refusal nobody can read is indistinguishable from
+     a worker that died, and this one is a deliberate decision worth stating. */
+  const _type = (msg && msg.type) || "";
+  if (!_ownPage(sender)) {
+    if (PAGE_ONLY.has(_type)) {
+      sendResponse({ err: "forbidden", reason: "page-only" });
+      return true;
+    }
+    if (OWN_HOST_ONLY.has(_type) && _senderHost(sender) !== _hostnameOf(msg && msg.host)) {
+      sendResponse({ err: "forbidden", reason: "other-host" });
+      return true;
+    }
+  }
 
   const run = async () => {
     /* Answered BEFORE anything else, and without touching a module: it is the
