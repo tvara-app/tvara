@@ -31,7 +31,9 @@
              match it exactly. -->
         <span id="plan-badge" class="badge free">Free</span>
         <span id="plan-days" class="plan-days" hidden></span>
-        <span class="account-ring" id="account-ring">
+        <!-- role="img": aria-label is ignored on a plain span, and this is a
+             drawn ring (plan colour, trial arc) with no text of its own. -->
+        <span class="account-ring" id="account-ring" role="img">
           <!-- Trial time, drawn as the rim itself: the arc drains as the week
                does, so the circle answers "how long left" without a number. -->
           <svg class="account-arc" id="account-arc" viewBox="0 0 32 32" aria-hidden="true" hidden>
@@ -122,7 +124,7 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 9 9h-9z"/><path d="M12 3v9h9a9 9 0 0 0-9-9z" opacity=".45"/></svg>
           </span>
           <span class="row-text">
-            <span class="row-title" title="Reads how much of each plan you have left — the percentages and reset times above — straight from each provider, on this device. Nothing is estimated and nothing is sent anywhere.">Allowance tracking</span>
+            <span class="row-title">Allowance tracking</span>
             <!-- What it IS, in the reader's terms. "Allowance tracking" names a
                  mechanism, not a benefit, and the two settings that used to sit
                  here explained nothing about either — they have moved under the
@@ -219,8 +221,7 @@
           <!-- Only while there is a queue and it is idle: a choice about work
                already under way is a second answer to a settled question. -->
           <button class="row-action" id="fill-choose" type="button" hidden
-                  title="Customize — pick the providers, or the chats inside one"
-                  aria-label="Customize what to fetch">
+                  aria-label="Customize what to fetch — the providers, or the chats inside one">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h10"/><path d="M4 12h7"/><path d="M4 17h13"/><path d="m17 6 2 2 4-4"/></svg>
           </button>
         </div>
@@ -260,10 +261,10 @@
           <span class="pro-title">Unlock everything</span>
           <span class="price-pill" data-price="{price} · once, forever"></span>
         </div>
-        <p class="pro-note" title="One check by email, then it works offline. Your trial and your purchase follow the account, across reinstalls and browsers.">Total Recall, Context Bridge and every tool on Claude &amp; Gemini.</p>
+        <p class="pro-note">Total Recall, Context Bridge and every tool on Claude &amp; Gemini.</p>
         <div class="identity" id="identity" hidden>
-          <p class="pro-note" id="identity-why" title="Your trial and your purchase follow the account, across reinstalls and browsers.">Sign in once &mdash; it follows your account.</p>
-          <button id="identity-google" class="identity-google" type="button" title="Sign in once — your trial and your purchase follow the account, across reinstalls and browsers." hidden>Continue with Google</button>
+          <p class="pro-note" id="identity-why">Sign in once &mdash; it follows your account.</p>
+          <button id="identity-google" class="identity-google" type="button" hidden>Continue with Google</button>
           <p class="pro-note" id="identity-nogoogle" hidden>Signing in needs Chrome or Edge. Firefox gives every install a different extension address, which Google will not accept as a redirect.</p>
           <!-- Restore is a RECOVERY path, not the thing to do next: the person
                reading this is signed in and has either bought or not. It keeps

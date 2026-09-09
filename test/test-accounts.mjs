@@ -970,6 +970,46 @@ try {
       /refusing to call evil\.example/.test(userinfo), userinfo);
     const junk = await probe("not-a-url");
     t("I1 …and an unparseable URL", /refusing to call/.test(junk), junk);
+
+    /* ---- N2. a remover of readings must not take the learned report ----
+       Both quota removers deleted every key their read returned, and the read
+       asked for `lct-quota-probe-v1` alongside the prefix. So the report was
+       wiped by every SUCCESSFUL poll (retire) and every sign-out (forget), it
+       was never on disk, every poll re-probed every candidate against the
+       user's own session, the per-platform poll floor never applied — no report
+       means "never read at all" — and the probe's own error, the one record
+       that says WHY a provider could not be read, was destroyed before anybody
+       could look at it. N1 above could not see it: it asserts the report after
+       a FAILED probe, and neither remover runs on that path. */
+    const kept = await withDeadline(sw.evaluate(async () => {
+      const KEY = "lct-quota-probe-v1";
+      const seed = async () => chrome.storage.local.set({
+        [KEY]: { claude: { working: [{ path: "/api/organizations" }] } },
+        "quota:claude|live": { id: "claude", acct: "live", windows: [] },
+        "quota:claude|dead": { id: "claude", acct: "dead", windows: [] },
+        settings: (await chrome.storage.local.get("settings")).settings || {}
+      });
+      await seed();
+      await self.retireUnknownQuotaTags("claude", new Set(["live"]));
+      const retired = await chrome.storage.local.get([KEY, "quota:claude|live", "quota:claude|dead"]);
+      await seed();
+      await self.forgetQuotaFor("claude");
+      const forgot = await chrome.storage.local.get([KEY, "quota:claude|live", "settings"]);
+      return {
+        reportSurvivesRetire: !!retired[KEY],
+        keptTheLiveAccount: !!retired["quota:claude|live"],
+        droppedTheDeadAccount: !retired["quota:claude|dead"],
+        reportSurvivesForget: !!forgot[KEY],
+        readingsGone: !forgot["quota:claude|live"],
+        settingsSurvive: !!forgot.settings
+      };
+    }), "quota removers");
+    t("N2 a successful poll does not delete the learned-endpoint report",
+      !!kept && kept.reportSurvivesRetire && kept.keptTheLiveAccount && kept.droppedTheDeadAccount,
+      JSON.stringify(kept));
+    t("N2 …nor does forgetting a signed-out provider's readings",
+      !!kept && kept.reportSurvivesForget && kept.readingsGone && kept.settingsSurvive,
+      JSON.stringify(kept));
   }
 
   t("H1 no page exceptions during the run", pageErrors.length === 0, JSON.stringify(pageErrors.slice(0, 3)));

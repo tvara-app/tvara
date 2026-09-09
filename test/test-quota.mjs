@@ -583,6 +583,41 @@ t("a query-count payload keeps its unit",
     windows.every((w) => w.resetAt > NOW), JSON.stringify(windows.map((w) => w.resetAt)));
 }
 
+/* ---------- a window that states nothing is not a reading ----------
+   Live, Perplexity's rate-limit response carried "3 pro searches left" beside
+   an unnamed window holding only a reset far in the future. After 45 minutes
+   the real counters aged out on freshness and the empty one did not — a future
+   reset never goes stale — so the row degraded from a number to "not reported"
+   out of the same response, and the panel had nothing to say while the site
+   was showing the figure. */
+{
+  const at = NOW - 5 * 60 * 1000;
+  const empty = { key: "window", path: "$", pctLeft: null, remaining: null, limit: null,
+    resetAt: NOW + 3 * 86400000, observedAt: at };
+  const real = { key: "pro-search", label: "", path: "modes.pro_search.remaining_detail",
+    pctLeft: null, remaining: 3, limit: null, resetAt: 0, observedAt: at };
+  const rec = { id: "perplexity", observedAt: at, windows: [empty, real] };
+  const rows = Q.ranked(rec, { now: NOW });
+  t("perplexity: a figure-less window never outranks a real count",
+    rows.length === 1 && rows[0].key === "pro-search", JSON.stringify(rows.map((w) => w.key)));
+  t("perplexity: and it is not a row of its own",
+    Q.ranked({ id: "perplexity", observedAt: at, windows: [empty] }, { now: NOW }).length === 0);
+  // A percentage of zero is a figure — the one the reader most needs.
+  t("a window at 0% left is still a reading",
+    Q.ranked({ id: "claude", observedAt: at, windows: [
+      { key: "five-hour", pctLeft: 0, remaining: null, limit: null, resetAt: NOW + 3600000, observedAt: at }
+    ] }, { now: NOW }).length === 1);
+  // So is a count of zero, and so is a ceiling with nothing spent against it.
+  t("a remaining of 0 is still a reading",
+    Q.ranked({ id: "grok", observedAt: at, windows: [
+      { key: "query", pctLeft: null, remaining: 0, limit: null, resetAt: NOW + 3600000, observedAt: at }
+    ] }, { now: NOW }).length === 1);
+  t("a limit with no remaining is still a reading",
+    Q.ranked({ id: "grok", observedAt: at, windows: [
+      { key: "query", pctLeft: null, remaining: null, limit: 30, resetAt: NOW + 3600000, observedAt: at }
+    ] }, { now: NOW }).length === 1);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) {
   console.log("\nfailures:");

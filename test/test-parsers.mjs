@@ -47,11 +47,12 @@ const grab = (name) => {
 };
 
 const NAMES = ["geminiValueEnd", "geminiFrames", "geminiPayloads", "geminiTime", "geminiAt", "geminiText", "geminiTierName",
-  "bgHealTries",
+  "bgHealTries", "quotaWhy", "keysUnder", "fillWhy",
   "pplxTime", "pplxFromTrace", "pplxAnswer", "xaiTime", "chatBranch", "chatgptMsgs", "turnMsgs", "planName", "claudeOrgCtx", "planRank", "bestPlanSeat", "clampText", "planFromAny", "pickAllowanceSeat", "bgHealNext", "narrowsFrom"];
 const {
   geminiFrames, geminiPayloads, geminiTime, geminiAt, geminiText, geminiTierName, pplxTime, pplxFromTrace, pplxAnswer, xaiTime,
-  chatgptMsgs, turnMsgs, planName, claudeOrgCtx, bestPlanSeat, planRank, clampText, planFromAny, pickAllowanceSeat, bgHealNext, narrowsFrom
+  chatgptMsgs, turnMsgs, planName, claudeOrgCtx, bestPlanSeat, planRank, clampText, planFromAny, pickAllowanceSeat, bgHealNext, narrowsFrom,
+  quotaWhy, keysUnder, fillWhy
 } = await import("data:text/javascript," + encodeURIComponent(
   NAMES.map(grab).join("\n") + `\nexport {${NAMES.join(",")}};`));
 
@@ -453,6 +454,59 @@ t("widening: an EARLIER word edited", narrowsFrom(prev(["atten", "layer"]), ["at
 t("widening: the words reordered", narrowsFrom(prev(["atten", "layer"]), ["layer", "atten"]) === false);
 t("nothing to narrow from", narrowsFrom(null, ["atten"]) === false);
 t("nothing to narrow from, empty", narrowsFrom(prev([]), ["atten"]) === false);
+
+/* ---------- why a provider could not be read ----------
+   Only `auth` is a statement about the SESSION. Every other failure reaching
+   the panel as "not signed in" is the wrong answer that looks like a real one —
+   it sends somebody to sign in to an account they are already signed into. */
+t("a 401 is a signed-out session", quotaWhy("auth") === "not signed in");
+t("a bot challenge is not a verdict about the session",
+  quotaWhy("challenge") === "blocked by the provider");
+t("a rate limit is not a signed-out session", quotaWhy("rate") === "rate-limited");
+t("a network failure is not a signed-out session",
+  quotaWhy("net") === "could not reach the provider");
+t("an unnamed failure is not a signed-out session either",
+  quotaWhy("") === "could not reach the provider" && quotaWhy(undefined) === "could not reach the provider");
+t("no failure kind ever reads as signed out but auth",
+  ["challenge", "rate", "net", "gone", "cancelled", "", null, undefined]
+    .every((k) => quotaWhy(k) !== "not signed in"));
+
+/* ---------- a remover only ever removes what its prefix owns ----------
+   Both quota removers deleted every key their read returned, and the read asked
+   for the learned-endpoint report alongside the prefix — so a successful poll
+   wiped the report, every later poll re-probed every candidate, and on a build
+   with no storage.local.getKeys() the read is get(null): one 401 would have
+   taken the whole store. */
+const store = {
+  "quota:claude|a": 1, "quota:claude|b": 2, "quota:chatgpt|a": 3,
+  "lct-quota-probe-v1": 4, "settings": 5
+};
+t("only keys under the prefix are removable",
+  JSON.stringify(keysUnder(store, "quota:claude|")) === JSON.stringify(["quota:claude|a", "quota:claude|b"]));
+t("the learned-endpoint report is never removable",
+  !keysUnder(store, "quota:claude|").includes("lct-quota-probe-v1"));
+t("a whole-store read cannot widen a prefix removal",
+  keysUnder(store, "quota:").length === 3 && !keysUnder(store, "quota:").includes("settings"));
+t("an empty read removes nothing", keysUnder(null, "quota:").length === 0);
+
+/* ---------- why the text fetch stopped on one provider ----------
+   Six providers download at once, so a refusal is about ONE of them — and only
+   `auth` is about the session. Every failure used to be written as "signed
+   out", and the popup then appended "Sign in, then tap to continue" to it. */
+const gpt = { id: "chatgpt", label: "ChatGPT", host: "chatgpt.com" };
+t("fetch: a 401 says to sign in, and says it once",
+  fillWhy(gpt, "auth") === "ChatGPT: not signed in. Sign in, then tap to continue.");
+t("fetch: a rate limit is not a signed-out session",
+  fillWhy(gpt, "rate") === "ChatGPT is rate-limiting. It picks up again on its own.");
+t("fetch: a bot challenge names the remedy that works",
+  fillWhy(gpt, "challenge") === "ChatGPT blocked the fetch. Open chatgpt.com in a tab.");
+t("fetch: an unreachable provider is not a signed-out session",
+  fillWhy(gpt, "net") === "Could not reach ChatGPT. It picks up again on its own.");
+t("fetch: no failure kind but auth ever says to sign in",
+  ["rate", "challenge", "net", "gone", "", null, undefined]
+    .every((k) => !/sign in/i.test(fillWhy(gpt, k))));
+t("fetch: every sentence carries its own remedy, so nothing is appended to it",
+  ["auth", "rate", "challenge", "net"].every((k) => /\.$/.test(fillWhy(gpt, k))));
 
 
 if (failed.length) {

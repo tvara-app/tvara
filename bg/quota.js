@@ -64,6 +64,13 @@ const QUOTA_POLL_MIN_MS = 60 * 1000;            // never hit a provider oftener
 const QUOTA_CTX_TTL = 5 * 60 * 1000;
 const QUOTA_STALE_MS = 12 * 60 * 60 * 1000;
 const QUOTA_PROBE_TTL = 24 * 60 * 60 * 1000;    // re-discover once a day
+/* A probe that never got to ASK is not a day-old fact about the provider.
+   "This account publishes no allowance" is worth caching for a day; "the
+   handshake failed" is worth caching for minutes, or a rate limit at the wrong
+   moment switches a platform off until tomorrow. Re-asking costs one
+   handshake, not the whole candidate list — the probe returns before it tries
+   an endpoint. */
+const QUOTA_PROBE_RETRY_MS = 10 * 60 * 1000;
 
 const quotaKey = (id, acct) => QUOTA_PREFIX + id + "|" + (acct || "");
 
@@ -81,15 +88,29 @@ async function retireStaleQuotaTags(id, acct, fresh) {
   const fp = quotaFingerprint(fresh);
   if (!fp) return;
   const keep = quotaKey(id, acct);
-  const all = await getByPrefix(QUOTA_PREFIX + id + "|", [QUOTA_PROBE_KEY]);
+  const prefix = QUOTA_PREFIX + id + "|";
+  const all = await getByPrefix(prefix);
   const dead = [];
   for (const [key, rec] of Object.entries(all)) {
-    if (key === keep || !rec || typeof rec !== "object") continue;
+    if (!key.startsWith(prefix) || key === keep || !rec || typeof rec !== "object") continue;
     if (quotaFingerprint(rec) !== fp) continue;
     if ((rec.observedAt || 0) >= (fresh.observedAt || 0)) continue;
     dead.push(key);
   }
   if (dead.length) await chrome.storage.local.remove(dead);
+}
+
+/* Why a provider could not be read, in the reader's terms.
+   Every failure that was not a challenge used to arrive as "not signed in" —
+   a verdict about the ACCOUNT produced by a timeout, a rate limit or a dead
+   network. It is the same wrong-answer-that-looks-right the 403 classifier was
+   fixed for, one layer up. Only `auth` is a statement about the session. */
+function quotaWhy(kind) {
+  if (kind === "auth") return "not signed in";
+  if (kind === "challenge") return "blocked by the provider";
+  if (kind === "rate") return "rate-limited";
+  if (kind) return "could not reach the provider";
+  return "could not reach the provider";
 }
 
 const quotaCtx = new Map();        // host -> { ctx, at }
@@ -405,8 +426,11 @@ async function quotaProbe(platformId, opts = {}) {
   try {
     ctx = await quotaPrepare(adapter);
   } catch (error) {
+    // The KIND travels with the report: the poll below turns it into words, and
+    // the diagnostics panel shows the message beside it.
+    const kind = (error && error.kind) || "";
     return keep({ id: platformId, at, sig, endpoints: [], working: [],
-      note: "not signed in or provider unreachable",
+      note: quotaWhy(kind), errKind: kind,
       error: String((error && error.message) || error) });
   }
 
@@ -452,16 +476,21 @@ async function quotaLearned(platformId) {
      signature is the candidate list itself; if it differs from what was learned
      against, what was learned is about a different question. */
   const sig = quotaSig(QUOTA_ENDPOINTS[platformId] || []);
-  const fresh = report && report.sig === sig && Date.now() - (report.at || 0) < QUOTA_PROBE_TTL;
+  const ttl = report && report.errKind ? QUOTA_PROBE_RETRY_MS : QUOTA_PROBE_TTL;
+  const fresh = report && report.sig === sig && Date.now() - (report.at || 0) < ttl;
   // The plan travels with the list: the endpoint that states it is often not
   // one that also states a NUMBER, so it is not in `working` and a poll would
   // never see it again. Learned once a day, carried until the next probe.
-  if (fresh) return { working: report.working || [], plan: report.plan || "", note: report.note || "" };
+  if (fresh) {
+    return { working: report.working || [], plan: report.plan || "",
+      note: report.note || "", errKind: report.errKind || "" };
+  }
 
   // Either we have never looked, or what we learned is a day old and these
   // endpoints move. Re-discover — it is a handful of calls, once.
   const next = await quotaProbe(platformId);
-  return { working: next.working || [], plan: next.plan || "", note: next.note || "" };
+  return { working: next.working || [], plan: next.plan || "",
+    note: next.note || "", errKind: next.errKind || "" };
 }
 
 /**
@@ -516,14 +545,15 @@ async function quotaPoll(platformId, reason = "manual") {
        every floor there is — the cached handshake included — because the point
        of it is a figure that keeps up, not a provider that gets polled. */
 
-    const { working, plan: learnedPlan, note: learnedNote } = await quotaLearned(platformId);
+    const { working, plan: learnedPlan, errKind: learnedKind } = await quotaLearned(platformId);
     if (!working.length) {
       /* WHICH silence this is. "No working endpoint" is a statement about the
          provider; a handshake that never landed is a statement about the
          session, and telling somebody their provider publishes no allowance
-         when they are simply signed out is the wrong answer twice over. */
-      const skipped = /not signed in|unreachable/.test(String(learnedNote || ""))
-        ? "not signed in" : "no working endpoint";
+         when they are simply signed out is the wrong answer twice over.
+         Read from the KIND the probe recorded, not from matching words in the
+         sentence it wrote — that test called a rate limit a sign-out. */
+      const skipped = learnedKind ? quotaWhy(learnedKind) : "no working endpoint";
       await noteQuotaTry(platformId, { skipped });
       trace("quota", `${platformId} ${skipped}`);
       return { id: platformId, skipped };
@@ -543,7 +573,7 @@ async function quotaPoll(platformId, reason = "manual") {
       /* A bot-protection challenge is the edge refusing the request shape. The
          session is intact and the stored rows are still about the right person,
          so they stay — and the reason says what would actually clear it. */
-      const why = (error && error.kind) === "challenge" ? "blocked by the provider" : "not signed in";
+      const why = quotaWhy(error && error.kind);
       await noteQuotaTry(platformId, { skipped: why });
       trace("quota", `${platformId} ${why}`);
       return { id: platformId, skipped: why };
@@ -691,12 +721,26 @@ async function quotaSweep(reason = "manual") {
 
 /** The account tag a reading belongs to. Same tag the archive uses, so a
  *  quota row and a synced account are the same account. */
+/* A reading is a key under the platform's prefix, and NOTHING ELSE is.
+   Both removers read with `getByPrefix(prefix, [QUOTA_PROBE_KEY])` and then
+   deleted every key that came back — so the learned-endpoint report was wiped
+   by every successful poll (retire) and every sign-out (forget). It was never
+   on disk: every poll re-probed all six candidates, the per-platform poll floor
+   never applied because "no report" means "never read at all", and the probe's
+   own error — the record that says WHY a provider could not be read — was
+   destroyed before anyone could look at it. Worse where storage.local has no
+   getKeys() (Firefox): getByPrefix falls back to get(null), so one 401 deleted
+   the entire extension store.
+   `keysUnder()` is the whole rule: never remove a key the prefix does not own. */
+function keysUnder(all, prefix) {
+  return Object.keys(all || {}).filter((key) => key.startsWith(prefix));
+}
+
 /** Forget every stored reading for a platform nobody is signed in to. */
 async function forgetQuotaFor(id) {
   try {
     const prefix = QUOTA_PREFIX + id + "|";
-    const all = await getByPrefix(prefix, [QUOTA_PROBE_KEY]);
-    const keys = Object.keys(all);
+    const keys = keysUnder(await getByPrefix(prefix), prefix);
     if (keys.length) await chrome.storage.local.remove(keys);
   } catch { /* the rows go stale on their own */ }
 }
@@ -706,8 +750,8 @@ async function retireUnknownQuotaTags(id, live) {
   if (!live || !live.size) return;
   try {
     const prefix = QUOTA_PREFIX + id + "|";
-    const all = await getByPrefix(prefix, [QUOTA_PROBE_KEY]);
-    const dead = Object.keys(all).filter((key) => !live.has(key.slice(prefix.length)));
+    const all = await getByPrefix(prefix);
+    const dead = keysUnder(all, prefix).filter((key) => !live.has(key.slice(prefix.length)));
     if (dead.length) await chrome.storage.local.remove(dead);
   } catch { /* the panel keeps the extra row until the next pass */ }
 }

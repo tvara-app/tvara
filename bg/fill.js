@@ -150,11 +150,45 @@ async function writeFill(patch) {
      user had switched off. Only fillStop and the final write may set state
      once a cancel is pending. */
   if (fillCancel && next.state === "running") delete next.state;
+  /* Chained: six providers and several lanes inside each write this one key,
+     and a read-then-write loses whichever landed first — the same race
+     editLocal() was written for in bg/state.js. */
   try {
-    const got = await chrome.storage.local.get(BG_FILL);
-    const prev = (got && got[BG_FILL]) || {};
-    await chrome.storage.local.set({ [BG_FILL]: { ...prev, ...next, at: Date.now() } });
+    await editLocal(BG_FILL, (held) => ({
+      ...(held && typeof held === "object" ? held : {}), ...next, at: Date.now()
+    }));
   } catch { /* the UI falls back to the queue length */ }
+}
+
+/* Why a provider stopped, in one sentence that carries its own remedy.
+   Every failure here was written as "signed out" or "not signed in" — a rate
+   limit, a bot challenge and an unreachable network all reaching the reader as
+   a verdict about the ACCOUNT, on a session that was signed in the whole time.
+   The popup then glued "Sign in, then tap to continue" onto whatever it said,
+   so even the challenge note ended "…open it in a tab.. Sign in, then tap to
+   continue." The remedy belongs with the diagnosis, in one place.
+   Same rule as quotaWhy() in bg/quota.js: only `auth` is about the session. */
+function fillWhy(adapter, kind) {
+  const label = adapter.label;
+  if (kind === "auth") return `${label}: not signed in. Sign in, then tap to continue.`;
+  if (kind === "challenge") return `${label} blocked the fetch. Open ${adapter.host} in a tab.`;
+  if (kind === "rate") return `${label} is rate-limiting. It picks up again on its own.`;
+  return `Could not reach ${label}. It picks up again on its own.`;
+}
+
+/* One note per PROVIDER. A single `note` field meant the last writer won, so
+   six providers downloading at once reported whichever failed most recently as
+   though it were the whole run — and a queue that was feeding from five
+   platforms read as one platform being broken. */
+async function noteFill(adapter, kind) {
+  await editLocal(BG_FILL, (held) => {
+    const st = held && typeof held === "object" ? held : {};
+    const notes = { ...(st.notes || {}) };
+    if (kind) notes[adapter.id] = fillWhy(adapter, kind);
+    else delete notes[adapter.id];
+    // The old single field goes with it, or a stale sentence outlives its cause.
+    return { ...st, notes, note: "", at: Date.now() };
+  });
 }
 
 /* Which chats this run is allowed to fetch, or null for all of them.
@@ -309,7 +343,7 @@ async function fillStart() {
   const planned = Object.values(stubs).reduce((n, l) => n + (Array.isArray(l) ? l.length : 0), 0);
   // note cleared: "ChatGPT: signed out" from a previous pass otherwise outlives
   // the sign-in that fixed it and paints this run as stalled from the start.
-  await writeFill({ state: "running", startedAt: started, done: 0, failed: 0, planned, note: "" });
+  await writeFill({ state: "running", startedAt: started, done: 0, failed: 0, planned, note: "", notes: {} });
   /* The worker's idle timer is reset by EVENTS and EXTENSION API CALLS — not by
      a pending fetch, which is documented to kill the worker outright if a
      response takes over 30 seconds. This loop only wrote storage every third
@@ -348,8 +382,8 @@ async function fillStart() {
            to a user who was signed in the whole time. */
         let ctx;
         try { ctx = await idxPrepare(adapter); }
-        catch {
-          await writeFill({ state: "running", note: `${adapter.label}: signed out` });
+        catch (error) {
+          await noteFill(adapter, (error && error.kind) || "net");
           return "stop";
         }
         const convId = recordId.startsWith(adapter.host + adapter.prefix)
@@ -381,7 +415,7 @@ async function fillStart() {
           if (kind === "challenge") {
             // The edge refused the request shape, not the session. Preparing
             // again would be refused the same way; stop and say what it was.
-            await writeFill({ note: `${adapter.label} blocked the fetch. Open ${adapter.host} in a tab.` });
+            await noteFill(adapter, "challenge");
             return "stop";
           }
           if (kind === "auth") {
@@ -392,7 +426,7 @@ async function fillStart() {
             let recovered = false;
             try { idxForget(adapter); await idxPrepare(adapter); recovered = true; } catch { /* really gone */ }
             if (recovered) { failed--; return ""; }
-            await writeFill({ note: `${adapter.label}: signed out` });
+            await noteFill(adapter, "auth");
             return "stop";
           }
           if (kind === "gone") await noteStub(recordId, adapter.host, true);
@@ -508,9 +542,11 @@ async function fillStart() {
       try { await Promise.race([idxPrepare(adapter), untilStopped()]); }
       catch (error) {
         if ((error && error.kind) === "cancelled") return;
-        await writeFill({ state: "running", note: `${adapter.label}: not signed in` });
+        await noteFill(adapter, (error && error.kind) || "net");
         return;
       }
+      // This platform is answering: whatever it said last time is over.
+      await noteFill(adapter, "");
       await runPlatform(adapter, ids);
     }));
     /* Nothing else will be fetched. Said BEFORE the tally below, which walks

@@ -68,8 +68,12 @@
     const anon = !identityVerified && !(who || src);
     acct.className = "account " + currentPlan + (anon ? " anon" : "");
     const plan = currentPlan === "pro" ? "Pro" : currentPlan === "trial" ? "Trial" : "Free";
-    ring.title = anon ? plan + " \u00b7 not signed in"
-      : who ? plan + " \u00b7 " + who : plan + " \u00b7 signed in";
+    /* Named, not tooltipped. A native title is a delayed grey box that covers
+       the panel it explains, and this popup is read at a glance — see the
+       window switch, which has carried an aria-label and no title for the same
+       reason. Everything worth SEEING is on screen; the rest is for a reader. */
+    ring.setAttribute("aria-label", anon ? plan + " \u00b7 not signed in"
+      : who ? plan + " \u00b7 " + who : plan + " \u00b7 signed in");
     if (anon) { $("account-photo").hidden = true; return; }
     $("account-initial").textContent = who ? who.slice(0, 1) : "\u2022";
     const img = $("account-photo");
@@ -120,14 +124,10 @@
       if (days) { days.hidden = true; days.textContent = ""; }
     }
 
-    $("account-ring").dataset.note = pro && overdueDays > 0
-      ? `Last checked in ${overdueDays} day${overdueDays === 1 ? "" : "s"} ago.` : "";
-    badge.title = pro && overdueDays > 0
-      ? `Pro. Last checked in ${overdueDays} day${overdueDays === 1 ? "" : "s"} ago. ` +
-        `Connect once and it refreshes itself.`
-      : pro ? "Pro — purchased. A one-time licence, yours forever."
-      : trialActive ? "Free trial. Everything is unlocked while it runs."
-      : "";
+    /* Overdue is SHOWN: the badge takes a dashed rim and a dot (.overdue in
+       popup.css). It used to be a hover tooltip as well, plus a `dataset.note`
+       nothing has ever rendered — a sentence in two places the reader never
+       looks and none they do. The badge's own word is the statement. */
     badge.classList.toggle("overdue", !!(pro && overdueDays > 0));
     /* One card replaces another as the licence state settles, and each is a
        different height. Travel, not teleport — this fires on the popup's first
@@ -215,9 +215,9 @@
     if (!link) return;
     link.textContent = on ? "warn at 20%" : "warnings off";
     link.classList.toggle("off", !on);
-    link.title = on
-      ? "You'll get one notification per platform when it drops under 20%, and again under 10%. Click to turn off."
-      : "You will not be told before an allowance runs out. Click to turn warnings back on.";
+    link.setAttribute("aria-label", on
+      ? "Warnings on. One notification per platform under 20%, and again under 10%. Click to turn off."
+      : "Warnings off. You will not be told before an allowance runs out. Click to turn back on.");
   }
 
   function paintToggles(s) {
@@ -408,6 +408,8 @@
     if (why === "tracking off") return "tracking off";
     if (why === "not signed in") return "not signed in";
     if (why === "blocked by the provider") return "blocked";
+    if (why === "rate-limited") return "rate-limited";
+    if (why === "could not reach the provider") return "unreachable";
     if (why === "no working endpoint") return "no limit published";
     if (why === "provider reported nothing") return "none published";
     return item.checked ? "none published" : "checking\u2026";
@@ -431,6 +433,12 @@
       if (why === "blocked by the provider") {
         return `${item.label} blocked the background check with a bot-protection challenge. ` +
           "Your session is fine — open the site in a tab and this fills in on its own.";
+      }
+      if (why === "rate-limited") {
+        return `${item.label} is rate-limiting this browser. Your session is fine — this retries on its own.`;
+      }
+      if (why === "could not reach the provider") {
+        return `Could not reach ${item.label}. Nothing is known about the session; this retries on its own.`;
       }
       if (why === "no working endpoint") {
         return `${item.label} publishes no allowance figure this browser can read.`;
@@ -463,6 +471,8 @@
         "tracking off": "Allowance tracking is switched off.",
         "not signed in": "Could not refresh: not signed in to this provider.",
         "blocked by the provider": "Could not refresh: the provider answered a bot-protection challenge. Open its site in a tab.",
+        "rate-limited": "Could not refresh: the provider is rate-limiting. It retries on its own.",
+        "could not reach the provider": "Could not refresh: the provider could not be reached.",
         "no working endpoint": "Could not refresh: this provider publishes no allowance endpoint we can read.",
         "provider reported nothing": "Refreshed, but the provider returned no allowance figure."
       }[why.skipped] || `Could not refresh: ${why.skipped}.`;
@@ -1573,12 +1583,17 @@
     row.classList.remove("busy");
     hideBar();
     setLine(title, `Fetch the text of ${left.toLocaleString()} chat${left === 1 ? "" : "s"}`);
-    /* The worker already worked out why it stopped — "ChatGPT: signed out",
-       "Perplexity: not signed in" — and this row used to throw it away and
-       return to "Download the text of 2,300 chats", so the user clicked again
-       and watched the same nothing happen. Say what it said. */
-    if (state && state.note) {
-      setLine(sub, `${state.note}. Sign in, then tap to continue.`);
+    /* The worker already worked out why it stopped, and it stopped PER
+       PROVIDER — six download at once, so one platform refusing is not the run
+       failing. Its own sentence carries its own remedy (fillWhy in bg/fill.js);
+       this row used to append "Sign in, then tap to continue" to whatever it
+       said, which told somebody being rate-limited to sign in to an account
+       they were already signed into. Say what it said, and say how many. */
+    const notes = state && state.notes && typeof state.notes === "object"
+      ? Object.values(state.notes).filter(Boolean)
+      : (state && state.note ? [String(state.note)] : []);
+    if (notes.length) {
+      setLine(sub, notes.length === 1 ? notes[0] : `${notes[0]} (+${notes.length - 1} more)`);
       row.classList.add("stalled");
       return;
     }
@@ -2207,7 +2222,7 @@
     pick.checked = dmPicked.has(d.device);
     pick.setAttribute("aria-label", "Select " + deviceTitle(d));
     // A row the issuer has no id for. Sign out would have nothing to send.
-    if (d.local) { pick.disabled = true; pick.title = "Not registered yet \u2014 nothing to sign out."; }
+    if (d.local) { pick.disabled = true; pick.setAttribute("aria-label", "Not registered yet \u2014 nothing to sign out."); }
     /* Only this row and the buttons. Re-rendering the whole list on a tick
        throws away the checkbox the person is still on — it detaches the very
        element they clicked, which loses focus and breaks a keyboard pass down
@@ -2226,7 +2241,7 @@
     name.className = "device-name" + (d.self ? " device-name-edit" : "");
     if (d.self) {
       name.type = "button";
-      name.title = "Rename this device";
+      name.setAttribute("aria-label", "Rename this device");
       name.addEventListener("click", () => startRename(row, d));
     }
     // textContent only: a label is written by another device — untrusted input.
@@ -2246,7 +2261,7 @@
     out.type = "button";
     out.className = "ghost device-signout-one";
     out.textContent = "Sign out";
-    if (d.local) { out.disabled = true; out.title = "Not registered yet \u2014 nothing to sign out."; }
+    if (d.local) { out.disabled = true; out.setAttribute("aria-label", "Not registered yet \u2014 nothing to sign out."); }
     else out.addEventListener("click", () => armConfirm("picked", [d.device]));
     row.append(out);
     return row;

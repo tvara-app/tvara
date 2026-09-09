@@ -114,7 +114,7 @@
       const value = document.createElement("span"); value.className = "quota-value";
       const said = reading(record, lastTry[id], checked[id], names[id]);
       value.textContent = said.text;
-      if (said.why) value.title = said.why;
+      if (said.why) value.setAttribute("aria-label", said.text + " \u2014 " + said.why);
       value.classList.toggle("pending", said.pending);
       if (said.figure) figures++;
       row.append(name, value); rows.push(row);
