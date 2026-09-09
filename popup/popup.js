@@ -177,8 +177,16 @@
     }
   }
 
+  /* Whether the search box is offered at all. A locked install still gets it:
+     the worker grants a few real searches over the reader's own archive, and
+     watching two thousand of your own messages come back is the entire offer.
+     A box you cannot type in sells nothing. `tasteSpent` flips only when the
+     worker says the allowance is gone. */
+  let tasteSpent = false;
+
   function paintRecallAccess(unlocked) {
-    showRows([[$("recall-searchbox"), !unlocked], [$("recall-locked"), unlocked]]);
+    const offer = !unlocked && !tasteSpent;
+    showRows([[$("recall-searchbox"), !(unlocked || offer)], [$("recall-locked"), unlocked || offer]]);
     /* Plain .hidden assignment does not reflect to the content attribute on an
        SVG element the way it does on HTMLElement — the property read back
        correctly but the DOM attribute, and so the CSS and the render, never
@@ -188,7 +196,7 @@
     $("open-recall").setAttribute("aria-label", unlocked
       ? "Open Total Recall in a new tab"
       : "Locked — start the free trial to search your archive");
-    if (!unlocked) {
+    if (!unlocked && !offer) {
       $("recall-query").value = "";
       $("recall-query-meta").textContent = "";
       $("recall-results").replaceChildren();
@@ -2682,6 +2690,19 @@
     $("recall-results").setAttribute("aria-busy", "true");
     const res = await send({ type: "recall-search", q });
     $("recall-results").removeAttribute("aria-busy");
+    /* The allowance ran out. Say what it was rather than what is missing:
+       they have just seen this work on their own conversations three times,
+       so the sentence can point at that instead of describing a feature. */
+    if (res && res.err === "locked") {
+      tasteSpent = true;
+      $("recall-results").replaceChildren();
+      sizeRecallResults(false);
+      $("recall-query-meta").textContent = "";
+      $("recall-locked").textContent =
+        "That was your own archive. Start the 7-day trial, or unlock it for good below.";
+      paintRecallAccess(false);
+      return;
+    }
     if (!res || res.err || q !== $("recall-query").value.trim()) return;
     const results = res.results || [];
     // Every match the archive returned, not a preview of the top two: the count
@@ -2691,9 +2712,21 @@
     $("recall-results").replaceChildren(...results.map(recallResult));
     $("recall-results").scrollTop = 0;
     sizeRecallResults(results.length > 0);
-    $("recall-query-meta").textContent = results.length
+    const found = results.length
       ? `${results.length} chat${results.length === 1 ? "" : "s"}`
-      : `no matches`;
+      : "no matches";
+    /* A free search says so, and says how many are left, because a taste
+       nobody knows is a taste reads as the product simply being free. */
+    const t = res.taste;
+    $("recall-query-meta").textContent = t
+      ? `${found} · ${t.left} free search${t.left === 1 ? "" : "es"} left`
+      : found;
+    if (t) {
+      $("recall-locked").textContent = results.length
+        ? `Those are your own conversations, searched on this device. ${t.left} free ${t.left === 1 ? "search" : "searches"} left.`
+        : `Searched every chat on this device. ${t.left} free ${t.left === 1 ? "search" : "searches"} left.`;
+      $("recall-locked").hidden = false;
+    }
   }
 
   $("recall-query").addEventListener("input", () => {

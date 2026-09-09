@@ -89,8 +89,15 @@
     // The lock lives inside the archive core rather than replacing it: the
     // stats below stay visible so a locked archive still looks alive, and the
     // trial can be started here instead of only from the popup.
+    /* Locked, but not yet shut out. The worker grants a locked install a few
+       real searches over its own archive, so the box is offered and the lock
+       card sits under it saying what the search they are about to run is. A
+       box nobody can type in demonstrates nothing, and this page is where the
+       demonstration is worth the most: the whole archive, in a full-width list.
+       `tasteSpent` flips only when the worker says the allowance is gone. */
+    const offer = !unlocked && !tasteSpent;
     if ($("core-locked")) $("core-locked").hidden = unlocked;
-    if ($("searchbox")) $("searchbox").hidden = !unlocked;
+    if ($("searchbox")) $("searchbox").hidden = !(unlocked || offer);
     if ($("trial-start")) $("trial-start").hidden = !!trialSpent;
     if (trialSpent && $("core-locked")) {
       $("core-locked").querySelector(".locked-title").textContent = "Your trial has ended";
@@ -101,6 +108,9 @@
     paintPaidSections(verdict);
     paintArchiveState();
   }
+
+  /* Set once the worker refuses a search: see paintPlan(). */
+  let tasteSpent = false;
 
   const LOCK_COPY = "Pro feature. Your archive keeps building either way, and \u201cExport archive\u201d below always works \u2014 Pro adds the encrypted, reinstall-proof backup and restore.";
 
@@ -296,6 +306,28 @@
     host.classList.add("searching");
     $("q-meta").textContent = "searching…";
     const res = await send({ type: "recall-search", q });
+    /* Refused: the free searches are gone. Point at what they just saw rather
+       than at what they cannot have — three times over, this searched their
+       own conversations and showed them the answer. */
+    if (res && res.err === "locked") {
+      tasteSpent = true;
+      host.classList.remove("searching");
+      host.style.minHeight = "";
+      host.replaceChildren();
+      $("q-meta").textContent = "";
+      const card = $("core-locked");
+      if (card) {
+        const title = card.querySelector(".locked-title");
+        const copy = card.querySelector(".locked-copy");
+        if (title) title.textContent = "That was your own archive";
+        if (copy) {
+          copy.textContent = "Every one of those chats is on this device already. " +
+            "Start the 7-day trial to keep searching them, or unlock it once and for good.";
+        }
+      }
+      lockedResponse(res);
+      return;
+    }
     if (lockedResponse(res)) { $("q-meta").textContent = ""; host.classList.remove("searching"); return; }
     // A slower earlier query must never repaint over a newer one.
     if (!res || res.err || q !== $("q").value.trim()) return;
@@ -306,9 +338,24 @@
     // Released on the next frame, once the new rows have been laid out: the
     // floor was only ever there to cover the gap between the two paints.
     requestAnimationFrame(() => { host.style.minHeight = ""; });
-    $("q-meta").textContent = res.results.length
+    const found = res.results.length
       ? `${res.results.length} chat${res.results.length === 1 ? "" : "s"}`
       : `no matches in ${res.scanned.toLocaleString()} chats`;
+    /* A free search says so. A taste nobody knows is a taste reads as the
+       product being free, and then the moment it stops reads as it breaking. */
+    const t = res.taste;
+    $("q-meta").textContent = t
+      ? `${found} · ${t.left} free search${t.left === 1 ? "" : "es"} left`
+      : found;
+    if (t && $("core-locked")) {
+      const title = $("core-locked").querySelector(".locked-title");
+      const copy = $("core-locked").querySelector(".locked-copy");
+      if (title) title.textContent = "This is your archive, on this device";
+      if (copy) {
+        copy.textContent = `Searched ${res.scanned.toLocaleString()} chats without sending a word anywhere. ` +
+          `${t.left} free ${t.left === 1 ? "search" : "searches"} left — the trial makes it unlimited for a week.`;
+      }
+    }
     paintArchiveState();
   }
 

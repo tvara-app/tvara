@@ -166,6 +166,31 @@ fully-synced archive has earned could never appear. The suite proves the
 classifier against the live edge: it has no Claude mock, so `claude.ai` answers
 the real challenge.
 
+**The offer is watching it work, not a list of feature names.** The card used
+to say "Total Recall, Context Bridge and every tool on Claude & Gemini" to
+somebody who had owned the extension for ninety seconds and knew what none of
+those were. Nobody buys a description. So a locked install is granted a few
+REAL searches over its own archive — their conversations, their words, the
+actual feature — and then the gate closes and the card points at what they just
+saw. The 7-day trial and the one-time purchase sit beside it the whole way.
+
+It is a GRANT, and the shape of the grant is the whole of its safety.
+`requireEntitlement()` is untouched: the router asks it first, and only then,
+for `recall-search` ALONE, spends an allowance the worker counts
+(`tasteSpend()` in `bg/paywall.js`). Search is a demonstration; backup, restore
+and export are the archive leaving the building, and they get no taste. The
+counter is spent on searches rather than on time, so nobody loses their taste
+to a week passing, and it lives in `storage.sync` like the trial clock, so
+clearing local storage does not mint another one.
+
+**Never probe the gate with `recall-search`.** It answers results before it
+answers "locked", so an assertion that a forged token, a foreign key or a
+hand-written Pro record "stays locked" is satisfied by the TASTE rather than by
+the gate — it would go green on a build whose paywall had been deleted. The
+security suite probes with `recall-snapshot` (archive.backup, no exception) and
+B13 spends the taste before it starts. Both were written against
+`recall-search` and both had to move the day the taste landed.
+
 **Total Recall is the search, and nothing else.** Checking providers for new
 chats, the encrypted reinstall backup, restoring one, choosing what text to
 fetch and deleting the archive are all FREE, and a free control reached only

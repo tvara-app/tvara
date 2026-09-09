@@ -444,10 +444,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
 
     const feature = PAID[msg && msg.type];
+    let taste = null;
     if (feature) {
       // Use the closure-captured _gate, not the global requireEntitlement.
       const gate = await _gate(feature);
-      if (!gate.ok) return { err: "locked", feature, reason: gate.reason };
+      if (!gate.ok) {
+        /* One exception, and it is a GRANT rather than a hole: a locked
+           install may run a few real searches over its own archive, because
+           watching the thing work is what the offer is, and a list of feature
+           names is not. The worker decides it, counts it, and closes it —
+           requireEntitlement() is untouched, and every other paid message
+           still refuses here exactly as before.
+
+           Only search. Backup, restore and export are not demonstrations;
+           they are the product leaving the building. */
+        if ((msg && msg.type) !== "recall-search") {
+          return { err: "locked", feature, reason: gate.reason };
+        }
+        taste = await tasteSpend();
+        if (!taste.granted) return { err: "locked", feature, reason: gate.reason, taste };
+      }
     }
 
     switch (msg && msg.type) {
@@ -555,7 +571,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return noteApiSeen(sender && sender.url ? new URL(sender.url).hostname : "", msg.paths);
       case "recall-upsert":      return upsert(msg.chat);
       case "recall-import":      return importBatch(msg.chats);
-      case "recall-search":      return search(msg.q, msg.long);
+      case "recall-search": {
+        const found = await search(msg.q, msg.long);
+        // The page has to know it was a taste, or it cannot say what it was.
+        return taste ? { ...found, taste } : found;
+      }
       case "recall-check":       return check(msg.ids);
       case "recall-stats":       return stats();
       // Export reads the archive HERE, behind the gate — not from the page's

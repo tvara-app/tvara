@@ -48,6 +48,59 @@ const PAID = Object.freeze({
   "recall-restore-guard-reset": "archive.restore"
 });
 
+/* ---------- the first taste ----------
+
+   The offer used to be a list of names — "Total Recall, Context Bridge and
+   every tool on Claude & Gemini" — to somebody who had owned the extension for
+   ninety seconds and had no idea what any of them meant. Nobody buys a
+   description. What sells this is watching it work: type a word, and two
+   thousand of your own messages come back in twelve milliseconds.
+
+   So a locked install gets a small number of REAL searches over its own
+   archive. Not a mock, not a sample: their conversations, their words, the
+   actual feature. Then the gate closes and the card says what it was.
+
+   Three rules this cannot break:
+
+   - The WORKER decides, exactly as it decides everything else here. This is
+     not the page being allowed to skip requireEntitlement(); it is the worker
+     granting a bounded thing and counting it. The gate is untouched.
+   - It is spent on SEARCHES, not on time, so nobody loses their taste to a
+     week passing while they were busy.
+   - It lives in storage.sync, like the trial clock, so clearing local storage
+     does not hand out another one. That is the same bar the trial already
+     stands on, and the same answer: a determined person can reset it by
+     starting a whole new browser profile, where the archive they would be
+     searching is empty. */
+const TASTE_KEY = "lct-taste-v1";
+const TASTE_MAX = 3;
+
+async function tasteRead() {
+  let rec = null;
+  try { rec = (await chrome.storage.sync.get(TASTE_KEY))[TASTE_KEY]; } catch { /* fall through */ }
+  if (!rec) {
+    try { rec = (await chrome.storage.local.get(TASTE_KEY))[TASTE_KEY]; } catch { /* none */ }
+  }
+  const used = Math.max(0, Number(rec && rec.used) || 0);
+  return { used, left: Math.max(0, TASTE_MAX - used), of: TASTE_MAX };
+}
+
+/**
+ * Take one, if there is one to take.
+ *
+ * Written BEFORE the search runs, like bgHeal's attempt counter: a taste that
+ * is spent only on success is one that never runs out for anybody whose
+ * searches fail.
+ */
+async function tasteSpend() {
+  const held = await tasteRead();
+  if (held.left <= 0) return { granted: false, ...held };
+  const rec = { used: held.used + 1, at: Date.now() };
+  try { await chrome.storage.sync.set({ [TASTE_KEY]: rec }); } catch { /* quota */ }
+  try { await chrome.storage.local.set({ [TASTE_KEY]: rec }); } catch { /* dead context */ }
+  return { granted: true, used: rec.used, left: Math.max(0, TASTE_MAX - rec.used), of: TASTE_MAX };
+}
+
 const TRIAL_MS = 7 * 864e5;
 const TRIAL_KEY = "lct-trial-v2";
 

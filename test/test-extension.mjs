@@ -3783,6 +3783,13 @@ try {
   const ask = (msg) => pop.evaluate((m) =>
     new Promise((res) => chrome.runtime.sendMessage(m, res)), msg);
 
+  /* Spend the taste first. A locked install is granted a few REAL searches over
+     its own archive — the offer is watching the thing work — so recall-search
+     answers results before it answers "locked". Every assertion below means to
+     prove the GATE, and a probe that the taste satisfies proves nothing at
+     all: it would go green on a build whose paywall had been deleted. */
+  for (let i = 0; i < 6; i++) await ask({ type: "recall-search", q: "architectural" });
+
   const locked = {
     search:   await ask({ type: "recall-search", q: "architectural" }),
     snapshot: await ask({ type: "recall-snapshot" }),
