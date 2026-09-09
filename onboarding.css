@@ -24,6 +24,55 @@ body::before { content: ""; position: fixed; inset: 0; pointer-events: none; opa
 .stats { padding: 33px 0 24px; }.section-heading { align-items: end; }.section-heading > span { color: var(--faint); font-size: 12px; }.stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; margin-top: 22px; border: 1px solid var(--line); background: var(--line); }.stat { padding: 18px; background: var(--panel); }.stat strong { display: block; font-size: 30px; font-weight: 500; }.stat span { color: var(--muted); font-size: 12px; }.quota-list { margin-top: 16px; }.quota-row { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--line); }.quota-name { flex: 1; }.quota-value { color: var(--ember); font-variant-numeric: tabular-nums; }.quota-value.pending { color: var(--faint); }.loading { color: var(--faint); font-size: 12px; }footer { padding-top: 22px; color: var(--faint); font-size: 12px; }footer button { margin-left: 20px; }
 @media (max-width: 700px) { .shell { width: min(100% - 30px, 560px); padding-top: 20px; }.welcome { padding: 60px 0 38px; }.pin-panel { grid-template-columns: 1fr; }.toolbar-art { min-height: 205px; }.stats { padding-top: 26px; }.stat { padding: 13px; }.stat strong { font-size: 24px; }footer { align-items: flex-start; gap: 14px; }footer button { margin-left: 0; } }
 
+/* ---------- drawn, not typed ----------
+   These were emoji: a puzzle piece, a pin, two arrows. An emoji is a different
+   picture in every font on every platform, and next to the line work in the
+   rest of this product it reads as a placeholder somebody forgot to replace.
+   They are SVGs now, sized here rather than by whatever the text run does. */
+.puzzle svg, .more svg, .pin svg { width: 1em; height: 1em; display: block; }
+.puzzle-arrow svg, .pin-arrow svg { width: 30px; height: 30px; display: block; }
+.puzzle { display: grid; place-items: center; width: 24px; height: 24px; }
+.more { display: grid; place-items: center; width: 18px; height: 18px; opacity: .55; }
+.pin { display: grid; place-items: center; width: 18px; height: 18px; }
+
+/* ---------- arriving ----------
+   Sections land in sequence, once, on load. Transform and opacity only, and
+   nothing here changes a box's size, so the arrival cannot move anything that
+   has already arrived. */
+.welcome, .pin-panel, .stats, footer {
+  animation: onb-rise .62s cubic-bezier(.22, 1, .36, 1) both;
+}
+.pin-panel { animation-delay: .07s; }
+.stats { animation-delay: .13s; }
+footer { animation-delay: .19s; }
+@keyframes onb-rise { from { opacity: 0; transform: translateY(10px); } }
+
+/* The two callouts pulse gently, in turn: they are pointing at something the
+   reader has to go and do in a different part of the browser. */
+.puzzle-arrow, .pin-arrow { animation: onb-nudge 2.4s ease-in-out infinite; }
+.pin-arrow { animation-delay: .5s; }
+@keyframes onb-nudge {
+  0%, 100% { opacity: .55; transform: translateY(0) rotate(var(--tilt, 0deg)); }
+  50%      { opacity: 1; transform: translateY(-3px) rotate(var(--tilt, 0deg)); }
+}
+.puzzle-arrow { --tilt: -25deg; }
+
+/* A row whose value is still being fetched holds the height its answer will
+   need. The list is rebuilt each time a provider replies, and every rebuild
+   used to move the footer. */
+.quota-row { min-height: 42px; }
+.quota-value { transition: color .3s cubic-bezier(.22, 1, .36, 1); }
+
+button { transition: transform .13s cubic-bezier(.22, 1, .36, 1), background .2s, opacity .2s; }
+button:active:not(:disabled) { transform: scale(.97); }
+
+@media (prefers-reduced-motion: reduce) {
+  .welcome, .pin-panel, .stats, footer,
+  .puzzle-arrow, .pin-arrow { animation: none; }
+  button, .quota-value { transition: none; }
+  button:active { transform: none; }
+}
+
 /* The install footer holds two actions now: the tour, which needs a chat page
    to run in, and the plain dismissal. */
 .foot-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }

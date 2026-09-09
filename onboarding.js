@@ -2,15 +2,27 @@
   "use strict";
 
   const $ = (id) => document.getElementById(id);
+  const M = self.LCTMotion;
   const names = { claude: "Claude", grok: "Grok", chatgpt: "ChatGPT", perplexity: "Perplexity", deepseek: "DeepSeek", gemini: "Gemini" };
   const send = (message) => new Promise((resolve) => {
     try { chrome.runtime.sendMessage(message, (reply) => { void chrome.runtime.lastError; resolve(reply); }); }
     catch { resolve(null); }
   });
 
+  /* These land while the reader is looking at them — the archive fills in the
+     background from the moment the extension is installed, so this page counts
+     up as it happens. A number that jumps reads as a glitch; the same number
+     arriving over a few hundred milliseconds reads as the thing working. */
+  const setCount = (id, n) => {
+    const el = $(id);
+    if (!el) return;
+    if (M) M.number(el, "onb:" + id, n);
+    else el.textContent = n.toLocaleString();
+  };
+
   function paintStats(stats) {
-    $("chat-count").textContent = Number(stats && stats.chats || 0).toLocaleString();
-    $("message-count").textContent = Number(stats && stats.msgs || 0).toLocaleString();
+    setCount("chat-count", Number(stats && stats.chats || 0));
+    setCount("message-count", Number(stats && stats.msgs || 0));
     $("updated").textContent = "Updated just now";
   }
 
@@ -72,7 +84,12 @@
     const ids = Object.keys(names);
     let figures = 0;                 // rows that carry an actual number
     const list = $("quota-list");
-    list.replaceChildren();
+    /* Rebuilt every time a provider answers. Each rebuild is a different set of
+       words in the value column and the footer moved with it, so the rows are
+       measured first and the difference animated away. */
+    const movers = [...document.querySelectorAll(".quota-row"), $("updated"), document.querySelector("footer")];
+    const rows = [];
+    const build = () => { list.replaceChildren(...rows); };
     for (const id of ids) {
       const record = best.get(id);
       const row = document.createElement("div");
@@ -84,13 +101,14 @@
       if (said.why) value.title = said.why;
       value.classList.toggle("pending", said.pending);
       if (said.figure) figures++;
-      row.append(name, value); list.appendChild(row);
+      row.append(name, value); rows.push(row);
     }
+    if (M) M.flip(movers, build); else build();
     /* Counted from rows that carry a NUMBER, not from rows that exist. It read
        `best.size` before, so a provider that had answered with nothing usable
        still went into "4 providers reporting" — and the four rows underneath
        plainly reported nothing. */
-    $("provider-count").textContent = figures.toLocaleString();
+    setCount("provider-count", figures);
     $("updated").textContent = figures
       ? `Live · ${figures} of ${ids.length} reporting`
       : "Checking your signed-in accounts…";

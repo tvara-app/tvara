@@ -129,9 +129,12 @@
       : trialActive ? "Free trial. Everything is unlocked while it runs."
       : "";
     badge.classList.toggle("overdue", !!(pro && overdueDays > 0));
-    $("pro-upsell").hidden = pro || trialActive;
-    $("pro-active").hidden = !pro;
-    $("trial-active").hidden = !trialActive;
+    /* One card replaces another as the licence state settles, and each is a
+       different height. Travel, not teleport — this fires on the popup's first
+       paint, which is exactly when a jump reads as the panel being broken. */
+    showRows([[$("pro-upsell"), !!(pro || trialActive)],
+              [$("pro-active"), !pro],
+              [$("trial-active"), !trialActive]]);
     if (pro) $("licensed-to").textContent =
       "One-time licence · " + (maskedEmail || "this browser");
     paintRecallAccess(pro || trialActive);
@@ -175,8 +178,16 @@
   }
 
   function paintRecallAccess(unlocked) {
-    $("recall-searchbox").hidden = !unlocked;
-    $("recall-locked").hidden = unlocked;
+    showRows([[$("recall-searchbox"), !unlocked], [$("recall-locked"), unlocked]]);
+    /* Plain .hidden assignment does not reflect to the content attribute on an
+       SVG element the way it does on HTMLElement — the property read back
+       correctly but the DOM attribute, and so the CSS and the render, never
+       moved. toggleAttribute writes the attribute itself. */
+    $("open-recall-arrow").toggleAttribute("hidden", !unlocked);
+    $("open-recall-lock").toggleAttribute("hidden", unlocked);
+    $("open-recall").setAttribute("aria-label", unlocked
+      ? "Open Total Recall in a new tab"
+      : "Locked — start the free trial to search your archive");
     if (!unlocked) {
       $("recall-query").value = "";
       $("recall-query-meta").textContent = "";
@@ -250,6 +261,17 @@
   // at the same size.
   const CORE_MIN = 26;       // px of hole needed before the centre reads out
 
+  /* Which window each row is showing, keyed by platform + account.
+     A provider can publish more than one — Claude states a five-hour session
+     limit AND a week, ChatGPT a primary and a secondary — and only one fits on
+     a row. The row leads with the one that stops you soonest and the reader
+     steps through the rest by clicking the figure. Kept out here because the
+     panel repaints every few seconds and a choice that reset on every repaint
+     would be unusable. */
+  const winPick = new Map();
+  // The last thing painted, so a click can repaint from it without a round trip.
+  let lastPaint = null;
+
   // Ring colour per provider. Each sits a step off its brand hue — near enough
   // that the ring is read as that platform without the legend, far enough that
   // it is our mark and not theirs. Kept in step with --p-* in recall.css.
@@ -277,6 +299,14 @@
     { id: "perplexity", label: "Perplexity" }
   ];
   const KNOWN_IDS = new Set(KNOWN_PLATFORMS.map((p) => p.id));
+  /* Platforms that publish no allowance, and are therefore not rows on THIS
+     panel. DeepSeek enforces with 429 plus a proof-of-work challenge rather
+     than a quota endpoint, so its row could only ever say "no limit published"
+     — a permanent line of nothing, sitting among figures. It is still archived
+     like every other provider; it just has no allowance to draw.
+     A record IS still rendered if one ever appears: this only stops the empty
+     placeholder, so the day DeepSeek publishes a number the row comes back. */
+  const NO_ALLOWANCE = new Set(["deepseek"]);
   const ID_TO_LABEL = Object.fromEntries(KNOWN_PLATFORMS.map((p) => [p.id, p.label]));
 
   /* Two accounts on one platform share a hue and separate on lightness: the
@@ -369,6 +399,7 @@
     const why = item.lastTry && item.lastTry.skipped ? String(item.lastTry.skipped) : "";
     if (why === "tracking off") return "tracking off";
     if (why === "not signed in") return "not signed in";
+    if (why === "blocked by the provider") return "blocked";
     if (why === "no working endpoint") return "no limit published";
     if (why === "provider reported nothing") return "none published";
     return item.checked ? "none published" : "checking\u2026";
@@ -388,6 +419,10 @@
       }
       if (why === "not signed in") {
         return `Not signed in to ${item.label} in this browser. Sign in and this fills in on its own.`;
+      }
+      if (why === "blocked by the provider") {
+        return `${item.label} blocked the background check with a bot-protection challenge. ` +
+          "Your session is fine — open the site in a tab and this fills in on its own.";
       }
       if (why === "no working endpoint") {
         return `${item.label} publishes no allowance figure this browser can read.`;
@@ -419,6 +454,7 @@
       const said = {
         "tracking off": "Allowance tracking is switched off.",
         "not signed in": "Could not refresh: not signed in to this provider.",
+        "blocked by the provider": "Could not refresh: the provider answered a bot-protection challenge. Open its site in a tab.",
         "no working endpoint": "Could not refresh: this provider publishes no allowance endpoint we can read.",
         "provider reported nothing": "Refreshed, but the provider returned no allowance figure."
       }[why.skipped] || `Could not refresh: ${why.skipped}.`;
@@ -593,7 +629,10 @@
       const row = document.createElement("div");
       row.className = "usage-row" + (it.hot ? " hot" : "");
       // Every figure is auditable: hovering a row says where it came from.
-      row.title = provenance(it);
+      // No hover tooltip: a box of text that covers the panel while you are
+      // reading it is not an explanation. The sentence stays where assistive
+      // tech can still reach it.
+      row.setAttribute("aria-label", provenance(it));
 
       // A hollow pip, lighter where the track is dotted: the legend repeats the
       // dial's own vocabulary at 9px. Never a broken ring — see popup.css.
@@ -615,8 +654,31 @@
            - nothing from the provider   → "not reported"
          The third is a real state, not a failure to render, and writing a
          number there is the exact dishonesty this rewrite removes. */
-      const val = document.createElement("span");
-      val.className = "usage-val";
+      /* A provider that publishes more than one window gets a figure the
+         reader can step through: Claude states a five-hour session limit AND a
+         week, and which one matters depends on what they are about to do. A
+         button, not a span, so it is reachable by keyboard and announced as
+         something that does something. */
+      const many = it.winCount > 1 && it.winNext;
+      const val = document.createElement(many ? "button" : "span");
+      val.className = "usage-val" + (many ? " usage-switch" : "");
+      if (many) {
+        val.type = "button";
+        /* No `title`. A native tooltip here sat on top of the row's own
+           provenance one and read out the meter's raw name — "Show paste text
+           to file" — which is neither a sentence nor a thing anybody asked to
+           be told. The dotted caption already says the figure is a control,
+           and the row's provenance tooltip is the text worth showing on hover.
+           The label stays for screen readers, where nothing else conveys it,
+           and names the WINDOW rather than the meter for the same reason. */
+        const next = it.winNext;
+        val.setAttribute("aria-label",
+          it.label + ": show " + (next.span || "the other window"));
+        val.addEventListener("click", () => {
+          winPick.set(it.key, (winPick.get(it.key) || 0) + 1);
+          if (lastPaint) paintUsage(lastPaint.total, lastPaint.quota);
+        });
+      }
       // Set by the tween below when this row's figure is one the reader has
       // already seen at a different value — see the sweep in popup.css.
       let moved = false;
@@ -704,34 +766,54 @@
      glitch: the eye cannot tell a repaint from a change. The same number
      arriving over a few hundred milliseconds reads as the panel working. All
      of it is off under prefers-reduced-motion, where jumping IS the answer. */
+  /* One engine for the whole page (lib/motion.js): one frame callback for
+     every value in flight, transform and opacity only, and nothing at all
+     while the popup is closed. The fallbacks below are what runs if that file
+     ever fails to load — a panel that cannot animate must still show numbers. */
+  const M = self.LCTMotion;
+  /* The engine answers this normally. Without it — the one case where that file
+     did not load — ask the browser directly rather than assume motion is
+     welcome: the stylesheet would still suppress the animation, but this gate
+     also decides whether a class is added at all. */
   const smoothOK = () => {
+    if (M) return !M.reduced;
     try { return !matchMedia("(prefers-reduced-motion: reduce)").matches; }
     catch { return true; }
   };
-  const seenNumber = new Map();          // key -> the number the user last saw
   const seenArc = new Map();             // ring key -> the geometry last drawn
 
   function tweenNumber(el, key, to, format) {
     if (!el) return;
-    const fmt = format || ((n) => n.toLocaleString());
-    const from = seenNumber.has(key) ? seenNumber.get(key) : null;
-    seenNumber.set(key, to);
-    if (from === null || from === to || !Number.isFinite(from) || !smoothOK()) {
-      el.textContent = fmt(to);
-      // A first paint has not "changed" — only a value the reader already saw.
-      return from !== null && from !== to;
-    }
-    const started = performance.now();
-    const dur = 420;
-    const step = (now) => {
-      const p = Math.min(1, (now - started) / dur);
-      const eased = 1 - Math.pow(1 - p, 3);          // ease-out cubic
-      el.textContent = fmt(Math.round(from + (to - from) * eased));
-      if (p < 1 && el.isConnected) requestAnimationFrame(step);
-      else el.textContent = fmt(to);
-    };
-    el.textContent = fmt(from);
-    requestAnimationFrame(step);
+    const fmt = format || ((n) => Math.round(n).toLocaleString());
+    if (M) return M.number(el, key, to, fmt);
+    el.textContent = fmt(to);
+    return false;
+  }
+
+  /* ---------- rows that come and go without moving the ones that stay ----------
+     The worker keeps learning things while the popup is open: a queue is
+     found, a deletion is noticed, a provider finally reports. Each of those
+     un-hides a row, and an un-hidden row moves everything beneath it in a
+     single frame — which does not read as new information arriving, it reads
+     as the panel lurching under the cursor.
+
+     FLIP fixes it properly: measure where everything is, let the layout change,
+     then animate the difference away with transforms. Nothing reflows during
+     the motion and every row lands exactly where the browser was going to put
+     it. Only when a visibility actually changed — two rect reads per row on
+     every poll would be a forced layout twice a second for no reason. */
+  // Everything a change can push around, in one place: the panel is a single
+  // column, so anything below the change moves and nothing above it does.
+  const MOVERS = ".pulse, .rows > *, .pro-card, .state-card";
+  const movers = () => document.querySelectorAll(MOVERS);
+
+  function showRows(changes) {
+    const pending = changes.filter((c) => c[0] && c[0].hidden !== c[1]);
+    if (!pending.length) return false;
+    const apply = () => { for (const [el, hide] of pending) el.hidden = hide; };
+    if (!M) { apply(); return true; }
+    M.flip(movers(), apply);
+    for (const [el, hide] of pending) if (!hide) M.enter(el, { y: 3 });
     return true;
   }
 
@@ -747,11 +829,16 @@
        heading — motion where nothing was happening but arithmetic. */
     const skeleton = (v) => String(v).replace(/[\d.,%]+/g, "#");
     const sameSentence = skeleton(el.textContent) === skeleton(text);
-    el.textContent = text;
+    /* A sentence that wraps to a second line — or stops wrapping — changes the
+       row's height and moves every row beneath it. By the time the new text is
+       in, the layout has already changed, so the neighbours are measured
+       first. Nothing moves in the common case and flip() skips them; when one
+       does, it travels. This replaces reserving a second line on every live
+       sub-line, which cost three rows a line of empty space each. */
+    const apply = () => { el.textContent = text; };
+    if (M) M.flip(movers(), apply); else apply();
     if (!smoothOK() || sameSentence) return;
-    el.classList.remove("swap");
-    void el.offsetWidth;                             // restart the animation
-    el.classList.add("swap");
+    if (M) M.replay(el, "swap");
   }
 
   /* ---------- the headline ----------
@@ -779,7 +866,7 @@
     /* A giant "0" is the first thing in the panel on a fresh install, and zero
        of something is not a statistic. Drop the number and let the sentence
        carry the line: it is the only thing here with anything to say. */
-    seenNumber.delete("pulse");
+    if (M) M.forget("pulse");
     num.textContent = "";
     num.hidden = true;
     label.textContent = "Open a long chat and watch it work.";
@@ -789,7 +876,12 @@
   const GENERIC_METER = /^(window|default|general|primary|main|overall|entitlement|-)?$/;
 
   let dialPainted = false;
+  // What the dial was last drawn from. See the signature check in paintUsage.
+  let lastUsageSig = "";
   function paintUsage(windowedTotal, quota) {
+    // Kept so a click on a row can repaint from the same data rather than wait
+    // for the next poll — see winPick.
+    lastPaint = { total: windowedTotal, quota };
 
     const records = (quota && Array.isArray(quota.records) ? quota.records : [])
       // The whitelist gate. A record for anything that is not one of the six
@@ -813,8 +905,28 @@
     const identified = new Set(records.filter((r) => r.acct).map((r) => r.id));
     for (const rec of records) {
       if (!rec.acct && identified.has(rec.id)) continue;
-      const win = rec.window || null;
       const key = rec.id + "|" + (rec.acct || "");
+      /* Older records carry only the chosen window; newer ones carry the whole
+         ranked list. Either way the row leads with the head unless the reader
+         has stepped it on. */
+      const all = Array.isArray(rec.windows) && rec.windows.length
+        ? rec.windows
+        : (rec.window ? [rec.window] : []);
+      /* Only windows that STATE something are worth stepping to. A window with
+         a reset and no figure is a real row when it is all a provider gave us —
+         it says when the clock turns over and admits it knows no more — but as
+         one of two or three options it is a step to nothing: the reader clicks
+         a number and lands on "not reported". */
+      const figured = all.filter((w) => w &&
+        ((w.pctLeft !== null && w.pctLeft !== undefined) ||
+         (w.remaining !== null && w.remaining !== undefined)));
+      const wins = figured.length ? figured : all;
+      const at = wins.length ? ((winPick.get(key) || 0) % wins.length) : 0;
+      const win = wins[at] || rec.window || null;
+      // What the row is RANKED by never changes as the reader steps through it:
+      // sorting on the selected window made a row jump up and down the list
+      // under the cursor, which reads as the panel losing its place.
+      const lead = wins[0] || rec.window || null;
       seat(rec.id);
       rowMap.set(key, {
         id: rec.id,
@@ -842,7 +954,12 @@
         source: (win && win.source) || rec.source || "",
         observedAt: (win && win.observedAt) || rec.observedAt || 0,
         lastTry: lastTry[rec.id] || null,
-        checked: !!checked[rec.id]
+        checked: !!checked[rec.id],
+        key,
+        winCount: wins.length,
+        leadPct: lead && lead.pctLeft !== null && lead.pctLeft !== undefined ? lead.pctLeft : null,
+        // What clicking would move to, so the row can say so before it is used.
+        winNext: wins.length > 1 ? (wins[(at + 1) % wins.length] || null) : null
       });
     }
 
@@ -850,7 +967,7 @@
     //    panel says which platforms it covers. These draw an empty dotted ring
     //    and read "not reported" — never a zero.
     for (const p of KNOWN_PLATFORMS) {
-      if (seats.has(p.id)) continue;
+      if (seats.has(p.id) || NO_ALLOWANCE.has(p.id)) continue;
       // A platform never seen on this install is not news, it is a catalogue.
       // Summarised below the legend instead of costing a row each — unless it
       // is all we have, in which case the catalogue IS the panel.
@@ -874,6 +991,7 @@
     // empty panel, which is what a fresh install and every test profile sees.
     if (!rowMap.size) {
       for (const p of unseen) {
+        if (NO_ALLOWANCE.has(p.id)) continue;
         seat(p.id);
         rowMap.set(p.id + "|", {
           id: p.id, acct: "", label: p.label, plan: "", account: "", ordinal: 0,
@@ -908,8 +1026,10 @@
     const ranked = [...rowMap.values()]
       .sort((a, b) => {
         if (a.reported !== b.reported) return a.reported ? -1 : 1;
-        const ap = a.pctLeft === null ? 101 : a.pctLeft;
-        const bp = b.pctLeft === null ? 101 : b.pctLeft;
+        // The row's OWN standing — its leading window — not whichever one the
+        // reader is currently looking at. See `lead` above.
+        const ap = a.leadPct === null || a.leadPct === undefined ? 101 : a.leadPct;
+        const bp = b.leadPct === null || b.leadPct === undefined ? 101 : b.leadPct;
         return ap - bp || a.label.localeCompare(b.label);
       })
       .map((b) => ({
@@ -925,6 +1045,27 @@
        percentage rows and take its sentence with it, so a real reading vanished
        from the panel because the drawing was full. */
     const items = ranked.slice(0, MAX_RINGS);
+
+    /* ---------- is this paint going to change anything? ----------
+       refreshPulse repaints every five seconds for as long as the popup is
+       open, and this function rebuilds the dial from nothing every time: two
+       SVGs, six arcs, a legend row per provider, all created, styled and laid
+       out to arrive at the picture already on the screen. Nothing about the
+       allowance changes on that cadence — a provider is polled minutes apart.
+
+       So sign what the drawing actually depends on, and when the signature is
+       the one already on screen, stop before building anything. The window a
+       reader stepped to is part of the item, so a click still repaints.
+
+       The items themselves are the signature, not a hand-picked subset of
+       their fields: a field left out of the list is a real change that stops
+       being drawn, which is the failure this panel exists to avoid. The minute
+       bucket is there because two labels are relative to now — "resets 9:46 PM"
+       does not move, but "read 3m ago" does, and a signature made only of the
+       data would freeze it. */
+    const sig = JSON.stringify([items, unseen.map((p) => p.id), Math.floor(Date.now() / 60000)]);
+    if (sig === lastUsageSig && $("usage-bars").firstChild) return;
+    lastUsageSig = sig;
 
     /* ---------- the verdict ----------
        The panel used to be six rows of "100% left", which is the answer to a
@@ -1002,7 +1143,16 @@
       rest.textContent = "Also covered: " + unseen.map((p) => p.label).join(", ");
       panel.append(rest);
     }
-    $("usage-bars").replaceChildren(verdict, panel);
+    /* The dial and its legend grow and shrink as providers report, and
+       everything below them moves when they do. Measure, swap, then animate
+       the difference away — see showRows for why this is worth doing. */
+    const swap = () => $("usage-bars").replaceChildren(verdict, panel);
+    if (M && $("usage-bars").firstChild) M.flip(movers(), swap); else swap();
+    // The rings arrive outermost first, so the eye follows the drawing rather
+    // than finding it already finished.
+    if (M && !panel.classList.contains("no-intro")) {
+      M.stagger(panel.querySelectorAll(".usage-row"), "usage-row-in", 34, 6);
+    }
   }
 
   /* ---------- first-paint cache ----------
@@ -1327,8 +1477,32 @@
      while you watch, and stops when you say. */
   let fillTimer = null;
 
+  /* The bar is mounted only when there is a real proportion to draw. A bar at
+     0% of an unknown total is a spinner wearing a progress bar's clothes. */
+  /* The rail is always there — see .fill-bar. What changes is how much of it
+     is filled, as a transform, and whether it has a proportion to state at
+     all. Nothing here toggles a box in or out of the layout. */
+  function paintBar(done, total) {
+    const bar = $("fill-bar");
+    const fill = $("fill-bar-fill");
+    if (!bar || !fill) return;
+    const known = total > 0;
+    bar.classList.toggle("waiting", !known);
+    const p = known ? Math.max(0, Math.min(1, done / total)) : 0;
+    fill.style.transform = `scaleX(${p.toFixed(4)})`;
+  }
+  const hideBar = () => {
+    const bar = $("fill-bar");
+    const fill = $("fill-bar-fill");
+    if (bar) bar.classList.remove("waiting");
+    if (fill) fill.style.transform = "scaleX(0)";
+  };
+
   function paintFill(state) {
-    const row = $("fill-archive");
+    /* The ROW carries the state classes (.busy draws the rail on its edge); the
+       button inside it is only the hit area. Two controls now live on this row,
+       so they are not the same element any more. */
+    const row = $("fill-row");
     const title = $("fill-title");
     const sub = $("fill-sub");
     if (!row) return;
@@ -1341,20 +1515,56 @@
     const left = state.total || 0;
     const running = !!(state.running || state.resuming);
 
-    if (!left && !running) { row.hidden = true; return; }
-    row.hidden = false;
+    const done = state.done || 0;
+    const stopping = !!state.stopping;
+
+    /* Withdrawn, not removed. `hidden` would collapse this row's third column,
+       the title and sub-line would rewrap into the space, and a sub-line that
+       rewraps changes the row's height — the one thing this panel must never do
+       while somebody is reaching for it. */
+    const choose = $("fill-choose");
+    const offerChoice = !!(left && !running && !stopping);
+    if (choose) {
+      choose.hidden = false;
+      choose.classList.toggle("is-off", !offerChoice);
+      choose.tabIndex = offerChoice ? 0 : -1;
+      choose.setAttribute("aria-hidden", offerChoice ? "false" : "true");
+    }
+    if (!left && !running && !stopping) {
+      showRows([[row, true]]);
+      hideBar();
+      return;
+    }
+    showRows([[row, false]]);
+
+    /* Asked to stop, and the last fetch is still unwinding. This state is the
+       whole reason the row used to read as broken: it went on saying "tap to
+       stop" after the tap, so the click looked like it had done nothing. */
+    if (stopping) {
+      row.classList.add("busy", "stopping");
+      row.classList.remove("stalled");
+      setLine(title, "Stopping…");
+      setLine(sub, "Finishing the one already in flight. Nothing else will be fetched.");
+      paintBar(done, done + left);
+      return;
+    }
+    row.classList.remove("stopping");
 
     if (running) {
-      const done = state.done || 0;
-      setLine(title, "Downloading your chats' text…");
+      const total = done + left;
+      // The count belongs in the title: it is the thing being watched, and a
+      // sub-line is where the eye goes last.
+      setLine(title, `Fetching text · ${done.toLocaleString()} of ${total.toLocaleString()}`);
       setLine(sub, state.running
-        ? `${done.toLocaleString()} done, ${left.toLocaleString()} to go. Tap to stop.`
-        : `${done.toLocaleString()} done, ${left.toLocaleString()} to go. The browser paused it; picking up again.`);
+        ? "Tap to stop."
+        : "The browser paused it; picking up again.");
       row.classList.add("busy");
+      paintBar(done, total);
       return;
     }
     row.classList.remove("busy");
-    setLine(title, `Download the text of ${left.toLocaleString()} chat${left === 1 ? "" : "s"}`);
+    hideBar();
+    setLine(title, `Fetch the text of ${left.toLocaleString()} chat${left === 1 ? "" : "s"}`);
     /* The worker already worked out why it stopped — "ChatGPT: signed out",
        "Perplexity: not signed in" — and this row used to throw it away and
        return to "Download the text of 2,300 chats", so the user clicked again
@@ -1366,16 +1576,22 @@
     }
     row.classList.remove("stalled");
     if (state && state.failed) {
-      const mins0 = Math.max(1, Math.round((left * 1.5) / 60));
+      const mins0 = Math.max(1, Math.round((left * 0.7) / 60));   // see below
       setLine(sub, `${state.failed.toLocaleString()} couldn't be fetched. Tap to retry. About ${mins0} min.`);
       return;
     }
-    /* Measured, not guessed: 30 chats took 45 seconds against a real account,
-       so about a second and a half each once the request itself is counted and
-       not just the pause between them. Stated as "about", because the number
-       that decides it is the provider's latency and that is not ours. */
-    const mins = Math.max(1, Math.round((left * 1.5) / 60));
-    setLine(sub, `Recall can only search what it has downloaded. About ${mins} min.`);
+    /* An UPPER bound, and stated as one.
+       The queue runs every provider at once and several chats at a time within
+       each, so the wall-clock figure is the slowest single host's share of the
+       work, not the sum of it. What is left is the paced interval the host has
+       earned — half a second at the floor — plus the write. The old figure of
+       1.5s each was measured when this ran one chat at a time with a second
+       sleep on top, and it now overstates the wait by more than double. */
+    const mins = Math.max(1, Math.round((left * 0.7) / 60));
+    /* What it is FOR, in the reader's terms. "Download" was the wrong verb in
+       the wrong place: this fills the archive, and the thing people came here
+       looking for under that word is the backup file, one row below. */
+    setLine(sub, `Search needs the words, not just the titles. About ${mins} min.`);
   }
 
   /* Set when we have asked the worker to start and have not yet seen it say so.
@@ -1400,8 +1616,12 @@
     fillTries = 0;
     const waitingToStart = fillExpected && Date.now() < fillExpected;
     if (state.running) fillExpected = 0;
-    // Poll only while it is working, or while we are waiting for it to admit it.
-    if (state.running || state.resuming || waitingToStart) fillTimer = setTimeout(refreshFill, 1200);
+    /* Poll while it is working, while it is unwinding a stop, or while we are
+       waiting for it to admit it started. Stopping has to be polled too, or the
+       row would sit on "Stopping…" until the popup was reopened. */
+    if (state.running || state.resuming || state.stopping || waitingToStart) {
+      fillTimer = setTimeout(refreshFill, state.stopping ? 600 : 1200);
+    }
   }
 
   /* The row is not a button element, so nothing disabled it: two clicks 150ms
@@ -1417,9 +1637,15 @@
     $("fill-archive").classList.add("pending");
     try {
       const state = await send({ type: "archive-fill-state" });
+      // Already unwinding a stop: the click has nothing left to ask for, and
+      // asking again would read as a second control the row does not have.
+      if (state && state.stopping) return;
       // Stopping a reclaimed run means clearing its watchdog, not just its loop.
       const stopping = !!(state && (state.running || state.resuming));
       await send({ type: stopping ? "archive-fill-stop" : "archive-fill-start" });
+      // Paint the decision now rather than at the next poll: a control that
+      // waits a second before admitting it heard you reads as a dead control.
+      if (stopping) paintFill({ ...state, running: false, stopping: true });
       // Give the worker a window to admit it started before we stop polling.
       fillExpected = stopping ? 0 : Date.now() + 30000;
     } finally {
@@ -1428,6 +1654,67 @@
     }
     setTimeout(refreshFill, 400);
   });
+
+  /* ---------- the backup file ----------
+     A different thing from the queue above, and the reason to say so in a
+     different verb: that one fills the archive IN this browser, this one writes
+     a copy OUT of it. It lived only on the Recall page, which is why the
+     question "where do I set the password" had no answer in the popup — the
+     row is the answer, and it opens the panel that owns it. */
+  function paintBackup(auto, durable) {
+    const row = $("backup-archive");
+    const sub = $("backup-sub");
+    if (!row || !sub) return;
+    const marker = (durable && durable.marker) || null;
+    row.classList.remove("stalled");
+    if (auto && auto.lastError) {
+      // An error is the one thing here worth interrupting for.
+      row.classList.add("stalled");
+      setLine(sub, "The last automatic backup failed. Open it to see why.");
+      return;
+    }
+    if (auto && auto.awaitingKey) {
+      row.classList.add("stalled");
+      setLine(sub, "Automatic backups are waiting for your password again.");
+      return;
+    }
+    if (auto && auto.enabled) {
+      setLine(sub, auto.lastAt
+        ? `Automatic · last ${agoLabel(auto.lastAt)}, ${(auto.lastChats || 0).toLocaleString()} chats.`
+        : "Automatic backups are on. The first one runs shortly.");
+      return;
+    }
+    if (marker && marker.createdAt) {
+      setLine(sub, `Last backup ${agoLabel(marker.createdAt)} · ` +
+        `${(marker.chats || 0).toLocaleString()} chats. Write a fresh one.`);
+      return;
+    }
+    /* Never backed up. The archive is on this machine and nowhere else, so this
+       is the sentence that says what is actually at stake — and names the
+       password, because that is what people come to this row looking for. */
+    setLine(sub, "Nothing saved yet. One encrypted file, locked with a password you set.");
+  }
+
+  async function refreshBackup() {
+    const [auto, durable] = await Promise.all([
+      send({ type: "recall-autobackup-state" }),
+      send({ type: "recall-backup-state" })
+    ]);
+    paintBackup(auto, durable);
+  }
+
+  $("fill-choose").addEventListener("click", (e) => {
+    e.stopPropagation();
+    chrome.tabs.create({ url: chrome.runtime.getURL("fetch.html") });
+    window.close();
+  });
+
+  $("backup-archive").addEventListener("click", () => {
+    // Straight to the panel that owns the password, not the top of the page.
+    chrome.tabs.create({ url: chrome.runtime.getURL("archive.html#backup-panel") });
+    window.close();
+  });
+  refreshBackup();
 
   /* Opening the popup is not what starts the download — it starts itself, on
      install and after every sync pass. This only covers the case where nothing
@@ -1519,6 +1806,10 @@
     $("pro-upsell").classList.toggle("needs-signin", !identityVerified && google);
     $("identity").hidden = false;
     $("identity-done").hidden = !identityVerified;
+    // Every repaint lands on the links, never mid-confirm — a confirm asked
+    // once should not still be standing after whatever caused this repaint.
+    $("identity-signout-confirm").hidden = true;
+    $("identity-links").hidden = false;
     // Firefox cannot register a redirect URL, so the button is absent there
     // rather than present and broken. bg.js decides; this only paints.
     $("identity-google").hidden = identityVerified || !google;
@@ -1552,6 +1843,23 @@
     identityMsg("Verified.", "ok");
   }
 
+  /* The window Google opens is the slow part and nothing here can change that.
+     What can change is everything BEFORE it: the service worker is reclaimed
+     constantly, so a click on a cold worker pays for the whole worker starting
+     before Chrome is even asked for the window. Reaching the button is the
+     signal — a pointer landing on it, or it taking focus, is a hundred
+     milliseconds of warning, and that is enough to wake the worker and mint
+     the nonce. Fire and forget, and never more than once every few seconds. */
+  let warmedAt = 0;
+  const warmSignIn = () => {
+    if (Date.now() - warmedAt < 4000) return;
+    warmedAt = Date.now();
+    send({ type: "identity-google-prepare" }).catch(() => {});
+  };
+  $("identity-google").addEventListener("pointerenter", warmSignIn);
+  $("identity-google").addEventListener("pointerdown", warmSignIn);
+  $("identity-google").addEventListener("focus", warmSignIn);
+
   $("identity-google").addEventListener("click", async () => {
     const button = $("identity-google");
     const label = button.textContent;
@@ -1579,9 +1887,20 @@
       : "Could not check right now. Try again in a minute.", res && res.ok ? "" : "warn");
   });
 
-  $("identity-signout").addEventListener("click", async () => {
-    /* Local only. Signing out is not a way to release a spent trial, and it
-       deliberately leaves an activated licence alone. */
+  /* "Use a different account" asks once before it acts — it does sign the
+     browser out, even though it deliberately leaves the licence and any spent
+     trial untouched. Swaps the two links for a Sign out / Cancel pair in the
+     same spot rather than opening anything new. */
+  $("identity-signout").addEventListener("click", () => {
+    $("identity-links").hidden = true;
+    $("identity-signout-confirm").hidden = false;
+  });
+  $("identity-signout-no").addEventListener("click", () => {
+    $("identity-signout-confirm").hidden = true;
+    $("identity-links").hidden = false;
+  });
+  $("identity-signout-yes").addEventListener("click", async () => {
+    $("identity-signout-confirm").hidden = true;
     paintIdentity(await send({ type: "identity-signout" }));
     identityMsg("");
   });
@@ -2964,7 +3283,7 @@
   // The popup is where most people will first notice.
   function paintDeletionAlert(deletions) {
     const count = (deletions && deletions.count) || 0;
-    $("deletion-alert").hidden = !count;
+    showRows([[$("deletion-alert"), !count]]);
     if (!count) return;
     $("deletion-alert-title").textContent = count === 1
       ? "1 chat was deleted on the site" : `${count} chats were deleted on the site`;
@@ -2976,7 +3295,7 @@
      person actually is when they notice the count. */
   function paintRestoreAlert(recovery) {
     const offered = !!(recovery && recovery.state === "restore-offered");
-    $("restore-alert").hidden = !offered;
+    showRows([[$("restore-alert"), !offered]]);
     if (!offered) return;
     const chats = Number(recovery.backup && recovery.backup.chats) || 0;
     $("restore-alert-title").textContent = chats
@@ -2985,7 +3304,7 @@
   }
 
   $("restore-alert").addEventListener("click", () => {
-    chrome.tabs.create({ url: chrome.runtime.getURL("recall.html#recovery") });
+    chrome.tabs.create({ url: chrome.runtime.getURL("archive.html#recovery") });
     window.close();
   });
 
@@ -3040,7 +3359,7 @@
        bulk action — it is the same two options twice. */
     const bulk = document.querySelector(".deletion-actions");
     if (bulk) bulk.hidden = items.length < 2;
-    if (!items.length) { $("deletion-panel").hidden = $("deletion-undo").hidden; return; }
+    if (!items.length) { showRows([[$("deletion-panel"), $("deletion-undo").hidden]]); return; }
     for (const item of items.slice(0, 25)) {
       const row = document.createElement("div");
       row.className = "deletion-item";
@@ -3067,7 +3386,7 @@
 
   $("deletion-alert").addEventListener("click", async () => {
     const panel = $("deletion-panel");
-    panel.hidden = !panel.hidden;
+    showRows([[panel, !panel.hidden]]);
     if (!panel.hidden) await paintDeletions();
   });
   $("deletion-policy").addEventListener("change", async () => {
@@ -3124,7 +3443,45 @@
   /* Five seconds, for as long as the panel is open. The storage signals below
      cover a tab reporting its own numbers; they do NOT cover the worker
      archiving in the background, which writes to IndexedDB and nothing else. */
+  /* ---------- did the worker start at all? ----------
+     Asked once, first, and answered by bg.js itself rather than by a module —
+     it is the one question a half-loaded worker can still answer. Silence is
+     an answer too: a worker that cannot reply to this did not start. */
+  async function checkWorker() {
+    let health;
+    try { health = await send({ type: "worker-health" }); } catch { /* silence is an answer */ }
+    const banner = $("worker-dead");
+    if (!banner) return;
+    if (health && health.ok) { showRows([[banner, true]]); return; }
+    const failed = (health && Array.isArray(health.failed) ? health.failed : []).filter(Boolean);
+    // This one lands ABOVE everything, so it moves the whole panel. Let the
+    // panel travel rather than teleport.
+    if (showRows([[banner, false]]) && M) M.enter(banner, { y: -6, dur: 340 });
+    const sub = $("worker-dead-sub");
+    if (sub) {
+      sub.textContent = failed.length
+        // Name the files. "It didn't load" is not something anybody can act on;
+        // "bg/store.js could not be read" tells them where to look.
+        ? `${failed.length} of its background files could not be read — ${failed.slice(0, 3).join(", ")}` +
+          (failed.length > 3 ? ", and more." : ".")
+        : "The background worker did not answer. Nothing is being archived or measured.";
+    }
+  }
+  checkWorker();
+  $("worker-dead-reload").addEventListener("click", () => {
+    // Reloading is the fix for a half-installed unpacked build, and it is the
+    // one thing this panel can still do without the worker.
+    try { chrome.runtime.reload(); } catch { /* nothing more we can do here */ }
+    window.close();
+  });
+
   setInterval(refreshPulse, 5000);
+  /* The backup row is a live reading like every other number on this panel: an
+     automatic backup can land, or a password can be set in the tab this row
+     just opened, while the popup is still on screen. Painted once at load it
+     would go on describing the state it opened in. Slower than the headline —
+     a backup is an hourly event, not a per-second one. */
+  setInterval(refreshBackup, 15000);
 
   /* And the allowances, while the panel is open. The user is chatting in
      another tab while this sits there, so a percentage read when the popup

@@ -46,6 +46,16 @@
     </header>
 
     <main>
+      <!-- A worker that never started answers nothing, and every panel below
+           then shows its own small emptiness: no counts, no allowance, rows
+           stuck on "checking". One cause, a dozen symptoms. This says the
+           cause. -->
+      <section class="dead-banner" id="worker-dead" role="alert" hidden>
+        <span class="dead-title">Tvara is not running</span>
+        <span class="dead-sub" id="worker-dead-sub">The extension did not finish loading.</span>
+        <button id="worker-dead-reload" class="dead-action" type="button">Reload the extension</button>
+      </section>
+
       <section class="pulse" aria-label="Live statistics">
         <span class="pulse-num" id="stat-windowed">0</span>
         <span class="pulse-label" id="stat-label">messages asleep right now</span>
@@ -126,8 +136,12 @@
             <span class="row-title">Total Recall</span>
             <span class="row-sub">Searches every chat on every platform</span>
           </span>
+          <!-- Two icons, one swapped for the other: a locked feature says so on
+               the row itself, not only in the sentence underneath it that is
+               easy to skim past. -->
           <button class="row-action" id="open-recall" type="button" aria-label="Open Total Recall in a new tab">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 16 16 8"/><path d="M9.5 8H16v6.5"/></svg>
+            <svg id="open-recall-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 16 16 8"/><path d="M9.5 8H16v6.5"/></svg>
+            <svg id="open-recall-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" hidden><rect x="5.5" y="10.5" width="13" height="9" rx="2"/><path d="M8.5 10.5V7.5a3.5 3.5 0 0 1 7 0v3"/></svg>
           </button>
         </div>
 
@@ -180,13 +194,43 @@
           </span>
         </button>
 
-        <button class="row row-button" id="fill-archive" type="button" hidden>
+        <!-- One row, two controls. Choosing what to fetch was its own row and
+             read as a second thing to do; it is one decision about THIS button,
+             so it sits on it. The hit area is a real <button> laid over the
+             row — a button cannot legally contain another one, and the icon and
+             text have to stay direct children of the row's grid. -->
+        <div class="row row-button row-fill" id="fill-row" hidden>
+          <button class="row-hit" id="fill-archive" type="button" aria-labelledby="fill-title fill-sub"></button>
           <span class="row-icon" aria-hidden="true">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 21h16"/></svg>
           </span>
           <span class="row-text">
-            <span class="row-title" id="fill-title">Download your chats' text</span>
-            <span class="row-sub" id="fill-sub">Recall can only search what it has downloaded</span>
+            <span class="row-title" id="fill-title">Fetch your chats' text</span>
+            <span class="row-sub" id="fill-sub" aria-live="polite">Search needs the words, not just the titles</span>
+            <!-- Always mounted, never hidden: showing and hiding it moves
+                 every row below. Empty at rest, determinate while there is a
+                 proportion to state, a travelling sheen while there is not. -->
+            <span class="fill-bar" id="fill-bar" aria-hidden="true"><i id="fill-bar-fill"></i></span>
+          </span>
+          <!-- Only while there is a queue and it is idle: a choice about work
+               already under way is a second answer to a settled question. -->
+          <button class="row-action" id="fill-choose" type="button" hidden
+                  title="Customize — pick the providers, or the chats inside one"
+                  aria-label="Customize what to fetch">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h10"/><path d="M4 12h7"/><path d="M4 17h13"/><path d="m17 6 2 2 4-4"/></svg>
+          </button>
+        </div>
+
+        <!-- The archive lives in this browser and nowhere else, so the file IS
+             the safety net. It used to exist only on the Recall page, which is
+             why nobody could find where to set its password. -->
+        <button class="row row-button" id="backup-archive" type="button">
+          <span class="row-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h14a1 1 0 0 1 1 1v3H4V5a1 1 0 0 1 1-1z"/><path d="M4 8h16v11a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"/><path d="M10 12h4"/></svg>
+          </span>
+          <span class="row-text">
+            <span class="row-title" id="backup-title">Back up your archive</span>
+            <span class="row-sub" id="backup-sub" aria-live="polite">One encrypted file you can restore anywhere</span>
           </span>
         </button>
 
@@ -211,16 +255,37 @@
           <p class="pro-note" id="identity-why">Sign in once &mdash; your trial and your purchase follow the account, across reinstalls and browsers.</p>
           <button id="identity-google" class="identity-google" type="button" hidden>Continue with Google</button>
           <p class="pro-note" id="identity-nogoogle" hidden>Signing in needs Chrome or Edge. Firefox gives every install a different extension address, which Google will not accept as a redirect.</p>
+          <!-- Restore is a RECOVERY path, not the thing to do next: the person
+               reading this is signed in and has either bought or not. It keeps
+               its own line because it acts on the account, and the two links
+               under it are housekeeping, side by side. -->
           <div id="identity-done" hidden>
-            <button id="identity-restore" type="button">Restore my purchase</button>
-            <button id="identity-devices" class="identity-link" type="button">Manage devices</button>
-            <button id="identity-signout" class="identity-link" type="button">Use a different account</button>
+            <button id="identity-restore" class="ghost" type="button">Restore my purchase</button>
+            <div class="identity-links" id="identity-links">
+              <button id="identity-devices" class="identity-link" type="button">Manage devices</button>
+              <button id="identity-signout" class="identity-link" type="button">Use a different account</button>
+            </div>
+            <!-- Signing out is not a way to release a spent trial, and it leaves
+                 a licence alone — but it does sign the browser out of the
+                 account, so a stray click deserves a second one before it acts. -->
+            <div id="identity-signout-confirm" hidden>
+              <p class="pro-note">Sign out of this account on this device?</p>
+              <div class="dm-confirm-row">
+                <button id="identity-signout-yes" class="dm-confirm-danger" type="button">Sign out</button>
+                <button id="identity-signout-no" class="dm-confirm-cancel" type="button">Cancel</button>
+              </div>
+            </div>
           </div>
           <p id="identity-status" role="status"></p>
         </div>
-        <button id="trial-start" hidden>Start 7-day free trial</button>
+        <!-- One offer, two ways to take it. Stacked, they read as two separate
+             decisions to make in order; side by side they read as the choice
+             they actually are. -->
+        <div class="pro-actions">
+          <button id="trial-start" hidden>Start 7-day free trial</button>
+          <button id="buy-pro" class="buy" type="button" data-price="Get Pro · {price}"></button>
+        </div>
         <p id="trial-note" class="pro-note" hidden></p>
-        <button id="buy-pro" class="buy" type="button" data-price="Get Pro · {price}"></button>
         <p class="pro-note"><button type="button" class="identity-link" id="license-toggle" aria-expanded="false" aria-controls="license-row">Bought before, or lost access to that account?</button></p>
         <div class="license-row" id="license-row" hidden>
           <input type="text" id="license-input" placeholder="Licence key" autocomplete="off" spellcheck="false" />
@@ -269,8 +334,8 @@
         <div id="device-confirm" hidden>
           <p class="pro-note" id="device-confirm-text"></p>
           <div class="dm-confirm-row">
-            <button id="device-confirm-yes">Sign out</button>
-            <button id="device-confirm-no" class="ghost">Cancel</button>
+            <button id="device-confirm-yes" class="dm-confirm-danger">Sign out</button>
+            <button id="device-confirm-no" class="dm-confirm-cancel">Cancel</button>
           </div>
         </div>
         <button id="license-retry-activate" hidden>Try activating again</button>
@@ -305,6 +370,7 @@
     </section>
   </div>
 
+  <script src="../lib/motion.js"></script>
   <script src="../lib/product.js"></script>
   <script src="../lib/license.js"></script>
   <script src="../lib/dodo.js"></script>

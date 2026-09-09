@@ -1,8 +1,12 @@
 /* Tvara — popup.
    Sized to fit a Chrome popup whole (no scrollbar): one warm gradient field,
    one grain plate, one column of icons, and type doing the rest.
-   Motion is ambient only — the plate breathes and the panel arrives. Nothing
-   twitches under the cursor. */
+   Motion is ambient — the plate breathes and the panel arrives — and nothing
+   twitches under the CURSOR: hover changes colour, never geometry. A PRESS is
+   different. It is the one moment the user has committed to something, and a
+   control that moves under the finger is the difference between a panel that
+   responds and a panel you have to check on. Every rule below that moves is
+   transform or opacity, and all of it stops under prefers-reduced-motion. */
 
 :root {
   color-scheme: dark;
@@ -312,6 +316,139 @@ main { padding: 0 var(--gutter); }
 }
 .pulse-num { font-size: 18px; font-weight: 400; letter-spacing: -.035em; font-variant-numeric: tabular-nums; }
 .pulse-label { color: var(--ink-dim); font-size: 11.5px; }
+/* ---------- the worker did not start ----------
+   Loud on purpose, and the only thing on this panel that is: every other
+   emptiness below has this as its cause, and reading them one at a time is how
+   an extension that never loaded gets reported as six separate bugs. */
+.dead-banner {
+  display: grid;
+  gap: 4px;
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+.dead-title { font-size: 13px; font-weight: 600; letter-spacing: -.01em; }
+.dead-sub { color: var(--ink-dim); font-size: 11.5px; line-height: 1.45; }
+.dead-action {
+  justify-self: start;
+  margin-top: 4px;
+  padding: 6px 12px;
+  border: 1px solid color-mix(in srgb, var(--danger) 55%, transparent);
+  border-radius: 8px;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background .18s var(--ease), transform .18s var(--ease);
+}
+.dead-action:hover { background: color-mix(in srgb, var(--danger) 18%, transparent); }
+.dead-action:active { transform: translateY(1px); }
+.dead-action:focus-visible { outline: 1px solid var(--ink-dim); outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) {
+  .dead-action { transition: none; }
+}
+
+/* ---------- the text queue, and the backup file ----------
+   Two different things that both used the word "download", which is how one of
+   them came to be read as the other. The queue fills the ARCHIVE and shows how
+   far through it is; the backup writes a FILE and is where the password lives.
+   Each says which it is in its own verb, and neither borrows the other's. */
+
+/* A determinate bar, hairline-thin. The row is 44px of touch target and the
+   progress is a fact about it, not a second object competing for the eye. */
+/* A secondary offer sitting under a primary one: present, and clearly the
+   quieter of the two. Same row geometry, so nothing shifts when it appears. */
+.row-quiet .row-title { font-weight: 500; opacity: .88; }
+.row-quiet .row-icon { opacity: .72; }
+
+/* The rail IS the row's divider, drawn over it.
+   A progress bar that occupies its own strip occupies its own HEIGHT, and then
+   this row is fifteen pixels taller than every row around it — the rhythm of
+   the whole column breaks at exactly one place, which reads as a mistake even
+   to somebody who cannot say what is wrong. So it takes no space at all: it
+   sits on the hairline that was already there, and filling it turns that line
+   into a measure of how far the fetch has got.
+
+   Nothing moves, ever — not when a download starts, not when it ends. */
+.fill-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  /* Not -1px. That reached one pixel into the NEXT row's own box, and because
+     that row is later in DOM order it paints on top of this one at that
+     shared edge — the bar was rendering, correctly, entirely UNDER its
+     neighbour. Kept inside this row's own box, it cannot lose a paint-order
+     fight it was never going to win. */
+  bottom: 0;
+  height: 2px;
+  overflow: hidden;
+  /* A faint permanent track, not transparent: a fill with nothing to sit in
+     reads as a stray mark rather than as progress. At 9 of 587 the filled
+     portion is a few pixels — without a track spanning the row there is
+     nothing to tell the reader it belongs to the row at all, let alone that
+     it is 1.5% of something. The track is what says "this is the whole bar,
+     and here is how much of it is done" — dim because it is the part not yet
+     reached, against the fill's full colour for the part that is. */
+  /* Tinted with the fill's own colour, not plain white: a dim version of the
+     accent reads as "this bar, not yet reached" — one bar in two states — where
+     a grey track beside an orange fill reads as two different things sharing a
+     line. 7% white measured invisible against this background once rendered;
+     this is both more visible and the more legible colour. */
+  background: color-mix(in oklab, var(--accent, #e0805c), transparent 84%);
+  opacity: 0;
+  transition: opacity .3s var(--ease);
+}
+.row.busy .fill-bar, .row.stopping .fill-bar { opacity: 1; }
+/* scaleX, never width: width is layout on every frame, a transform is one
+   matrix on the compositor. The element is full width and squashed to zero. */
+.fill-bar > i {
+  display: block;
+  height: 100%;
+  width: 100%;
+  transform: scaleX(0);
+  transform-origin: 0 50%;
+  background: linear-gradient(90deg, var(--accent, #e0805c), color-mix(in oklab, var(--accent, #e0805c), #fff 26%));
+  transition: transform .45s var(--ease);
+}
+/* Promoted only while it is actually moving. A permanent will-change holds a
+   layer for a bar that is idle most of the time. */
+.row.busy .fill-bar > i { will-change: transform; }
+/* Working, with no proportion to state yet — resuming after the worker was
+   reclaimed. A travelling sheen says "something is happening" without
+   inventing a percentage nobody measured. */
+.fill-bar.waiting > i {
+  transform: scaleX(.32);
+  animation: rail-wait 1.25s var(--ease) infinite;
+}
+@keyframes rail-wait {
+  0%   { transform: translateX(-38%) scaleX(.32); }
+  100% { transform: translateX(312%) scaleX(.32); }
+}
+/* Asked to stop and still draining: the bar stops claiming progress and says
+   so by standing still, dimmed, rather than by continuing to fill. */
+.row.stopping .fill-bar > i { opacity: .45; transition: none; animation: none; }
+.row.stopping .row-title { opacity: .82; }
+/* A row waiting on the worker cannot be clicked again — see fillBusy. */
+.row.pending { pointer-events: none; opacity: .72; }
+.row.pending .row-title::after {
+  content: "";
+  display: inline-block;
+  width: .55em; height: .55em;
+  margin-left: .45em;
+  border-radius: 50%;
+  background: currentColor;
+  animation: row-wait 1s ease-in-out infinite;
+}
+@keyframes row-wait { 0%, 100% { opacity: .25; } 50% { opacity: .9; } }
+@media (prefers-reduced-motion: reduce) {
+  .fill-bar > i { transition: none; }
+  .fill-bar.waiting > i { animation: none; transform: scaleX(.32); }
+  .row.pending .row-title::after { animation: none; opacity: .6; }
+}
+
 /* ---------- usage dial ----------
    Rings nested into one object, read outward-in by recency. Each track is its
    own ring's colour held at a whisper rather than a shared grey, so an empty
@@ -460,6 +597,22 @@ main { padding: 0 var(--gutter); }
   white-space: nowrap;
 }
 .usage-val b { color: var(--ink); font-weight: 500; }
+/* A row whose provider publishes more than one window: the figure is a button.
+   Quiet until it is wanted — the panel is read at a glance and a row of live
+   controls would compete with the numbers themselves. */
+button.usage-switch {
+  appearance: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  text-align: right;
+  cursor: pointer;
+}
+button.usage-switch .usage-cap { border-bottom: 1px dotted currentColor; }
+button.usage-switch:hover .usage-cap,
+button.usage-switch:focus-visible .usage-cap { border-bottom-color: var(--ink); }
+button.usage-switch:focus-visible { outline: 1px solid var(--ink-dim); outline-offset: 3px; border-radius: 4px; }
 .usage-row.hot .usage-val b { color: var(--danger); }
 /* "not reported" is a real state, not a dimmed number: it sits back a step from
    the reported rows so the eye reads the figures first and does not mistake an
@@ -491,8 +644,18 @@ main { padding: 0 var(--gutter); }
 .swap { animation: swap-in .24s var(--ease) both; }
 @keyframes swap-in { from { opacity: .35; transform: translateY(2px); } }
 
+/* The legend arrives a row at a time, outermost ring first, so the eye follows
+   the drawing being made instead of finding it already finished. The delay is
+   one custom property written per row by lib/motion.js — N rows cost N CSS
+   animations on the compositor rather than N timers on the main thread. */
+.usage-row-in {
+  animation: usage-row-in .34s var(--ease) both;
+  animation-delay: var(--stagger, 0ms);
+}
+@keyframes usage-row-in { from { opacity: 0; transform: translateY(3px); } }
+
 @media (prefers-reduced-motion: reduce) {
-  .swap, .usage-row.moved { animation: none; }
+  .swap, .usage-row.moved, .usage-row-in { animation: none; }
   .no-intro .usage-arc { transition: none; }
 }
 
@@ -526,14 +689,28 @@ main { padding: 0 var(--gutter); }
 .rows > .row-panel,
 .rows > .row-button { grid-column: 1 / -1; }
 
+/* Everything in a row hangs off the TITLE's line, not off the middle of the
+   row. Centring looks right until two rows differ in height — and they always
+   do, because a description wraps, or a progress rail appears, or the cell
+   beside it in the pair has more to say. Then the icons stop agreeing on a
+   baseline and the two titles in a pair sit at different heights, which is the
+   first thing the eye finds wrong even when nothing else is.
+
+   So the row aligns to the top and each column is nudged by half the
+   difference between its own box and the title's 15.6px line box. */
 .row {
+  position: relative;                  /* the fill rail sits on this row's edge */
   display: grid;
   grid-template-columns: var(--icon-col) minmax(0, 1fr) auto;
-  align-items: center;
+  align-items: start;
   width: 100%;
   min-height: 32px;
   gap: var(--icon-gap);
-  padding: 2px 0;
+  /* Not symmetric, and the same on every row: the extra below is what keeps
+     the divider — and the fill rail drawn on it — off the descenders of the
+     line above. Two pixels read as an underline of the sentence rather than a
+     measure of the row. */
+  padding: 2px 0 4px;
   border: 0;
   border-top: 1px solid var(--line-soft);
   background: transparent;
@@ -545,11 +722,18 @@ main { padding: 0 var(--gutter); }
 .rows > .row:first-child { border-top: 0; }
 .row-panel + .row { border-top: 1px solid var(--line-soft); }
 
+/* Aligned to the TITLE, not to the middle of the row. `align-items: center` on
+   the row centres the icon against everything the row holds — so a row with a
+   second line of description, or a progress rail, sat its icon lower than the
+   row above it, and a column of icons that do not agree on a baseline is the
+   first thing the eye finds wrong. The offset is half the difference between
+   the icon box and the title's line box. */
 .row-icon {
   display: grid;
   width: var(--icon-col);
   height: var(--icon-col);
   place-items: center;
+  margin-top: -2px;                    /* 20px box on a 15.6px line */
   color: var(--ink-faint);
 }
 .row-icon svg { width: 16px; height: 16px; }
@@ -571,6 +755,15 @@ main { padding: 0 var(--gutter); }
   font-size: 10.5px;
   line-height: 1.25;
 }
+/* A toggle cell reserves two lines whether it needs them or not, and only a
+   toggle cell does. These six sit in a two-column grid, so a pair shares one
+   track and the track is as tall as the fuller of the two — which left the
+   shorter one with thirteen pixels of slack under its text and nothing under
+   the others. Reserved, all three tracks are the same height and the block has
+   one rhythm. The full-width rows below are sized to their own content, which
+   is even among themselves. */
+label.row .row-sub { min-height: 2.5em; }
+
 /* The allowance row carries two controls in its subtitle, and nothing had ever
    styled an anchor inside a row: they rendered in the browser's default link
    blue, underlined, the one unpainted thing in the whole panel. */
@@ -588,6 +781,7 @@ main { padding: 0 var(--gutter); }
   display: grid;
   width: 26px;
   height: 26px;
+  margin-top: -5px;                    /* 26px box on a 15.6px line */
   place-items: center;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -596,9 +790,57 @@ main { padding: 0 var(--gutter); }
   cursor: pointer;
 }
 .row-action svg { width: 14px; height: 14px; }
+
+/* ---------- the fetch row carries two controls ----------
+   The hit area is a real button laid over the row: a <button> cannot contain
+   another one, and the icon and text must stay direct children of the row's
+   grid or the three columns collapse. */
+.row-fill { position: relative; }
+.row-hit {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  padding: 0;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+.row-fill > .row-icon, .row-fill > .row-text, .row-fill > .row-action {
+  position: relative;
+  z-index: 1;                          /* above the hit area, so both are clickable */
+}
+.row-fill > .row-text { pointer-events: none; }   /* the text is not a second target */
+/* Withdrawn, never removed: its column stays, so nothing rewraps and no row
+   below it moves. */
+.row-action.is-off { visibility: hidden; pointer-events: none; }
 .row-action:hover { background: rgb(255 255 255 / .07); color: var(--ink); }
 .row-static { cursor: default; }
 .row-button:hover .row-title, .row-action:hover { color: var(--ink); }
+
+/* ---------- tactile ----------
+   A press is answered in the same frame it happens. The scale is small on
+   purpose: this is a receipt, not an effect, and a control that visibly
+   deforms reads as a toy. Transforms only — none of this touches layout, so a
+   press cannot move anything around it. */
+.row-button, .row-action, .dead-action, button, .identity-google, .buy, .ghost {
+  transition: transform .13s var(--ease), background .18s var(--ease),
+              border-color .18s var(--ease), color .18s var(--ease), opacity .18s var(--ease);
+}
+.row-button:active { transform: scale(.988); }
+.row-action:active, button:active:not(:disabled) { transform: scale(.955); }
+/* A row that is waiting on the worker must not answer a press it is ignoring. */
+.row.pending:active, button:disabled:active { transform: none; }
+/* The icon leads the press: it is the thing the eye is already on. */
+.row-button:active .row-icon { transform: scale(.9); }
+.row-icon { transition: transform .13s var(--ease), color .25s var(--ease); }
+
+@media (prefers-reduced-motion: reduce) {
+  .row-button, .row-action, .dead-action, button, .row-icon,
+  .identity-google, .buy, .ghost { transition: none; }
+  .row-button:active, .row-action:active, button:active,
+  .row-button:active .row-icon { transform: none; }
+}
 
 /* Something is waiting on a decision that cannot be undone once made. */
 .row.alert { border-color: rgb(255 138 107 / .34); background: rgb(255 138 107 / .07); }
@@ -842,7 +1084,7 @@ body.searching footer { display: none; }
 .pro-card.needs-signin #trial-start:hover,
 .pro-card.needs-signin #buy-pro:hover { background: rgb(255 255 255 / .05); color: var(--ink); }
 
-#trial-start, #identity-google, #identity-restore {
+#trial-start, #identity-google {
   width: 100%;
   margin-top: 5px;
   border-color: transparent;
@@ -903,7 +1145,29 @@ body.dm-open #pro-active, body.dm-open #trial-active { display: none !important;
 .device-row button { flex: none; min-height: 24px; padding: 0 9px; font-size: 9.5px; }
 #device-actions, #device-confirm { display: grid; gap: 6px; margin-top: 9px; }
 #device-actions button, #device-confirm button { width: 100%; min-height: 26px; }
-.dm-confirm-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.dm-confirm-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+/* The browser's default button — grey face, black text — was the one control
+   in this panel not wearing the panel's own palette. Danger is what signing
+   a device out actually is, so it takes the danger colour the rest of the UI
+   already uses; Cancel is the same outline every secondary action here uses. */
+.dm-confirm-danger {
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--danger), transparent 82%);
+  color: var(--danger);
+  font: 500 10.5px/1 var(--sans);
+  cursor: pointer;
+}
+.dm-confirm-danger:hover { background: color-mix(in oklab, var(--danger), transparent 72%); }
+.dm-confirm-cancel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink-dim);
+  font: 500 10.5px/1 var(--sans);
+  cursor: pointer;
+}
+.dm-confirm-cancel:hover { color: var(--ink); background: rgb(255 255 255 / .05); }
 .device-pick { flex: none; accent-color: var(--ember); margin: 0; }
 .device-row.picked { border-color: var(--ember); }
 .device-signout-one { white-space: nowrap; }
@@ -1042,8 +1306,43 @@ button:disabled { cursor: default; }
 #identity-status.err { color: var(--danger); }
 /* Busy is a state of the button, not a sentence under it. */
 #identity-google:disabled, #identity-restore:disabled { cursor: default; opacity: .55; }
-#identity-done { display: grid; gap: 6px; }
+#identity-done { display: grid; gap: 8px; }
 #identity-done[hidden] { display: none; }
+#identity-signout-confirm .pro-note { margin-top: 0; }
+#identity-signout-confirm .dm-confirm-row { margin-top: 6px; }
+/* Housekeeping, and it reads as housekeeping: one line, two links, not two
+   full-width rows competing with the action above them. */
+.identity-links { display: flex; flex-wrap: wrap; gap: 16px; }
+.identity-links .identity-link { text-align: left; }
+
+/* The offer is one decision. Whichever of the two is showing takes the room.
+   Geometry is stated once, here, for both — they are a matched pair and the
+   only thing allowed to differ between them is which one is louder. */
+.pro-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.pro-actions > button {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 28px;
+  margin: 0;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font: 500 10.5px/1 var(--sans);
+}
+.pro-actions > button[hidden] { display: none; }
+/* The secondary is a SURFACE, not an outline. Identical boxes do not read as
+   identical when one is a solid mass and the other is a hairline tracing the
+   same rectangle — the eye follows the mass, and the filled one looks rounder
+   and larger than the measurements say it is. Given a fill of its own, the
+   pair reads as the one size it has always been. */
+.pro-actions #buy-pro {
+  border-color: transparent;
+  background: rgb(255 177 133 / .13);
+  color: var(--ember);
+}
+.pro-actions #buy-pro:hover { background: rgb(255 177 133 / .2); }
+.pro-actions #buy-pro.primary { background: var(--ember); color: #16090d; }
+.pro-actions #buy-pro.primary:hover { opacity: .88; }
 
 /* The last card's "open one of these" row. Chips, not a paragraph of links:
    the reader is being asked to pick one, and picking is easier than reading. */

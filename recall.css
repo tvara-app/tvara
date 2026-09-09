@@ -242,6 +242,56 @@ h1 {
   to   { opacity: 1; transform: none; }
 }
 
+/* A query in flight. What is on screen is the previous answer, so it is held
+   back rather than thrown away — and it stops accepting clicks, because the
+   row under the cursor is about to be a different chat. */
+#results.searching { opacity: .5; pointer-events: none; transition: opacity .2s var(--ease); }
+#results.searching:empty { display: none; }
+
+.r-item-in {
+  animation: rise .38s var(--ease) both;
+  animation-delay: var(--stagger, 0ms);
+}
+/* The container's own entrance is for the first set only; after that each row
+   carries its own, or every repaint slides the whole block again. */
+#results:has(.r-item-in) { animation: none; }
+
+/* Its own class, never .r-item — see resultSkeleton. Same box, so the real
+   results land in room already made for them. */
+.r-skeleton { padding: 15px 14px; border-radius: 12px; pointer-events: none; }
+.r-skeleton span {
+  display: block;
+  height: 12px;
+  border-radius: 6px;
+  background: linear-gradient(90deg,
+    rgb(255 255 255 / .04) 0%, rgb(255 255 255 / .1) 42%, rgb(255 255 255 / .04) 82%);
+  background-size: 260% 100%;
+  animation: r-shimmer 1.5s linear infinite;
+  animation-delay: var(--stagger, 0ms);
+}
+.r-skeleton span:first-child { width: 42%; }
+.r-skeleton span + span { width: 76%; height: 9px; margin-top: 10px; }
+@keyframes r-shimmer { to { background-position: -160% 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .r-item-in, .r-skeleton span { animation: none; }
+}
+
+/* ---------- tactile ----------
+   The same rule as the popup: hover changes colour, a press moves. Transform
+   only, so nothing here can push a neighbour around. */
+button, .r-item, .pick-open, .s-row {
+  transition: transform .13s var(--ease), background .3s var(--ease),
+              border-color .3s var(--ease), color .3s var(--ease), opacity .2s var(--ease);
+}
+button:active:not(:disabled) { transform: scale(.97); }
+.r-item:active { transform: scale(.995); }
+.pick-open:active { transform: scale(.94); }
+@media (prefers-reduced-motion: reduce) {
+  button, .r-item, .pick-open, .s-row { transition: none; }
+  button:active, .r-item:active, .pick-open:active { transform: none; }
+}
+
 .core-empty { padding: 22px 2px; color: var(--ink-faint); font-size: 13px; }
 
 .core-locked { padding: 26px 2px 24px; border-bottom: 1px solid var(--line-soft); }
@@ -362,6 +412,9 @@ button:disabled { cursor: default; opacity: .4; }
 .status-copy { min-height: 1.3em; margin-top: 11px; color: var(--ink-faint); font-size: 11.5px; }
 .status-copy.ok { color: var(--signal-warm); }
 .status-copy.err { color: var(--danger); }
+/* Nothing went wrong and nothing finished — the reader has to wait and try
+   again. Neither the success colour nor the failure one would be true. */
+.status-copy.warn { color: var(--signal-warm); opacity: .82; }
 .status-copy.dim { color: var(--ink-faint); opacity: .85; }
 
 /* Sub-choices that only apply while their parent switch is on: indented and
@@ -481,12 +534,12 @@ button:disabled { cursor: default; opacity: .4; }
   height: 5px;
   flex: none;
   border-radius: 50%;
-  background: color-mix(in oklab, var(--accent), transparent 55%);
+  background: color-mix(in oklab, var(--signal), transparent 55%);
   transition: background .35s var(--ease), box-shadow .35s var(--ease);
 }
 .sync-row[data-phase="up-to-date"] b::before {
-  background: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent), transparent 84%);
+  background: var(--signal);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--signal), transparent 84%);
 }
 .sync-row[data-phase="up-to-date"]::after {
   content: "";
@@ -496,17 +549,17 @@ button:disabled { cursor: default; opacity: .4; }
   left: -8px;
   width: 2px;
   border-radius: 2px;
-  background: color-mix(in oklab, var(--accent), transparent 68%);
+  background: color-mix(in oklab, var(--signal), transparent 68%);
 }
 .sync-row[data-phase="error"] b::before { background: var(--danger); box-shadow: none; }
 .sync-row[data-phase="syncing"] b::before,
 .sync-row[data-phase="checking"] b::before {
-  background: var(--accent);
+  background: var(--signal);
   animation: sync-pulse 1.5s var(--ease) infinite;
 }
 @keyframes sync-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--accent), transparent 50%); }
-  50%      { box-shadow: 0 0 0 5px color-mix(in oklab, var(--accent), transparent 100%); }
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--signal), transparent 50%); }
+  50%      { box-shadow: 0 0 0 5px color-mix(in oklab, var(--signal), transparent 100%); }
 }
 @keyframes pulse {
   0%, 100% { box-shadow: 0 0 0 0 rgb(255 138 107 / .5); }
@@ -597,3 +650,189 @@ header, .masthead, .core { animation: rise .55s var(--ease) both; }
 }
 .auto-sync input { flex: none; margin-top: 2px; width: 15px; height: 15px; accent-color: var(--signal); }
 .auto-sync span { max-width: 64ch; }
+
+
+/* Arriving from the popup's backup row. A single quiet pulse on the panel that
+   was asked for — enough to say "this one", gone before it becomes decoration.
+   Colour is not the only signal: the scroll and the focused field carry it too,
+   which is what keeps this useful with motion turned off. */
+.panel-landed {
+  animation: panel-landed 1.6s cubic-bezier(.16, 1, .3, 1) both;
+}
+@keyframes panel-landed {
+  0%   { box-shadow: inset 0 0 0 1px rgb(224 128 92 / .55); }
+  100% { box-shadow: inset 0 0 0 1px rgb(224 128 92 / 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .panel-landed { animation: none; }
+}
+
+
+/* ---------- choosing what to fetch ----------
+   A list, not a grid of cards: the question is "which of these", and every
+   card border between the reader and that question is one more thing to look
+   past. Providers are the outer level because that is the choice most people
+   want; a provider opens into its own chats for the one who wants more. */
+.pick-list { display: grid; gap: 0; margin: 4px 0 12px; }
+/* The browser's default tick is a saturated blue, and it was the one thing on
+   this page not wearing the page's own colour. accent-color keeps the native
+   control — its focus ring, its keyboard behaviour, its high-contrast handling
+   — and only changes what it is painted with. */
+.pick-list input[type="checkbox"] { accent-color: var(--signal-warm); cursor: pointer; }
+.pick-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: center;
+  gap: 10px;
+  /* Stated, not inferred from the content: the placeholder row and the real
+     row are then the same height and the swap between them moves nothing. */
+  min-height: 38px;
+  padding: 9px 2px;
+  border-top: 1px solid var(--line, rgba(255,255,255,.08));
+}
+.pick-row:last-of-type { border-bottom: 1px solid var(--line, rgba(255,255,255,.08)); }
+.pick-name { font-weight: 600; letter-spacing: -.01em; }
+.pick-count { opacity: .62; font-size: .88em; font-variant-numeric: tabular-nums; }
+
+/* A provider with nothing waiting. Present, legible, and plainly not asking
+   for a decision — the alternative was leaving it off the list, which reads as
+   "this provider was never archived". */
+.pick-row.pick-done .pick-name { opacity: .72; font-weight: 500; }
+.pick-row.pick-done .pick-count { opacity: .55; }
+
+/* A chat whose text is already here. Ticking it fetches it again — a
+   conversation carried on since it was archived has messages this copy does
+   not — so it is marked, not withheld. */
+.pick-chat-mark {
+  padding-left: 12px;
+  font-size: .78em;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  opacity: .38;
+  white-space: nowrap;
+}
+.pick-chat.pick-chat-held > span:not(.pick-chat-mark) { opacity: .66; }
+.pick-open {
+  border: 0; background: none; color: inherit; font: inherit;
+  opacity: .7; cursor: pointer; padding: 2px 6px; border-radius: 6px;
+}
+.pick-open:hover { opacity: 1; }
+.pick-open:focus-visible { outline: 1px solid currentColor; outline-offset: 2px; }
+/* The chats under a provider. Indented, quieter, and scrollable rather than
+   endless: a queue of two thousand is a list nobody scrolls to the bottom of. */
+.pick-chats {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  margin: 2px 0 6px 26px;
+  padding-right: 4px;
+}
+/* Only when there is genuinely more below: the last row fades under the edge
+   rather than being sliced across the middle, which is the difference between
+   a list that continues and a list that looks broken. Set from the page after
+   the list is measured — a mask applied unconditionally would fade the final
+   row of a list that fits, for nothing. */
+.pick-chats.scrolls {
+  mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 26px), transparent 100%);
+}
+.pick-chat {
+  display: grid;
+  /* Third column for the "fetched" mark. Always present, so a list with some
+     marked and some not keeps one left edge for the titles. */
+  grid-template-columns: auto 1fr auto;
+  align-items: baseline;
+  gap: 9px;
+  padding: 5px 0;
+  font-size: .93em;
+}
+.pick-chat span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: .88; }
+.pick-chat .untitled { opacity: .5; font-style: italic; }
+.pick-more { padding: 6px 0 2px 26px; opacity: .6; font-size: .88em; }
+.pick-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+
+/* ---------- the picker in motion ----------
+   Every rule here is transform and opacity, every one of them is off under
+   reduced motion, and none of them changes the size of a box: a provider
+   opening is allowed to move the rows below it, and that movement is animated
+   from where they were, never played as a jump. */
+.pick-row-in, .pick-chat-in {
+  animation: pick-in .34s var(--ease) both;
+  animation-delay: var(--stagger, 0ms);
+}
+@keyframes pick-in { from { opacity: 0; transform: translateY(4px); } }
+
+.pick-count-swap { animation: pick-count-swap .28s var(--ease) both; }
+@keyframes pick-count-swap { from { opacity: .3; transform: translateY(-2px); } }
+.swap-line { animation: pick-in .26s var(--ease) both; }
+
+/* Waiting for the worker to count. Four rows at the height of a real one, so
+   the real list lands in room already made for it — a spinner that is replaced
+   by content of a different size moves the page at the exact moment the reader
+   starts reading it. */
+.pick-skeleton {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;              /* the same height as a real row */
+  padding: 9px 2px;
+  border-top: 1px solid var(--line, rgba(255,255,255,.08));
+  pointer-events: none;
+}
+.pick-skeleton span {
+  display: block;
+  width: 38%;
+  height: 11px;
+  border-radius: 5px;
+  background: linear-gradient(90deg,
+    rgb(255 255 255 / .05) 0%, rgb(255 255 255 / .12) 42%, rgb(255 255 255 / .05) 82%);
+  background-size: 260% 100%;
+  animation: pick-shimmer 1.5s linear infinite;
+  animation-delay: var(--stagger, 0ms);
+}
+.pick-skeleton span + span { width: 14%; margin-left: auto; }
+@keyframes pick-shimmer { to { background-position: -160% 0; } }
+
+/* A pressed button keeps its width. A label that grows here would move the two
+   buttons beside it while the reader is still looking at the one they hit. */
+button.busy { opacity: .72; cursor: progress; }
+
+@media (prefers-reduced-motion: reduce) {
+  .pick-row-in, .pick-chat-in, .pick-count-swap, .swap-line,
+  .pick-skeleton span { animation: none; }
+}
+
+/* ---------- crossing between the pages ----------
+   Total Recall is the SEARCH. The operations that build and carry the archive
+   are free, and burying a free control inside a paid page is how a thing that
+   works comes to look like a thing you have not bought — so they have their
+   own page and this is the door to it. */
+
+.page-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in oklab, var(--signal), transparent 62%);
+  background: color-mix(in oklab, var(--signal), transparent 88%);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+  text-decoration: none;
+  transition: background 160ms var(--ease), border-color 160ms var(--ease);
+}
+.page-link:hover { background: color-mix(in oklab, var(--signal), transparent 78%); }
+.page-link:active { transform: scale(.985); }        /* the press, answered in frame */
+.page-link.secondary {
+  border-color: var(--line);
+  background: transparent;
+  font-weight: 500;
+  color: var(--ink-dim);
+}
+.page-link.secondary:hover { color: var(--ink); border-color: var(--line-strong); }
+
+.ops-back { display: flex; gap: 10px; flex-wrap: wrap; margin: 0 0 18px; }
+.ops-link .actions { margin-top: 14px; }
