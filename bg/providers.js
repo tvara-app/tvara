@@ -98,6 +98,10 @@ const GEMINI_RPC_LIST = "MaZiqc";     // list conversations
    bucket is [remaining, usedRatio, type, [[seconds, nanos]]] and type 1 is the
    five-hour window, type 2 the weekly one. */
 const GEMINI_RPC_USAGE = "jSf9Qc";    // allowance buckets
+/* What gemini.google.com/usage sends alongside that rpc. batchexecute routes on
+   the page a call claims to come from, and this header is the other half of
+   that claim — without it the usage rpc is answered with nothing at all. */
+const GEMINI_EXT_USAGE = "[0]";
 const GEMINI_RPC_READ = "hNvQHb";     // read one conversation
 const GEMINI_LIST_MAX = 400;          // conversations asked for per shelf
 const GEMINI_TURN_MAX = 2000;         // turns asked for per conversation
@@ -572,11 +576,40 @@ const BG_ADAPTERS = [
     id: "claude", label: "Claude", base: "https://claude.ai",
     host: "claude.ai", prefix: "/chat/",
     async prepare() {
-      const r = await bgFetch(this.base + "/api/organizations");
-      const orgs = await bgJson(r);
-      const list = (Array.isArray(orgs) ? orgs : []).filter((o) => o && o.uuid);
+      /* Two sources, because ONE endpoint answering nothing is not the user
+         being signed out — and saying so sends somebody to sign in to an
+         account they are already signed into, which is the least actionable
+         thing this extension can tell anyone. /api/organizations is the direct
+         answer; /api/bootstrap is what claude.ai itself loads on every visit
+         and carries the same organisations under account.memberships. Only
+         when NEITHER names an organisation is this a signed-out session. */
+      let list = [];
+      /* A challenge is not a verdict about the session, so it must not be
+         reported as one — but if NOTHING answers, it is the truest thing we
+         know about why, and it is what the row should say. */
+      let blocked = null;
+      try {
+        const orgs = await bgJson(await bgFetch(this.base + "/api/organizations"));
+        list = (Array.isArray(orgs) ? orgs : []).filter((o) => o && o.uuid);
+      } catch (error) {
+        // A refusal that names the session is final; anything else is worth a
+        // second look at the endpoint the app itself uses.
+        if (error && error.kind === "auth") throw error;
+        if (error && error.kind === "challenge") blocked = error;
+      }
+      if (!list.length) {
+        try {
+          const boot = await bgJson(await bgFetch(this.base + "/api/bootstrap"));
+          const account = (boot && boot.account) || null;
+          const memberships = account && Array.isArray(account.memberships) ? account.memberships : [];
+          list = memberships.map((m) => m && m.organization).filter((o) => o && o.uuid);
+        } catch (error) {
+          /* neither answered — the throw below is then the truth */
+          if (error && error.kind === "challenge") blocked = blocked || error;
+        }
+      }
       const org = list[0];
-      if (!org) throw new BgError("auth", "not signed in");
+      if (!org) throw blocked || new BgError("auth", "not signed in");
       /* The org stays the first one — it is what every checkpoint and archived
          row is keyed to, and re-keying it would re-download the world. The PLAN
          does not: a login owns one subscription, and reading it off whichever
@@ -811,8 +844,20 @@ const BG_ADAPTERS = [
       // No token means the shell rendered signed-out. An auth failure, not a
       // shape change — the two want different remedies from the user.
       if (!at) throw new BgError("auth", "not signed in");
+      /* A browser signed into several Google accounts serves Gemini under an
+         account prefix — /u/1/app — and every RPC has to be asked for on the
+         same prefix, path AND source-path. The shell tells us which one we were
+         actually served, because bgFetch reports the URL it ended on. Without
+         it a second-account login asks /app for a page it is not on and the
+         answer is empty: archiving still worked, the allowance never did. */
+      let prefix = "";
+      try {
+        const seen = /^\/(u\/\d+)\//.exec(new URL(r.url || "").pathname);
+        if (seen) prefix = "/" + seen[1];
+      } catch { /* no URL on the response — the bare path is the right guess */ }
       return {
         at,
+        prefix,
         bl: (GEMINI_BL_RE.exec(html) || [])[1] || "",
         sid: (GEMINI_SID_RE.exec(html) || [])[1] || "",
         // Nothing in the shell names the account dependably, so accounts here
@@ -829,12 +874,18 @@ const BG_ADAPTERS = [
     async rpc(ctx, rpcid, payload, opts) {
       geminiReqid = (geminiReqid || Math.floor(Math.random() * 90000) + 10000) + 100000;
       const params = new URLSearchParams({
-        rpcids: rpcid, "source-path": (opts && opts.sourcePath) || "/app", hl: "en",
+        rpcids: rpcid,
+        // The page this call claims to come from, under the account prefix the
+        // shell was served on — both halves matter, see prepare().
+        "source-path": ((ctx && ctx.prefix) || "") + ((opts && opts.sourcePath) || "/app"),
+        hl: "en",
         _reqid: String(geminiReqid), rt: "c"
       });
       if (ctx.bl) params.set("bl", ctx.bl);
       if (ctx.sid) params.set("f.sid", ctx.sid);
-      const r = await bgFetch(this.base + GEMINI_BATCH_PATH + "?" + params.toString(), {
+      // NOT `at` — that name belongs to the token in the body below.
+      const prefix = (ctx && ctx.prefix) || "";
+      const r = await bgFetch(this.base + prefix + GEMINI_BATCH_PATH + "?" + params.toString(), {
         method: "POST",
         headers: {
           "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
@@ -863,12 +914,28 @@ const BG_ADAPTERS = [
      * must read as "no limit published", never as a limit of zero.
      */
     async quotaJson(ctx) {
-      let payloads;
-      try {
-        payloads = geminiPayloads(
-          await this.rpc(ctx, GEMINI_RPC_USAGE, [], { sourcePath: "/usage" }),
-          GEMINI_RPC_USAGE);
-      } catch { return null; }
+      /* Every failure below RAISES, and says which one it was.
+         Returning null for all of them made the panel say "none published" —
+         a statement about Gemini — when the truth might be that the call never
+         landed, or that the shape moved. The probe report is the only place a
+         user can see the difference, so it has to be told. */
+      /* BOTH halves of the routing, not one. `rpc` has carried `opts.ext` since
+         it was written and its own comment says the usage RPC is served to
+         /usage WITH the extension header its own page sends — and then no
+         caller ever passed one. So this asked the right path with the wrong
+         headers, Google answered a frame with no envelope for jSf9Qc, and the
+         panel reported "none published" about an account whose usage page was
+         showing the numbers at that moment. */
+      const payloads = geminiPayloads(
+        await this.rpc(ctx, GEMINI_RPC_USAGE, [], { sourcePath: "/usage", ext: GEMINI_EXT_USAGE }),
+        GEMINI_RPC_USAGE);
+      if (!payloads.length) {
+        /* No envelope for the rpc we asked for. Either the id rotated, or the
+           request was not accepted — a signed-out shell answers this way too,
+           and so does a login whose usage lives behind an account prefix
+           (/u/1/…), which this adapter does not carry. */
+        throw new BgError("shape", "usage rpc returned no payload");
+      }
       /* A metric is [something, fractionSpent, period, [[epochSeconds, nanos]]].
          Found STRUCTURALLY rather than at a fixed index: Google appends new
          buckets with layouts of their own, and rejecting the whole array
@@ -880,7 +947,9 @@ const BG_ADAPTERS = [
       const buckets = payloads
         .map((p) => (Array.isArray(p) ? p.find((x) => Array.isArray(x) && x.some(isMetric)) : null))
         .find(Array.isArray);
-      if (!Array.isArray(buckets) || !buckets.length) return null;
+      if (!Array.isArray(buckets) || !buckets.length) {
+        throw new BgError("shape", "usage payload carried no windows");
+      }
       /* payload[0] is the account's tier code, and it is the ONLY place Gemini
          states a plan at all — there is no REST endpoint to read one from. */
       const tier = payloads.map((p) => (Array.isArray(p) ? p[0] : null))
@@ -912,7 +981,8 @@ const BG_ADAPTERS = [
         const type = Number(bucket[2]);
         out[type === 1 ? "five_hour" : type === 2 ? "seven_day" : "bucket_" + type] = window;
       }
-      return Object.keys(out).length ? out : null;
+      if (!Object.keys(out).length) throw new BgError("shape", "usage windows were all unfamiliar");
+      return out;
     },
     async list(ctx, sinceMs, progress) {
       const metas = [];

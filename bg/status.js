@@ -76,6 +76,11 @@ async function bgSyncStatus() {
  * of the four; requiring all four to report "up to date" meant the reassuring
  * message a fully-synced archive has earned could never appear.
  */
+/** A provider this browser could not ask: signed out, or refused at the edge. */
+function unreachable(p) {
+  return !!(p.progress && (p.progress.signedOut || p.progress.blocked));
+}
+
 function summarize(platforms, running, recovery, runId) {
   const entries = Object.values(platforms);
   if (running || entries.some((p) => p.progress && p.progress.state === "syncing")) {
@@ -108,7 +113,7 @@ function summarize(platforms, running, recovery, runId) {
   const cooling = entries.filter((p) => p.progress && p.progress.state === "paused");
   if (cooling.length) {
     return { state: "paused", message: cooling[0].progress.msg || "Paused. Resumes automatically.",
-      checkedAt: 0, connected: entries.filter((p) => !(p.progress && p.progress.signedOut)).length };
+      checkedAt: 0, connected: entries.filter((p) => !unreachable(p)).length };
   }
 
   /* A platform this browser has never checked is UNKNOWN, not connected —
@@ -120,7 +125,12 @@ function summarize(platforms, running, recovery, runId) {
      way — archived, or signed out — and it rejoins the count on its own
      evidence rather than on our having shipped it. */
   const known = entries.filter((p) => p.progress || p.checkpoint);
-  const connected = known.filter((p) => !(p.progress && p.progress.signedOut));
+  /* Signed out and blocked-at-the-edge are the same shape of fact: a provider
+     this browser could not ASK. Neither is a failure of the archive, and
+     leading the headline with one meant the reassuring line a fully-synced
+     archive has earned could never appear. The provider's own row still says
+     exactly what happened — that is where it is actionable. */
+  const connected = known.filter((p) => !unreachable(p));
   const failing = connected.filter((p) => p.progress && p.progress.state === "error");
   if (failing.length) {
     return {
@@ -130,7 +140,23 @@ function summarize(platforms, running, recovery, runId) {
       connected: connected.length
     };
   }
-  const paused = connected.filter((p) => p.progress && p.progress.state === "interrupted");
+  /* An "interrupted" record from a pass that has SINCE been superseded is a
+     leftover, not a pass waiting to be picked up. `claude-code` is dormant by
+     design — it has no documented endpoint, so it never runs — and the install
+     sweep marked it interrupted once. Nothing could ever clear that, so this
+     line read "Paused · pick up where it stopped" permanently while every real
+     platform was up to date, and the button offering to pick it up could not:
+     the adapter it was waiting on does not run. A record speaks for the pass
+     that is on record only if it carries that pass's id; one from an older
+     pass, or from before ids were written at all, does not. The syncing branch
+     above already discounts other runs the same way. */
+  const paused = connected.filter((p) => {
+    const pr = p.progress;
+    if (!pr || pr.state !== "interrupted") return false;
+    // No pass on record to compare against: keep the old behaviour.
+    if (!runId) return true;
+    return String(pr.runId || "") === String(runId);
+  });
   if (paused.length) {
     return { state: "pending", message: "Paused · pick up where it stopped", checkedAt: 0, connected: connected.length };
   }

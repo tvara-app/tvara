@@ -650,7 +650,7 @@ async function bgSyncAccount(adapter, run, opts, ctx, tabs, seat = { seat: 0, se
         } catch (error) {
           const kind = error && error.kind;
           const reason = String((error && error.message) || error);
-          if (kind === "auth" || reason.includes("unauthorized")) { fatal = error; return; }
+          if (kind === "auth" || kind === "challenge" || reason.includes("unauthorized")) { fatal = error; return; }
           // Deleted upstream: it leaves the journal either way (there is nothing
           // left to fetch), but whether the ARCHIVED copy goes is the user's
           // call, not the provider's.
@@ -730,14 +730,21 @@ async function bgSyncAccount(adapter, run, opts, ctx, tabs, seat = { seat: 0, se
 async function reportPlatformError(adapter, run, error, fields) {
   const { attempted = 0, total = 0, succeeded = 0, failed = 0 } = fields || {};
   const reason = String((error && error.message) || error);
-  const signedOut = reason.includes("unauthorized") || reason.includes("not signed in") ||
-    /unexpected provider response|invalid provider response/i.test(reason);
+  const signedOut = (error && error.kind) !== "challenge" &&
+    (reason.includes("unauthorized") || reason.includes("not signed in") ||
+     /unexpected provider response|invalid provider response/i.test(reason));
   const rateLimited = (error && error.kind) === "rate";
+  /* The provider's edge refused the request shape (Cloudflare's managed
+     challenge). Not a session verdict: the cookies are fine, and loading the
+     site in a tab is what clears it. */
+  const challenged = (error && error.kind) === "challenge";
   // A reachable provider that answered in a shape we no longer parse. Saying
   // "couldn't reach" there sends the user to check their connection about
   // something only a new build can fix.
   const shapeChanged = (error && error.kind) === "shape";
-  const message = reason.includes("unauthorized") || reason.includes("not signed in")
+  const message = challenged
+    ? `${adapter.label} blocked the background check. Open ${adapter.host} in a tab, then check again`
+    : reason.includes("unauthorized") || reason.includes("not signed in")
     ? `Not signed in`
     : /unexpected token\s*['"]?<?|valid json|json\.parse|unexpected provider response|invalid provider response/i.test(reason)
       ? `Needs an active session`
@@ -751,7 +758,8 @@ async function reportPlatformError(adapter, run, error, fields) {
     [BG_SYNC_PROG(adapter.id)]: {
       state: rateLimited ? "paused" : "error", phase: rateLimited ? "paused" : "error",
       runId: run.id, platform: adapter.id,
-      done: attempted, attempted, total, succeeded, failed, msg: message, signedOut, at: Date.now()
+      done: attempted, attempted, total, succeeded, failed, msg: message,
+      signedOut, blocked: challenged, at: Date.now()
     }
   });
   return { ok: false, error: reason, signedOut };

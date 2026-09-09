@@ -188,7 +188,13 @@ const QUOTA_ENDPOINTS = {
        is not worth asking FIRST. */
     { path: "/api/organizations/{org}/usage", needsOrg: true },
     { path: "/api/organizations/{org}/rate_limits", needsOrg: true },
-    { path: "/api/organizations/{org}/usage_limits", needsOrg: true },
+    /* This is the Anthropic CONSOLE's monthly API spend cap — a billing
+       control for organisations that use the API with a key, unrelated to the
+       five-hour/weekly chat limit claude.ai itself enforces. Read generically
+       it produced a real-looking "N% left · month" row for a limit Claude does
+       not publish to chat users at all. planOnly: its plan field (when it has
+       one) is still worth reading; its numbers are not a chat allowance. */
+    { path: "/api/organizations/{org}/usage_limits", needsOrg: true, planOnly: true },
     { path: "/api/organizations/{org}", needsOrg: true, planOnly: true },
     { path: "/api/bootstrap", planOnly: true },
     { path: "/api/account", planOnly: true }
@@ -257,9 +263,18 @@ async function quotaTry(adapter, ctx, endpoint) {
     try {
       const json = await adapter.quotaJson(ctx);
       if (!json) return { path: endpoint.path, ok: false, status: 0 };
+      /* The PLAN too. The REST branch below has always read it off the body it
+         already has, and this one did not — so Gemini's tier code, which is
+         the only statement of a plan that host makes anywhere, was decoded
+         into `plan_name` by the adapter and then thrown away here. */
+      let plan = "";
+      try { plan = (typeof adapter.planFrom === "function" && adapter.planFrom(endpoint.path, json)) || ""; }
+      catch { plan = ""; }
+      if (!plan) { try { plan = planFromAny(json, 0); } catch { plan = ""; } }
       return {
         path: endpoint.path, status: 200, ok: true, native: true,
         method: "RPC", body: null, needsOrg: false, auth: "cookie",
+        plan,
         windows: self.LCTQuota.fromJson(json, {}),
         sample: self.LCTQuota.redact(json, 0)
       };
@@ -364,18 +379,35 @@ async function quotaProbe(platformId, opts = {}) {
   const at = Date.now();
   // What this report is an answer ABOUT — see quotaLearned().
   const sig = quotaSig(candidates);
+  /* EVERY report is stored, including the ones that found nothing.
+     These two returns used to hand a report back without writing it, so a
+     platform whose handshake fails was never marked as checked at all — the row
+     said "checking…" for the life of the install, and the diagnostics panel,
+     which exists to explain exactly this, had nothing to show. A probe that
+     failed is a finding; it is the finding a user most needs. */
+  const keep = async (report) => {
+    if (opts.dryRun) return report;
+    try {
+      const { [QUOTA_PROBE_KEY]: held } = await chrome.storage.local.get(QUOTA_PROBE_KEY);
+      const all = held && typeof held === "object" ? held : {};
+      all[platformId] = report;
+      await chrome.storage.local.set({ [QUOTA_PROBE_KEY]: all });
+    } catch { /* the reading still returns, it just is not remembered */ }
+    return report;
+  };
+
   if (!adapter || !candidates.length) {
-    return { id: platformId, at, sig, endpoints: [], working: [],
-      note: adapter ? "no candidate endpoints, observation only" : "unknown platform" };
+    return keep({ id: platformId, at, sig, endpoints: [], working: [],
+      note: adapter ? "no candidate endpoints, observation only" : "unknown platform" });
   }
 
   let ctx;
   try {
     ctx = await quotaPrepare(adapter);
   } catch (error) {
-    return { id: platformId, at, sig, endpoints: [], working: [],
+    return keep({ id: platformId, at, sig, endpoints: [], working: [],
       note: "not signed in or provider unreachable",
-      error: String((error && error.message) || error) };
+      error: String((error && error.message) || error) });
   }
 
   const endpoints = [];
@@ -402,15 +434,7 @@ async function quotaProbe(platformId, opts = {}) {
     note: working.length ? "" : "provider published no allowance for this account"
   };
 
-  if (!opts.dryRun) {
-    try {
-      const { [QUOTA_PROBE_KEY]: held } = await chrome.storage.local.get(QUOTA_PROBE_KEY);
-      const all = held && typeof held === "object" ? held : {};
-      all[platformId] = report;
-      await chrome.storage.local.set({ [QUOTA_PROBE_KEY]: all });
-    } catch { /* the reading still returns, it just is not remembered */ }
-  }
-  return report;
+  return keep(report);
 }
 
 /** The endpoints we know work here, discovering them first if we never have. */
@@ -432,12 +456,12 @@ async function quotaLearned(platformId) {
   // The plan travels with the list: the endpoint that states it is often not
   // one that also states a NUMBER, so it is not in `working` and a poll would
   // never see it again. Learned once a day, carried until the next probe.
-  if (fresh) return { working: report.working || [], plan: report.plan || "" };
+  if (fresh) return { working: report.working || [], plan: report.plan || "", note: report.note || "" };
 
   // Either we have never looked, or what we learned is a day old and these
   // endpoints move. Re-discover — it is a handful of calls, once.
   const next = await quotaProbe(platformId);
-  return { working: next.working || [], plan: next.plan || "" };
+  return { working: next.working || [], plan: next.plan || "", note: next.note || "" };
 }
 
 /**
@@ -464,7 +488,18 @@ async function quotaPoll(platformId, reason = "manual") {
 
   const last = await quotaLastPoll(platformId);
   if (reason !== "manual" && Date.now() - last < QUOTA_POLL_MIN_MS) {
-    return { id: platformId, skipped: "polled recently" };
+    /* …unless nothing has ever been LEARNED about this platform.
+       The floor exists to stop re-asking a provider we already know how to
+       read. A platform with no probe report has never been read at all, and
+       one poll that set the clock without leaving a report then blocked every
+       later attempt — the row sat on "checking…" for the life of the install,
+       which is exactly the state a floor should never be able to create. */
+    let probed = false;
+    try {
+      const { [QUOTA_PROBE_KEY]: held } = await chrome.storage.local.get(QUOTA_PROBE_KEY);
+      probed = !!(held && held[platformId]);
+    } catch { /* unreadable: treat as never probed and go and look */ }
+    if (probed) return { id: platformId, skipped: "polled recently" };
   }
 
   const run = (async () => {
@@ -481,11 +516,17 @@ async function quotaPoll(platformId, reason = "manual") {
        every floor there is — the cached handshake included — because the point
        of it is a figure that keeps up, not a provider that gets polled. */
 
-    const { working, plan: learnedPlan } = await quotaLearned(platformId);
+    const { working, plan: learnedPlan, note: learnedNote } = await quotaLearned(platformId);
     if (!working.length) {
-      await noteQuotaTry(platformId, { skipped: "no working endpoint" });
-      trace("quota", `${platformId} no working endpoint`);
-      return { id: platformId, skipped: "no working endpoint" };
+      /* WHICH silence this is. "No working endpoint" is a statement about the
+         provider; a handshake that never landed is a statement about the
+         session, and telling somebody their provider publishes no allowance
+         when they are simply signed out is the wrong answer twice over. */
+      const skipped = /not signed in|unreachable/.test(String(learnedNote || ""))
+        ? "not signed in" : "no working endpoint";
+      await noteQuotaTry(platformId, { skipped });
+      trace("quota", `${platformId} ${skipped}`);
+      return { id: platformId, skipped };
     }
 
     let ctx;
@@ -499,9 +540,13 @@ async function quotaPoll(platformId, reason = "manual") {
          adapters raise when the session is gone — a timeout raises something
          else and the rows stay put until they go stale on their own. */
       if (error && error.kind === "auth") await forgetQuotaFor(platformId);
-      await noteQuotaTry(platformId, { skipped: "not signed in" });
-      trace("quota", `${platformId} not signed in`);
-      return { id: platformId, skipped: "not signed in" };
+      /* A bot-protection challenge is the edge refusing the request shape. The
+         session is intact and the stored rows are still about the right person,
+         so they stay — and the reason says what would actually clear it. */
+      const why = (error && error.kind) === "challenge" ? "blocked by the provider" : "not signed in";
+      await noteQuotaTry(platformId, { skipped: why });
+      trace("quota", `${platformId} ${why}`);
+      return { id: platformId, skipped: why };
     }
 
     /* EVERY account this login owns, not just the first: `prepare()` builds one
@@ -857,22 +902,29 @@ async function quotaState() {
     probes = all[QUOTA_PROBE_KEY] || {};
     for (const [key, record] of Object.entries(all)) {
       if (!key.startsWith(QUOTA_PREFIX) || !record || typeof record !== "object") continue;
-      const win = self.LCTQuota.primary(record, {});
+      const all = self.LCTQuota.ranked(record, {});
+      const win = all[0] || null;
+      const shape = (w) => ({
+        key: w.key, label: w.label, pctLeft: w.pctLeft, resetAt: w.resetAt,
+        span: w.span || "", spanSec: w.spanSec || 0,
+        basis: w.basis, unit: w.unit, remaining: w.remaining, limit: w.limit,
+        observedAt: w.observedAt || 0, source: w.source || ""
+      });
       out.push({
         id: record.id || key.slice(QUOTA_PREFIX.length).split("|")[0],
         acct: record.acct || "",
         plan: record.plan || "",
         observedAt: record.observedAt || 0,
         source: record.source || "",
-        window: win
-          ? { key: win.key, label: win.label, pctLeft: win.pctLeft, resetAt: win.resetAt,
-              // Which window this is — "5h", "week". Claude publishes both and
-              // the panel has to say which one the number belongs to.
-              span: win.span || "", spanSec: win.spanSec || 0,
-              basis: win.basis, unit: win.unit, remaining: win.remaining, limit: win.limit,
-              observedAt: win.observedAt || 0, source: win.source || "" }
-          : null,
-        windows: (record.windows || []).length
+        // Which window this is — "5h", "week". Claude publishes both and the
+        // panel has to say which one the number belongs to.
+        window: win ? shape(win) : null,
+        /* …and ALL of them, best first, so the row can be stepped through.
+           A provider that publishes a session limit AND a weekly one is
+           answering two different questions; the row leads with the one that
+           stops you soonest and the reader can ask for the other. Capped: past
+           a few this stops being a switch and becomes a list. */
+        windows: all.slice(0, 4).map(shape)
       });
     }
   } catch { /* an empty state renders as "not reported", which is true */ }

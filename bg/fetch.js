@@ -108,6 +108,26 @@ function hostBudgetUntil(host) {
   return s.used >= BG_HOURLY_CAP ? s.windowAt + BG_HOUR_MS : 0;
 }
 
+/* The reader opened a conversation.
+ *
+ * The yield in hostSlot() already stands the backfill down for BG_YIELD_MS —
+ * but only from the moment WE make a foreground request, which is after the
+ * page has asked for its own transcript. By then the crawl has already spent
+ * the burst the host allows, and what the reader gets for opening a chat is
+ * "Too many requests" from the site itself. The page says it is here BEFORE
+ * anything else on a new route, so the stand-down starts with the click.
+ */
+function readerHere(host) {
+  if (!host) return;
+  hostEntry(String(host)).activeAt = Date.now();
+}
+
+/** Is somebody on this host right now? The backfill asks before each chat. */
+function readerActive(host) {
+  if (!host) return false;
+  return Date.now() - hostEntry(String(host)).activeAt < BG_YIELD_MS;
+}
+
 function hostSlot(host, opts) {
   const s = hostEntry(host);
   // The pacing figure is intervalFor(host) now — what this host has earned —
@@ -362,7 +382,20 @@ async function bgFetch(url, opts = {}) {
       if (circuitOpen) throw lastRate;
       continue;   // retry in place so the caller's slot isn't burned
     }
-    if (r.status === 401 || r.status === 403) throw new BgError("auth", "unauthorized", { status: r.status });
+    if (r.status === 401) throw new BgError("auth", "unauthorized", { status: 401 });
+    if (r.status === 403) {
+      /* A 403 is two different facts wearing one number. Cloudflare's managed
+         challenge is served as 403 with `cf-mitigated: challenge` and an HTML
+         interstitial ("Just a moment…"); that is the EDGE refusing a request
+         shape, not the session being signed out — and claude.ai serves it to
+         this worker's fetches. Called auth, it reached the panel as "Not signed
+         in", which sends somebody to sign in to an account they are already
+         signed into. Opening the site in a tab is what actually clears it. */
+      const mitigated = (r.headers.get("cf-mitigated") || "").toLowerCase();
+      const html = (r.headers.get("content-type") || "").includes("text/html");
+      if (mitigated || html) throw new BgError("challenge", "blocked by bot protection", { status: 403 });
+      throw new BgError("auth", "unauthorized", { status: 403 });
+    }
     if (r.status === 404 || r.status === 410) throw new BgError("gone", "http " + r.status, { status: r.status });
     if (!r.ok) {
       if (r.status >= 500 && attempt < attempts - 1) { await sleep(backoffDelay(attempt, 0)); continue; }
@@ -417,7 +450,7 @@ async function walkScheme(adapter, opts, scheme) {
     let items;
     try { items = await fetchPage(scheme.param(page, pageSize), pageSize); }
     catch (error) {
-      if (error && (error.kind === "auth" || error.kind === "rate")) throw error;
+      if (error && (error.kind === "auth" || error.kind === "rate" || error.kind === "challenge")) throw error;
       break;   // this scheme's params upset the endpoint — try another
     }
     if (!items.length) { complete = true; break; }
