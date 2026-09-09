@@ -47,9 +47,26 @@
         figure: true, pending: false, why: "" };
     }
     const why = tried && tried.skipped ? String(tried.skipped) : "";
+    /* A SETTING, true the moment it is read. Everything below this line is a
+       verdict about a provider, and those have to be earned. */
     if (why === "tracking off") {
       return { text: "Tracking is off", figure: false, pending: false,
         why: "Turn Allowance tracking on in the Tvara popup to read this." };
+    }
+    /* NOTHING FINAL BEFORE THE FIRST COMPLETE CHECK.
+
+       This is the page somebody sees in the first minute of owning the thing,
+       and it was answering before it had asked: "No limit to read" and
+       "nothing published" appeared on providers that a moment later showed a
+       real percentage. A reader cannot tell a settled answer from a half-built
+       one, so the first thing this panel ever said about their account was
+       wrong — and the whole promise here is that it does not do that.
+
+       `checked` is a stored probe report, and a probe that FAILED writes one
+       too, so a row cannot be stranded on "Checking…" by a provider that
+       refuses: it says so as soon as there is something to say. */
+    if (!wasChecked) {
+      return { text: "Checking…", figure: false, pending: true, why: "" };
     }
     if (why === "not signed in") {
       return { text: `Not signed in to ${label}`, figure: false, pending: false,
@@ -63,11 +80,10 @@
       return { text: "Signed in · nothing published", figure: false, pending: false,
         why: `${label} answered, but told us nothing about your remaining allowance.` };
     }
-    if (wasChecked) {
-      return { text: "Nothing published yet", figure: false, pending: false,
-        why: `${label} has been asked and has not published a figure yet.` };
-    }
-    return { text: "Checking…", figure: false, pending: true, why: "" };
+    // Asked, answered, and the answer carried no figure. Reaching here at all
+    // means wasChecked, so there is no unchecked case left to fall through to.
+    return { text: "Nothing published yet", figure: false, pending: false,
+      why: `${label} has been asked and has not published a figure yet.` };
   }
 
   function paintQuota(state) {
@@ -109,9 +125,12 @@
        still went into "4 providers reporting" — and the four rows underneath
        plainly reported nothing. */
     setCount("provider-count", figures);
+    /* Plain words for a plain fact. "Live · 4 of 6 reporting" reads like a
+       server status page; what the reader wants to know is whether the thing
+       has finished looking yet. */
     $("updated").textContent = figures
-      ? `Live · ${figures} of ${ids.length} reporting`
-      : "Checking your signed-in accounts…";
+      ? `${figures} of ${ids.length} sites answered`
+      : "Checking the sites you're signed in to…";
   }
 
   async function refreshStats() {

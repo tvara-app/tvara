@@ -39,13 +39,18 @@ body::before { content: ""; position: fixed; inset: 0; pointer-events: none; opa
    Sections land in sequence, once, on load. Transform and opacity only, and
    nothing here changes a box's size, so the arrival cannot move anything that
    has already arrived. */
+/* Halved. This is a welcome page rather than a control panel, so a considered
+   arrival earns its place here in a way it does not in the popup — but the
+   last section used to finish .81s after load (.19s of delay on top of .62s),
+   and the allowance rows people came to read are in it. Everything is legible
+   inside .4s now, and the sequence still reads as a sequence. */
 .welcome, .pin-panel, .stats, footer {
-  animation: onb-rise .62s cubic-bezier(.22, 1, .36, 1) both;
+  animation: onb-rise .28s cubic-bezier(.22, 1, .36, 1) both;
 }
-.pin-panel { animation-delay: .07s; }
-.stats { animation-delay: .13s; }
-footer { animation-delay: .19s; }
-@keyframes onb-rise { from { opacity: 0; transform: translateY(10px); } }
+.pin-panel { animation-delay: .04s; }
+.stats { animation-delay: .07s; }
+footer { animation-delay: .1s; }
+@keyframes onb-rise { from { opacity: 0; transform: translateY(6px); } }
 
 /* The two callouts pulse gently, in turn: they are pointing at something the
    reader has to go and do in a different part of the browser. */
