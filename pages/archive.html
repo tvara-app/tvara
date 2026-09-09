@@ -144,9 +144,11 @@
           </div>
           <p id="backup-status" class="status-copy" role="status"></p>
           <div class="actions">
-            <button id="export-archive" class="secondary" type="button">Export archive (JSON)</button>
+            <button id="export-readable" class="secondary" type="button">Export as a page (HTML)</button>
+            <button id="export-index" class="secondary" type="button">Export the list (CSV)</button>
+            <button id="export-archive" class="secondary" type="button">Export everything (JSON)</button>
           </div>
-          <p class="status-copy dim">Your conversations, as a plain file, whenever you want them &mdash; this one never needs a licence. It is <strong>not encrypted</strong>, so keep it somewhere you would keep the chats themselves. For an unattended, reinstall-proof copy, use the encrypted backup above.</p>
+          <p class="status-copy dim">Your conversations, as a plain file, whenever you want them &mdash; these never need a licence. All three are sorted by provider, then by the conversation&rsquo;s title. The <strong>page</strong> is one file you open in any browser: every chat in full, searchable with Ctrl/Cmd&#8209;F, and Ctrl/Cmd&#8209;P saves it as a PDF with a page per conversation. The <strong>list</strong> is one row per chat, for a spreadsheet. The <strong>JSON</strong> is every field spelled out, for another program. None is encrypted, so keep them where you would keep the chats themselves. For an unattended, reinstall-proof copy, use the encrypted backup above.</p>
           <p id="export-status" class="status-copy" role="status"></p>
           <p id="autobackup-status" class="status-copy dim" role="status"></p>
           <div class="actions" id="autobackup-actions" hidden>

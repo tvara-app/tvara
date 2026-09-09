@@ -156,18 +156,15 @@ async function autoBackupDisable() {
 
 /** Every archived chat, straight out of IndexedDB. */
 async function archiveSnapshot() {
-  const d = await db();
-  return new Promise((resolve, reject) => {
-    const out = [];
-    const req = tx(d, "readonly").openCursor();
-    req.onerror = () => reject(req.error);
-    req.onsuccess = () => {
-      const cursor = req.result;
-      if (!cursor) return resolve(out);
-      out.push(cursor.value);
-      cursor.continue();
-    };
-  });
+  /* openCursor is one request per record — the whole archive, one round trip at
+     a time, for the two operations that read all of it (the export and the
+     encrypted backup). scanChats() reads a PAGE of whole records per request on
+     the same single transaction, so this is still a snapshot: the next getAll
+     is issued from inside the previous one's onsuccess, before control returns
+     to the event loop. Same rule as the search walk. */
+  const out = [];
+  await scanChats((chat) => { out.push(chat); });
+  return out;
 }
 
 let autoBackupRunning = false;

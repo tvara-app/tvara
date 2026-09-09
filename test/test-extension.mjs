@@ -3528,6 +3528,120 @@ try {
   t("B11 reinstall backup is encrypted and downloaded",
     /encrypted/.test(await recall.textContent("#backup-status")) && /\.lctbackup/.test(backupDownload.suggestedFilename()));
 
+  /* ---- B11x. the export is a document, not a memory dump ----
+     The archive's stored record is a storage shape — `r`, `t`, `ts`, `i`, `c`,
+     `m`, `n`, `mv`, epoch milliseconds — and it used to be written to the file
+     byte for byte, so somebody opening their own history found one-letter keys
+     and no readable dates. Nothing on the machine imports this file; its whole
+     job is to be readable. */
+  const exportEvent = recall.waitForEvent("download");
+  await recall.click("#export-archive");
+  const exportDownload = await exportEvent.catch(async (err) => {
+    const why = await recall.textContent("#export-status").catch(() => "(no status)");
+    throw new Error(`no download from #export-archive — #export-status: ${why} :: ${err.message}`);
+  });
+  const exportPath = join(SCRATCH, "archive-export.json");
+  await exportDownload.saveAs(exportPath);
+  const exported = JSON.parse(readFileSync(exportPath, "utf8"));
+  const exportedChats = Object.values(exported.archive || {}).flat();
+  const exportedMsgs = exportedChats.flatMap((c) => c.messages || []);
+  t("B11x the export names itself and its version",
+    exported.format === "tvara-archive-export" && exported.version === 3,
+    JSON.stringify({ format: exported.format, version: exported.version }));
+  t("B11x …and explains its own fields inside the file",
+    !!exported.fields && Object.keys(exported.fields).length >= 8 && !!exported.fields["message.role"],
+    JSON.stringify(Object.keys(exported.fields || {})));
+  t("B11x every conversation is grouped under a provider and carries its own totals",
+    exportedChats.length > 0 && exportedChats.every((c) =>
+      typeof c.provider === "string" && c.provider &&
+      typeof c.messageCount === "number" && typeof c.textFetched === "boolean" &&
+      "title" in c && "url" in c),
+    JSON.stringify(exportedChats[0] && Object.keys(exportedChats[0])));
+  t("B11x times are ISO 8601, never epoch milliseconds",
+    exportedChats.every((c) => c.updatedAt === null || /^\d{4}-\d{2}-\d{2}T/.test(String(c.updatedAt))) &&
+    exportedMsgs.every((m) => m.at === null || /^\d{4}-\d{2}-\d{2}T/.test(String(m.at))),
+    JSON.stringify(exportedChats.map((c) => c.updatedAt).slice(0, 3)));
+  t("B11x a message says who wrote it and what it says, in words",
+    exportedMsgs.length > 0 && exportedMsgs.every((m) =>
+      (m.role === "user" || m.role === "assistant") && typeof m.text === "string" &&
+      typeof m.index === "number"),
+    JSON.stringify(exportedMsgs[0] || null));
+  /* Provider, then title, then the whole conversation — the order somebody can
+     scan. Newest-first was the write order dressed up. */
+  t("B11x conversations are sorted by title within each provider",
+    Object.values(exported.archive || {}).every((list) => {
+      const named = list.filter((c) => String(c.title || "").trim());
+      const sorted = [...named].sort((a, b) =>
+        new Intl.Collator(undefined, { sensitivity: "base", numeric: true })
+          .compare(String(a.title).trim(), String(b.title).trim()));
+      return named.every((c, i) => c.id === sorted[i].id);
+    }),
+    JSON.stringify(Object.values(exported.archive || {})[0]?.map((c) => c.title).slice(0, 6)));
+  /* The readable file. Deliberately HTML rather than a generated PDF: a PDF
+     writer here means vendoring a library plus a Unicode font, the better part
+     of a megabyte, to reproduce badly what the browser's own print engine does
+     from this file. */
+  const readableEvent = recall.waitForEvent("download");
+  await recall.click("#export-readable");
+  const readableDownload = await readableEvent.catch(async (err) => {
+    const why = await recall.textContent("#export-status").catch(() => "(no status)");
+    throw new Error(`no download from #export-readable — #export-status: ${why} :: ${err.message}`);
+  });
+  const readablePath = join(SCRATCH, "archive-export.html");
+  await readableDownload.saveAs(readablePath);
+  const html = readFileSync(readablePath, "utf8");
+  const tocTitles = [...html.matchAll(/<li><a href="#c\d+">([^<]*)<\/a>/g)].map((m) => m[1]);
+  const articleTitles = [...html.matchAll(/<article id="c\d+"><h3>([^<]*)<\/h3>/g)].map((m) => m[1]);
+  t("B11y the readable export is one self-contained page",
+    /^<!doctype html>/i.test(html) && /<nav class="toc"/.test(html) && !/<script/i.test(html),
+    html.slice(0, 60));
+  t("B11y …with a contents list and an entry per conversation",
+    tocTitles.length === exportedChats.length && articleTitles.length === exportedChats.length,
+    JSON.stringify({ toc: tocTitles.length, articles: articleTitles.length, chats: exportedChats.length }));
+  t("B11y …in the same provider-then-title order as the data file",
+    JSON.stringify(articleTitles) ===
+      JSON.stringify(exportedChats.map((c) => c.title || "(untitled)")),
+    JSON.stringify({ html: articleTitles.slice(0, 4), json: exportedChats.map((c) => c.title).slice(0, 4) }));
+  t("B11y …and it prints to a PDF with a page per conversation",
+    /@media print/.test(html) && /article \{ break-before: page/.test(html));
+  /* Built from the user's own conversations and then opened in a browser, so
+     nothing in a message may become markup. Every interpolation goes through
+     esc(); this is the check that no path skipped it. */
+  t("B11y nothing in a conversation can become markup or run",
+    !/ on[a-z]+\s*=/i.test(html) && !/javascript:/i.test(html) &&
+    [...html.matchAll(/<img src="([^"]*)"/g)].every((m) => /^(https?:\/\/|data:image\/)/i.test(m[1])),
+    JSON.stringify([...html.matchAll(/<img src="([^"]*)"/g)].map((m) => m[1]).slice(0, 3)));
+
+  /* The tabular half. One row per CONVERSATION — a four-thousand-character
+     answer in a spreadsheet cell is a cell nobody can read. */
+  const csvEvent = recall.waitForEvent("download");
+  await recall.click("#export-index");
+  const csvDownload = await csvEvent.catch(async (err) => {
+    const why = await recall.textContent("#export-status").catch(() => "(no status)");
+    throw new Error(`no download from #export-index — #export-status: ${why} :: ${err.message}`);
+  });
+  const csvPath = join(SCRATCH, "archive-index.csv");
+  await csvDownload.saveAs(csvPath);
+  const csv = readFileSync(csvPath, "utf8");
+  const csvLines = csv.replace(/^\ufeff/, "").trim().split("\r\n");
+  t("B11z the index is one row per conversation, with a header",
+    csvLines.length === exportedChats.length + 1 &&
+    csvLines[0] === "Provider,Title,Messages,Text fetched,Created,Last updated,URL",
+    JSON.stringify({ rows: csvLines.length, header: csvLines[0] }));
+  t("B11z …carries the UTF-8 mark Excel needs, and CRLF line endings",
+    csv.charCodeAt(0) === 0xfeff && /\r\n/.test(csv));
+
+  t("B11x an untitled conversation sorts last, never first",
+    Object.values(exported.archive || {}).every((list) => {
+      const firstUntitled = list.findIndex((c) => !String(c.title || "").trim());
+      return firstUntitled < 0 || list.slice(firstUntitled).every((c) => !String(c.title || "").trim());
+    }),
+    JSON.stringify(Object.values(exported.archive || {})[0]?.map((c) => c.title).slice(0, 6)));
+  t("B11x no storage-shape key survives into the file",
+    exportedMsgs.every((m) => !("r" in m || "t" in m || "ts" in m || "i" in m || "c" in m || "m" in m)) &&
+    exportedChats.every((c) => !("msgs" in c || "n" in c || "mv" in c || "acct" in c)),
+    JSON.stringify(exportedMsgs[0] || null));
+
   // The encrypted envelope must validate before it changes any archive data.
   const corruptBackupPath = join(SCRATCH, "corrupt-reinstall-archive.lctbackup");
   writeFileSync(corruptBackupPath, "{not valid backup json");

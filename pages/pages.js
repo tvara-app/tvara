@@ -83,7 +83,9 @@
     const badge = $("plan-badge");
     if (badge) {
       self.LCTProduct.paintBadge(badge, pro, trialOn);
-      badge.title = pro ? "Pro — purchased. A one-time licence, yours forever." : "";
+      // aria-label, never title: a native tooltip is a delayed grey box over
+      // the thing it explains, and everything here is already on screen.
+      badge.setAttribute("aria-label", pro ? "Pro — purchased. A one-time licence, yours forever." : "");
     }
 
     // The lock lives inside the archive core rather than replacing it: the
@@ -121,7 +123,9 @@
       const node = $(id);
       if (!node) continue;
       node.disabled = !allowed;
-      node.title = allowed ? "" : LOCK_COPY;
+      // The same sentence is set VISIBLY below (setStatus), so a tooltip
+      // repeating it only covers the button it is about.
+      node.setAttribute("aria-label", allowed ? "" : LOCK_COPY);
     }
     // Re-assert the passphrase gate: the loop above just re-enabled Create on
     // entitlement alone, which is only half of what the button waits for.
@@ -804,63 +808,353 @@
     await paintAutoBackup();
   }
 
-  /* The way out, always open. Deliberately does NOT consult canBackup: this
-     button is the one thing on this page that a locked, lapsed or refunded
-     install must still be able to press. See the "recall-export" case in bg.js
-     for why. */
-  on("export-archive", "click", async () => {
-    const button = $("export-archive");
-    button.disabled = true;
-    setStatus("export-status", "Reading your archive…");
-    try {
-      const res = await send({ type: "recall-export" });
-      if (!res || res.err) throw new Error("Could not read the archive");
-      const chats = res.chats || [];
-      if (!chats.length) throw new Error("There is nothing archived yet");
-      /* Grouped by provider, because that is how anyone reads their own
-         archive back: "what did I ask Claude", not "chat 1,482 of 2,300". Each
-         provider carries its own count and its own date range, and the chats
-         inside one run newest first — a flat list of two thousand objects in
-         write order is a file nobody opens twice. */
-      const byProvider = {};
-      for (const chat of chats) {
-        const name = String((chat && chat.platform) || (chat && chat.host) || "Other");
-        (byProvider[name] || (byProvider[name] = [])).push(chat);
+  /* ---------- the way out, always open ----------
+     Deliberately does NOT consult canBackup: these buttons are the one thing on
+     this page a locked, lapsed or refunded install must still be able to press.
+     See the "recall-export" case in bg.js for why. */
+
+  /** The archive, read once and put in the order a file is READ in: provider,
+   *  then title, then the whole conversation. Every export below shares it, so
+   *  the JSON, the readable page and the index can never disagree. */
+  async function archiveDocument() {
+    const res = await send({ type: "recall-export" });
+    if (!res || res.err) throw new Error("Could not read the archive");
+    const chats = res.chats || [];
+    if (!chats.length) throw new Error("There is nothing archived yet");
+    /* Grouped by provider, because that is how anyone reads their own archive
+       back: "what did I ask Claude", not "chat 1,482 of 2,300". */
+    const byProvider = {};
+    for (const chat of chats) {
+      const name = String((chat && chat.platform) || (chat && chat.host) || "Other");
+      (byProvider[name] || (byProvider[name] = [])).push(chat);
+    }
+    const providers = Object.keys(byProvider).sort();
+    /* Provider, then TITLE. A file is read by looking something up in it, and
+       the thing anybody has to go on is what the chat was called. Newest-first
+       was the write order dressed up: useful to nobody holding the file.
+       `numeric` so "Draft 2" comes before "Draft 10"; `sensitivity: base` so
+       case does not split one run of titles into two. A chat the provider never
+       named sorts last, newest first among those — an untitled chat is not the
+       head of the alphabet. */
+    const byTitle = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
+    const summary = {};
+    for (const name of providers) {
+      const list = byProvider[name];
+      list.sort((a, b) => {
+        const at = String((a && a.title) || "").trim();
+        const bt = String((b && b.title) || "").trim();
+        if (at && bt) return byTitle.compare(at, bt) || (b.updatedAt || 0) - (a.updatedAt || 0);
+        if (at !== bt) return at ? -1 : 1;
+        return (b.updatedAt || 0) - (a.updatedAt || 0);
+      });
+      const times = list.map((c) => c.updatedAt || 0).filter(Boolean);
+      summary[name] = {
+        chats: list.length,
+        messages: list.reduce((n, c) => n + (c.n || (c.msgs || []).length), 0),
+        newest: times.length ? new Date(Math.max(...times)).toISOString() : null,
+        oldest: times.length ? new Date(Math.min(...times)).toISOString() : null
+      };
+    }
+    /* A stored record is a storage shape — `r`, `t`, `ts`, `i`, `c`, `m`, `n`,
+       `mv`, epoch milliseconds — chosen to keep thousands of conversations
+       small in IndexedDB, and it used to be written out byte for byte:
+       somebody opening their own history found one-letter keys and no readable
+       dates. Every field is spelled out here and every time is ISO 8601. */
+    const iso = (ms) => (Number(ms) > 0 ? new Date(Number(ms)).toISOString() : null);
+    const messageOut = (m, i) => ({
+      index: i + 1,
+      role: m && m.r === "user" ? "user" : "assistant",
+      at: iso(m && m.ts),
+      text: String((m && m.t) || ""),
+      // Present only when true: a flag on every message is noise in a file
+      // somebody reads.
+      ...(m && m.c ? { truncated: true } : {}),
+      ...(m && m.m ? { imageOnly: true } : {}),
+      ...(m && m.i ? { providerMessageId: String(m.i) } : {})
+    });
+    const chatOut = (chat) => {
+      const host = String((chat && chat.host) || "");
+      const path = String((chat && chat.path) || "");
+      const msgs = (chat && chat.msgs) || [];
+      return {
+        id: String((chat && chat.id) || ""),
+        provider: String((chat && chat.platform) || host || "Other"),
+        url: host ? `https://${host}${path}` : "",
+        title: String((chat && chat.title) || ""),
+        createdAt: iso(chat && chat.createdAt),
+        updatedAt: iso(chat && chat.updatedAt),
+        messageCount: Number(chat && chat.n) || msgs.length,
+        // A title with no body is a chat whose text has not been fetched yet,
+        // and a file that does not say so reads as a conversation that was lost.
+        textFetched: msgs.length > 0,
+        ...(chat && chat.temp ? { temporaryChat: true } : {}),
+        messages: msgs.map(messageOut)
+      };
+    };
+    const archive = {};
+    for (const name of providers) archive[name] = byProvider[name].map(chatOut);
+    return {
+      providers, summary, archive,
+      totals: {
+        chats: chats.length,
+        messages: chats.reduce((n, c) => n + (c.n || (c.msgs || []).length), 0),
+        providers: providers.length
       }
-      const providers = Object.keys(byProvider).sort();
-      const summary = {};
-      for (const name of providers) {
-        const list = byProvider[name];
-        list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-        const times = list.map((c) => c.updatedAt || 0).filter(Boolean);
-        summary[name] = {
-          chats: list.length,
-          messages: list.reduce((n, c) => n + (c.n || (c.msgs || []).length), 0),
-          newest: times.length ? new Date(Math.max(...times)).toISOString() : null,
-          oldest: times.length ? new Date(Math.min(...times)).toISOString() : null
-        };
+    };
+  }
+
+  const FIELD_NOTES = {
+    archive: "Conversations grouped by provider, then sorted by title. Untitled chats come last, newest first.",
+    "chat.url": "Where the conversation lives on the provider's site.",
+    "chat.messageCount": "Messages the archive holds for this conversation.",
+    "chat.textFetched": "false means only the title was archived — run “Fetch the text” to fill it in.",
+    "chat.temporaryChat": "Present when the provider itself never kept this chat.",
+    "message.role": "“user” (you) or “assistant” (the model).",
+    "message.at": "When it was sent, ISO 8601, or null where the provider did not say.",
+    "message.text": "The message, as Markdown: code fenced, maths as LaTeX, pictures as ![alt](src).",
+    "message.truncated": "Present when the stored text was cut to the archive's per-message bound.",
+    "message.imageOnly": "Present when the turn carried a picture and no text.",
+    "message.providerMessageId": "The provider's own id for the message, where it gave one."
+  };
+
+  /* One pass, not four. This runs over every character of every message in the
+     archive — four chained replaces walked megabytes four times, and the common
+     case (a string with nothing to escape) now leaves after a single failed
+     regex match. */
+  const ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
+  const esc = (value) => String(value == null ? "" : value).replace(/[&<>"]/g, (ch) => ESCAPES[ch]);
+  /* The same allowlist the archive panel uses: a picture may render, anything
+     that could RUN is named instead. */
+  const SAFE_SRC = /^(https?:\/\/|data:image\/)/i;
+
+  /* Escaped first, always. This file is built from the user's own
+     conversations and then opened in a browser, so nothing inside a message may
+     become markup. Fenced code keeps its shape, a picture on its own line
+     renders, and everything else is the text as written — `pre-wrap` in the
+     stylesheet keeps its line breaks without a paragraph parser guessing. */
+  function messageHtml(text) {
+    const out = [];
+    const parts = String(text || "").split("```");
+    for (let i = 0; i < parts.length; i++) {
+      if (i % 2) {
+        const nl = parts[i].indexOf("\n");
+        const lang = nl < 0 ? "" : parts[i].slice(0, nl).trim();
+        const code = nl < 0 ? parts[i] : parts[i].slice(nl + 1);
+        out.push(`<pre class="code"${lang ? ` data-lang="${esc(lang)}"` : ""}><code>${esc(code.replace(/\n+$/, ""))}</code></pre>`);
+        continue;
       }
-      const file = JSON.stringify({
-        format: "tvara-archive-export",
-        version: 2,
-        createdAt: new Date().toISOString(),
-        totals: {
-          chats: chats.length,
-          messages: chats.reduce((n, c) => n + (c.n || (c.msgs || []).length), 0),
-          providers: providers.length
-        },
-        providers: summary,
-        // The conversations themselves, under the provider they came from.
-        archive: byProvider
-      }, null, 2);
-      const stamp = new Date().toISOString().slice(0, 10);
-      download(new Blob([file], { type: "application/json" }), `tvara-archive-${stamp}.json`);
-      setStatus("export-status",
-        `${chats.length.toLocaleString()} chats exported. The file is not encrypted.`, "ok");
-    } catch (error) {
-      setStatus("export-status", String(error.message || error), "err");
-    } finally { button.disabled = false; }
-  });
+      for (const chunk of parts[i].split(/\n{2,}/)) {
+        if (!chunk.trim()) continue;
+        const pic = /^!\[([^\]]*)\]\(([^)\s]+)\)$/.exec(chunk.trim());
+        if (pic && SAFE_SRC.test(pic[2])) {
+          out.push(`<figure><img src="${esc(pic[2])}" alt="${esc(pic[1])}" loading="lazy">` +
+            (pic[1] ? `<figcaption>${esc(pic[1])}</figcaption>` : "") + "</figure>");
+          continue;
+        }
+        out.push(`<p>${esc(chunk)}</p>`);
+      }
+    }
+    return out.join("\n") || '<p class="none">(no text archived yet)</p>';
+  }
+
+  /* One formatter, reused. `toLocaleString()` builds an Intl formatter on every
+     call, and this is called once per MESSAGE — tens of thousands of times on a
+     real archive, which was most of the export's time. */
+  let whenFmt = null;
+  const whenLabel = (isoString) => {
+    if (!isoString) return "";
+    const d = new Date(isoString);
+    if (Number.isNaN(d.getTime())) return "";
+    if (!whenFmt) {
+      try {
+        whenFmt = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
+      } catch { whenFmt = { format: (x) => x.toISOString() }; }
+    }
+    return whenFmt.format(d);
+  };
+
+  /* ONE self-contained page, and it is deliberately not a PDF.
+     A PDF written here means vendoring a PDF library plus a Unicode font — the
+     better part of a megabyte in front of an extension whose whole promise is
+     speed — to reproduce, badly, what the browser already does: this file
+     prints to a paginated PDF with Cmd/Ctrl+P, using the print rules below, and
+     Cmd/Ctrl+F searches every conversation in it. A spreadsheet is the wrong
+     shape for the same reason: an answer is four thousand characters of prose
+     and code, and a cell is one line. The index CSV below is the tabular half,
+     where a spreadsheet is genuinely the right tool. */
+  function readableHtml(doc) {
+    const made = new Date();
+    const parts = [];
+    let n = 0;
+    const anchors = new Map();
+    for (const name of doc.providers) {
+      for (const chat of doc.archive[name]) anchors.set(chat, "c" + (++n));
+    }
+    parts.push(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Your AI archive — ${esc(made.toISOString().slice(0, 10))}</title>
+<style>
+  :root { color-scheme: light dark; --ink:#12131a; --dim:#5c6070; --line:#e3e5ec; --bg:#fff; --card:#f7f8fb; --user:#2f6fed; }
+  @media (prefers-color-scheme: dark) {
+    :root { --ink:#e8eaf2; --dim:#9aa0b4; --line:#2a2d38; --bg:#101219; --card:#171a23; --user:#7aa2ff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+  .wrap { max-width: 47rem; margin: 0 auto; padding: 2.5rem 1.25rem 6rem; }
+  h1 { font-size: 1.7rem; margin: 0 0 .35rem; letter-spacing: -.02em; }
+  .sub { color: var(--dim); margin: 0 0 2rem; }
+  h2 { font-size: 1.25rem; margin: 3rem 0 .25rem; padding-bottom:.4rem; border-bottom: 1px solid var(--line); }
+  .toc { background: var(--card); border:1px solid var(--line); border-radius: 12px; padding: 1rem 1.25rem; margin-bottom: 2rem; }
+  .toc h2 { font-size: 1rem; margin:.75rem 0 .4rem; border:0; padding:0; }
+  .toc h2:first-child { margin-top: 0; }
+  .toc ol { margin:0; padding-left: 1.3rem; }
+  .toc li { margin:.15rem 0; }
+  .toc a { color: inherit; }
+  .toc .count { color: var(--dim); }
+  article { margin: 2rem 0 0; padding-top: 1.25rem; border-top: 1px solid var(--line); }
+  article h3 { font-size: 1.05rem; margin: 0 0 .3rem; }
+  .meta { color: var(--dim); font-size: .85rem; margin: 0 0 1rem; }
+  .meta a { color: inherit; }
+  .msg { margin: 0 0 1.1rem; }
+  .who { font-size: .75rem; font-weight: 700; letter-spacing:.06em; text-transform: uppercase; color: var(--dim); margin-bottom:.2rem; }
+  .msg.user .who { color: var(--user); }
+  .msg p { margin: 0 0 .6rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .msg .none { color: var(--dim); font-style: italic; }
+  pre.code { background: var(--card); border:1px solid var(--line); border-radius: 8px; padding:.75rem .9rem; overflow-x:auto; font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  figure { margin:.5rem 0; } figure img { max-width:100%; border-radius:8px; }
+  figcaption { color: var(--dim); font-size:.8rem; }
+  .cut { color: var(--dim); font-size:.8rem; }
+  @media print {
+    body { background:#fff; color:#000; font-size: 11pt; }
+    .wrap { max-width: none; padding: 0; }
+    .toc { break-after: page; border-color:#ccc; background:none; }
+    article { break-before: page; border-top: 0; }
+    a { color: inherit; text-decoration: none; }
+    pre.code { background:none; border:1px solid #ccc; }
+  }
+</style></head><body><div class="wrap">
+<h1>Your AI archive</h1>
+<p class="sub">${doc.totals.chats.toLocaleString()} conversations · ${doc.totals.messages.toLocaleString()} messages · ${doc.totals.providers} providers · saved ${esc(made.toLocaleString())}<br>Everything below came off this device. Print this page to save it as a PDF.</p>`);
+
+    parts.push('<nav class="toc" aria-label="Contents">');
+    for (const name of doc.providers) {
+      const list = doc.archive[name];
+      parts.push(`<h2>${esc(name)} <span class="count">· ${list.length.toLocaleString()} chat${list.length === 1 ? "" : "s"}</span></h2><ol>`);
+      for (const chat of list) {
+        parts.push(`<li><a href="#${anchors.get(chat)}">${esc(chat.title || "(untitled)")}</a>` +
+          ` <span class="count">· ${chat.messageCount.toLocaleString()}</span></li>`);
+      }
+      parts.push("</ol>");
+    }
+    parts.push("</nav>");
+
+    for (const name of doc.providers) {
+      parts.push(`<h2>${esc(name)}</h2>`);
+      for (const chat of doc.archive[name]) {
+        const bits = [esc(chat.provider)];
+        if (chat.updatedAt) bits.push(esc(whenLabel(chat.updatedAt)));
+        bits.push(`${chat.messageCount.toLocaleString()} message${chat.messageCount === 1 ? "" : "s"}`);
+        if (chat.temporaryChat) bits.push("temporary chat");
+        parts.push(`<article id="${anchors.get(chat)}"><h3>${esc(chat.title || "(untitled)")}</h3>`);
+        parts.push(`<p class="meta">${bits.join(" · ")}` +
+          (chat.url ? ` · <a href="${esc(chat.url)}">open on ${esc(chat.provider)}</a>` : "") + "</p>");
+        if (!chat.textFetched) {
+          parts.push('<p class="none">Only the title is archived so far — run “Fetch the text” to fill this in.</p>');
+        }
+        for (const m of chat.messages) {
+          parts.push(`<div class="msg ${m.role === "user" ? "user" : "model"}">` +
+            `<div class="who">${m.role === "user" ? "You" : esc(chat.provider)}` +
+            (m.at ? ` · <span class="cut">${esc(whenLabel(m.at))}</span>` : "") + "</div>" +
+            messageHtml(m.text) +
+            (m.truncated ? '<p class="cut">(this message was stored shortened)</p>' : "") +
+            "</div>");
+        }
+        parts.push("</article>");
+      }
+    }
+    parts.push("</div></body></html>");
+    /* The PIECES, not one joined string. join() on a large archive materialises
+       a second copy of the whole document — tens of megabytes — which the Blob
+       then copies again. Blob takes an array of strings and concatenates it
+       once, in the browser's own memory. */
+    return parts;
+  }
+
+  /* The tabular half. One ROW per conversation is what a spreadsheet is for;
+     one row per message is not — a four-thousand-character answer in a cell is
+     a cell nobody can read, and its newlines break most importers. The BOM is
+     what makes Excel open it as UTF-8 rather than mojibake. */
+  function indexCsv(doc) {
+    const cell = (value) => {
+      const text = String(value == null ? "" : value);
+      return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+    };
+    /* A title is one line by nature, but nothing guarantees it: a newline
+       inside a quoted field is valid CSV and still splits the row for every
+       naive reader, this file's own tests included. Collapse it here rather
+       than hope. */
+    const line = (text) => String(text || "").replace(/\s+/g, " ").trim();
+    const rows = [["Provider", "Title", "Messages", "Text fetched", "Created", "Last updated", "URL"]];
+    for (const name of doc.providers) {
+      for (const chat of doc.archive[name]) {
+        rows.push([name, line(chat.title) || "(untitled)", chat.messageCount,
+          chat.textFetched ? "yes" : "no", chat.createdAt || "", chat.updatedAt || "", chat.url]);
+      }
+    }
+    return "﻿" + rows.map((row) => row.map(cell).join(",")).join("\r\n") + "\r\n";
+  }
+
+  const sizeLabel = (bytes) => (bytes >= 1048576
+    ? (bytes / 1048576).toFixed(1) + " MB"
+    : Math.max(1, Math.round(bytes / 1024)) + " KB");
+
+  function exporter(id, build) {
+    on(id, "click", async () => {
+      const button = $(id);
+      button.disabled = true;
+      setStatus("export-status", "Reading your archive…");
+      try {
+        const doc = await archiveDocument();
+        const { blob, filename, note } = build(doc);
+        download(blob, filename);
+        setStatus("export-status",
+          `${doc.totals.chats.toLocaleString()} chats exported to ${filename} (${sizeLabel(blob.size)}). ${note}`, "ok");
+      } catch (error) {
+        setStatus("export-status", String(error.message || error), "err");
+      } finally { button.disabled = false; }
+    });
+  }
+
+  const stampToday = () => new Date().toISOString().slice(0, 10);
+
+  exporter("export-readable", (doc) => ({
+    blob: new Blob(readableHtml(doc), { type: "text/html" }),
+    filename: `tvara-archive-${stampToday()}.html`,
+    note: "Open it in any browser; print it to save a PDF. It is not encrypted."
+  }));
+
+  exporter("export-index", (doc) => ({
+    blob: new Blob([indexCsv(doc)], { type: "text/csv" }),
+    filename: `tvara-chats-${stampToday()}.csv`,
+    note: "One row per conversation, for a spreadsheet."
+  }));
+
+  exporter("export-archive", (doc) => ({
+    blob: new Blob([JSON.stringify({
+      format: "tvara-archive-export",
+      version: 3,
+      createdAt: new Date().toISOString(),
+      totals: doc.totals,
+      // What every key means, so the file explains itself to whatever opens it.
+      fields: FIELD_NOTES,
+      providers: doc.summary,
+      // The conversations themselves, under the provider they came from.
+      archive: doc.archive
+    }, null, 2)], { type: "application/json" }),
+    filename: `tvara-archive-${stampToday()}.json`,
+    note: "Every field spelled out, for another program. It is not encrypted."
+  }));
 
   on("create-backup", "click", async () => {
     const button = $("create-backup");
