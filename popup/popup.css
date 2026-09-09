@@ -307,6 +307,7 @@ header {
 main { padding: 0 var(--gutter); }
 
 .pulse {
+  position: relative;                  /* .usage-controls anchors to this */
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
@@ -804,6 +805,44 @@ label.row .row-sub { -webkit-line-clamp: 1; }
   cursor: pointer;
 }
 .row-action svg { width: 14px; height: 14px; }
+
+/* The pass percentage, in the third column with every other figure on this
+   panel. Width is RESERVED and the element is never removed: a number that
+   appears when a pass starts and vanishes when it ends would squeeze the
+   sentence beside it and re-wrap the row, twice per pass. */
+.row-pct {
+  min-width: 3.1em;
+  margin-top: -1px;                    /* onto the title's line, like .row-action */
+  color: var(--ink-dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* The two allowance settings, under the readings they govern. They used to sit
+   in the toggle row as its entire description, which left the row naming a
+   mechanism and explaining nothing. */
+/* Top-right of the readings block, on the line the headline number already
+   occupies — which is empty there. A line of its own cost 39px in a panel that
+   was exactly at Chrome's 600px cap, and the offer at the bottom is what falls
+   off the end when this overflows. */
+.usage-controls {
+  position: absolute;
+  top: 0;
+  right: 0;
+  margin: 0;
+  color: var(--ink-faint);
+  font-size: 10.5px;
+  text-align: right;
+}
+.usage-controls a {
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px solid rgb(255 255 255 / .22);
+}
+.usage-controls a:hover { color: var(--ink); border-bottom-color: rgb(255 255 255 / .38); }
+.usage-controls a.off { opacity: .55; }
 
 /* ---------- the fetch row carries two controls ----------
    The hit area is a real button laid over the row: a <button> cannot contain

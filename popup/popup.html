@@ -60,6 +60,10 @@
         <span class="pulse-num" id="stat-windowed">0</span>
         <span class="pulse-label" id="stat-label">messages asleep right now</span>
         <div id="usage-bars"></div>
+        <!-- Beside the readings they govern rather than beside the switch that
+             turns them on: "warn at 20%" is about these numbers, and "accuracy"
+             explains where these numbers came from. -->
+        <p class="usage-controls"><a href="#" id="quota-warn-link">warn at 20%</a> · <a href="#" id="quota-diag-link">accuracy</a></p>
       </section>
 
       <section class="rows" aria-label="Toolkit">
@@ -118,12 +122,12 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 9 9h-9z"/><path d="M12 3v9h9a9 9 0 0 0-9-9z" opacity=".45"/></svg>
           </span>
           <span class="row-text">
-            <span class="row-title">Allowance tracking</span>
-            <!-- The row title already says what this is, and the verdict line
-                 above the dial says what it found. This line is for the two
-                 controls, which both have to FIT: with the description in
-                 front of them, "check accuracy" fell off the end of the row. -->
-            <span class="row-sub"><a href="#" id="quota-warn-link">warn at 20%</a> · <a href="#" id="quota-diag-link">accuracy</a></span>
+            <span class="row-title" title="Reads how much of each plan you have left — the percentages and reset times above — straight from each provider, on this device. Nothing is estimated and nothing is sent anywhere.">Allowance tracking</span>
+            <!-- What it IS, in the reader's terms. "Allowance tracking" names a
+                 mechanism, not a benefit, and the two settings that used to sit
+                 here explained nothing about either — they have moved under the
+                 dial, which is the thing they actually govern. -->
+            <span class="row-sub">How much of each plan you have left</span>
           </span>
           <input type="checkbox" id="toggle-quota" checked />
         </label>
@@ -242,6 +246,12 @@
             <span class="row-title">Archive core</span>
             <span class="row-sub" id="sync-status" aria-live="polite">Checking archive state…</span>
           </span>
+          <!-- The figure belongs in the column every other figure on this panel
+               is in, not tacked onto the end of a sentence that is already the
+               longest line in the row. Always mounted and width-reserved: a
+               number that appears when a pass starts would otherwise squeeze
+               the sentence beside it and re-wrap the row. -->
+          <span class="row-pct" id="sync-pct" aria-hidden="true"></span>
         </button>
       </section>
 

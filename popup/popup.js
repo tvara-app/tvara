@@ -3270,6 +3270,15 @@
       : value;
   }
 
+  /* The pass percentage, in the column every other figure is in. Empty rather
+     than removed: the element keeps its reserved width, so a pass starting or
+     ending cannot re-wrap the sentence beside it. */
+  function setSyncPct(text) {
+    const el = $("sync-pct");
+    if (!el || el.textContent === text) return;
+    el.textContent = text;
+  }
+
   function updateSyncStatus(text, cls) {
     const el = $("sync-status");
     // The line changes while a pass runs — "Capturing 35 of 498" — and a
@@ -3303,6 +3312,7 @@
       // The worker was still waking. Say what the button does rather than
       // sending the user somewhere else; checkFreshness retries behind this.
       setSyncBusy(false);
+      setSyncPct("");
       updateSyncStatus("Check your history for new chats");
       return;
     }
@@ -3310,18 +3320,23 @@
     setSyncBusy(isSyncing);
     switch (summary.state) {
       case "syncing": {
-        const pct = summary.total ? ` · ${Math.min(100, Math.round((summary.done / summary.total) * 100))}%` : "";
-        updateSyncStatus((summary.message || "Checking…") + pct);
+        const pct = summary.total
+          ? `${Math.min(100, Math.round((summary.done / summary.total) * 100))}%` : "";
+        setSyncPct(pct);
+        updateSyncStatus(summary.message || "Checking…");
         break;
       }
       case "current":
+        setSyncPct("");
         updateSyncStatus(summary.message + " · " + timeAgo(summary.checkedAt), "ok");
         saveCache({ sync: { text: summary.message + " · checked " + timeAgo(summary.checkedAt), cls: "ok" } });
         break;
       case "error":
+        setSyncPct("");
         updateSyncStatus(summary.message, "err");
         break;
       default:
+        setSyncPct("");
         updateSyncStatus(summary.message);
     }
   }
