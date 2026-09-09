@@ -47,6 +47,7 @@ const grab = (name) => {
 };
 
 const NAMES = ["geminiValueEnd", "geminiFrames", "geminiPayloads", "geminiTime", "geminiAt", "geminiText", "geminiTierName",
+  "bgHealTries",
   "pplxTime", "pplxFromTrace", "pplxAnswer", "xaiTime", "chatBranch", "chatgptMsgs", "turnMsgs", "planName", "claudeOrgCtx", "planRank", "bestPlanSeat", "clampText", "planFromAny", "pickAllowanceSeat", "bgHealNext", "narrowsFrom"];
 const {
   geminiFrames, geminiPayloads, geminiTime, geminiAt, geminiText, geminiTierName, pplxTime, pplxFromTrace, pplxAnswer, xaiTime,
@@ -411,6 +412,27 @@ t("heal clears a spent record on a healthy start",
   bgHealNext({ version: "1.0.0", tries: 2 }, "1.0.0", true) === "clear");
 t("heal writes nothing when there is nothing to clear",
   bgHealNext(null, "1.0.0", true) === "");
+
+/* An UNPACKED build's files move all day and its version never changes, so a
+   bound keyed on version alone spent itself once and the worker could never
+   heal again — the dead extension this exists to end, made permanent by its
+   own guard. Observed exactly that way: fifteen modules failing, every file
+   present and readable, and a banner that had stopped trying. The bound is on
+   the RATE now: two attempts, then a pause, then a fresh episode. */
+const NOW = 1_700_000_000_000;
+const COOL = 30 * 60 * 1000;
+t("heal stops while the two attempts are still recent",
+  bgHealNext({ version: "1.0.0", tries: 2, at: NOW - 60_000 }, "1.0.0", false, NOW) === "stop");
+t("heal tries again once the pause has passed, on the SAME version",
+  bgHealNext({ version: "1.0.0", tries: 2, at: NOW - COOL - 1 }, "1.0.0", false, NOW) === "reload");
+t("…and the counter starts over, so the new episode gets two of its own",
+  bgHealNext({ version: "1.0.0", tries: 9, at: NOW - COOL - 1 }, "1.0.0", false, NOW) === "reload");
+/* The whole safety of this is that a fresh episode cannot begin immediately:
+   without the pause it is an extension that restarts itself forever. */
+t("heal cannot spin: one second before the pause ends it is still stopped",
+  bgHealNext({ version: "1.0.0", tries: 2, at: NOW - COOL + 1000 }, "1.0.0", false, NOW) === "stop");
+t("a record with no timestamp is treated as this episode, not a free retry",
+  bgHealNext({ version: "1.0.0", tries: 2 }, "1.0.0", false, NOW) === "stop");
 
 /* ---------- searching as you type ----------
    Adding characters can only narrow an AND search over substrings, so a query

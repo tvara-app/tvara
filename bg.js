@@ -100,14 +100,39 @@ if (!BG_ALIVE) {
    at all was already loaded with developer mode on. */
 const BG_HEAL_KEY = "lct-worker-heal-v1";
 
+/* How long a spent record speaks for. Bounding the heal by VERSION alone was
+   wrong for the case it exists to fix: an unpacked build's files move all day
+   and its version never changes, so two attempts spent once meant the worker
+   could never heal again — the dead extension this was written to end, made
+   permanent by its own guard. Seen exactly that way: fifteen modules failing,
+   every file present and readable, and a banner that no longer tried.
+
+   So bound the RATE, not the total. Two attempts back to back, then a pause;
+   a start after the pause is a new episode and may try again. The extension
+   can always come back, and it still cannot spin. */
+
+/** Attempts already spent that still speak for THIS episode. Self-contained,
+ *  like everything test/test-parsers.mjs lifts out of this file to run without
+ *  a browser: a module-level constant would not come with it. */
+function bgHealTries(held, version, now) {
+  const COOL_MS = 30 * 60 * 1000;
+  if (!held || held.version !== version) return 0;
+  /* A record with no usable timestamp counts as THIS episode. Reading a
+     missing `at` as "long ago" would hand out a fresh pair of attempts to any
+     record that lost the field — which is a bound that anything malformed can
+     step around, and the bound is the whole safety of this. */
+  const at = Number(held.at) || 0;
+  if (at && at + COOL_MS <= now) return 0;   // the pause has passed: a new episode
+  return held.tries | 0;
+}
+
 /** What this start should do about the heal record it found: clear a spent
  *  one, reload once more, or stop and let the banner stand. Pure, so the
  *  bound is provable without a browser — the one thing here that must never
  *  be wrong is the loop guard. */
-function bgHealNext(held, version, alive) {
-  const tries = held && held.version === version ? (held.tries | 0) : 0;
+function bgHealNext(held, version, alive, now = Date.now()) {
   if (alive) return held ? "clear" : "";
-  return tries >= 2 ? "stop" : "reload";   // two attempts, then the banner stands
+  return bgHealTries(held, version, now) >= 2 ? "stop" : "reload";
 }
 
 async function bgHeal(alive) {
@@ -115,10 +140,13 @@ async function bgHeal(alive) {
   try { held = (await chrome.storage.local.get(BG_HEAL_KEY))[BG_HEAL_KEY]; }
   catch (_) { return; }                  // no storage: no bookkeeping, no reload
   const version = chrome.runtime.getManifest().version;
-  const next = bgHealNext(held, version, alive);
+  const now = Date.now();
+  const next = bgHealNext(held, version, alive, now);
   if (next === "clear") { chrome.storage.local.remove(BG_HEAL_KEY).catch(() => {}); return; }
   if (next !== "reload") return;
-  const tries = held && held.version === version ? (held.tries | 0) : 0;
+  // The same reckoning the decision was made on — two readings of "how many
+  // attempts are still live" that can disagree is how a bound stops binding.
+  const tries = bgHealTries(held, version, now);
   // Written BEFORE the reload: an unrecorded attempt is an unbounded loop.
   try { await chrome.storage.local.set({ [BG_HEAL_KEY]: { version, tries: tries + 1, at: Date.now() } }); }
   catch (_) { return; }
