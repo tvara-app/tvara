@@ -428,11 +428,19 @@
 
   let pill = null, pillCancel = null;
 
-  function showPill(text, onCancel) {
+  function showPill(text, onCancel, frac) {
     if (!pill) {
       pill = document.createElement("div");
       pill.id = "lct-seek";
-      pill.innerHTML = '<span class="lct-seek-text"></span><button type="button" class="lct-seek-stop">Stop</button>';
+      /* A rail, not just a count. "Loading older messages… 240 of 1,471" says
+         how far but not how far LEFT, and on a long conversation the number
+         crawls for a minute with nothing on screen saying the work is still
+         moving. Permanent and empty at rest — see the popup's .fill-bar: a bar
+         that mounts when work starts adds its own height and shifts the row. */
+      pill.innerHTML = '<span class="lct-seek-body">' +
+        '<span class="lct-seek-text"></span>' +
+        '<span class="lct-seek-rail"><i></i></span>' +
+        '</span><button type="button" class="lct-seek-stop">Stop</button>';
       pill.querySelector(".lct-seek-stop").addEventListener("click", () => {
         if (pillCancel) pillCancel();
       });
@@ -441,6 +449,15 @@
     if (!pill.isConnected) document.documentElement.appendChild(pill);
     pillCancel = onCancel || pillCancel;
     pill.querySelector(".lct-seek-text").textContent = text;
+    /* scaleX, never width: width is layout, and this repaints every step. A
+       proportion nobody can state leaves the rail indeterminate rather than
+       inventing one. */
+    const fill = pill.querySelector(".lct-seek-rail > i");
+    if (fill) {
+      const known = typeof frac === "number" && frac >= 0 && frac <= 1;
+      pill.classList.toggle("lct-seek-unknown", !known);
+      if (known) fill.style.transform = "scaleX(" + frac.toFixed(4) + ")";
+    }
     pill.classList.add("lct-seek-show");
   }
 
@@ -465,6 +482,14 @@
     return total > have
       ? `Loading older messages… ${commas(have)} of ${commas(total)}`
       : `Loading older messages… ${commas(have)}`;
+  }
+
+  /** How far along, or null where the provider's index says nothing. */
+  function walkFrac(adapter) {
+    const total = self.LCTMinimap ? self.LCTMinimap.count : 0;
+    const have = mountedCount(adapter);
+    if (!(total > 0) || total <= have) return null;
+    return Math.max(0, Math.min(1, have / total));
   }
 
   function attachCancellation(task) {
@@ -574,7 +599,7 @@
       showPill(walkLabel(adapter), () => {
         task.cancelled = true;
         task.cancelledBy = "stop";
-      });
+      }, walkFrac(adapter));
     }
     let failed = false;
     try {
@@ -598,7 +623,7 @@
           const total = self.LCTMinimap ? self.LCTMinimap.count : 0;
           return total > startMounted && mountedCount(adapter) >= total;
         },
-        onStep: () => { if (announce) showPill(walkLabel(adapter)); },
+        onStep: () => { if (announce) showPill(walkLabel(adapter), null, walkFrac(adapter)); },
         lock
       });
       /* Put them back BEFORE the copy comes down: every one of those attempts
@@ -1032,6 +1057,78 @@
   // must still render, just without colour or MathML.
   const rich = () => !!(self.LCTRichText && self.LCTRichText.looksLikeCode);
 
+  /* ---------- pipe tables ----------
+     Nothing here parsed one, so every row reached the reader as the literal
+     `| Device | Expected experience |` and the answer's whole shape was lost.
+     The stylesheets have carried table rules the renderer never produced. */
+
+  /** One row into cells. `\|` is a literal pipe, outer pipes are optional. */
+  function tableCells(line) {
+    const body = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+    const out = [];
+    let cur = "";
+    for (let k = 0; k < body.length; k++) {
+      if (body[k] === "\\" && body[k + 1] === "|") { cur += "|"; k++; continue; }
+      if (body[k] === "|") { out.push(cur.trim()); cur = ""; continue; }
+      cur += body[k];
+    }
+    out.push(cur.trim());
+    return out;
+  }
+
+  /**
+   * A table starting at `i`, or null.
+   *
+   * The delimiter row is what makes it one — a line of pipes on its own is
+   * prose often enough (a shell pipeline, a regex) and must stay prose.
+   */
+  function tableAt(lines, i) {
+    const head = lines[i], sep = lines[i + 1];
+    if (!head || !sep || !head.includes("|") || !sep.includes("-")) return null;
+    const cells = tableCells(head);
+    const marks = tableCells(sep);
+    if (cells.length < 2 || marks.length !== cells.length) return null;
+    if (!marks.every((m) => /^:?-+:?$/.test(m))) return null;
+    const align = marks.map((m) => (m.startsWith(":") && m.endsWith(":") ? "center"
+      : m.endsWith(":") ? "right" : m.startsWith(":") ? "left" : ""));
+    const rows = [cells];
+    let end = i + 1;
+    for (let j = i + 2; j < lines.length; j++) {
+      if (!lines[j].trim() || !lines[j].includes("|")) break;
+      rows.push(tableCells(lines[j]));
+      end = j;
+    }
+    return { rows, align, end };
+  }
+
+  function appendTable(host, rows, align) {
+    const table = document.createElement("table");
+    const cols = rows[0].length;
+    const mk = (tag, text, n) => {
+      const cell = document.createElement(tag);
+      if (align[n]) cell.style.textAlign = align[n];
+      inline(cell, text || "");
+      return cell;
+    };
+    const thead = document.createElement("thead");
+    const htr = document.createElement("tr");
+    rows[0].forEach((c, n) => htr.appendChild(mk("th", c, n)));
+    thead.appendChild(htr);
+    table.appendChild(thead);
+    if (rows.length > 1) {
+      const tbody = document.createElement("tbody");
+      for (const row of rows.slice(1)) {
+        const tr = document.createElement("tr");
+        // Ragged rows are common; a short one keeps the grid rather than
+        // shifting every cell after it one column left.
+        for (let n = 0; n < cols; n++) tr.appendChild(mk("td", row[n], n));
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+    }
+    host.appendChild(table);
+  }
+
   function codeInto(host, body, lang) {
     if (rich()) { self.LCTRichText.codeBlock(host, body, lang); return; }
     const pre = document.createElement("pre");
@@ -1133,6 +1230,17 @@
           const body = [openEnv[1], ...lines.slice(i + 1, end + 1)];
           blockMath(host, body.join(" ").replace(/\$\s*$/, "").trim());
           i = end;
+          continue;
+        }
+      }
+      // A pipe table, header + delimiter + rows. Before the code heuristic:
+      // a row of pipes and dashes reads as code to it.
+      if (line.includes("|")) {
+        const tbl = tableAt(lines, i);
+        if (tbl) {
+          endList();
+          appendTable(host, tbl.rows, tbl.align);
+          i = tbl.end;
           continue;
         }
       }
@@ -1757,6 +1865,11 @@
         ? `Loading older messages… ${commas(have)} of ${commas(total)}`
         : `Loading older messages… ${commas(have)}`;
     };
+    const frac = () => {
+      const have = mountedCount(adapter);
+      const total = target.total || (self.LCTMinimap ? self.LCTMinimap.count : 0);
+      return total > have ? Math.max(0, Math.min(1, have / total)) : null;
+    };
 
     (async () => {
       // Cheapest first: it may simply be mounted already.
@@ -1797,10 +1910,10 @@
       const lock = document.hidden ? null : makeFreeze(scroller);
       let outcome;
       try {
-        showPill(label(), () => { task.cancelled = true; task.cancelledBy = "stop"; });
+        showPill(label(), () => { task.cancelled = true; task.cancelledBy = "stop"; }, frac());
         outcome = await pageUp(adapter, task, scroller, {
           until: () => !!found(),
-          onStep: () => showPill(label()),
+          onStep: () => showPill(label(), null, frac()),
           lock
         });
         /* Land while the copy is still up, so the only frame anyone sees is the
@@ -1825,7 +1938,7 @@
             if (task.cancelled || task.route !== location.href) break;
             const again = await pageUp(adapter, task, scroller, {
               until: () => !!found(),
-              onStep: () => showPill(label()),
+              onStep: () => showPill(label(), null, frac()),
               lock
             }).catch(() => "cancelled");
             if (again === "reached") { outcome = "reached"; break; }

@@ -365,6 +365,31 @@
   transition: opacity 0.18s ease, transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
 }
 #lct-seek.lct-seek-show { opacity: 1; pointer-events: auto; transform: translate(-50%, 0); }
+/* The count says how far; the rail says how far LEFT. Permanent, so starting
+   the walk cannot change the pill's height under the Stop button. */
+.lct-seek-body { display: flex; flex-direction: column; gap: 6px; min-width: 168px; }
+.lct-seek-rail {
+  display: block; height: 2px; border-radius: 2px; overflow: hidden;
+  background: rgba(255, 255, 255, .13);
+}
+.lct-seek-rail > i {
+  display: block; height: 100%; transform: scaleX(0); transform-origin: 0 50%;
+  background: var(--lct-accent, #ff5d8a);
+  transition: transform .28s cubic-bezier(.22, 1, .36, 1);
+}
+/* No total to measure against — a host with no index. A travelling sheen says
+   "still working" without claiming a proportion nobody published. */
+#lct-seek.lct-seek-unknown .lct-seek-rail > i {
+  transform: none; width: 38%; transition: none;
+  animation: lct-seek-slide 1.15s ease-in-out infinite;
+}
+@keyframes lct-seek-slide {
+  0% { margin-left: -38%; } 100% { margin-left: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lct-seek-rail > i { transition: none; }
+  #lct-seek.lct-seek-unknown .lct-seek-rail > i { animation: none; margin-left: 0; width: 100%; opacity: .45; }
+}
 .lct-seek-stop {
   padding: 5px 11px;
   border: 0;
@@ -500,11 +525,18 @@
    sixty-column comparison must not push the panel out past the window. */
 .lct-hp-text table {
   display: block; width: max-content; max-width: 100%;
+  margin: 0 0 10px;                    /* the paragraph after it is not a caption */
   overflow-x: auto; border-collapse: collapse;
 }
+/* Fallback colour, not decoration: an undefined token makes the whole `border`
+   declaration invalid and the grid disappears, which reads as ragged text
+   rather than a table. */
 .lct-hp-text th, .lct-hp-text td {
-  border: 1px solid var(--lct-line); padding: 4px 8px; white-space: nowrap;
+  border: 1px solid var(--lct-line, rgba(255, 220, 230, .14));
+  padding: 4px 8px; white-space: nowrap;
 }
+.lct-hp-text th { text-align: left; font-weight: 650; }
+.lct-hp-text thead th { background: rgba(255, 255, 255, .045); }
 .lct-hp-empty {
   padding: 24px 4px; text-align: center;
   font: 500 12px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -1886,11 +1918,16 @@ html[data-lct-history-state="running"] #lct-minimap { opacity: 1; }
 }
 #lct-old-turns .lct-old-text table {
   display: block; width: max-content; max-width: 100%;
+  margin: 0 0 12px;
   overflow-x: auto; border-collapse: collapse;
 }
 #lct-old-turns .lct-old-text th, #lct-old-turns .lct-old-text td {
   border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
   padding: 4px 8px; white-space: nowrap;
+}
+#lct-old-turns .lct-old-text th { text-align: left; font-weight: 650; }
+#lct-old-turns .lct-old-text thead th {
+  background: color-mix(in srgb, currentColor 7%, transparent);
 }
 #lct-old-turns .lct-old-text pre code {
   background: none; padding: 0; border-radius: 0;

@@ -224,8 +224,22 @@
     self.LCTSearch.refresh(messages);
   }
 
+  /* "A reader is on this host." Sent before we ask the host for anything of our
+     own: the backfill yields for BG_YIELD_MS, but only from OUR first
+     foreground request — by then the crawl has spent the burst the host allows
+     and the click is answered with "Too many requests". Landing on a
+     conversation directly is a reader arriving exactly as much as clicking
+     through to one is, so this is not inside onChatSwitch(). */
+  function readerHere() {
+    try {
+      chrome.runtime.sendMessage({ type: "reader-here", host: location.host },
+        () => void chrome.runtime.lastError);
+    } catch (_) { /* worker asleep; our own foreground request still marks it */ }
+  }
+
   function onChatSwitch() {
     currentRoute = routeId();
+    readerHere();
     loadedAt = Date.now(); // suppress save/offer while the host auto-scrolls
     resumeOffered = false;
     removeChip();
@@ -1075,6 +1089,10 @@
 
   loadState().catch(() => {}).then(() => {
     applyState();
+    // Landing straight on a conversation — a bookmark, a reload, a new tab —
+    // is a reader arriving too, and seedFromProvider() below is the first
+    // thing that asks this host for anything.
+    readerHere();
     seedFromProvider();
     if (state.enabled) kickVisitSync();
     setTimeout(reportApiPaths, 4000);
