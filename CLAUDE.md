@@ -219,6 +219,56 @@ replacing a stub list plus a batched re-read of it. A row says `624 waiting` or
 text already here can be fetched AGAIN: a conversation carried on since it was
 archived has messages this copy does not.
 
+**A refusal is about ONE provider, and only `auth` is about the session.**
+The text fetch runs all six at once, so a platform that will not answer is not
+the run failing — but `bg/fill.js` wrote one `note` field, last writer wins, and
+wrote every failure as "signed out" or "not signed in". A rate limit (ChatGPT
+backing off after a burst), a bot challenge and an unreachable network all
+reached the row as a verdict about the account, on a session that was signed in
+the whole time; the popup then appended "Sign in, then tap to continue" to
+whatever it said, so even the challenge note ended "…open it in a tab.. Sign in,
+then tap to continue." `fillWhy()` writes ONE sentence carrying its own remedy
+and `noteFill()` keys it per provider (cleared when that platform answers), so
+the row can say "ChatGPT is rate-limiting. It picks up again on its own. (+1
+more)" while five platforms carry on downloading. Same rule as `quotaWhy()`;
+this was the fetch row's copy of the same defect. `writeFill()` goes through
+`editLocal()` now — six providers and several lanes inside each write that one
+key, and a read-then-write loses whichever landed first.
+
+**The export is a document, not a memory dump.** A stored record is a storage
+shape — `r`, `t`, `ts`, `i`, `c`, `m`, `n`, `mv`, epoch milliseconds — chosen to
+keep thousands of conversations small in IndexedDB, and `pages/pages.js` wrote it
+to the file byte for byte: somebody opening their own history found one-letter
+keys and no readable dates.
+
+`archiveDocument()` is now the single ordering and the single shape, and three
+buttons write it out, so they cannot disagree:
+
+- **A page (`.html`)** — one self-contained file, every conversation in full,
+  a contents list, `Ctrl/Cmd+F` over the lot. **Deliberately not a generated
+  PDF**: a PDF writer here means vendoring a library plus a Unicode font, the
+  better part of a megabyte in front of an extension whose whole promise is
+  speed, to reproduce badly what the browser already does — `Ctrl/Cmd+P` on this
+  file paginates it with `break-before: page` per conversation.
+- **A list (`.csv`)** — one row per CONVERSATION, because that is the shape a
+  spreadsheet is for. One row per message is not: an answer is four thousand
+  characters of prose and code, and a cell is one line. Leading BOM, or Excel
+  reads UTF-8 as mojibake.
+- **Everything (`.json`)** — version 3, every field spelled out (`role`, `text`,
+  `at`, `providerMessageId`, `truncated`, `imageOnly`), ISO 8601 times, a
+  `fields` block that explains the file inside the file. Nothing imports it;
+  being readable is its whole job.
+
+Ordered provider, then TITLE, then the whole conversation — newest-first was the
+write order dressed up, and a file is read by looking something up in it. An
+untitled chat sorts last: it is not the head of the alphabet.
+
+**The readable page is built from the user's own chat text**, so every
+interpolation goes through `esc()` and a picture renders only under the archive
+panel's own scheme allowlist (`https?:` or `data:image/`). B11y asserts the
+output carries no `<script`, no `on…=` attribute and no other scheme — the check
+that no path skipped the escaping.
+
 **Customize belongs on the button it customizes.** "Choose what to fetch" had a
 row of its own and read as a second thing to do. It is one decision about the
 fetch button, so it sits on that row. A `<button>` cannot contain another and
@@ -450,6 +500,41 @@ deep research" while the figure the reader asked about sat behind it. Niche
 meters take a tie-break penalty, never an exclusion: where one is all the
 provider published, it is still the truth and it is still shown.
 
+**A remover of readings only removes readings.** `forgetQuotaFor()` and
+`retireUnknownQuotaTags()` read with `getByPrefix(prefix, [QUOTA_PROBE_KEY])`
+and then deleted every key that came back — so `lct-quota-probe-v1`, the learned
+endpoint list, was wiped by every SUCCESSFUL poll and every sign-out. It was
+never on disk. Three things followed, and all three were reported as separate
+faults: every poll re-probed every candidate against the user's own session
+(six endpoints per platform, on every popup tick), the per-platform poll floor
+never applied because "no report" is how the code says "never read at all", and
+the probe's stored `error` — the one record that says WHY a provider could not
+be read — was destroyed before anybody could look at it. On a build with no
+`storage.local.getKeys()` the read is `get(null)`, so one 401 would have taken
+the entire extension store. `keysUnder()` is the rule: never remove a key the
+prefix does not own. N1 in `test/test-accounts.mjs` could not see it — it
+asserts the report after a FAILED probe, and neither remover runs on that path.
+
+**Only `auth` is a statement about the session.** The 403 classifier fixed this
+one layer down; `quotaPoll` then did it again at the top, mapping every
+non-challenge failure to "not signed in" — a timeout, a rate limit, a dead
+network, all reaching the panel as a verdict about the account, which sends
+somebody to sign in to an account they are already signed into. `quotaWhy()`
+turns the error KIND into the words, and the probe records that kind so the
+learned-note path answers the same way; matching words in the sentence the
+probe wrote (`/not signed in|unreachable/`) is what called a rate limit a
+sign-out.
+
+**A window that states no figure is not a reading.** It is a deadline with
+nothing attached, and it outlives every real window because a future reset
+never goes stale. Live, Perplexity's rate-limit response carried one beside
+"3 pro searches left": after `FRESH_MS` the real counters aged out, the empty
+one did not, and the row degraded from a number to "not reported" out of the
+same response. `ranked()` drops a window carrying no percentage, no remaining
+and no limit; with none left the row says the provider answered and reported
+nothing, which is true. A figure of ZERO is a figure — it is the one the reader
+most needs.
+
 Rules the panel cannot break:
 
 - **Which seat holds the allowance is decided from the NUMBERS, not before
@@ -514,6 +599,17 @@ library actually gets used for here, and nothing else.
 - **`prefers-reduced-motion` turns every entry point into a plain assignment** —
   including `flip()`, which still performs the caller's mutation, because that
   is the actual state change and only the travel was decoration.
+
+**Nothing meaningful lives in a native tooltip.** `title` is a delayed grey box
+that covers the thing it explains, cannot be styled, never appears on a touch
+device and is unreachable by keyboard — and the popup is read at a GLANCE. The
+window switch has carried an `aria-label` and no `title` since it was written
+(`test/test-extension.mjs` A1e asserts the absence); the rest of the popup and
+`pages/` now match it. Say it on screen, or say it to a screen reader with
+`aria-label` — and on an element whose role exposes one, which a bare `<span>`
+does not (`#account-ring` is `role="img"` for exactly that). Two of these were
+duplicates of text already on screen, and one — the overdue-licence sentence —
+was written to a `dataset.note` no stylesheet has ever rendered.
 
 ## Nothing moves that the reader did not move
 
