@@ -16,3 +16,10 @@ store/
 *.mkv
 *.mp3
 .claude/
+
+# Screenshots dropped in the repo root while working.
+# Globs, not bare extensions: `.jpg` matches a file CALLED .jpg and nothing else.
+*.jpg
+*.jpeg
+*.png
+*.gif
