@@ -294,6 +294,90 @@ try {
   t("A1d a reset a month away is dated, not given a weekday",
     !/\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\b/.test(farRow) && /\d/.test(farRow), farRow);
 
+  /* ---- A1e two windows, one row ----
+     Claude publishes a five-hour session limit AND a week. The row leads with
+     the one that stops you soonest, and which one matters depends on what the
+     reader is about to do — so the figure is a button that steps between them,
+     and the choice survives the panel's own repaint. */
+  await pop.evaluate(() => new Promise((r) => chrome.runtime.sendMessage({
+    type: "quota-observed", host: "claude.ai",
+    observations: [{ kind: "body", at: Date.now(), json: {
+      five_hour: { utilization: 24, resets_at: new Date(Date.now() + 3.6e6).toISOString() },
+      seven_day: { utilization: 61, resets_at: new Date(Date.now() + 3 * 864e5).toISOString() }
+    } }]
+  }, r)));
+  await pop.reload();
+  await pop.waitForSelector(".usage-row", { timeout: 8000 });
+  await pop.waitForTimeout(2500);
+  const claudeRow = () => pop.evaluate(() => {
+    const row = [...document.querySelectorAll(".usage-row")].find((r) => /Claude/.test(r.textContent));
+    const btn = row && row.querySelector("button.usage-switch");
+    return { text: row ? row.textContent.replace(/\s+/g, " ").trim() : "(none)",
+             switchable: !!btn,
+             // No native tooltip on purpose — see popup.js. The screen-reader
+             // label is what has to name the window.
+             hasTitle: !!(btn && btn.getAttribute("title")),
+             label: btn ? btn.getAttribute("aria-label") || "" : "" };
+  });
+  const firstWin = await claudeRow();
+  t("A1e the row leads with the session limit, not the week",
+    /5h/.test(firstWin.text) && /76/.test(firstWin.text), JSON.stringify(firstWin));
+  t("A1e …and says the other one can be shown",
+    firstWin.switchable && /week/i.test(firstWin.label), JSON.stringify(firstWin));
+  t("A1e …without a tooltip reading out the meter's raw name",
+    !firstWin.hasTitle, JSON.stringify(firstWin));
+  await pop.click(".usage-row button.usage-switch");
+  await pop.waitForTimeout(700);
+  const secondWin = await claudeRow();
+  t("A1e clicking the figure shows the weekly limit",
+    /week/.test(secondWin.text) && /39/.test(secondWin.text), JSON.stringify(secondWin));
+  // The panel repaints on its own every few seconds; a choice that reset on
+  // every repaint would be unusable.
+  await pop.waitForTimeout(3000);
+  const heldWin = await claudeRow();
+  t("A1e …and the panel's own repaint does not undo it",
+    /week/.test(heldWin.text), JSON.stringify(heldWin));
+  await pop.click(".usage-row button.usage-switch");
+  await pop.waitForTimeout(700);
+  const wrapped = await claudeRow();
+  t("A1e clicking again comes back round to the session limit",
+    /5h/.test(wrapped.text) && /76/.test(wrapped.text), JSON.stringify(wrapped));
+  /* A window with a reset and no figure is a real row when it is all a
+     provider gave us. It is NOT one of the options behind a click: stepping
+     off a number and landing on "not reported" is a step to nothing. */
+  await pop.evaluate(() => new Promise((r) => chrome.runtime.sendMessage({
+    type: "quota-observed", host: "claude.ai",
+    observations: [{ kind: "body", at: Date.now(), json: {
+      five_hour: { utilization: 24, resets_at: new Date(Date.now() + 3.6e6).toISOString() },
+      seven_day: { utilization: 61, resets_at: new Date(Date.now() + 3 * 864e5).toISOString() },
+      entitlement: { resets_at: new Date(Date.now() + 9 * 864e5).toISOString() }
+    } }]
+  }, r)));
+  await pop.reload();
+  await pop.waitForSelector(".usage-row", { timeout: 8000 });
+  await pop.waitForTimeout(2500);
+  const stepped = [];
+  for (let i = 0; i < 4; i++) {
+    stepped.push((await claudeRow()).text);
+    const has = await pop.locator(".usage-row button.usage-switch").count();
+    if (!has) break;
+    await pop.click(".usage-row button.usage-switch");
+    await pop.waitForTimeout(600);
+  }
+  t("A1e a window with no figure is never one of the options",
+    !stepped.some((x) => /not reported/.test(x)), JSON.stringify(stepped));
+  t("A1e …and stepping through returns to where it started",
+    stepped[0] === stepped[2], JSON.stringify(stepped));
+  await pop.evaluate(() => chrome.storage.local.remove(["quota:claude|", "lct-quota-warned-v1"]));
+
+  /* DeepSeek publishes no allowance at all — it enforces with 429 and a
+     proof-of-work challenge — so a permanent "no limit published" row among
+     the figures is a line of nothing. It is still archived. */
+  const rowNames = await pop.evaluate(() =>
+    [...document.querySelectorAll(".usage-row .usage-name")].map((n) => n.textContent.trim()));
+  t("A1e a provider with no allowance to publish is not a row on this panel",
+    !rowNames.some((n) => /DeepSeek/i.test(n)), JSON.stringify(rowNames));
+
   t("A1d a count with no ceiling is shown as the count it is",
     /25/.test(counted.row) && /left/.test(counted.row), counted.row);
   t("A1d …and says what is being counted",
@@ -1485,6 +1569,16 @@ try {
       return {
         maths: host.querySelectorAll(".lct-math-block math").length,
         tables: host.querySelectorAll("mtable").length,
+        grid: (() => {
+          const t = host.querySelector("table");
+          if (!t) return null;
+          return {
+            head: [...t.querySelectorAll("thead th")].map((c) => c.textContent),
+            rows: [...t.querySelectorAll("tbody tr")].map((r) =>
+              [...r.querySelectorAll("td")].map((c) => c.textContent)),
+            align: [...t.querySelectorAll("thead th")].map((c) => c.style.textAlign)
+          };
+        })(),
         imgs: [...host.querySelectorAll("img")].map((i) => i.getAttribute("src")),
         links: [...host.querySelectorAll("a")].map((a) => a.getAttribute("href")),
         pres: host.querySelectorAll("pre").length,
@@ -1508,10 +1602,45 @@ try {
       unclosedProse: render("```\nI'll assume you are asking whether the server\n" +
         "accepts JSON only in the request body and how it relates to HTTP methods."),
       unclosedCode: render("```\nconst a = 1;\nfoo.bar();"),
-      closedProse: render("```\njust some words here\n```\nafter")
+      closedProse: render("```\njust some words here\n```\nafter"),
+      table: render("Estimated resource requirements\n\n" +
+        "| Device | Expected experience |\n" +
+        "|---------|--------------------|\n" +
+        "| Intel i5 (11th Gen+) | Slow but usable |\n" +
+        "| Apple M1/M2/M3/M4 | Good (Metal backend) |\n\n" +
+        "Grounding DINO is the dominant CPU workload."),
+      tableAligned: render("| L | C | R |\n|:--|:-:|--:|\n| a | b | c |"),
+      tableRagged: render("| a | b | c |\n| - | - | - |\n| 1 |\n"),
+      notATable: render("Run `cat x | grep y` — the pipe is not a table.\n" +
+        "And a second line with a | in it.")
     };
   });
   await mdPage.close();
+
+  /* Every row used to reach the reader as the literal `| Device | … |`: the
+     stylesheets have carried table rules the renderer never produced. */
+  t("B23 a pipe table renders as a table, not as text",
+    !!md.table.grid && md.table.grid.head.join("|") === "Device|Expected experience",
+    JSON.stringify(md.table.grid));
+  t("B23 …with every body row, and the prose either side left alone",
+    !!md.table.grid && md.table.grid.rows.length === 2 &&
+    md.table.grid.rows[1][1] === "Good (Metal backend)" &&
+    /Grounding DINO is the dominant/.test(md.table.text) &&
+    !/\|-{3}/.test(md.table.text),
+    JSON.stringify(md.table.grid && md.table.grid.rows));
+  t("B23 …honouring the alignment the delimiter row states",
+    !!md.tableAligned.grid &&
+    md.tableAligned.grid.align.join(",") === "left,center,right",
+    JSON.stringify(md.tableAligned.grid && md.tableAligned.grid.align));
+  /* A short row keeps the grid: filling the gap is what stops every cell after
+     it sliding one column left, which reads as the wrong data, not a gap. */
+  t("B23 …and a ragged row keeps its columns",
+    !!md.tableRagged.grid && md.tableRagged.grid.rows[0].length === 3,
+    JSON.stringify(md.tableRagged.grid && md.tableRagged.grid.rows));
+  /* The delimiter row is what makes it a table. A shell pipeline is prose. */
+  t("B23 …while a line with a pipe in it stays prose",
+    md.notATable.grid === null && /cat x \| grep y/.test(md.notATable.text),
+    JSON.stringify(md.notATable.text).slice(0, 120));
 
   t("B23 an aligned environment inside single dollars renders as a formula",
     md.aligned.maths === 1 && md.aligned.tables === 1, JSON.stringify(md.aligned).slice(0, 200));
@@ -1830,6 +1959,20 @@ try {
     panel: !!document.getElementById("lct-history-panel"),
     pill: document.querySelector("#lct-seek.lct-seek-show")
       ? document.querySelector(".lct-seek-text").textContent : null,
+    /* The count says how far; the rail says how far LEFT. On a long
+       conversation the number crawls for a minute and a bare count reads as a
+       stalled job. */
+    rail: (() => {
+      const fill = document.querySelector("#lct-seek .lct-seek-rail > i");
+      if (!fill) return null;
+      const m = /scaleX\(([\d.]+)\)/.exec(fill.style.transform || "");
+      return {
+        present: true,
+        determinate: !document.getElementById("lct-seek").classList.contains("lct-seek-unknown"),
+        frac: m ? Number(m[1]) : null,
+        height: Math.round(document.querySelector("#lct-seek .lct-seek-rail").getBoundingClientRect().height)
+      };
+    })(),
     state: document.documentElement.dataset.lctSeekState
   }));
   // At 1,500 messages one pixel row spans three of them, so the top of the rail
@@ -1843,6 +1986,13 @@ try {
     opened.panel, JSON.stringify(opened));
   t("B2g the wait is named, with a real denominator",
     /^Loading older messages… [\d,]+ of 1,500$/.test(opened.pill || ""), String(opened.pill));
+  t("B2g …and shown as a rail, so a crawling number still reads as progress",
+    !!opened.rail && opened.rail.present && opened.rail.height > 0,
+    JSON.stringify(opened.rail));
+  t("B2g …determinate, because this host publishes a total",
+    !!opened.rail && opened.rail.determinate &&
+    opened.rail.frac !== null && opened.rail.frac >= 0 && opened.rail.frac < 1,
+    JSON.stringify(opened.rail));
   // The click that starts a seek is itself a pointerdown, and the loader's
   // stand-down listener is in capture phase: it must not cancel its own start.
   t("B2g the click that started the seek never cancels it", opened.state === "running");
@@ -2565,14 +2715,29 @@ try {
   const recall = await ctx.newPage();
   trackErrors(recall);
   await recall.goto(POPUP.replace("popup/popup.html", "recall.html"));
-  await recall.waitForSelector("#searchbox:not([hidden])", { timeout: 5000 });
+  /* #searchbox carries no `hidden` in the markup — loadPlan() is what puts one
+     there — so waiting on ":not([hidden])" matched the very first paint and
+     every assertion below raced the entitlement round-trip. Wait for the badge
+     to stop saying "…", which only the resolved verdict can do. */
+  await recall.waitForFunction(() =>
+    (document.getElementById("plan-badge")?.textContent || "…").trim() !== "…",
+    null, { timeout: 10000 });
   t("B11 recall page unlocked under trial", !(await recall.isVisible("#locked")));
   t("B11 recall page badge shows Trial", (await recall.textContent("#plan-badge")).trim() === "Trial");
   await recall.fill("#q", "architectural implications");
   await recall.waitForSelector("#results .r-item", { timeout: 5000 });
   t("B11 recall page search works", /Test Page/.test(await recall.textContent("#results .r-item")));
+  await recall.waitForFunction(() =>
+    /chats archived/.test(document.getElementById("stats")?.textContent || ""),
+    null, { timeout: 10000 }).catch(() => {});
   t("B11 recall page shows archive stats",
     /chats archived/.test(await recall.textContent("#stats")));
+
+  /* The operations left Total Recall: search is the Recall page, and checking
+     providers, backup, restore and delete are the Archive page. Same script on
+     both, so every selector below still resolves — only the URL moves. */
+  const ARCHIVE_URL = POPUP.replace("popup/popup.html", "archive.html");
+  await recall.goto(ARCHIVE_URL);
 
   // A reinstall offers the previous backup — and must NOT hold archiving
   // hostage to it. Blocking the pass meant a reinstalled browser quietly
@@ -2598,8 +2763,13 @@ try {
   await recall.evaluate(() => chrome.storage.local.set({
     "lct-recall-recovery-v1": { state: "ready" }
   }));
-  await recall.reload();
-  await recall.waitForSelector("#searchbox:not([hidden])", { timeout: 5000 });
+  // Recall unlocks with the trial once the restore prompt is cleared…
+  await recall.goto(POPUP.replace("popup/popup.html", "recall.html"));
+  await recall.waitForFunction(() =>
+    (document.getElementById("plan-badge")?.textContent || "…").trim() !== "…",
+    null, { timeout: 10000 });
+  // …and the operations are back on their own page.
+  await recall.goto(ARCHIVE_URL);
 
   // 5b) Durable worker-owned sync state. The live network sweep needs real
   // provider sessions; this covers the state contract the UI observes without
@@ -2642,10 +2812,16 @@ try {
   await recall.waitForFunction(() =>
     /Up to date|chats archived/.test(document.getElementById("sync-row-chatgpt")?.textContent || ""),
     null, { timeout: 5000 });
+  /* Asserted rather than waited-on: a bare waitForFunction that times out kills
+     the run and says only "timeout", so the one thing needed to fix it — what
+     the headline actually said — is the one thing it does not report. */
   await recall.waitForFunction(() =>
     /Everything is already backed up/.test(document.getElementById("sync-summary")?.textContent || ""),
-    null, { timeout: 5000 });
-  t("B11 empty delta reports everything already backed up", true);
+    null, { timeout: 5000 }).catch(() => {});
+  const summaryText = await recall.evaluate(() =>
+    document.getElementById("sync-summary")?.textContent || "(empty)");
+  t("B11 empty delta reports everything already backed up",
+    /Everything is already backed up/.test(summaryText), summaryText);
   await pop.waitForFunction(() =>
     /Everything is already backed up/.test(document.getElementById("sync-status")?.textContent || ""),
     null, { timeout: 5000 });
@@ -3189,6 +3365,8 @@ try {
     /[0-9]/.test(document.getElementById("stat-windowed")?.textContent || ""),
     null, { timeout: 8000 });
   const pulseBefore = await pop.textContent("#stat-windowed");
+  const pulseStatsBefore = await pop.evaluate(() => new Promise((r) =>
+    chrome.runtime.sendMessage({ type: "recall-stats" }, r)));
   await pop.evaluate(() => new Promise((res) => chrome.runtime.sendMessage({
     type: "recall-upsert",
     chat: { id: "chatgpt.com/c/pulse-1", host: "chatgpt.com", path: "/c/pulse-1",
@@ -3196,11 +3374,27 @@ try {
       msgs: [{ i: "p1", r: "user", t: "one" }, { i: "p2", r: "assistant", t: "two" },
              { i: "p3", r: "user", t: "three" }] }
   }, res)));
-  const moved = await pop.waitForFunction((was) =>
-    (document.getElementById("stat-windowed")?.textContent || "") !== was,
-    pulseBefore, { timeout: 12000 }).then(() => true).catch(() => false);
+  /* The keys are cleared on EVERY tick, not once before the reload. An open
+     chat tab re-reports its own windowed figure on a timer, and the headline
+     prefers that over the archive by design — so a single clear left this
+     racing a tab from an earlier block, and the number it read back was the
+     conversation's, unmoved, rather than the archive's. This block is about the
+     archive path, so it holds the archive path open. */
+  const moved = await pop.waitForFunction(async (was) => {
+    const all = await chrome.storage.local.get(null);
+    const live = Object.keys(all).filter((k) => k.startsWith("stats:"));
+    if (live.length) { await chrome.storage.local.remove(live); return false; }
+    return (document.getElementById("stat-windowed")?.textContent || "") !== was;
+  }, pulseBefore, { timeout: 12000, polling: 300 }).then(() => true).catch(() => false);
+  /* Two different failures wear the same face here: the archive not changing,
+     and the panel not repainting. Say which — a number that did not move is
+     not evidence of a stale popup unless the archive behind it moved. */
+  const pulseStatsAfter = await pop.evaluate(() => new Promise((r) =>
+    chrome.runtime.sendMessage({ type: "recall-stats" }, r)));
   t("B11f the archive count updates without closing the popup", moved,
-    pulseBefore + " -> " + (await pop.textContent("#stat-windowed")));
+    `${pulseBefore} -> ${await pop.textContent("#stat-windowed")}` +
+    ` | archive msgs ${pulseStatsBefore && pulseStatsBefore.msgs} -> ${pulseStatsAfter && pulseStatsAfter.msgs}` +
+    ` | chats ${pulseStatsBefore && pulseStatsBefore.chats} -> ${pulseStatsAfter && pulseStatsAfter.chats}`);
   await pop.evaluate((kept) => chrome.storage.local.set(kept), parkedStats);
 
   // Put the seeded ledger and salt back — the backup/restore handoff below is
@@ -3244,6 +3438,10 @@ try {
   await recall.setInputFiles("#import-file", fixPath);
   await recall.waitForSelector("#import-status.ok", { timeout: 10000 });
   t("B11 import reports success", /Imported 2 chats/.test(await recall.textContent("#import-status")));
+  await recall.goto(POPUP.replace("popup/popup.html", "recall.html"));
+  await recall.waitForFunction(() =>
+    (document.getElementById("plan-badge")?.textContent || "…").trim() !== "…",
+    null, { timeout: 10000 });
   await recall.fill("#q", "zebra-quantum-fixture");
   await recall.waitForFunction(() =>
     /fixture/.test(document.getElementById("results").textContent), null, { timeout: 5000 });
@@ -3298,6 +3496,8 @@ try {
   // 7) encrypted reinstall backup. It contains the archive plus compact
   // checkpoint ledger, but never the passphrase itself.
   const reinstallPassphrase = "test migration archive passphrase";
+  await recall.goto(ARCHIVE_URL);
+  await recall.waitForSelector("#backup-passphrase");
   await recall.fill("#backup-passphrase", reinstallPassphrase);
   await recall.fill("#backup-passphrase-confirm", reinstallPassphrase);
   // Scheduled backups are exercised on their own below; leaving them on here
@@ -3548,7 +3748,8 @@ try {
     await page.evaluate(() => !document.querySelector("#lct-bridge.lct-b-open")));
   t("B12 locked command explains why (not a silent no-op)",
     /Context Bridge is a Pro feature/.test(await page.textContent("#lct-note").catch(() => "")));
-  await recall.reload();
+  // The lock lives on the SEARCH page; this handle was last on Archive.
+  await recall.goto(POPUP.replace("popup/popup.html", "recall.html"));
   await recall.waitForSelector("#core-locked:not([hidden])", { timeout: 5000 });
   t("B11 recall page shows upsell when locked", await recall.isVisible("#core-locked"));
   // A locked page must offer both doors: the free week AND the way to pay.
@@ -3565,7 +3766,12 @@ try {
       chrome.runtime.sendMessage = real;
       return !!sent && sent.type === "checkout-start" && location.href === before;
     }));
-  // the file input itself is hidden by design — its label is the control
+  /* Import and wipe are the user's own data and are free at every plan — they
+     live on the Archive page now, and being locked out of SEARCH must not lock
+     anyone out of those. The file input itself is hidden by design; its label
+     is the control. */
+  await recall.goto(ARCHIVE_URL);
+  await recall.waitForSelector("#wipe");
   t("B11 locked page still owns import + wipe (user's data)",
     (await recall.isVisible('label[for="import-file"]')) && (await recall.isVisible("#wipe")));
 
@@ -3954,6 +4160,29 @@ try {
      step, and the reading is handed to the worker's own function rather than
      posted as a message — nothing here should depend on a round trip that a
      restart can land in the middle of. */
+  /* ---- B21h the backfill yields to the reader from the CLICK ----
+     The pacing yield stands the crawl down for BG_YIELD_MS, but it used to
+     start at OUR first foreground request — after the page had already asked
+     for its own transcript, by which time the crawl had spent the burst the
+     host allows and the reader's click was answered with "Too many requests".
+     The page now says it is here before anything else on a new route. */
+  {
+    const w = ctx.serviceWorkers()[0] || await ctx.waitForEvent("serviceworker", { timeout: 10000 });
+    const yielded = await w.evaluate(() => {
+      const host = "reader-test.example";
+      const before = readerActive(host);
+      readerHere(host);
+      return { before, after: readerActive(host), other: readerActive("someone-else.example") };
+    });
+    t("B21h a reader arriving stands the backfill down on THAT host",
+      yielded.before === false && yielded.after === true, JSON.stringify(yielded));
+    t("B21h …and on that host only", yielded.other === false, JSON.stringify(yielded));
+    const routed = await pop.evaluate(() => new Promise((res) =>
+      chrome.runtime.sendMessage({ type: "reader-here", host: "routed.example" }, res)));
+    t("B21h …and the signal is ungated: a page may always say it is here",
+      !!(routed && routed.ok), JSON.stringify(routed));
+  }
+
   const armNotes = async () => {
     const w = ctx.serviceWorkers()[0] || await ctx.waitForEvent("serviceworker", { timeout: 10000 });
     await w.evaluate(() => {
@@ -3967,10 +4196,21 @@ try {
     settings: { enabled: true, minimap: true, time: true, history: false, quota: true, quotaWarn: v }
   }), on);
 
-  /** Feed the worker a reading the way an observed response arrives. */
+  /** Feed the worker a reading the way an observed response arrives.
+   *
+   *  The stub is installed INSIDE the same evaluate that triggers the reading,
+   *  not by a separate round trip before it. Chrome recycles this worker
+   *  whenever it goes idle and that takes `self.__notes` with it — arming in
+   *  one call and observing in the next leaves a window for exactly that, and
+   *  when it landed there the assertion failed with an empty list: not a
+   *  product fault, a torn-down stub. One call has no gap to land in. */
   const observe = async (pct, opts = {}) => {
     const w = await armNotes();
     return w.evaluate(async ([p, withReset, fresh]) => {
+      if (!Array.isArray(self.__notes)) {
+        self.__notes = [];
+        chrome.notifications.create = (id, o) => { self.__notes.push({ id, opts: o }); return Promise.resolve(id); };
+      }
       if (fresh) await chrome.storage.local.remove(["quota:chatgpt|", "lct-quota-warned-v1"]);
       else await chrome.storage.local.remove("quota:chatgpt|");   // same window, new reading
       const json = { remaining: p, limit: 100 };
@@ -4267,15 +4507,455 @@ try {
     await pop.reload();
     await pop.waitForTimeout(2500);
     const row = await pop.evaluate(() => {
-      const el = document.getElementById("fill-archive");
+      // The row is the container now: it carries the state and the visibility,
+      // and #fill-archive is the hit area laid over it.
+      const el = document.getElementById("fill-row");
       return { hidden: el.hidden, title: document.getElementById("fill-title").textContent,
                sub: document.getElementById("fill-sub").textContent };
     });
     t("B21 the popup offers to fetch what is missing", !row.hidden, JSON.stringify(row));
     t("B21 …and says how many, and roughly how long",
       /\d/.test(row.title) && /min/.test(row.sub), JSON.stringify(row));
-    t("B21 …and says why it matters",
-      /Recall can only search what it has downloaded/.test(row.sub), row.sub);
+    t("B21 …and says why it matters, in the reader's terms",
+      /Search needs the words, not just the titles/.test(row.sub), row.sub);
+    /* "Download" meant two different things in one panel: this queue, which
+       fills the archive, and the backup FILE, which is what people were looking
+       for under that word. Neither borrows the other's verb now. */
+    t("B21 …and does not call filling the archive a download",
+      !/download/i.test(row.title) && !/download/i.test(row.sub),
+      JSON.stringify(row));
+
+    /* ---- B21a the row does not move when it starts working ----
+       A progress bar that is mounted when work starts adds its own height to
+       the row, and every row under it drops by that much — in a panel where
+       the thing below is the button somebody was reaching for. The rail is
+       therefore permanent and only its FILL changes, which is a transform.
+       Measured, not asserted from the stylesheet: the whole point is the
+       height the browser actually computes. */
+    const geom = await pop.evaluate(() => {
+      const row = document.getElementById("fill-row");
+      const bar = document.getElementById("fill-bar");
+      const fill = document.getElementById("fill-bar-fill");
+      const below = document.getElementById("backup-archive");
+      const read = () => ({
+        row: Math.round(row.getBoundingClientRect().height),
+        below: Math.round(below.getBoundingClientRect().top),
+        barShown: !bar.hidden && bar.getBoundingClientRect().height > 0
+      });
+      const idle = read();
+      // Exactly what a running queue does to this row.
+      row.classList.add("busy");
+      fill.style.transform = "scaleX(0.62)";
+      const busy = read();
+      row.classList.remove("busy");
+      fill.style.transform = "scaleX(0)";
+      return { idle, busy };
+    });
+    t("B21a the progress rail is there before there is any progress",
+      geom.idle.barShown, JSON.stringify(geom));
+    /* The Customize control shares the row with the fetch button. Withdrawing
+       it must not collapse its column: the title and sub would rewrap into the
+       space and the row would change height while somebody was reaching for the
+       button under it. */
+    const chooseGeom = await pop.evaluate(() => {
+      const row = document.getElementById("fill-row");
+      const choose = document.getElementById("fill-choose");
+      const h = () => Math.round(row.getBoundingClientRect().height);
+      choose.classList.remove("is-off");
+      const offered = h();
+      choose.classList.add("is-off");
+      const withdrawn = h();
+      choose.classList.remove("is-off");
+      return { offered, withdrawn, reachable: !choose.hidden };
+    });
+    t("B21a withdrawing Customize does not change the row's height",
+      chooseGeom.offered === chooseGeom.withdrawn, JSON.stringify(chooseGeom));
+    t("B21a a download starting does not change the row's height",
+      geom.idle.row === geom.busy.row, JSON.stringify(geom));
+    t("B21a …so nothing below it moves either",
+      geom.idle.below === geom.busy.below, JSON.stringify(geom));
+
+    /* ---- B21f the motion engine ----
+       Three pages animate through lib/motion.js, so its contract is worth
+       stating: one frame loop for everything in flight, a first paint that
+       does not animate a value nobody has seen, a mutation that happens
+       whether or not it can be animated, and a tween that lets go of an
+       element the page has thrown away. */
+    const motion = await pop.evaluate(async () => {
+      const M = self.LCTMotion;
+      const out = { present: typeof M };
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+      // A number nobody has seen is written, not counted to: there is nothing
+      // to travel from, and a count-up on first paint is decoration.
+      const el = document.createElement("span");
+      document.body.append(el);
+      out.firstPaintChanged = M.number(el, "probe:" + Math.random(), 500);
+      out.firstPaintText = el.textContent;
+
+      /* A percentage counting up through 62.4177% reads as a readout glitching,
+         not as a value arriving. Every figure this panel shows is a count or a
+         percentage, so the formatter is handed whole numbers and only whole
+         numbers — including on the frames in between. */
+      const pct = document.createElement("span");
+      document.body.append(pct);
+      const key = "pct-probe:" + Math.random();
+      const saw = [];
+      M.number(pct, key, 40, (n) => { saw.push(n); return n + "%"; });
+      M.number(pct, key, 95, (n) => { saw.push(n); return n + "%"; });
+      await wait(500);
+      out.formatterSawFractions = saw.filter((n) => !Number.isInteger(n)).length;
+      out.formatterFrames = saw.length;
+      out.pctFinal = pct.textContent;
+      pct.remove();
+
+      // FLIP performs the mutation. That is not optional — it is the caller's
+      // actual state change; only the travel is decoration.
+      let mutated = false;
+      M.flip([el], () => { mutated = true; });
+      out.flipMutated = mutated;
+
+      // A tween whose element has left the document stops on its own, rather
+      // than writing to a node nothing can see for the rest of its duration.
+      const gone = document.createElement("span");
+      document.body.append(gone);
+      let writes = 0;
+      M.tween({ from: 0, to: 100, dur: 400, el: gone, onUpdate: () => { writes++; } });
+      await wait(60);
+      const during = writes;
+      gone.remove();
+      await wait(200);
+      out.stoppedWhenDetached = writes === during && during > 0;
+
+      /* Every value in flight shares ONE frame callback. A loop per tween is
+         the usual way this gets written and it is why panels judder: each one
+         wakes the compositor on its own schedule. Counted inside a single
+         turn, before any frame can run, so this measures the engine and not
+         the machine's frame rate. */
+      await wait(150);                      // let any loop already going finish
+      const native = requestAnimationFrame;
+      let loops = 0;
+      self.requestAnimationFrame = (fn) => { loops++; return native(fn); };
+      const hosts = [];
+      for (let i = 0; i < 6; i++) {
+        const n = document.createElement("span");
+        document.body.append(n);
+        hosts.push(n);
+        M.tween({ from: 0, to: 10, dur: 300, el: n, onUpdate: () => {} });
+      }
+      out.loopsForSixTweens = loops;
+      self.requestAnimationFrame = native;
+      for (const n of hosts) n.remove();
+      el.remove();
+      return out;
+    });
+    t("B21f the pages share one motion engine", motion.present === "object",
+      JSON.stringify(motion));
+    t("B21f a value nobody has seen is written, not counted to",
+      motion.firstPaintChanged === false && motion.firstPaintText === "500",
+      JSON.stringify(motion));
+    t("B21f a counting number never shows a fraction of a percent",
+      motion.formatterSawFractions === 0 && motion.formatterFrames > 1 &&
+      motion.pctFinal === "95%", JSON.stringify(motion));
+    t("B21f a FLIP performs the change whether or not it animates it",
+      motion.flipMutated === true, JSON.stringify(motion));
+    t("B21f a tween lets go of an element the page removed",
+      motion.stoppedWhenDetached === true, JSON.stringify(motion));
+    t("B21f six tweens share one frame loop, not six",
+      motion.loopsForSixTweens === 1, JSON.stringify(motion));
+
+    /* ---- B21g one baseline ----
+       Every icon labels the TITLE beside it, and the two titles in a pair are
+       the same line of the panel. Centring each row on its own content looks
+       right until two rows differ in height — a description that wraps, a
+       progress rail, a fuller cell in the pair — and then the icons stop
+       agreeing with each other and the eye finds it immediately. This is
+       measured rather than looked at, because looking at it is what failed. */
+    const align = await pop.evaluate(() => {
+      const rows = [...document.querySelectorAll(".rows > .row")].filter((r) => !r.hidden);
+      const mid = (el) => { const b = el.getBoundingClientRect(); return b.top + b.height / 2; };
+      const icons = [];
+      for (const r of rows) {
+        const icon = r.querySelector(".row-icon");
+        const title = r.querySelector(".row-title");
+        if (icon && title) icons.push({ name: title.textContent.slice(0, 22), off: +(mid(icon) - mid(title)).toFixed(1) });
+      }
+      /* The toggles are a two-column grid, so two rows share a grid line. Their
+         titles have to share it too. */
+      const pairs = [];
+      const byTop = new Map();
+      for (const r of rows) {
+        const title = r.querySelector(".row-title");
+        if (!title) continue;
+        const key = Math.round(r.getBoundingClientRect().top);
+        if (!byTop.has(key)) byTop.set(key, []);
+        byTop.get(key).push(+title.getBoundingClientRect().top.toFixed(1));
+      }
+      for (const [, tops] of byTop) {
+        if (tops.length > 1) pairs.push(+(Math.max(...tops) - Math.min(...tops)).toFixed(1));
+      }
+      /* Even spacing is not "every row the same height" — a row with two lines
+         of description is taller and should be. It is that the SPACE around
+         the text is the same everywhere, and that rows carrying the same
+         amount of text come out the same height. */
+      const shape = rows.map((r) => {
+        const title = r.querySelector(".row-title");
+        const sub = r.querySelector(".row-sub");
+        const rb = r.getBoundingClientRect();
+        const last = (sub || title).getBoundingClientRect();
+        return { h: +rb.height.toFixed(1), under: +(rb.top + rb.height - (last.top + last.height)).toFixed(1) };
+      });
+      return { icons, pairs, shape };
+    });
+    const offs = align.icons.map((i) => i.off);
+    const spread = offs.length ? +(Math.max(...offs) - Math.min(...offs)).toFixed(1) : 0;
+    t("B21g every row's icon sits on its own title's line",
+      offs.length > 6 && offs.every((o) => Math.abs(o) < 1.5),
+      JSON.stringify(align.icons));
+    t("B21g …and all of them on the same baseline as each other",
+      spread < 1.5, `spread ${spread}px across ${offs.length} rows`);
+    t("B21g two titles sharing a grid line share a line on the screen",
+      align.pairs.length > 0 && align.pairs.every((d) => d < 1.5),
+      JSON.stringify(align.pairs));
+
+    /* The rhythm of the column. Rows differ in height when they differ in
+       content and that is right; what must not differ is the space around the
+       text, and the panel must not contain a dozen slightly different row
+       heights — which is what "the spacing looks odd" turned out to mean. */
+    const unders = align.shape.map((r) => r.under);
+    const underSpread = +(Math.max(...unders) - Math.min(...unders)).toFixed(1);
+    const heights = [...new Set(align.shape.map((r) => r.h))];
+    t("B21g the space under a row's text is the same in every row",
+      underSpread < 1.5, `spread ${underSpread}px: ${JSON.stringify(unders)}`);
+    t("B21g …and the panel settles into two row heights, not a dozen",
+      heights.length <= 2, JSON.stringify(heights));
+
+    /* The two ways to take the offer are one control group, so they are the
+       same control twice with a different weight. Stated once in .pro-actions
+       and asserted here, because "they look different sizes" is what a pair
+       whose geometry drifted apart looks like — and because an outline and a
+       fill of identical size do not read as identical, which is why the
+       secondary carries a surface of its own. */
+    const offer = await pop.evaluate(() => {
+      const trial = document.getElementById("trial-start");
+      const buy = document.getElementById("buy-pro");
+      /* The card these live in is hidden while a trial is running, and a
+         hidden ancestor measures every descendant as zero. Reveal the whole
+         chain, measure, put it back exactly as it was. */
+      const restore = [];
+      for (const el of [trial, buy]) {
+        for (let n = el; n && n !== document.body; n = n.parentElement) {
+          if (n.hidden) { restore.push(n); n.hidden = false; }
+        }
+      }
+      /* needs-signin deliberately ghosts both buttons — signing in is the step
+         in front of them, and "one filled action, not three" is the point of
+         that state. The pair being a matched surface is a claim about the
+         SIGNED-IN presentation, which is what this checks. */
+      const card = document.querySelector(".pro-card");
+      const wasNeedsSignin = card.classList.contains("needs-signin");
+      card.classList.remove("needs-signin");
+      const g = (e) => { const b = e.getBoundingClientRect(); const s = getComputedStyle(e);
+        return [Math.round(b.width), Math.round(b.height), s.borderTopLeftRadius,
+          s.paddingLeft, s.paddingRight, s.borderTopWidth, s.fontSize]; };
+      const out = { trial: g(trial), buy: g(buy),
+        sameRow: Math.round(trial.getBoundingClientRect().top) === Math.round(buy.getBoundingClientRect().top),
+        // Neither is a bare outline: an outline and a fill of the same size do
+        // not look the same size.
+        trialFilled: getComputedStyle(trial).backgroundColor !== "rgba(0, 0, 0, 0)",
+        buyFilled: getComputedStyle(buy).backgroundColor !== "rgba(0, 0, 0, 0)" };
+      if (wasNeedsSignin) card.classList.add("needs-signin");
+      for (const n of restore) n.hidden = true;
+      return out;
+    });
+    t("B21g the trial and the purchase are the same control, twice",
+      JSON.stringify(offer.trial) === JSON.stringify(offer.buy), JSON.stringify(offer));
+    t("B21g …side by side, and both of them a surface",
+      offer.sameRow && offer.trialFilled && offer.buyFilled, JSON.stringify(offer));
+
+    /* ---- B21b the backup file, and where its password lives ----
+       The archive is in this browser and nowhere else, so the file is the
+       safety net — and it existed only on the Recall page, which is why "where
+       do I set the password" had no answer in the popup. */
+    const backupRow = await pop.evaluate(() => {
+      const el = document.getElementById("backup-archive");
+      return el ? { hidden: el.hidden,
+                    title: document.getElementById("backup-title").textContent,
+                    sub: document.getElementById("backup-sub").textContent } : null;
+    });
+    t("B21b the popup offers the backup file at all",
+      !!backupRow && !backupRow.hidden, JSON.stringify(backupRow));
+    t("B21b …and reports the last one it wrote, with a count and a time",
+      /last backup/i.test(backupRow.sub) && /\d/.test(backupRow.sub), backupRow.sub);
+    /* The empty state is the one that has to name the password: it is the only
+       moment the reader is asking where to set it. */
+    const held = await pop.evaluate(async () => {
+      const k = "lct-recall-backup-marker-v1";
+      // The marker is durable: sync where it is available, local otherwise —
+      // getDurable() reads both, so clearing one leaves the other standing.
+      const was = (await chrome.storage.sync.get(k))[k] ||
+        (await chrome.storage.local.get(k))[k] || null;
+      await chrome.storage.sync.remove(k);
+      await chrome.storage.local.remove(k);
+      return was;
+    });
+    await pop.reload();
+    await pop.waitForTimeout(1200);
+    const emptyBackup = await pop.evaluate(() =>
+      document.getElementById("backup-sub").textContent);
+    t("B21b with nothing saved it says so, and names the password",
+      /nothing saved/i.test(emptyBackup) && /password/i.test(emptyBackup), emptyBackup);
+    await pop.evaluate(async (was) => {
+      if (was) await chrome.storage.sync.set({ "lct-recall-backup-marker-v1": was });
+      if (was) await chrome.storage.local.set({ "lct-recall-backup-marker-v1": was });
+    }, held);
+    await pop.reload();
+    await pop.waitForTimeout(1200);
+    t("B21b …in a different verb from the queue above it",
+      !/download/i.test(backupRow.title + backupRow.sub), JSON.stringify(backupRow));
+
+    /* Stopping is a state of its own. Without it the row went on saying "tap to
+       stop" after the tap — the click looked like it had done nothing. */
+    /* ---- B21c a dead worker says so, once, instead of a dozen times ----
+       Every module failing to load produced a panel of small emptinesses — no
+       counts, no allowance, rows stuck on "checking" — and they were reported
+       one at a time as separate bugs. Answered by bg.js before any module is
+       touched, because it is the one question a half-loaded worker can still
+       answer about itself. */
+    const health = await ask({ type: "worker-health" });
+    t("B21c the worker can be asked whether it started at all",
+      !!health && health.ok === true, JSON.stringify(health));
+    t("B21c …and names its modules, so a partial load can be counted",
+      !!health && Number(health.modules) > 10 &&
+      Array.isArray(health.failed) && health.failed.length === 0, JSON.stringify(health));
+    const deadBanner = await pop.evaluate(() => {
+      const el = document.getElementById("worker-dead");
+      return el ? el.hidden : null;
+    });
+    t("B21c …and a live worker shows no alarm", deadBanner === true, String(deadBanner));
+
+    /* ---- B21d choosing what to fetch ----
+       The queue is per chat, so the choice is per chat. A provider left out is
+       not fetched; one named with no list is fetched whole; no choice at all
+       still means everything, which is what every earlier caller sent. */
+    const queue = await ask({ type: "archive-fill-queue" });
+    t("B21d the queue can be listed for a person to choose from",
+      !!queue && Array.isArray(queue.platforms), JSON.stringify(queue && Object.keys(queue)));
+    t("B21d …per provider, with a real count",
+      (queue.platforms || []).every((p) => p.id && p.label && Number.isFinite(p.total)),
+      JSON.stringify((queue.platforms || []).map((p) => [p.id, p.total])));
+    t("B21d …and with titles, never message text",
+      (queue.platforms || []).every((p) => (p.chats || []).every((c) =>
+        c && typeof c.id === "string" && typeof c.title === "string" && !("t" in c))),
+      JSON.stringify((queue.platforms || [])[0] || null).slice(0, 200));
+    /* A provider whose text is all here is still a row with chats in it: they
+       can be fetched AGAIN, and offering that for one provider while refusing
+       it for five is what made the page look broken. */
+    t("B21d …and a finished provider still lists what it holds",
+      (queue.platforms || []).every((p) => p.total > 0 || (p.chats || []).length > 0 || !p.archived),
+      JSON.stringify((queue.platforms || []).map((p) => [p.id, p.total, p.archived, (p.chats || []).length])));
+    t("B21d …saying of each chat whether its text is already here",
+      (queue.platforms || []).every((p) => (p.chats || []).every((c) => typeof c.held === "boolean")),
+      JSON.stringify(((queue.platforms || [])[0] || {}).chats?.[0] || null));
+    const startReply = await ask({ type: "archive-fill-start", pick: { chatgpt: ["chatgpt.com/c/nothing-here"] } });
+    const persisted = await pop.evaluate(async () =>
+      ((await chrome.storage.local.get("lct-fill-v1"))["lct-fill-v1"] || {}).pick);
+    /* Written before the run begins, because the watchdog restarts fillStart()
+       with nothing in hand after a reclaim — a choice in memory would quietly
+       widen back to everything. */
+    t("B21d a choice is persisted with the queue, not held in a variable",
+      !!persisted && Array.isArray(persisted.chatgpt), JSON.stringify(persisted));
+    t("B21d …and the caller is told what actually happened",
+      !!startReply && typeof startReply.how === "string", JSON.stringify(startReply));
+    /* …and CONSUMED by the pass that used it. Left behind, it narrowed every
+       later fetch to the same handful for good: the auto queue re-ran those
+       chats, reported "partial" because the rest were still waiting, and came
+       back to run the same ones again — a fetch button that does nothing,
+       forever, bought with one visit to the picker. */
+    await ask({ type: "archive-fill-stop" });
+    /* Waited on the PASS ending, not on `running` going false: `running` is a
+       module variable in a worker that gets reclaimed, so it reads false while
+       the pass is still on its way to its own last write — which is where the
+       choice is consumed. `finishedAt` moving is that write. */
+    const consumed = await pop.evaluate(async (before) => {
+      /* Either signal ends the wait, because either one settles the question:
+         the pass wrote its ending, or the choice is already gone. Waiting on
+         `finishedAt` ALONE flakes in both directions — the pass can end before
+         this poll starts (so the timestamp never moves for us), and under the
+         load of a full run it can take longer than a short window allows. */
+      for (let i = 0; i < 80; i++) {
+        const held = (await chrome.storage.local.get("lct-fill-v1"))["lct-fill-v1"] || {};
+        if (held.pick == null || Number(held.finishedAt) > before) {
+          return held.pick === undefined ? null : held.pick;
+        }
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      const held = (await chrome.storage.local.get("lct-fill-v1"))["lct-fill-v1"] || {};
+      return "the choice outlived its pass: " + JSON.stringify(held);
+    }, Date.now() - 1);
+    t("B21d …and is consumed by the pass that used it, never left to narrow the next",
+      consumed === null || consumed === undefined, JSON.stringify(consumed));
+    await pop.evaluate(async () => {
+      const k = "lct-fill-v1";
+      const held = (await chrome.storage.local.get(k))[k] || {};
+      await chrome.storage.local.set({ [k]: { ...held, pick: null, state: "partial" } });
+    });
+
+    /* ---- B21e it is its own page ----
+       Total Recall is the SEARCH feature and it is gated. Deciding what the
+       archive should hold is neither, and burying a free control inside a paid
+       page is how a thing that works comes to look like a thing you have not
+       bought. */
+    const fetchPage = await ctx.newPage();
+    trackErrors(fetchPage);
+    await fetchPage.goto(POPUP.replace("popup/popup.html", "fetch.html"));
+    await fetchPage.waitForSelector("#fill-picker", { timeout: 10000 });
+    const picker = await fetchPage.evaluate(() => ({
+      shown: !document.getElementById("fill-picker").hidden,
+      rows: document.querySelectorAll("#fill-picker-list .pick-row").length,
+      empty: !document.getElementById("fill-picker-empty").hidden,
+      go: !!document.getElementById("fill-pick-go")
+    }));
+    t("B21e the picker has a page of its own", picker.shown && picker.go,
+      JSON.stringify(picker));
+    t("B21e …and shows either a queue or an honest empty state",
+      picker.rows > 0 || picker.empty, JSON.stringify(picker));
+
+    /* The list is EDITED, never rebuilt. Rebuilding it on every tick throws
+       away the checkbox that has focus and the reader's place in a list of a
+       thousand titles, and moves everything below whatever was clicked — for
+       a checkbox, which is the smallest interaction there is. Focus surviving
+       a click is the observable proof the nodes survived it. */
+    if (picker.rows > 0) {
+      const kept = await fetchPage.evaluate(async () => {
+        const box = document.querySelector(".pick-row input[type=checkbox]");
+        box.id = box.id || "pick-probe";
+        const before = box;
+        box.focus();
+        box.click();                                   // select this provider
+        await new Promise((r) => setTimeout(r, 250));
+        const after = document.querySelector(".pick-row input[type=checkbox]");
+        return {
+          sameNode: before === after,
+          stillFocused: document.activeElement === after,
+          go: (document.getElementById("fill-pick-go").textContent || "")
+        };
+      });
+      t("B21e ticking a provider does not rebuild the list under the reader",
+        kept.sameNode && kept.stillFocused, JSON.stringify(kept));
+      t("B21e …and the button says how much was chosen",
+        /\d/.test(kept.go), kept.go);
+    }
+
+    await fetchPage.close();
+    const stillOnRecall = await recall.evaluate(() => !!document.getElementById("fill-picker"));
+    t("B21e …and is not buried in the gated one", stillOnRecall === false,
+      String(stillOnRecall));
+
+    const fillContract = await ask({ type: "archive-fill-state" });
+    t("B21b the worker reports stopping as its own state, not as running",
+      fillContract && "stopping" in fillContract && fillContract.stopping === false,
+      JSON.stringify(fillContract && { running: fillContract.running, stopping: fillContract.stopping }));
   }
 
   /* ---- B22. Nobody should have to ask for their own backup ----
@@ -4394,9 +5074,14 @@ try {
     /* The stopped run's own last write is "stopped", and it lands whenever the
        loop notices the cancel — after this line if it is not waited for, which
        would park the queue again behind the re-arm below. */
+    /* `running` goes false the moment a cancel is pending — that is what makes
+       the popup's stop button feel like it did something. "Still draining" is
+       its own state now, so waiting for the run to actually END means waiting
+       for both, or the write below lands mid-drain and the run's own final
+       "stopped" overwrites it. */
     for (let i = 0; i < 40; i++) {
       const st = await ask({ type: "archive-fill-state" });
-      if (st && !st.running) break;
+      if (st && !st.running && !st.stopping) break;
       await pop.waitForTimeout(250);
     }
     await pop.evaluate(async () => {

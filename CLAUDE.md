@@ -119,6 +119,128 @@ reload started the whole sweep again and the panel went back to "Capturing 35 of
 the extension VERSION, and that is what tells the two apart; an empty archive
 still runs, so a first pass that failed is not left stuck.
 
+**A dead worker must say so once, not a dozen times.** Every `bg/` module
+failing to load produced a panel of small emptinesses — no counts, no
+allowance, rows stuck on "checking" — and they get reported one at a time as
+separate bugs. `worker-health` is answered by `bg.js` BEFORE any module is
+touched, because it is the one question a half-loaded worker can still answer
+about itself, and the popup raises `#worker-dead` naming the files that could
+not be read. Silence counts: a worker that cannot answer that did not start.
+
+**A dead worker gets one chance to fix itself.** Naming the files that would
+not load is the diagnosis, not the cure: the extension stays dead until
+somebody presses Reload, and nobody does — the symptom reads as six separate
+features being broken rather than as one worker that never started. Every time
+this has been seen the files were on disk and readable, so what is stale is the
+service-worker registration, and `chrome.runtime.reload()` is what rebuilds it.
+`bgHeal()` does that at most twice, keyed on the extension VERSION and cleared
+by a healthy start, and the count is written BEFORE the reload — an unrecorded
+attempt is an extension that restarts itself forever. `bgHealNext()` is pure so
+the bound is provable without a browser (`test/test-parsers.mjs`); it is the one
+thing here that must never be wrong.
+
+**A rate-limit floor must never be able to create a permanent blank.**
+`quotaPoll` skips a platform polled recently — and returned before writing
+anything, so one early poll that set the clock without leaving a probe report
+blocked every later attempt and the row sat on "checking…" for the life of the
+install. The floor now applies only once something has been LEARNED about that
+platform: no probe report means it has never been read at all.
+
+**A 403 is two different facts wearing one number.** Cloudflare's managed
+challenge is served as `403` with `cf-mitigated: challenge` and an HTML
+"Just a moment…" body, and claude.ai serves exactly that to the worker's
+fetches. `bgFetch` called every 403 `auth`, so it reached the panel as
+**"Not signed in"** on an account that was signed in the whole time — the least
+actionable thing this extension can say, and the one wrong answer that looks
+like a real one. A challenge is now its own kind: the row says the provider
+blocked the background check and that opening the site in a tab clears it, the
+stored allowance rows are NOT retired (the session is intact, so they are still
+about the right person), and `signedOut` stays false. Only `401`, and a `403`
+whose body is not the interstitial, is still a verdict about the session.
+
+A provider that could not be ASKED — signed out, or refused at the edge — is
+excluded from the headline exactly as a signed-out one always was
+(`unreachable()` in `bg/status.js`). Its own row still says what happened,
+which is where it is actionable; leading with it meant the reassuring line a
+fully-synced archive has earned could never appear. The suite proves the
+classifier against the live edge: it has no Claude mock, so `claude.ai` answers
+the real challenge.
+
+**Total Recall is the search, and nothing else.** Checking providers for new
+chats, the encrypted reinstall backup, restoring one, choosing what text to
+fetch and deleting the archive are all FREE, and a free control reached only
+through a paid page reads as a thing you have not bought. `fetch.html` took the
+picker; `archive.html` takes the rest, and `recall.html` keeps a door to both.
+One script (`recall-page.js`) still serves both pages, so every top-level hook
+goes through `on(id, ev, fn)` and every paint tolerates an absent node — a
+control that lives on the other page is missing, not broken.
+
+**One endpoint answering nothing is not a signed-out session.** Claude's
+`prepare()` read `/api/organizations` and, finding no usable org, declared the
+session dead — which sends somebody to sign in to an account they are already
+signed into. It falls back to `/api/bootstrap`, which claude.ai itself loads on
+every visit and carries the same organisations under `account.memberships`; only
+when NEITHER names one is this signed out. An `auth` refusal still short-circuits,
+because that one is final.
+
+**A finished provider is not a missing one.** The picker was built from the
+stub index — chats holding a title and no text — so a provider whose text was
+all fetched had no stubs and `fillQueue` skipped it entirely. Five of six
+platforms vanished from the one page whose job is to say what is there, and
+missing read exactly like never archived. `fillQueue()` now makes ONE pass over
+the archive and returns every chat a provider holds, each carrying `held` —
+replacing a stub list plus a batched re-read of it. A row says `624 waiting` or
+`all 28 fetched · re-fetch`; a finished provider opens like any other, because
+text already here can be fetched AGAIN: a conversation carried on since it was
+archived has messages this copy does not.
+
+**Customize belongs on the button it customizes.** "Choose what to fetch" had a
+row of its own and read as a second thing to do. It is one decision about the
+fetch button, so it sits on that row. A `<button>` cannot contain another and
+the icon and text must stay direct children of the row's grid, so the hit area
+is a real button laid UNDER them (`.row-hit`, `inset: 0`) with both above it.
+When there is nothing to choose the control is WITHDRAWN, not removed
+(`visibility`, never `hidden`): its column stays, so the sub-line cannot rewrap
+and the row cannot change height under a reaching hand. B21a measures it.
+
+**Choosing what to fetch is its own page (`fetch.html`), not a Recall panel.**
+Recall is the SEARCH feature and it is gated. Deciding what the archive should
+hold is neither, and burying a free control inside a paid page is how a thing
+that works comes to look like a thing you have not bought.
+
+**A choice describes ONE pass.** The pick is persisted rather than held in a
+variable so a worker reclaimed mid-run resumes the same choice — and it was
+never cleared, so a pass that FINISHED left it behind and every later fetch was
+narrowed to the same handful for good: the auto queue re-ran two chats, reported
+"partial" because five hundred were still waiting, and came back to run the same
+two again. From the outside that is a fetch button that does nothing, forever,
+bought with one visit to the picker. `fillStart()` clears it at its own end; the
+reclaim path never reaches there, which is exactly the distinction that matters.
+
+An explicit list is the whole instruction, not a filter over the stubs.
+Intersecting the two dropped any chat whose text was already here, so ticking it
+did nothing. Scoped to the adapter's HOST, never host+prefix — three providers
+store one chat under two spellings (`chatIdCandidates`), so a prefix test would
+reject the very ids this page just handed out.
+
+**A run reads its choice once, before the loop.** So handing a new one to a run
+already in flight changed nothing, and the router answered `started: true`
+anyway — pick three chats while a download is going, press Fetch selected, and
+the page says it has begun while the old queue carries on. `fillRestart()`
+stops, waits for the loop to land, and starts on the new choice; where it cannot
+(a fetch still in the air) it answers `busy` and the page says so rather than
+claiming success.
+
+**Fetching text is per chat, so choosing what to fetch is per chat.**
+`archive-fill-start` takes an optional `pick` — a provider left out is not
+fetched, one named with no list is fetched whole, and no `pick` at all still
+means everything. It is persisted with the queue, never held in a variable: the
+watchdog alarm restarts `fillStart()` with nothing in hand after a reclaim, so a
+choice in memory would quietly widen back to everything. `archive-fill-queue`
+lists what is waiting per provider with TITLES only — the words are the thing
+that has not been fetched yet — and the per-provider cap is stated on screen,
+because a cap nobody mentions is a lie about how much is there.
+
 ## Background work
 
 Everything archives itself. Nothing waits to be asked, and nothing reads
@@ -132,6 +254,24 @@ whether the browser is focused.
 - `resumeIfUnfinished()` on `wake()` — a browser restart clears alarms, so
   outstanding work is rebooked from what the last pass wrote about itself.
 - `lct-fill-resume` — 1 min, repeating, for the text-fill queue.
+- **The text queue runs every provider at once, and several chats within each.**
+  Six hosts have six independent budgets and six independent pacers; one
+  signed-out or cooling provider used to hold every other queue behind it. The
+  lanes inside a provider do NOT make it faster than the host permits —
+  `hostSlot()` holds `intervalFor(host)` between request STARTS whatever is
+  waiting on it — they stop the pipe standing empty while a response is in the
+  air. `targetConcurrency()` is re-read per chat, so a 429 narrows the queue on
+  the next one; lane 0 always survives, so a narrowed queue slows rather than
+  stops. The fixed `FILL_PAUSE_MS` sleep is gone: it was a second rate floor
+  outside the pacing code, and it made every chat cost the interval PLUS the
+  round trip PLUS 350 ms.
+- **`BG_HOURLY_CAP` is a budget, not the rate limiter.** What protects a session
+  is `intervalFor()` doubling on the FIRST refusal and the circuit breaker
+  tripping on the third — both driven by the provider's own signal. At 400 the
+  cap was the binding constraint on every large archive: the hour ran out long
+  before the work did, whatever the fetch speed. 1,200 is one request per three
+  seconds averaged over an hour, well under the one-per-500 ms already permitted
+  in a burst.
 - Budget: `BG_PASS_BUDGET_MS` (4 min) covers the **listing and the fetching**
   together, with `BG_MIN_FETCH_MS` (60 s) guaranteed to the fetch loop so a slow
   listing can never starve it.
@@ -252,6 +392,24 @@ percentage the provider stated over one computed from a pair. Counts are
 untouched: a provider can meter several different things on one clock, but it
 never states two different shares of one allowance.
 
+**A provider that publishes two windows is answering two questions.** Claude
+states a five-hour session limit AND a week; the row leads with the one that
+stops you soonest and the figure is a BUTTON that steps to the others.
+`ranked()` in `lib/quota.js` is the whole list, `primary()` its head. Two rules
+the switch cannot break: only windows that STATE a figure are options — landing
+on "not reported" is a step to nothing, though it is still a real row when it is
+all a provider gave us — and the list is sorted by each row's LEADING window,
+never the selected one, or a row jumps out from under the cursor as you step
+through it. The choice lives in `winPick`, outside the paint, because the panel
+repaints every few seconds.
+
+**A platform with no allowance to publish is not a row on this panel.**
+`NO_ALLOWANCE` holds DeepSeek, which enforces with 429 plus a proof-of-work
+challenge and has no quota endpoint, so its row could only ever say "no limit
+published" — a permanent line of nothing among the figures. It is archived like
+every other provider; only the placeholder is suppressed, so the day it does
+publish a number the row comes back.
+
 **The session limit is the one that stops you.** A window now carries how long
 it IS (`spanSec`, from what the provider calls it — `five_hour`, `seven_day`,
 `weekly`), and `rank()` breaks a tie by preferring the SHORTER one. Claude
@@ -304,6 +462,114 @@ Rules the panel cannot break:
   the cached handshake first, because signing in as a different account is
   exactly when a five-minute-old context describes the wrong person. The open
   panel's own minute tick is `watch`, which goes through every floor there is.
+
+## Motion, and why there is no animation library
+
+`lib/motion.js` is loaded by the popup, Total Recall, the fetch picker and the
+onboarding page. It is not a small GSAP: it is the four things an animation
+library actually gets used for here, and nothing else.
+
+- **There cannot be a library.** `script-src 'self'` blocks every CDN, so any
+  runtime would have to be vendored — tens of kilobytes in front of a panel
+  whose whole promise is that it is fast, and on six content scripts if it went
+  there too. The GSAP *technique* is what is worth having; the download is not.
+- **One `requestAnimationFrame` loop for every value in flight.** A loop per
+  tween is how this usually gets written and it is why panels judder. Asserted:
+  six tweens started in one turn schedule exactly ONE frame callback.
+- **Transform and opacity only.** Nothing animates width, height, top or left.
+  The progress rail fills by `scaleX`, not by width.
+- **`quickTo` retargets rather than restarts**, for values written on a timer.
+- **A hidden document runs nothing.** Every job finishes on the spot and the
+  loop is cancelled — a closed popup must not hold a frame callback open.
+- **The formatter of a counting number always receives a WHOLE number.**
+  Rounding inside each caller means the one that forgets counts a percentage up
+  through 62.4177%, which reads as a readout glitching rather than a value
+  arriving. It is rounded once, in `number()`, and a frame that lands on the
+  same integer writes nothing at all.
+- **`prefers-reduced-motion` turns every entry point into a plain assignment** —
+  including `flip()`, which still performs the caller's mutation, because that
+  is the actual state change and only the travel was decoration.
+
+## Nothing moves that the reader did not move
+
+A control that appears mid-glance pushes everything under it, and what that
+reads as is the panel lurching — usually at the exact moment somebody is
+reaching for the button below it. Three rules, in order of preference:
+
+1. **Reserve the space.** `.fill-bar` is a permanent hairline rail: it is
+   already there before there is any progress, and only its fill moves. It used
+   to be `hidden` until a download started, which added ten pixels to that row
+   and dropped every row beneath it. A sub-line that changes at runtime
+   (`.row-sub[aria-live]`) holds two lines' worth of room whether it needs them
+   or not. `test/test-extension.mjs` B21a measures the row's computed height
+   idle and busy and requires them equal.
+2. **Where a change genuinely adds or removes something, FLIP it.** Measure,
+   let the layout happen, then animate the difference away as transforms:
+   nothing reflows during the motion and every row lands where the browser was
+   going to put it anyway. `showRows()` in the popup routes every appearing and
+   disappearing row through this.
+3. **Placeholders are the same size as the thing they stand in for**, and they
+   never wear that thing's class. A skeleton row wearing `.r-item` or
+   `.pick-row` is counted as a result by everything downstream — the
+   empty-archive notice read one as a hit, and a test waiting for the first
+   search result matched a grey box with no text in it.
+
+The picker (`fetch-page.js`) is built once and EDITED. Rebuilding it on every
+tick throws away the checkbox that has focus and the reader's place in a list of
+a thousand titles — for a checkbox, which is the smallest interaction there is.
+
+Hover changes colour, never geometry: that rule predates all of this and it
+stays. A PRESS is different — it is the moment somebody committed to something,
+and it is answered in the same frame with a small `scale()`.
+
+## Walking the archive
+
+Three rules, all measured against a real browser rather than `fake-indexeddb`,
+which has no IPC and will tell you the opposite (it did):
+
+- **`openCursor` is one request per record.** `scanChats()` in `bg/store.js`
+  reads a page of whole records per request instead, on ONE transaction — the
+  next `getAll` is issued from inside the previous one's `onsuccess`, before
+  control returns to the event loop, so the walk is still a snapshot. A walk
+  split across transactions is not, and the sync engine writing while a search
+  reads could then skip a record or count one twice.
+- **Reading N records by id is N transactions unless you say otherwise.**
+  `recordsByIds()` issues every `get` synchronously on one transaction so they
+  pipeline: 400 chats went from 40 ms to 8 ms. The fetch picker was doing a
+  `recordFor()` per chat — up to eight hundred transactions per provider just
+  to put titles on a list.
+- **A visitor that throws inside an IndexedDB event handler settles nothing.**
+  The promise would neither resolve nor reject and every caller would hang for
+  the life of the worker. One malformed record must not be able to do that.
+
+## Searching as you type
+
+Search is AND over substrings, so adding characters can only ever NARROW the
+answer: a chat containing "attention" already contains "atten", and a chat that
+fails on an added word was going to fail anyway. So a query that extends the
+last one is answered from that query's results rather than from the archive —
+on 2,000 chats and 14 MB, 80 ms for the first keystroke and 2 ms for every one
+after it.
+
+- `narrowsFrom()` is the whole rule and it is pure, so it is tested without a
+  store. Saying "yes" wrongly loses search results silently, which is the one
+  failure this project must not have — so a word shortened, changed, removed or
+  reordered all go back to the archive.
+- The set is held against the archive's write counter (`archiveSeq`), or a chat
+  the sync engine adds stays invisible until the query is retyped.
+- Only while the set is small: narrowing five thousand candidates is not cheaper
+  than the scan it replaces.
+- **`scanned` still describes the ARCHIVE**, not the handful of records re-read
+  to answer. "no matches in 12 chats" would be a false statement about an
+  archive of two thousand.
+
+`mayMatch()` is the other half: one missing word is the whole chat gone, and
+answering that with a case-insensitive regex against the text already in memory
+allocates nothing, where building a lowercase copy of every chat allocated the
+whole archive. It runs only for plain-ASCII queries — across the whole of
+Unicode, `toLowerCase()` and regex case folding are not guaranteed to agree, and
+a fast path that drops a real result is worse than no fast path. It is only ever
+allowed to be wrong in the safe direction, and 4,000 random cases check that.
 
 ## Numbers move
 

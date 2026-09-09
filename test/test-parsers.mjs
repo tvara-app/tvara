@@ -47,10 +47,10 @@ const grab = (name) => {
 };
 
 const NAMES = ["geminiValueEnd", "geminiFrames", "geminiPayloads", "geminiTime", "geminiAt", "geminiText", "geminiTierName",
-  "pplxTime", "pplxFromTrace", "pplxAnswer", "xaiTime", "chatBranch", "chatgptMsgs", "turnMsgs", "planName", "claudeOrgCtx", "planRank", "bestPlanSeat", "clampText", "planFromAny", "pickAllowanceSeat"];
+  "pplxTime", "pplxFromTrace", "pplxAnswer", "xaiTime", "chatBranch", "chatgptMsgs", "turnMsgs", "planName", "claudeOrgCtx", "planRank", "bestPlanSeat", "clampText", "planFromAny", "pickAllowanceSeat", "bgHealNext", "narrowsFrom"];
 const {
   geminiFrames, geminiPayloads, geminiTime, geminiAt, geminiText, geminiTierName, pplxTime, pplxFromTrace, pplxAnswer, xaiTime,
-  chatgptMsgs, turnMsgs, planName, claudeOrgCtx, bestPlanSeat, planRank, clampText, planFromAny, pickAllowanceSeat
+  chatgptMsgs, turnMsgs, planName, claudeOrgCtx, bestPlanSeat, planRank, clampText, planFromAny, pickAllowanceSeat, bgHealNext, narrowsFrom
 } = await import("data:text/javascript," + encodeURIComponent(
   NAMES.map(grab).join("\n") + `\nexport {${NAMES.join(",")}};`));
 
@@ -394,6 +394,43 @@ t("read keeps a stored picture",
   turnMsgs([{ t: "hi" }, { t: "", m: 1 }]).length === 2);
 t("read leaves a clean record's own array alone",
   (() => { const a = [{ t: "hi" }, { t: "yes" }]; return turnMsgs(a) === a; })());
+
+
+/* ---------- the worker's own restart ----------
+   A dead worker reloads the extension to rebuild its registration. The bound is
+   the whole safety of that: unrecorded or mis-keyed, it is an extension that
+   restarts itself forever. */
+t("heal reloads a worker that lost its modules", bgHealNext(null, "1.0.0", false) === "reload");
+t("heal reloads a second time", bgHealNext({ version: "1.0.0", tries: 1 }, "1.0.0", false) === "reload");
+t("heal stops at the bound", bgHealNext({ version: "1.0.0", tries: 2 }, "1.0.0", false) === "stop");
+t("heal stays stopped past the bound", bgHealNext({ version: "1.0.0", tries: 9 }, "1.0.0", false) === "stop");
+// A new build is a new chance: the record is keyed by version, not by install.
+t("heal tries again after an upgrade", bgHealNext({ version: "0.9.0", tries: 2 }, "1.0.0", false) === "reload");
+// And a healthy start is what clears it, or the next real failure is unhealable.
+t("heal clears a spent record on a healthy start",
+  bgHealNext({ version: "1.0.0", tries: 2 }, "1.0.0", true) === "clear");
+t("heal writes nothing when there is nothing to clear",
+  bgHealNext(null, "1.0.0", true) === "");
+
+/* ---------- searching as you type ----------
+   Adding characters can only narrow an AND search over substrings, so a query
+   that extends the last one is answered from the last one's results instead of
+   from the whole archive. Saying "yes" wrongly here loses search results
+   silently, which is the one failure this project must not have. */
+const prev = (words) => ({ words, ids: [], scanned: 1, seq: 0 });
+t("narrowing: a word being typed out", narrowsFrom(prev(["atten"]), ["attention"]) === true);
+t("narrowing: the same query again", narrowsFrom(prev(["atten"]), ["atten"]) === true);
+t("narrowing: a second word added", narrowsFrom(prev(["atten"]), ["atten", "layer"]) === true);
+t("narrowing: a word typed out AND another added",
+  narrowsFrom(prev(["atten"]), ["attention", "la"]) === true);
+// Every one of these can WIDEN the answer, so every one goes back to the archive.
+t("widening: a character deleted", narrowsFrom(prev(["attention"]), ["attentio"]) === false);
+t("widening: the word replaced", narrowsFrom(prev(["attention"]), ["retrieval"]) === false);
+t("widening: a word removed", narrowsFrom(prev(["atten", "layer"]), ["atten"]) === false);
+t("widening: an EARLIER word edited", narrowsFrom(prev(["atten", "layer"]), ["atte", "layer"]) === false);
+t("widening: the words reordered", narrowsFrom(prev(["atten", "layer"]), ["layer", "atten"]) === false);
+t("nothing to narrow from", narrowsFrom(null, ["atten"]) === false);
+t("nothing to narrow from, empty", narrowsFrom(prev([]), ["atten"]) === false);
 
 
 if (failed.length) {

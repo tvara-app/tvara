@@ -902,6 +902,29 @@ try {
     lapsedDetails === 5 && idsFor(await rows(), "chatgpt.com/c/alice-").length === 4,
     `${lapsedDetails} conversation fetches`);
 
+  /* ---- N. a probe that found nothing is still a finding ----
+     quotaProbe() used to hand back a report and not store it on the two paths
+     that matter most — no adapter, and a handshake that never landed. So a
+     platform whose session is gone was never marked as CHECKED: the popup row
+     said "checking…" for the life of the install, and the diagnostics panel,
+     which exists to explain exactly that, had nothing to show. */
+  await providers.control({ gemini: { signedIn: false } });
+  await send({ type: "quota-refresh", platform: "gemini", reason: "manual" });
+  const probed = await local("lct-quota-probe-v1");
+  const gemProbe = (probed && probed.gemini) || null;
+  t("N1 a platform that could not be reached is still recorded as checked",
+    !!gemProbe, JSON.stringify(probed && Object.keys(probed)));
+  /* And it says WHICH silence. "The provider publishes none" is a statement
+     about the provider; a handshake that never landed is a statement about the
+     session, and they want different remedies from the reader. */
+  t("N1 …and the record says which silence it was",
+    !!gemProbe && /not signed in|unreachable|published no allowance|no candidate/
+      .test(String(gemProbe.note || "")),
+    JSON.stringify(gemProbe && { note: gemProbe.note, error: gemProbe.error }));
+  t("N1 …so the row can say it, rather than sitting on 'checking'",
+    !!gemProbe && Array.isArray(gemProbe.working) && gemProbe.working.length === 0,
+    JSON.stringify(gemProbe && gemProbe.working));
+
   /* ================= I. the network guard ================= */
   /* bgFetch attaches the user's session to every request it makes, so the set
      of hosts it will call is a security boundary, not a detail. It is derived
