@@ -675,6 +675,13 @@ button.usage-switch:focus-visible { outline: 1px solid var(--ink-dim); outline-o
   display: grid;
   grid-template-columns: 1fr 1fr;
   column-gap: 18px;
+  /* Each row is its own height, not its grid track's. A track is as tall as
+     the fuller of the two cells, and a stretched cell puts all of that slack
+     UNDER its text — so the moment the toggles' descriptions became tooltips,
+     the one row that still carries a sub-line (Allowance, whose "sub-line" is
+     two controls) stretched its partner and left it with 18px of nothing
+     beneath a single line. B21g measures exactly that, and caught it. */
+  align-items: start;
 }
 /* A toggle row is the ONLY thing that takes half the width. Everything else
    spans the pair by default, because a panel left in one column sizes that
@@ -703,8 +710,12 @@ button.usage-switch:focus-visible { outline: 1px solid var(--ink-dim); outline-o
   display: grid;
   grid-template-columns: var(--icon-col) minmax(0, 1fr) auto;
   align-items: start;
+  /* No floor. 32px was one line of title plus a line of description; with the
+     descriptions moved to tooltips it became 13px of nothing under a single
+     line, in every toggle row at once. The switch itself is 20px and the
+     padding is stated below, so the row still has a real target without a
+     number holding it open. */
   width: 100%;
-  min-height: 32px;
   gap: var(--icon-gap);
   /* Not symmetric, and the same on every row: the extra below is what keeps
      the divider — and the fill rail drawn on it — off the descenders of the
@@ -755,14 +766,17 @@ button.usage-switch:focus-visible { outline: 1px solid var(--ink-dim); outline-o
   font-size: 10.5px;
   line-height: 1.25;
 }
-/* A toggle cell reserves two lines whether it needs them or not, and only a
-   toggle cell does. These six sit in a two-column grid, so a pair shares one
-   track and the track is as tall as the fuller of the two — which left the
-   shorter one with thirteen pixels of slack under its text and nothing under
-   the others. Reserved, all three tracks are the same height and the block has
-   one rhythm. The full-width rows below are sized to their own content, which
-   is even among themselves. */
-label.row .row-sub { min-height: 2.5em; }
+/* ONE line, not two. This reserved 2.5em — two lines whether a row needed them
+   or not — and six toggle rows at 50px each is 130px the panel did not have: a
+   popup Chrome caps at 600px was rendering 720 and scrolling, so the last
+   thing on it could not be seen without hunting for it.
+
+   The descriptions stay: a visible line beats a tooltip nobody hovers. They
+   are written to fit the half-width column instead, which is also what stops
+   the clamp turning the longest of them into an ellipsis — "Renders every
+   older message from your own copy — nothing is scrolled" was being cut off
+   mid-sentence, so the line was costing two rows' height to say half a thing. */
+label.row .row-sub { -webkit-line-clamp: 1; }
 
 /* The allowance row carries two controls in its subtitle, and nothing had ever
    styled an anchor inside a row: they rendered in the browser's default link
@@ -992,8 +1006,11 @@ body.searching footer { display: none; }
 #quota-warn-link.off { color: var(--ink-faint); text-decoration-style: dotted; }
 
 .pro-card, .state-card {
-  margin-top: 5px;
-  padding: 7px 10px;
+  /* The last four pixels. The panel came to 603 against Chrome's 600px cap,
+     and a card that is three pixels too tall scrolls the whole popup — the
+     offer at the bottom of it is the part that then cannot be seen. */
+  margin-top: 4px;
+  padding: 6px 10px;
   border: 1px solid var(--line);
   border-radius: 11px;
   background: var(--glass);
@@ -1250,18 +1267,21 @@ footer a:hover { color: var(--ink); }
 button:disabled { cursor: default; }
 
 /* ---------- arrival ----------
-   One movement for the whole panel: the plate fades up while the content
-   rises through it. No per-element choreography. */
+   THE PANEL IS READABLE ON THE FIRST FRAME. It used to start at opacity 0 and
+   fade up over 620ms with `both`, so every number on it was invisible until
+   the animation had run — and on a busy machine (a fresh install, the first
+   sweep under way) the frame that starts it is itself late. What that reads
+   as is the popup hanging and then appearing, which is exactly what it was
+   reported as, and it is a cost paid on every single open forever.
 
-.shell { animation: arrive .62s var(--ease) both; }
-.field { animation: drift 34s ease-in-out infinite alternate, wake 1.1s var(--ease) both; }
+   So: no opacity on the way in, and a rise small enough and short enough to
+   be a settle rather than a wait. Nothing here delays a word being legible. */
+
+.shell { animation: arrive .16s var(--ease) both; }
+.field { animation: drift 34s ease-in-out infinite alternate; }
 @keyframes arrive {
-  from { opacity: 0; transform: translateY(9px); }
-  to   { opacity: 1; transform: none; }
-}
-@keyframes wake {
-  from { opacity: .2; }
-  to   { opacity: 1; }
+  from { transform: translateY(3px); }
+  to   { transform: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

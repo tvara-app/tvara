@@ -1577,7 +1577,14 @@
     row.classList.remove("stalled");
     if (state && state.failed) {
       const mins0 = Math.max(1, Math.round((left * 0.7) / 60));   // see below
-      setLine(sub, `${state.failed.toLocaleString()} couldn't be fetched. Tap to retry. About ${mins0} min.`);
+      /* `failed` counts ATTEMPTS across the pass and `left` counts CHATS, so a
+         chat that failed twice pushed the first number above the second: the
+         row read "Fetch the text of 707 chats" over "708 couldn't be fetched",
+         which is not a state anybody can make sense of. Chats are what the row
+         is about, so say it in chats — at least this many are still here and
+         have already refused once. */
+      const stuck = Math.min(Number(state.failed) || 0, left);
+      setLine(sub, `${stuck.toLocaleString()} couldn't be fetched. Tap to retry. About ${mins0} min.`);
       return;
     }
     /* An UPPER bound, and stated as one.
@@ -1816,9 +1823,16 @@
     // Sign-in is the only route now, so a browser that cannot do it needs a
     // reason on screen. An empty card reads as a bug.
     $("identity-nogoogle").hidden = identityVerified || google;
-    $("identity-why").textContent = identityVerified
-      ? "Signed in. Your trial and your purchase follow this account."
-      : "Sign in once \u2014 your trial and your purchase follow the account, across reinstalls and browsers.";
+    /* Shown only when it is carrying something the button below does not.
+       Signed OUT, "Sign in once — it follows your account" sat directly above a
+       button reading "Continue with Google": a line of prose explaining the
+       control under it, in a panel that was overflowing its 600px cap. Signed
+       IN there is no button, and the sentence is the confirmation. */
+    const why = $("identity-why");
+    why.hidden = !identityVerified;
+    if (identityVerified) {
+      why.textContent = "Signed in. Your trial and your purchase follow this account.";
+    }
   }
 
   async function refreshIdentity() {
