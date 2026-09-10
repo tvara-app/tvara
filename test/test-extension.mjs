@@ -4970,12 +4970,13 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
     /* ---- B21b the backup file ---- */
     const backupRow = await pop.evaluate(() => {
       const el = document.getElementById("backup-archive");
-      return el ? { hidden: el.hidden, label: el.textContent, title: el.title } : null;
+      return el ? { hidden: el.hidden, label: el.textContent, title: el.title,
+                    ariaLabel: el.getAttribute("aria-label") } : null;
     });
     t("B21b the popup offers the backup file at all",
       !!backupRow && !backupRow.hidden, JSON.stringify(backupRow));
     t("B21b names the encrypted backup action",
-      /back up/i.test(backupRow.label) && /encrypted/i.test(backupRow.title), JSON.stringify(backupRow));
+      /back up/i.test(backupRow.label) && /encrypted/i.test(backupRow.ariaLabel), JSON.stringify(backupRow));
     t("B21b …in a different verb from the queue above it",
       !/download/i.test(backupRow.title + backupRow.label), JSON.stringify(backupRow));
 
