@@ -177,6 +177,12 @@ const rows = (e, sql) => e.DB.sqlite.prepare(sql).all();
 }
 
 {
+  const res = await worker.fetch(delivery("refund.succeeded", refund(), { id: "msg_no_ledger" }),
+    env({ DB: undefined }));
+  t("a webhook without its ledger is retryable", res.status === 503, `got ${res.status}`);
+}
+
+{
   const e = env();
   const res = await worker.fetch(delivery("refund.succeeded", refund(), { sig: "v1,AAAA" }), e);
   t("a forged signature is refused", res.status === 401, `got ${res.status}`);

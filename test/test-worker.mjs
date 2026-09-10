@@ -144,8 +144,7 @@ function kv({ broken = false } = {}) {
  * changes on a replayed nonce, and a batch rolling back as one — are SQLite's
  * behaviour. A hand-written fake would only ever assert my guess at it.
  *
- * `broken` makes every statement throw, which is how the degrade-open paths
- * get proved rather than assumed.
+ * `broken` proves that issuer mutations fail closed.
  */
 /* node:sqlite binds positionally and rejects ?N outright ("column index out of
    range"); D1 accepts it, and every statement the Worker ships is written that
@@ -606,21 +605,34 @@ t("seats: an idle seat past its token's life is reclaimed",
       { e: dEnv, path: "/devices/revoke" })).status === 200);
 }
 
-/* ---------- degradation ---------- */
+{
+  const e = env();
+  const devices = await Promise.all(Array.from({ length: 6 }, () => makeDevice()));
+  stubDodo({ status: 200, body: { valid: true } });
+  const statuses = await Promise.all(devices.map(async (dev) =>
+    (await post(await signedBody({}, { dev }), { e })).status));
+  t("devices: concurrent claims cannot exceed the five-seat cap",
+    statuses.filter((status) => status === 200).length === 5 &&
+    statuses.filter((status) => status === 422).length === 1,
+    statuses.join(","));
+}
+
+/* ---------- ledger failures ---------- */
 
 stubDodo({ status: 200, body: { valid: true } });
-t("degrade: KV down still serves a paying customer",
+t("ledger: KV down does not block a healthy D1 request",
   (await post(await signedBody(), { e: env({ RL: kv({ broken: true }) }) })).status === 200);
-t("degrade: no KV binding at all still serves",
+t("ledger: no KV binding does not block a healthy D1 request",
   (await post(await signedBody(), { e: env({ RL: undefined }) })).status === 200);
-/* The same promise, now that the ledgers moved. A database we cannot reach must
-   not be able to unsell a licence somebody paid for. */
-t("degrade: D1 down still serves a paying customer",
-  (await post(await signedBody(), { e: env({ DB: d1({ broken: true }) }) })).status === 200);
-t("degrade: no D1 binding at all still serves",
-  (await post(await signedBody(), { e: env({ DB: undefined }) })).status === 200);
-t("degrade: neither binding still serves",
-  (await post(await signedBody(), { e: env({ DB: undefined, RL: undefined }) })).status === 200);
+t("ledger: D1 failure refuses a new entitlement",
+  (await post(await signedBody(), { e: env({ DB: d1({ broken: true }) }) })).status === 503);
+t("ledger: no D1 binding refuses a new entitlement",
+  (await post(await signedBody(), { e: env({ DB: undefined }) })).status === 503);
+t("ledger: no D1 never mints when KV is also absent",
+  (await post(await signedBody(), { e: env({ DB: undefined, RL: undefined }) })).status === 503);
+t("ledger: no D1 refuses device-seat reads",
+  (await post(await signedBody({}, { route: "devices" }),
+    { e: env({ DB: undefined }), path: "/devices" })).status === 503);
 
 /* A worker deployed without its secret must not sign anything. /licenses/validate
    is the same public endpoint the client can reach, so without the key the
@@ -1026,7 +1038,7 @@ function stubCheckout({ checkout, keys } = {}) {
 }
 
 const PRODUCT = "pdt_test_0001";
-const checkoutEnv = (over = {}) => env({ DODO_PRODUCT_ID: PRODUCT, RETURN_URL: "https://tvara-app.github.io/thanks.html", ...over });
+const checkoutEnv = (over = {}) => env({ DODO_PRODUCT_ID: PRODUCT, RETURN_URL: "https://tvara.pages.dev/thanks", ...over });
 
 const openCheckout = async (e, dev = DEVICE) =>
   post(await signedBody({ idt: BUYER_IDT }, { route: "checkout", dev }), { e, path: "/checkout" });
@@ -1060,6 +1072,25 @@ const openCheckout = async (e, dev = DEVICE) =>
 }
 
 {
+  const e = checkoutEnv({ DB: d1({ broken: true }) });
+  const calls = stubCheckout();
+  const res = await openCheckout(e);
+  t("checkout: ledger failure opens no upstream session", res.status === 503 && calls.length === 0,
+    String(res.status));
+}
+
+{
+  const e = checkoutEnv();
+  const calls = stubCheckout();
+  const dev = await makeDevice();
+  const statuses = [];
+  for (let i = 0; i < 6; i++) statuses.push((await openCheckout(e, dev)).status);
+  t("checkout: the durable reservation caps upstream sessions per device",
+    statuses.slice(0, 5).every((status) => status === 200) && statuses[5] === 429 && calls.length === 5,
+    statuses.join(","));
+}
+
+{
   // A URL is an instruction to send someone somewhere to type a card number.
   // "The upstream said so" is not a reason to pass one on.
   const e = checkoutEnv();
@@ -1087,7 +1118,7 @@ const openCheckout = async (e, dev = DEVICE) =>
 /* ---------- claim ---------- */
 
 const claim = async (e, ref, dev = DEVICE) =>
-  post(await signedBody({ ref }, { route: "checkout-claim", dev }), { e, path: "/checkout/claim" });
+  post(await signedBody({ ref, idt: BUYER_IDT }, { route: "checkout-claim", dev }), { e, path: "/checkout/claim" });
 
 {
   const e = checkoutEnv();
@@ -1281,7 +1312,7 @@ const heartbeat = async (e, over = {}, opts = {}) =>
   const e = env({ DB: null });
   stubDodo({ status: 200, body: { valid: true } });
   const res = await heartbeat(e);
-  t("session: no database at all degrades open", (await res.json()).live === true, String(res.status));
+t("session: no database answers unavailable, never a false live verdict", res.status === 503, String(res.status));
 }
 
 /* A device whose seat predates this table must not read as signed out on the

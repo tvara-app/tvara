@@ -3,7 +3,7 @@
    context-pull, popup entitlement check, purchase activation) under a
    request-recording proxy, and assert every single request the extension
    makes lands on an allowlisted host — the 6 real AI providers (for the
-   user's own session-cookie-bearing traffic), tvara-app.github.io, the
+   user's own session-cookie-bearing traffic), tvara.pages.dev, the
    entitlement issuer, or one of lib/dodo.js's two Dodo API hosts — and that
    Dodo requests specifically carry no cookie header, operationalizing
    lib/dodo.js's own header-comment claims ("never a cookie... never the
@@ -40,7 +40,7 @@ if (!ISSUER_URL) throw new Error("cannot read ISSUER from lib/entitlement.js");
 const ISSUER_HOST = new URL(ISSUER_URL).host;
 const ALLOWED_HOSTS = new Set([
   ...REAL_PROVIDER_HOSTS,
-  "tvara-app.github.io",
+  "tvara.pages.dev",
   ISSUER_HOST,
   "live.dodopayments.com",
   "test.dodopayments.com",

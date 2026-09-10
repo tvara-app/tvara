@@ -1,7 +1,7 @@
 {
   "name": "tvara",
   "version": "1.0.0",
-  "description": "Make long AI chats fast again.",
+  "description": "Keep long AI chats fast, searchable and backed up locally—without deleting messages or sending chat text to us.",
   "type": "module",
   "scripts": {
     "test": "node test/test-license.mjs && node test/test-parsers.mjs && node test/idb-fake.mjs && node test/test-quota.mjs && node test/test-distil.mjs && node test/test-ephemeral.mjs && node test/test-handover-adversarial.mjs && node test/test-worker.mjs && node test/test-refund-webhook.mjs && node test/test-device-proof.mjs && node test/fuzz-quota.mjs && node test/fuzz-backup-crypto.mjs && node test/fuzz-entitlement.mjs && node test/fuzz-license.mjs && node test/fuzz-worker.mjs && node test/security-xss-regression.mjs && node test/security-sender-allowlist.mjs && node test/security-entitlement-gate.mjs && node test/security-purchase-flow.mjs && node test/security-recall-navigation.mjs && node test/security-egress-proof.mjs && node test/test-backup-password.mjs && node test/test-accounts.mjs && node test/test-extension.mjs && node test/test-temp-chat.mjs && node test/test-edge-cases.mjs",
@@ -48,26 +48,29 @@
     "test:security-navigation": "node test/security-recall-navigation.mjs",
     "test:security-egress": "node test/security-egress-proof.mjs",
     "lint": "eslint .",
-    "lint:webext": "node tools/pack.mjs --firefox && rm -rf dist/webext-lint && mkdir -p dist/webext-lint && unzip -q dist/*-firefox.zip -d dist/webext-lint && npx --yes web-ext@8 lint --source-dir=dist/webext-lint",
+    "lint:package": "node tools/pack.mjs",
     "test:device-proof": "node test/test-device-proof.mjs",
     "test:session-ui": "node test/real-chrome-session-ui.mjs",
     "test:idb": "node test/idb-fake.mjs"
   },
   "engines": {
-    "node": ">=24"
+    "node": ">=24.11.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@stryker-mutator/core": "^10.0.0",
-    "eslint": "^10.9.1",
+    "eslint": "^10.10.0",
     "eslint-plugin-no-unsanitized": "^4.1.5",
     "eslint-plugin-security": "^4.0.1",
     "fake-indexeddb": "^6.2.5",
     "fast-check": "^4.9.0",
-    "globals": "^17.11.0",
-    "playwright": "^1.62.1"
+    "globals": "^17.12.0",
+    "playwright": "^1.63.0",
+    "terser": "^5.51.2",
+    "web-ext": "^10.6.0"
   },
   "overrides": {
+    "qs": "^6.16.0",
     "tmp": "^0.2.7"
   }
 }

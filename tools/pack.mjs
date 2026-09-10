@@ -2,8 +2,7 @@
 /**
  * Build store-ready zips.
  *
- *   node tools/pack.mjs            → dist/tvara-vX.Y.Z.zip          (Chrome/Edge)
- *   node tools/pack.mjs --firefox  → …and dist/tvara-vX.Y.Z-firefox.zip
+ *   node tools/pack.mjs  → dist/tvara-vX.Y.Z.zip (Chrome/Edge)
  *
  * Copies only shippable files, strips the localhost dev matches, and then
  * REFUSES to produce a zip that references a file it does not contain.
@@ -17,16 +16,15 @@ import { cpSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync, sta
 import { execSync } from "node:child_process";
 import { join, dirname, posix } from "node:path";
 import { fileURLToPath } from "node:url";
+import { minify } from "terser";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const dist = join(root, "dist");
-const withFirefox = process.argv.includes("--firefox");
 
 const SHIP = ["manifest.json", "lib", "content", "popup", "diag",
               "bg.js", "bg", "pages"];
 
-/** The files bg.js pulls in, in call order. The Firefox background list and the
- *  ship check both read this, so neither can drift from the worker itself. */
+/** Files bg.js loads, used for package integrity checks. */
 function workerScripts(bgSource) {
   const out = [];
   const seen = new Set();
@@ -110,9 +108,22 @@ function verify(staging, mf, label) {
   console.log(`  ✓ ${label}: every referenced path is in the zip`);
 }
 
+async function minifyScripts(staging) {
+  for (const rel of walk(staging).filter((file) => file.endsWith(".js"))) {
+    const file = join(staging, rel);
+    const result = await minify(readFileSync(file, "utf8"), {
+      compress: false,
+      mangle: false,
+      format: { comments: false }
+    });
+    if (!result.code) throw new Error(`Minification produced no output for ${rel}.`);
+    writeFileSync(file, result.code + "\n");
+  }
+}
+
 /* ---------- build ---------- */
 
-function build({ name, tweak, label }) {
+async function build({ name, tweak, label }) {
   const staging = join(dist, "staging");
   rmSync(staging, { recursive: true, force: true });
   mkdirSync(staging, { recursive: true });
@@ -151,6 +162,7 @@ function build({ name, tweak, label }) {
   mkdirSync(join(staging, "icons"), { recursive: true });
   for (const rel of wanted) cpSync(join(root, rel), join(staging, rel));
 
+  await minifyScripts(staging);
   verify(staging, mf, label);
 
   const zip = join(dist, name);
@@ -168,53 +180,10 @@ mkdirSync(dist, { recursive: true });
 
 console.log(`\nTvara v${version}\n`);
 
-build({
+await build({
   name: `tvara-v${version}.zip`,
   label: "chrome/edge",
-  // Firefox metadata has no business in a Chrome upload — it claims support we
-  // have not verified, in a file reviewers read.
   tweak: (mf) => { delete mf.browser_specific_settings; }
 });
-
-if (withFirefox) {
-  build({
-    name: `tvara-v${version}-firefox.zip`,
-    label: "firefox (UNVERIFIED)",
-    tweak: (mf, staging) => {
-      /* Firefox has no MV3 background service worker. It runs the same files as
-         an event page — which works only because bg.js's importScripts() calls
-         are wrapped in try/catch, so listing them here loads them and the failed
-         importScripts is a no-op.
-
-         Derived from bg.js rather than typed: a hand-written list silently drops
-         a module on Firefox alone, where nothing we run would catch it. (It was
-         already wrong — lib/backup-crypto.js was missing.)
-
-         NOT type:"module". Every file here declares plain top-level functions
-         and shares one global with bg.js, exactly as importScripts gives us on
-         Chrome. Module scope is per-file, so it would hide all of them. */
-      const bgSrc = readFileSync(join(staging, "bg.js"), "utf8");
-      mf.background = { scripts: [...workerScripts(bgSrc), "bg.js"] };
-      /* Required for new Firefox extensions (addons-linter:
-         MISSING_DATA_COLLECTION_PERMISSIONS). "none" is the literal truth here:
-         there is no server to send anything to. */
-      mf.browser_specific_settings = mf.browser_specific_settings || {};
-      mf.browser_specific_settings.gecko = mf.browser_specific_settings.gecko || {};
-      mf.browser_specific_settings.gecko.data_collection_permissions = { required: ["none"] };
-      /* The data-collection key does not exist before Firefox 140, and declaring
-         it against an older strict_min_version is itself a lint warning. 128 was
-         the floor for MV3; 140 is the floor for saying, in the manifest, that we
-         collect nothing. */
-      mf.browser_specific_settings.gecko.strict_min_version = "140.0";
-      // Firefox for Android reads its own floor, and inherits nothing.
-      /* Android got the data-collection key later than desktop, at 142, so the
-         two floors are genuinely different numbers rather than a copy of one. */
-      mf.browser_specific_settings.gecko_android = { strict_min_version: "142.0" };
-      delete mf.minimum_chrome_version;
-    }
-  });
-  console.log("\n  ⚠️  The Firefox zip has never been run in Firefox. Load it with");
-  console.log("     about:debugging before it goes anywhere near AMO.");
-}
 
 console.log("");

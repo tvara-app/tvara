@@ -248,6 +248,35 @@ try {
     (await pop.isChecked("#toggle-enabled")) && (await pop.isChecked("#toggle-minimap")) && (await pop.isChecked("#toggle-time")));
   t("A1 trial button visible in free state", await pop.isVisible("#trial-start"));
 
+  const onboarding = await ctx.newPage();
+  trackErrors(onboarding);
+  await onboarding.goto(POPUP.replace("/popup/popup.html", "/pages/onboarding.html"));
+  await onboarding.getByRole("button", { name: "Use Tvara" }).click();
+  await onboarding.waitForFunction(() => document.querySelector("#picker.open") &&
+    document.querySelectorAll(".bubble-disc svg").length === 6);
+  const pickerState = await onboarding.evaluate(() => ({
+    labels: [...document.querySelectorAll(".bubble")].map((b) => b.getAttribute("aria-label")),
+    glyphs: document.querySelectorAll(".bubble-disc svg").length,
+    initials: [...document.querySelectorAll(".bubble-disc")].some((d) => (d.textContent || "").trim()),
+    focus: document.activeElement?.getAttribute("aria-label") || ""
+  }));
+  t("A1f onboarding uses six labelled provider glyphs, not initials",
+    pickerState.glyphs === 6 && !pickerState.initials && pickerState.labels.length === 6,
+    JSON.stringify(pickerState));
+  t("A1f picker focuses its first choice", /ChatGPT/.test(pickerState.focus), JSON.stringify(pickerState));
+  await onboarding.setViewportSize({ width: 360, height: 800 });
+  const compactPicker = await onboarding.evaluate(() => {
+    const sheet = document.querySelector(".picker-sheet").getBoundingClientRect();
+    const bubbles = getComputedStyle(document.querySelector(".bubbles")).gridTemplateColumns.split(" ").length;
+    return { bubbles, fits: sheet.left >= 0 && sheet.right <= innerWidth && document.documentElement.scrollWidth <= innerWidth };
+  });
+  t("A1f picker remains usable in a narrow desktop window", compactPicker.bubbles === 2 && compactPicker.fits,
+    JSON.stringify(compactPicker));
+  await onboarding.keyboard.press("Escape");
+  await onboarding.waitForFunction(() => document.querySelector("#picker").hidden);
+  t("A1f Escape closes the picker and restores focus", await onboarding.evaluate(() => document.activeElement?.id === "use-tvara"));
+  await onboarding.close();
+
   /* A1b — the purchase path. Until this existed the popup could take a licence
      key but could not tell anyone where to get one. chrome.tabs.create is
      stubbed rather than fired: the assertion is about WHICH url we send people
@@ -342,6 +371,33 @@ try {
   const wrapped = await claudeRow();
   t("A1e clicking again comes back round to the session limit",
     /5h/.test(wrapped.text) && /76/.test(wrapped.text), JSON.stringify(wrapped));
+  await pop.evaluate(() => new Promise((r) => chrome.runtime.sendMessage({
+    type: "quota-observed", host: "claude.ai",
+    observations: [{ kind: "body", at: Date.now(), json: {
+      five_hour: { utilization: 9, resets_at: new Date(Date.now() + 3.6e6).toISOString() },
+      seven_day: { utilization: 100, resets_at: new Date(Date.now() + 3 * 864e5).toISOString() }
+    } }]
+  }, r)));
+  await pop.reload();
+  await pop.waitForSelector(".usage-row", { timeout: 8000 });
+  await pop.waitForTimeout(2500);
+  const blockedClaude = await pop.evaluate(() => {
+    const row = [...document.querySelectorAll(".usage-row")].find((r) => /Claude/.test(r.textContent));
+    const lock = row && row.querySelector(".usage-lock");
+    return { text: row ? row.textContent.replace(/\s+/g, " ").trim() : "(none)",
+      lock: lock ? lock.getAttribute("aria-label") || "" : "",
+      switchable: !!(row && row.querySelector("button.usage-switch")),
+      headline: !!document.querySelector(".usage-verdict"),
+      spentStrokes: [...document.querySelectorAll(".usage-track.spent")].map((el) => el.style.stroke),
+      spentOpacity: getComputedStyle(document.querySelector(".usage-track.spent")).opacity };
+  });
+  t("A1e an exhausted weekly limit locks the provider despite session allowance",
+    /Claude unavailable/i.test(blockedClaude.lock) && !/5h/.test(blockedClaude.text), JSON.stringify(blockedClaude));
+  t("A1e unavailable providers use the lock indicator, not a headline or window switch",
+    !blockedClaude.switchable && !blockedClaude.headline, JSON.stringify(blockedClaude));
+  t("A1e an exhausted provider keeps its own subdued ring colour",
+    blockedClaude.spentStrokes.includes("#e0805c") && Number(blockedClaude.spentOpacity) <= 0.2,
+    JSON.stringify(blockedClaude));
   /* A window with a reset and no figure is a real row when it is all a
      provider gave us. It is NOT one of the options behind a click: stepping
      off a number and landing on "not reported" is a step to nothing. */
@@ -2950,13 +3006,13 @@ try {
   await recall.evaluate((at) => chrome.storage.local.set({
     "recall-sync-progress:chatgpt": {
       state: "paused", phase: "paused", runId: "run-C", platform: "chatgpt", done: 0, total: 0,
-      msg: "ChatGPT is rate-limiting — resumes automatically", at
+      msg: "Waiting briefly before continuing with ChatGPT.", at
     }
   }), Date.now());
   const cooled = await recall.evaluate(() => new Promise((res) =>
     chrome.runtime.sendMessage({ type: "recall-sync-status" }, res)));
-  t("B11c rate limiting reports as paused, never as an error",
-    cooled.summary.state === "paused" && /resumes automatically/.test(cooled.summary.message),
+  t("B11c a provider pause reports as paused, never as an error",
+    cooled.summary.state === "paused" && /Waiting briefly/.test(cooled.summary.message),
     JSON.stringify(cooled.summary));
   await recall.evaluate(() => chrome.storage.local.remove("recall-sync-progress:chatgpt"));
 
@@ -4661,7 +4717,9 @@ try {
       const read = () => ({
         row: Math.round(row.getBoundingClientRect().height),
         below: Math.round(below.getBoundingClientRect().top),
-        barShown: !bar.hidden && bar.getBoundingClientRect().height > 0
+        barShown: !bar.hidden && bar.getBoundingClientRect().height > 0,
+        barLeft: Math.round(bar.getBoundingClientRect().left),
+        titleLeft: Math.round(document.getElementById("fill-title").getBoundingClientRect().left)
       });
       const idle = read();
       // Exactly what a running queue does to this row.
@@ -4674,6 +4732,8 @@ try {
     });
     t("B21a the progress rail is there before there is any progress",
       geom.idle.barShown, JSON.stringify(geom));
+    t("B21a the progress rail starts under the archive heading",
+      geom.idle.barLeft === geom.idle.titleLeft, JSON.stringify(geom));
     /* The Customize control shares the row with the fetch button. Withdrawing
        it must not collapse its column: the title and sub would rewrap into the
        space and the row would change height while somebody was reaching for the

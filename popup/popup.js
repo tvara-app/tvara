@@ -87,7 +87,7 @@
     img.src = src;
   }
 
-  function paintPlan(pro, maskedEmail, trialUntil, overdueDays) {
+  function paintPlan(pro, maskedEmail, trialUntil) {
     const badge = $("plan-badge");
     const trialActive = !pro && trialUntil > Date.now();
     paintBadge(badge, pro, trialActive);
@@ -95,13 +95,6 @@
        the same two booleans — so the two can never name different plans. */
     currentPlan = pro ? "pro" : trialActive ? "trial" : "free";
     paintAccount();
-    /* evaluate() has computed `stale` and `overdueDays` since it was written,
-       with a comment saying the UI shows it — and nothing read either field.
-       A licence 200 days past its check-in showed a plain "Pro" badge and no
-       hint that anything was pending. It still works, and it still says so:
-       this is a nudge, not a threat. */
-    /* The tooltip moved to the ring with the rest of the plan. Kept on the
-       label too: it is still the element an assistive reader lands on. */
     /* How much of the week is left, drawn as the rim. TRIAL_MS is seven days
        in the worker; the fraction is the honest one — a trial two hours old
        shows a nearly full circle, not a full one. */
@@ -124,11 +117,6 @@
       if (days) { days.hidden = true; days.textContent = ""; }
     }
 
-    /* Overdue is SHOWN: the badge takes a dashed rim and a dot (.overdue in
-       popup.css). It used to be a hover tooltip as well, plus a `dataset.note`
-       nothing has ever rendered — a sentence in two places the reader never
-       looks and none they do. The badge's own word is the statement. */
-    badge.classList.toggle("overdue", !!(pro && overdueDays > 0));
     /* One card replaces another as the licence state settles, and each is a
        different height. Travel, not teleport — this fires on the popup's first
        paint, which is exactly when a jump reads as the panel being broken. */
@@ -408,8 +396,8 @@
     if (why === "tracking off") return "tracking off";
     if (why === "not signed in") return "not signed in";
     if (why === "blocked by the provider") return "blocked";
-    if (why === "rate-limited") return "rate-limited";
-    if (why === "could not reach the provider") return "unreachable";
+    if (why === "rate-limited") return "checking shortly";
+    if (why === "could not reach the provider") return "checking shortly";
     if (why === "no working endpoint") return "no limit published";
     if (why === "provider reported nothing") return "none published";
     return item.checked ? "none published" : "checking\u2026";
@@ -435,10 +423,10 @@
           "Your session is fine — open the site in a tab and this fills in on its own.";
       }
       if (why === "rate-limited") {
-        return `${item.label} is rate-limiting this browser. Your session is fine — this retries on its own.`;
+        return `Waiting briefly before checking ${item.label} again. Your session is fine.`;
       }
       if (why === "could not reach the provider") {
-        return `Could not reach ${item.label}. Nothing is known about the session; this retries on its own.`;
+        return `${item.label}'s latest allowance is not available yet. Tvara will check again automatically.`;
       }
       if (why === "no working endpoint") {
         return `${item.label} publishes no allowance figure this browser can read.`;
@@ -471,8 +459,8 @@
         "tracking off": "Allowance tracking is switched off.",
         "not signed in": "Could not refresh: not signed in to this provider.",
         "blocked by the provider": "Could not refresh: the provider answered a bot-protection challenge. Open its site in a tab.",
-        "rate-limited": "Could not refresh: the provider is rate-limiting. It retries on its own.",
-        "could not reach the provider": "Could not refresh: the provider could not be reached.",
+        "rate-limited": "Waiting briefly before checking again.",
+        "could not reach the provider": "The latest allowance is not available yet. Tvara will check again automatically.",
         "no working endpoint": "Could not refresh: this provider publishes no allowance endpoint we can read.",
         "provider reported nothing": "Refreshed, but the provider returned no allowance figure."
       }[why.skipped] || `Could not refresh: ${why.skipped}.`;
@@ -525,9 +513,8 @@
         cx: c, cy: c, r: r.toFixed(2),
         class: "usage-track" + (open ? " open" : "") + (it.out ? " spent" : "")
       });
-      // Out of allowance: the channel is left dim — it is empty, and that is
-      // the point — and only its colour changes.
-      track.style.stroke = it.out ? "var(--danger)" : it.color;
+      // An empty channel stays identifiable as its provider, just subdued.
+      track.style.stroke = it.color;
       /* A share gets a full-width channel to empty out of. Everything else is a
          dotted path, weighted by how much the provider actually said: a real
          count carries more of its colour than a ring still waiting on a reply.
@@ -645,7 +632,7 @@
 
     for (const it of items) {
       const row = document.createElement("div");
-      row.className = "usage-row" + (it.hot ? " hot" : "");
+      row.className = "usage-row" + (it.hot ? " hot" : "") + (it.blocked ? " unavailable" : "");
       // Every figure is auditable: hovering a row says where it came from.
       // No hover tooltip: a box of text that covers the panel while you are
       // reading it is not an explanation. The sentence stays where assistive
@@ -677,7 +664,7 @@
          week, and which one matters depends on what they are about to do. A
          button, not a span, so it is reachable by keyboard and announced as
          something that does something. */
-      const many = it.winCount > 1 && it.winNext;
+      const many = !it.blocked && it.winCount > 1 && it.winNext;
       const val = document.createElement(many ? "button" : "span");
       val.className = "usage-val" + (many ? " usage-switch" : "");
       if (many) {
@@ -700,7 +687,20 @@
       // Set by the tween below when this row's figure is one the reader has
       // already seen at a different value — see the sweep in popup.css.
       let moved = false;
-      if (it.pctLeft !== null) {
+      if (it.blocked) {
+        val.classList.add("usage-lock");
+        val.setAttribute("role", "img");
+        val.setAttribute("aria-label", `${it.label} unavailable${it.blockedUntil ? ` until ${new Date(it.blockedUntil).toLocaleString()}` : ""}`);
+        const lock = svgEl("svg", { viewBox: "0 0 24 24", "aria-hidden": "true" });
+        lock.append(svgEl("rect", { x: 5, y: 10, width: 14, height: 10, rx: 2 }),
+          svgEl("path", { d: "M8 10V7a4 4 0 0 1 8 0v3" }));
+        val.append(lock);
+        if (it.blockedUntil) {
+          const when = document.createElement("span");
+          when.textContent = resetLabel(it.blockedUntil);
+          val.append(when);
+        }
+      } else if (it.pctLeft !== null) {
         const stale = isStale(it);
         const num = document.createElement("b");
         moved = tweenNumber(num, "pct:" + it.id + "|" + (it.acct || ""), it.pctLeft, (n) => n + "%");
@@ -940,7 +940,8 @@
          (w.remaining !== null && w.remaining !== undefined)));
       const wins = figured.length ? figured : all;
       const at = wins.length ? ((winPick.get(key) || 0) % wins.length) : 0;
-      const win = wins[at] || rec.window || null;
+      const blocker = rec.blocked && rec.blocker ? rec.blocker : null;
+      const win = blocker || wins[at] || rec.window || null;
       // What the row is RANKED by never changes as the reader steps through it:
       // sorting on the selected window made a row jump up and down the list
       // under the cursor, which reads as the panel losing its place.
@@ -974,10 +975,12 @@
         lastTry: lastTry[rec.id] || null,
         checked: !!checked[rec.id],
         key,
-        winCount: wins.length,
+        blocked: !!blocker,
+        blockedUntil: blocker ? blocker.resetAt || 0 : 0,
+        winCount: blocker ? 1 : wins.length,
         leadPct: lead && lead.pctLeft !== null && lead.pctLeft !== undefined ? lead.pctLeft : null,
         // What clicking would move to, so the row can say so before it is used.
-        winNext: wins.length > 1 ? (wins[(at + 1) % wins.length] || null) : null
+        winNext: blocker ? null : (wins.length > 1 ? (wins[(at + 1) % wins.length] || null) : null)
       });
     }
 
@@ -1055,7 +1058,7 @@
         ...arcOf(b.pctLeft),
         color: ringColor(b.id, (seats.get(b.id) || 0) > 1 ? b.ordinal : 0),
         hot: b.pctLeft !== null && b.pctLeft <= LOW_PCT && b.pctLeft > 0,
-        out: b.pctLeft === 0
+        out: b.blocked || b.pctLeft === 0
       }));
     /* The dial has room for MAX_RINGS; the verdict has room for the truth.
        Slicing before the verdict was computed meant a count-only row — which
@@ -1164,7 +1167,7 @@
     /* The dial and its legend grow and shrink as providers report, and
        everything below them moves when they do. Measure, swap, then animate
        the difference away — see showRows for why this is worth doing. */
-    const swap = () => $("usage-bars").replaceChildren(verdict, panel);
+    const swap = () => $("usage-bars").replaceChildren(...(ranked.some((it) => it.blocked) ? [panel] : [verdict, panel]));
     if (M && $("usage-bars").firstChild) M.flip(movers(), swap); else swap();
     // The rings arrive outermost first, so the eye follows the drawing rather
     // than finding it already finished.
@@ -1222,8 +1225,7 @@
   // Synchronous restore — runs during parse, i.e. before the first paint.
   $("version").textContent = "v" + chrome.runtime.getManifest().version;
   paintToggles(cache && cache.settings);
-  paintPlan(!!(cache && cache.pro), cache && cache.masked, (cache && cache.trialUntil) || 0,
-    (cache && cache.overdueDays) || 0);
+  paintPlan(!!(cache && cache.pro), cache && cache.masked, (cache && cache.trialUntil) || 0);
   // Always paint the dial — the placeholder rows inside paintUsage cover every
   // supported platform even without data, so the rings are never absent on
   // first open. The cached reading is repainted from the worker a frame later;
@@ -1458,8 +1460,8 @@
     paintDevicesEntries();
     const seatCount = licenseKind === "dodo"
       ? Object.keys((await self.LCTDodo.readSeats()).seats).length : 0;
-    paintPlan(pro, masked, trialUntil, (verdict && verdict.overdueDays) || 0);
-    saveCache({ pro, masked, trialUntil, overdueDays: (verdict && verdict.overdueDays) || 0, licenseKind, seatCount, settings: settings || null,
+    paintPlan(pro, masked, trialUntil);
+    saveCache({ pro, masked, trialUntil, licenseKind, seatCount, settings: settings || null,
       stats: { total, rows }, quota: quota || null });
   }
 
@@ -1599,15 +1601,7 @@
     }
     row.classList.remove("stalled");
     if (state && state.failed) {
-      const mins0 = Math.max(1, Math.round((left * 0.7) / 60));   // see below
-      /* `failed` counts ATTEMPTS across the pass and `left` counts CHATS, so a
-         chat that failed twice pushed the first number above the second: the
-         row read "Fetch the text of 707 chats" over "708 couldn't be fetched",
-         which is not a state anybody can make sense of. Chats are what the row
-         is about, so say it in chats — at least this many are still here and
-         have already refused once. */
-      const stuck = Math.min(Number(state.failed) || 0, left);
-      setLine(sub, `${stuck.toLocaleString()} couldn't be fetched. Tap to retry. About ${mins0} min.`);
+      setLine(sub, "Some chats are waiting for another pass. Tvara will continue automatically.");
       return;
     }
     /* An UPPER bound, and stated as one.
@@ -2739,7 +2733,7 @@
     if (t) {
       $("recall-locked").textContent = results.length
         ? `Those are your own conversations, searched on this device. ${t.left} free ${t.left === 1 ? "search" : "searches"} left.`
-        : `Searched every chat on this device. ${t.left} free ${t.left === 1 ? "search" : "searches"} left.`;
+        : `Searched archived chats on this device. ${t.left} free ${t.left === 1 ? "search" : "searches"} left.`;
       $("recall-locked").hidden = false;
     }
   }
@@ -2839,7 +2833,7 @@
       id: "archive",
       anchor: () => $("open-recall")?.closest(".row"),
       title: "Total Recall",
-      body: "One search box across every chat you have archived, on every platform. Type here for the quick answer, or open the full page for the archive itself — deletions, encrypted backups and what has been downloaded so far."
+      body: "One search box across chats archived on supported sites. Type here for the quick answer, or open the full page for the archive itself — deletions, encrypted backups and what has been downloaded so far."
     },
     {
       id: "deletions",

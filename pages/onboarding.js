@@ -147,10 +147,7 @@
      One button used to send everybody to ChatGPT, which is the wrong site for
      most people and a redirect nobody asked for. This asks instead.
 
-     A colour and an initial, not a wordmark: the palette is the one the rest
-     of the product already uses for these six — recognisably theirs,
-     deliberately not theirs exactly — and shipping somebody else's logo in our
-     own UI is a thing to be licensed, not borrowed. */
+     Local glyphs keep the picker recognisable without borrowing brand assets. */
   const SITES = [
     { id: "chatgpt", url: "https://chatgpt.com/" },
     { id: "claude", url: "https://claude.ai/" },
@@ -159,6 +156,27 @@
     { id: "perplexity", url: "https://www.perplexity.ai/" },
     { id: "deepseek", url: "https://chat.deepseek.com/" }
   ];
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  const GLYPHS = Object.freeze({
+    chatgpt: ["M12 3.8 18.5 7.5v7L12 18.2 5.5 14.5v-7Z", "M8.3 6.2v7.6L15.7 18", "M15.7 6.2 8.3 10.4"],
+    claude: ["M12 3.5v17M4.6 7.8l14.8 8.4M4.6 16.2l14.8-8.4"],
+    gemini: ["M12 2.8 14.7 9.3 21.2 12l-6.5 2.7-2.7 6.5-2.7-6.5L2.8 12l6.5-2.7Z"],
+    grok: ["M5.2 5.2 18.8 18.8M18.8 5.2 5.2 18.8", "M8.2 3.8 5.2 5.2l1.4 3M15.8 20.2l3-1.4-1.4-3"],
+    perplexity: ["M12 3.5a8.5 8.5 0 1 0 8.5 8.5", "M12 7.5a4.5 4.5 0 1 0 4.5 4.5", "M12 12h.01M12 3.5v2M20.5 12h-2"],
+    deepseek: ["M4 15.5c3.2-6.6 7.3-8.6 12.8-6.1 1.7.8 2.7 2.1 3.2 3.7-3.2 6.6-7.3 8.6-12.8 6.1-1.7-.8-2.7-2.1-3.2-3.7Z", "M8 13.3c1.5-1.4 3.1-1.5 4.8-.4", "M15.2 7.4 17 4.8l1.1 3.1"]
+  });
+
+  function glyph(id) {
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("focusable", "false");
+    for (const d of GLYPHS[id] || []) {
+      const path = document.createElementNS(SVG_NS, "path");
+      path.setAttribute("d", d);
+      svg.append(path);
+    }
+    return svg;
+  }
 
   const picker = $("picker");
   let lastFocus = null;
@@ -178,7 +196,7 @@
       const disc = document.createElement("span");
       disc.className = "bubble-disc";
       disc.setAttribute("aria-hidden", "true");
-      disc.textContent = names[site.id].slice(0, 1);
+      disc.append(glyph(site.id));
       const label = document.createElement("span");
       label.className = "bubble-name";
       label.textContent = names[site.id];

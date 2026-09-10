@@ -220,7 +220,7 @@
     const by = new Map((commands || []).map((c) => [c.name, pretty(c.shortcut)]));
     const wanted = [
       ["in-chat-search", "Search this conversation"],
-      ["open-recall", "Search every chat, every platform"],
+      ["open-recall", "Search archived chats"],
       ["open-bridge", "Context Bridge"]
     ];
     const box = document.createElement("div");
@@ -285,7 +285,7 @@
         id: "preview",
         anchor: () => el("lct-mm-stage") || el("lct-minimap"),
         title: "Even the old messages the page forgot",
-        body: "Chat sites quietly drop older messages to stay fast, which is why scrolling back is so slow. Tvara keeps its own copy, so clicking one opens it instantly while the site catches up in the background.",
+        body: "Chat sites can drop older messages to stay responsive. Tvara keeps its own copy, so a selected message can open from local data while the site catches up in the background.",
         foot: "A small bar at the bottom shows how far along that is, and you can stop it whenever you like."
       }
     );
@@ -369,7 +369,7 @@
       offPage: true,   // not on this page — see the filter in start()
       anchor: () => null,
       title: "\"I solved this before — but where?\"",
-      body: "Total Recall searches every chat you have had, across all of these sites, from one box. Click a result and it opens that conversation with your words already highlighted.",
+      body: "Total Recall searches chats you archived on supported sites from one box. Click a result and it opens that conversation with your words already highlighted.",
       foot: "The searching happens on your own computer. Your conversations are not kept anywhere else."
     });
     list.push({

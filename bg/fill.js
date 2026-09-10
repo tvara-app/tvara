@@ -172,8 +172,8 @@ function fillWhy(adapter, kind) {
   const label = adapter.label;
   if (kind === "auth") return `${label}: not signed in. Sign in, then tap to continue.`;
   if (kind === "challenge") return `${label} blocked the fetch. Open ${adapter.host} in a tab.`;
-  if (kind === "rate") return `${label} is rate-limiting. It picks up again on its own.`;
-  return `Could not reach ${label}. It picks up again on its own.`;
+  if (kind === "rate") return `Waiting briefly before continuing with ${label}. Tvara resumes automatically.`;
+  return `Pausing ${label}'s archive safely. Tvara will try again automatically.`;
 }
 
 /* One note per PROVIDER. A single `note` field meant the last writer won, so
@@ -411,6 +411,10 @@ async function fillStart() {
              about work nobody wanted done, and the stub stays in the queue so
              the next run simply picks it up. */
           if (kind === "cancelled" || fillCancel) return "stop";
+          if (kind === "gone") {
+            await noteStub(recordId, adapter.host, true);
+            return "";
+          }
           failed++;
           if (kind === "challenge") {
             // The edge refused the request shape, not the session. Preparing
@@ -429,7 +433,10 @@ async function fillStart() {
             await noteFill(adapter, "auth");
             return "stop";
           }
-          if (kind === "gone") await noteStub(recordId, adapter.host, true);
+          if (kind === "rate" || kind === "net" || kind === "shape") {
+            await noteFill(adapter, kind);
+            return "stop";
+          }
           /* A refusal is already answered where refusals are handled:
              noteRateLimit() halves this host's concurrency and DOUBLES its
              interval on the first one, and trips the circuit on the third.

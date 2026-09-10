@@ -233,7 +233,7 @@ try {
     await pop.evaluate(() => chrome.storage.local.remove(["license", "lct-license-state-v1"]));
 
     const buyer = await ctx.newPage();
-    await buyer.goto("https://tvara-app.github.io/thanks.html",
+    await buyer.goto("https://tvara.pages.dev/thanks",
       { waitUntil: "domcontentloaded", timeout: 45000 });
     await buyer.waitForTimeout(8000);
     const box = await buyer.evaluate(() => {

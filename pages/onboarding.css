@@ -166,7 +166,8 @@ button:active:not(:disabled) { transform: scale(.97); }
   transition: background .16s var(--ease, cubic-bezier(.22, 1, .36, 1));
 }
 .bubble:hover { background: rgb(255 255 255 / .04); }
-.bubble:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+.bubble:focus-visible { outline: 0; }
+.bubble:focus-visible .bubble-disc { outline: 2px solid var(--ink); outline-offset: 3px; }
 
 .bubble-disc {
   display: grid;
@@ -177,12 +178,11 @@ button:active:not(:disabled) { transform: scale(.97); }
   border: 1px solid color-mix(in srgb, var(--tint) 55%, transparent);
   background: color-mix(in srgb, var(--tint) 16%, transparent);
   color: var(--tint);
-  font-size: 21px;
-  font-weight: 600;
-  letter-spacing: -.02em;
   transition: transform .18s var(--ease, cubic-bezier(.22, 1, .36, 1)),
               background .18s var(--ease, cubic-bezier(.22, 1, .36, 1));
 }
+.bubble-disc svg { width: 29px; height: 29px; fill: none; stroke: currentColor; stroke-width: 1.65; stroke-linecap: round; stroke-linejoin: round; }
+.bubble[data-platform="gemini"] .bubble-disc svg { fill: currentColor; stroke: none; }
 .bubble:hover .bubble-disc { transform: scale(1.06); background: color-mix(in srgb, var(--tint) 26%, transparent); }
 .bubble:active .bubble-disc { transform: scale(.97); }
 .bubble-name { color: var(--muted); font-size: 12px; }

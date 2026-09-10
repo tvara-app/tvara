@@ -1,6 +1,5 @@
 #!/usr/bin/env node
-/* content/purchase.js runs on exactly one page: our own post-purchase
-   thanks.html.
+/* content/purchase.js runs on the post-purchase page.
 
    WHAT THIS TEST IS NOW ABOUT. It used to read a licence key out of the
    query string and hand it to bg.js, and this file tested that a hostile
@@ -52,9 +51,8 @@ const ctx = await chromium.launchPersistentContext(PROFILE, {
 });
 await new Promise((r) => setTimeout(r, 1500));
 
-// Serve the repo's own thanks.html for the exact URL the manifest matches —
-// no real network reach to tvara-app.github.io, ever.
-await ctx.route("https://tvara-app.github.io/thanks.html*", (route) =>
+// Serve the local template for the exact manifest match; no real network call.
+await ctx.route("https://tvara.pages.dev/thanks*", (route) =>
   route.fulfill({ path: THANKS, contentType: "text/html" }));
 
 /* Nothing in this test should reach a payment provider. Routing both hosts to a
@@ -81,7 +79,7 @@ async function runScenario(query) {
   const page = await ctx.newPage();
   await sw.evaluate(() => { self.__seenMessages = []; });
 
-  await page.goto("https://tvara-app.github.io/thanks.html" + query, { waitUntil: "load" });
+  await page.goto("https://tvara.pages.dev/thanks" + query, { waitUntil: "load" });
   await new Promise((r) => setTimeout(r, 2000)); // document_idle + a poll round trip
 
   const seen = await sw.evaluate(() => self.__seenMessages || []);

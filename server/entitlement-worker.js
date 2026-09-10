@@ -96,15 +96,12 @@
  *   EDGE_RL — optional Cloudflare rate-limit binding, keyed on IP. The hard
  *             bound the KV counters never were.
  *
- * Every one of them degrades OPEN. A ledger that is unreachable must not be
- * able to unsell a licence somebody paid for.
+ * Local, signed, unexpired entitlements remain usable when this issuer is unreachable.
+ * The issuer itself fails closed for ledger-backed work: it must never mint,
+ * move, revoke or acknowledge state it cannot durably record.
  */
 
-/* Was 90 days. Shortened because there is now a kill list: revocation no
-   longer has to wait out the token, so the token no longer has to be short to
-   make revocation possible. 30 days is still far longer than any outage the
-   client's offline path is meant to survive — see lib/entitlement.js, where
-   age alone never withdraws a purchase. */
+/* 30 days gives bounded offline operation and prompt renewal. */
 const TTL_MS = 30 * 864e5;
 
 /* Deliberately NOT TTL_MS. Seat eviction asks "has this device been gone long
@@ -250,11 +247,9 @@ async function verifyDeviceProof(devicePubB64, sigB64, input) {
  *
  * D1 is one SQLite primary. A read reflects every write that preceded it.
  *
- * WHAT IT COSTS. A missing or failing DB degrades open, the same way the KV
- * paths always did — see the ladder at the top of this file. That is a real
- * trade and it is the right one here: a $1 one-time licence must not stop
- * working because our database had a bad afternoon. deploy.sh's smoke test is
- * what catches a binding that never got created.
+ * A missing or failing database is an unavailable issuer, never evidence that
+ * a nonce is fresh, a seat exists, or a licence is not revoked. Existing
+ * signed tokens stay valid locally during that bounded grace period.
  */
 const d1 = (env) => (env && env.DB) || null;
 
@@ -264,22 +259,9 @@ const d1 = (env) => (env && env.DB) || null;
  * One use per nonce. Step 2 already bounds a captured request to five minutes;
  * this closes the replays that fit inside them.
  *
- * In D1 the check and the claim are ONE statement: INSERT ... ON CONFLICT DO
- * NOTHING reports zero rows changed when the id was already there. The KV
- * version below could not do that — get-then-put let two simultaneous replays
- * both read "unseen" — and it is kept only for a deployment that has KV but no
- * D1 yet, where a leaky nonce check still beats no nonce check.
- *
- * The expiry sweep rides along in the same batch, so the table cleans itself
- * without a cron and without a random-sampling trick that would make this
- * function's behaviour depend on a coin flip.
- *
- * With neither binding this can only pass, deliberately: steps 1, 2, 4 and 5
- * (origin, freshness, device proof, upstream validation) all hold without
- * storage, so the residual threat is an attacker who ALREADY holds the device
- * key and the licence, replaying inside a five-minute window.
+ * D1 claims atomically. Ledger failure is unavailable, never a KV fallback.
  */
-async function seenNonce(env, nonce, devFp) {
+async function claimNonce(env, nonce, devFp) {
   const id = `n:${await sha256Hex(nonce + ":" + devFp, 16)}`;
   const db = d1(env);
   if (db) {
@@ -291,18 +273,10 @@ async function seenNonce(env, nonce, devFp) {
           .bind(id, now + NONCE_TTL_S * 1000)
       ]);
       const claim = res && res[1];
-      return ((claim && claim.meta && claim.meta.changes) || 0) === 0;
-    } catch { return false; }
+      return ((claim && claim.meta && claim.meta.changes) || 0) === 0 ? "replayed" : "ok";
+    } catch { return "unavailable"; }
   }
-  if (!env.RL) return false;
-  try {
-    if (await env.RL.get(id)) return true;
-    await env.RL.put(id, "1", { expirationTtl: NONCE_TTL_S });
-    return false;
-  } catch {
-    // An outage is not a verdict: steps 2, 4 and 6 are all still in force.
-    return false;
-  }
+  return "unavailable";
 }
 
 /* ---------- kill list (step 7) ---------- */
@@ -317,16 +291,16 @@ async function seenNonce(env, nonce, devFp) {
  * somebody's purchase, and that judgement stays with a person.
  *
  * Returns the reason string so support can see WHY without a second lookup,
- * and false when there is no D1 — a database we cannot reach must not be able
- * to revoke everyone at once.
+ * and null when the ledger cannot answer. A database outage cannot revoke a
+ * customer, but it also cannot authorise an issuer response.
  */
 async function revoked(env, keyFp) {
   const db = d1(env);
-  if (!db) return false;
+  if (!db) return null;
   try {
     const row = await db.prepare("SELECT reason FROM revocations WHERE key_fp = ?1").bind(keyFp).first();
     return row ? String(row.reason || "revoked") : false;
-  } catch { return false; }
+  } catch { return null; }
 }
 
 /* ---------- origin policy ---------- */
@@ -384,6 +358,34 @@ const json = (body, status, origin, extra) =>
       ...(extra || {})
     }
   });
+
+function metricRoute(request) {
+  const path = new URL(request.url).pathname;
+  if (path === "/webhook/dodo") return "webhook";
+  if (path.startsWith("/checkout")) return "checkout";
+  if (path.startsWith("/identity")) return "identity";
+  if (path.startsWith("/session")) return "session";
+  if (path.startsWith("/device")) return "device";
+  if (path === "/trial") return "trial";
+  return "entitlement";
+}
+
+function latencyBucket(ms) {
+  if (ms <= 100) return "le100";
+  if (ms <= 500) return "le500";
+  if (ms <= 2000) return "le2000";
+  if (ms <= 10000) return "le10000";
+  return "gt10000";
+}
+
+function emitMetric(env, route, outcome, elapsed = 0) {
+  try {
+    env.ISSUER_METRICS?.writeDataPoint({
+      blobs: [route, outcome, latencyBucket(elapsed)],
+      doubles: [1, elapsed]
+    });
+  } catch { /* Metrics must never affect an entitlement decision. */ }
+}
 
 /** Seconds a throttled caller should wait, as a header the client already
  *  knows how to read. Rounded up: 0 would mean "immediately". */
@@ -886,12 +888,13 @@ async function verifyGoogleIdToken(env, idToken, expectNonce) {
  *  route only, because that is the one that says how it was proven. */
 async function noteIdentity(env, emailFp, via) {
   const db = d1(env);
-  if (!db) return;
+  if (!db) return false;
   try {
     await db.prepare(
       "INSERT INTO identities (email_fp, first_seen, via) VALUES (?1, ?2, ?3) ON CONFLICT(email_fp) DO NOTHING"
     ).bind(emailFp, Date.now(), via).run();
-  } catch { /* the trial ledger is the one that has to be right */ }
+    return true;
+  } catch { return false; }
 }
 
 /**
@@ -902,19 +905,21 @@ async function noteIdentity(env, emailFp, via) {
  * AES-GCM key so a dump is ciphertext, and NEVER read back into a response —
  * no route returns it, so there is nothing on the wire to intercept.
  *
- * Best-effort by design: failing to file the address must not fail a sign-in.
+ * A verified identity is not complete until this encrypted support record is
+ * durable too.
  */
 async function rememberEmail(env, emailFp, email) {
   const db = d1(env);
-  if (!db || !emailFp || !email) return;
+  if (!db || !emailFp || !email) return false;
   const blob = await aesSeal(await aesKeyFor(env, "lct-email-v1"), email);
-  if (!blob) return;                     // no SIGNING_KEY: store nothing rather than plaintext
+  if (!blob) return false;
   try {
     await db.prepare(
       "INSERT INTO identity_emails (email_fp, email_enc, updated_at) VALUES (?1, ?2, ?3) " +
       "ON CONFLICT(email_fp) DO UPDATE SET email_enc = excluded.email_enc, updated_at = excluded.updated_at"
     ).bind(emailFp, blob, Date.now()).run();
-  } catch { /* the identity row is the one that has to be right */ }
+    return true;
+  } catch { return false; }
 }
 
 /** Support path only. No route calls this; it exists so an operator answering
@@ -950,6 +955,7 @@ async function claimIdentityTrial(env, emailFp, devFp) {
          has an older one: keep the older. The only way this ordering appears
          is a trial started before identity existed and verified afterwards. */
       const prior = devFp ? await deviceTrialStart(env, db, devFp) : 0;
+      if (prior === null) return null;
       const at = Number(seen.started_at) || 0;
       if (prior && prior < at) {
         try {
@@ -957,17 +963,18 @@ async function claimIdentityTrial(env, emailFp, devFp) {
         } catch { /* the older date is a correction, not a requirement */ }
         return { startedAt: prior, already: true };
       }
-      await stampDeviceTrial(db, devFp, at);
+      if (!(await stampDeviceTrial(db, devFp, at))) return null;
       return { startedAt: at, already: true };
     }
 
     const carried = devFp ? await deviceTrialStart(env, db, devFp) : 0;
+    if (carried === null) return null;
     const startedAt = carried || Date.now();
     await db.prepare("INSERT INTO trials_id (email_fp, started_at) VALUES (?1, ?2) ON CONFLICT(email_fp) DO NOTHING")
       .bind(emailFp, startedAt).run();
     const row = await db.prepare("SELECT started_at FROM trials_id WHERE email_fp = ?1").bind(emailFp).first();
     const at = Number(row && row.started_at) || startedAt;
-    await stampDeviceTrial(db, devFp, at);
+    if (!(await stampDeviceTrial(db, devFp, at))) return null;
     return { startedAt: at, already: Boolean(carried) || at !== startedAt };
   } catch { return null; }
 }
@@ -986,20 +993,21 @@ async function claimIdentityTrial(env, emailFp, devFp) {
  * EARLIEST week this device saw. Moving it forward is how a device farms.
  */
 async function stampDeviceTrial(db, devFp, startedAt) {
-  if (!devFp || !startedAt) return;
+  if (!devFp || !startedAt) return true;
   try {
     await db.prepare("INSERT INTO trials (dev_fp, started_at) VALUES (?1, ?2) ON CONFLICT(dev_fp) DO NOTHING")
       .bind(devFp, startedAt).run();
-  } catch { /* the identity ledger is the bound; this is the extra one */ }
+    return true;
+  } catch { return false; }
 }
 
 /** The week this DEVICE already spent, from either pre-identity ledger. */
 async function deviceTrialStart(env, db, devFp) {
-  let fromD1 = 0;
+  let fromD1;
   try {
     const row = await db.prepare("SELECT started_at FROM trials WHERE dev_fp = ?1").bind(devFp).first();
     fromD1 = Number(row && row.started_at) || 0;
-  } catch { /* KV may still hold it */ }
+  } catch { return null; }
   const fromKv = await trialFromKV(env, devFp);
   if (fromD1 && fromKv) return Math.min(fromD1, fromKv);
   return fromD1 || fromKv || 0;
@@ -1010,23 +1018,24 @@ async function deviceTrialStart(env, db, devFp) {
  *  when the user actually asks for it. */
 async function readIdentityTrial(env, emailFp) {
   const db = d1(env);
-  if (!db) return 0;
+  if (!db) return null;
   try {
     const row = await db.prepare("SELECT started_at FROM trials_id WHERE email_fp = ?1").bind(emailFp).first();
     return Number(row && row.started_at) || 0;
-  } catch { return 0; }
+  } catch { return null; }
 }
 
 /** Does this identity hold an owner row for this licence? The question
  *  evictOldestSeat() must answer yes to before it removes anything. */
 async function ownsLicence(env, keyFp, emailFp) {
   const db = d1(env);
-  if (!db || !emailFp) return false;
+  if (!db) return null;
+  if (!emailFp) return false;
   try {
     const row = await db.prepare("SELECT 1 AS n FROM owners WHERE key_fp = ?1 AND email_fp = ?2")
       .bind(keyFp, emailFp).first();
     return Boolean(row);
-  } catch { return false; }
+  } catch { return null; }
 }
 
 /**
@@ -1038,30 +1047,28 @@ async function ownsLicence(env, keyFp, emailFp) {
  * trial button to somebody who already paid.
  */
 async function identityAnswer(env, emailFp, devFp, origin, seat) {
-  const idt = await mintIdentityToken(env, emailFp);
-  if (!idt) return json({ error: "unavailable" }, 503, origin);
-
-  /* Signing in IS the moment this device joins the account, so its row is
-     written here rather than at the first paid check-in. A trial or free
-     device never reaches /entitlement, and before this the device screen was
-     empty for the very person who had just signed in on it. Written before the
-     answer goes out, so the list is already right by the time the client can
-     ask for it. */
   if (devFp) {
-    await touchSession(env, {
+    const touched = await touchSession(env, {
       devFp, keyFp: null, emailFp,
       plat: (seat && seat.plat) || "", geo: (seat && seat.geo) || "",
       label: (seat && seat.label) || ""
     });
-    await enforceFreeDeviceLimit(env, emailFp, devFp);
+    if (!touched || !(await enforceFreeDeviceLimit(env, emailFp, devFp))) {
+      return json({ error: "unavailable" }, 503, origin, retryAfter(30e3));
+    }
   }
 
   const startedAt = await readIdentityTrial(env, emailFp);
+  if (startedAt === null) return json({ error: "unavailable" }, 503, origin, retryAfter(30e3));
   /* A device that spent a week before identity existed. Reported so the client
      shows the truth immediately; /trial writes it across when it is called. */
   const db = d1(env);
   const carried = (!startedAt && db && devFp) ? await deviceTrialStart(env, db, devFp) : 0;
+  if (carried === null) return json({ error: "unavailable" }, 503, origin, retryAfter(30e3));
   const owned = await ownedLicences(env, emailFp);
+  if (owned === null) return json({ error: "unavailable" }, 503, origin, retryAfter(30e3));
+  const idt = await mintIdentityToken(env, emailFp);
+  if (!idt) return json({ error: "unavailable" }, 503, origin);
   return json({
     ok: true,
     idt,
@@ -1122,24 +1129,25 @@ const decLic = async (env, blob) => aesOpen(await ownerCipherKey(env), blob);
  */
 async function bindOwner(env, keyFp, emailFp, licKey) {
   const db = d1(env);
-  if (!db || !emailFp) return;
+  if (!db || !emailFp) return false;
   try {
     const have = await db.prepare("SELECT lic_enc FROM owners WHERE key_fp = ?1 AND email_fp = ?2")
       .bind(keyFp, emailFp).first();
-    if (have && have.lic_enc) return;
+    if (have && have.lic_enc) return true;
     /* A licence has exactly one owner: the first identity to present it.
        Binding every activator made a leaked key a weapon — the stranger got
        eviction rights over the buyer's seats and a permanent /restore. */
     if (!have) {
       const taken = await db.prepare("SELECT 1 AS n FROM owners WHERE key_fp = ?1 LIMIT 1")
         .bind(keyFp).first();
-      if (taken) return;
+      if (taken) return true;
     }
     await db.prepare(
       "INSERT INTO owners (key_fp, email_fp, lic_enc, bound_at) VALUES (?1, ?2, ?3, ?4) " +
       "ON CONFLICT(key_fp, email_fp) DO UPDATE SET lic_enc = excluded.lic_enc"
     ).bind(keyFp, emailFp, await encLic(env, licKey), Date.now()).run();
-  } catch { /* restore is a convenience; failing it must not fail the call */ }
+    return true;
+  } catch { return false; }
 }
 
 /**
@@ -1150,7 +1158,7 @@ async function bindOwner(env, keyFp, emailFp, licKey) {
  */
 async function ownedLicences(env, emailFp) {
   const db = d1(env);
-  if (!db || !emailFp) return [];
+  if (!db || !emailFp) return null;
   try {
     const res = await db.prepare(
       "SELECT key_fp, lic_enc FROM owners WHERE email_fp = ?1 ORDER BY bound_at DESC LIMIT 8"
@@ -1158,12 +1166,14 @@ async function ownedLicences(env, emailFp) {
     const rows = (res && res.results) || [];
     const out = [];
     for (const r of rows) {
-      if (await revoked(env, String(r.key_fp))) continue;
+      const revokedReason = await revoked(env, String(r.key_fp));
+      if (revokedReason === null) return null;
+      if (revokedReason) continue;
       const key = await decLic(env, r.lic_enc);
       if (key) out.push({ keyFp: String(r.key_fp), key });
     }
     return out;
-  } catch { return []; }
+  } catch { return null; }
 }
 
 /* ---------- sharing observer ---------- */
@@ -1211,7 +1221,10 @@ async function dodoValidate(env, licenseKey, instanceId) {
      signed 90-day tokens with no customer record behind them and `email` empty
      everywhere downstream. A deployment missing its key is a misconfigured
      deployment, and it should say so rather than quietly sign things. */
-  if (!env.DODO_API_KEY) return { branch: "service" };
+  if (!env.DODO_API_KEY) {
+    emitMetric(env, "upstream", "dodo-misconfigured");
+    return { branch: "service" };
+  }
 
   const base = dodoBase(env);
   const body = { license_key: licenseKey };
@@ -1230,17 +1243,24 @@ async function dodoValidate(env, licenseKey, instanceId) {
       signal: AbortSignal.timeout(DODO_TIMEOUT_MS)
     });
   } catch {
+    emitMetric(env, "upstream", "dodo-unavailable");
     return { branch: "service" };
   }
 
   if (res.status === 404) return { branch: "notfound" };
   if (res.status === 403) return { branch: "inactive" };
   if (res.status === 422) return { branch: "limit" };
-  if (res.status >= 500) return { branch: "service" };
+  if (res.status >= 500) {
+    emitMetric(env, "upstream", "dodo-5xx");
+    return { branch: "service" };
+  }
   if (!res.ok) return { branch: "badrequest" };
 
   let data;
-  try { data = await res.json(); } catch { return { branch: "service" }; }
+  try { data = await res.json(); } catch {
+    emitMetric(env, "upstream", "dodo-invalid-response");
+    return { branch: "service" };
+  }
 
   // Only a literal true is a pass. Missing field is not consent.
   if (data && data.valid === true) {
@@ -1320,7 +1340,10 @@ function checkoutUrlOk(value) {
 /** Open a hosted checkout session. `ref` is ours and comes back on the webhook. */
 async function dodoCheckout(env, ref, devFp) {
   const productId = str(env.DODO_PRODUCT_ID);
-  if (!productId || !env.DODO_API_KEY) return { branch: "closed" };
+  if (!productId || !env.DODO_API_KEY) {
+    emitMetric(env, "upstream", "checkout-closed");
+    return { branch: "closed" };
+  }
 
   let res;
   try {
@@ -1341,29 +1364,29 @@ async function dodoCheckout(env, ref, devFp) {
       }),
       signal: AbortSignal.timeout(DODO_TIMEOUT_MS)
     });
-  } catch { return { branch: "service" }; }
+  } catch {
+    emitMetric(env, "upstream", "checkout-unavailable");
+    return { branch: "service" };
+  }
 
-  if (!res.ok) return { branch: res.status >= 500 ? "service" : "badrequest" };
+  if (!res.ok) {
+    emitMetric(env, "upstream", res.status >= 500 ? "checkout-5xx" : "checkout-4xx");
+    return { branch: res.status >= 500 ? "service" : "badrequest" };
+  }
   let data;
-  try { data = await res.json(); } catch { return { branch: "service" }; }
+  try { data = await res.json(); } catch {
+    emitMetric(env, "upstream", "checkout-invalid-response");
+    return { branch: "service" };
+  }
 
   const url = String((data && data.checkout_url) || "");
   // No URL means the session was created in a mode we did not ask for. Refusing
   // beats handing the popup something it cannot open.
-  if (!checkoutUrlOk(url)) return { branch: "service" };
+  if (!checkoutUrlOk(url)) {
+    emitMetric(env, "upstream", "checkout-invalid-url");
+    return { branch: "service" };
+  }
   return { branch: "ok", url, sessionId: String((data && data.session_id) || "") };
-}
-
-/** Unpaid orders this device already has in flight. -1 when unknown. */
-async function openOrderCount(env, devFp) {
-  const db = d1(env);
-  if (!db) return -1;
-  try {
-    const row = await db.prepare(
-      "SELECT COUNT(*) AS n FROM orders WHERE dev_fp = ?1 AND state = 'created' AND created_at > ?2"
-    ).bind(devFp, Date.now() - ORDER_TTL_MS).first();
-    return Number(row && row.n) || 0;
-  } catch { return -1; }
 }
 
 /**
@@ -1395,34 +1418,42 @@ async function checkoutRateLimited(env, devFp, ip) {
 }
 
 async function openOrder(env, devFp) {
-  const open = await openOrderCount(env, devFp);
-  // -1 is "the ledger did not answer", which is not evidence of abuse.
-  if (open >= ORDER_MAX_OPEN) return { branch: "throttled" };
-
   const ref = crypto.randomUUID().replace(/-/g, "");
-  const made = await dodoCheckout(env, ref, devFp);
-  if (made.branch !== "ok") return made;
-
   const db = d1(env);
-  if (db) {
-    try {
-      const now = Date.now();
-      await db.batch([
-        db.prepare("DELETE FROM orders WHERE state = 'created' AND created_at < ?1")
-          .bind(now - ORDER_TTL_MS),
-        /* Settled orders are kept for a season and then dropped. They are how a
-           support ticket gets from "my licence stopped" to a payment id, which
-           is worth more than the row costs — but not forever, and an unbounded
-           table is a slow outage nobody schedules. */
-        db.prepare("DELETE FROM orders WHERE state IN ('claimed','refunded') AND updated_at < ?1")
-          .bind(now - ORDER_KEEP_MS),
-        db.prepare(
-          "INSERT INTO orders (ref, dev_fp, state, session_id, created_at, updated_at) " +
-          "VALUES (?1, ?2, 'created', ?3, ?4, ?4) ON CONFLICT(ref) DO NOTHING"
-        ).bind(ref, devFp, made.sessionId, now)
-      ]);
-    } catch { /* the metadata is the link; the webhook writes the row */ }
+  if (!db) return { branch: "unavailable" };
+  const now = Date.now();
+  let reserved;
+  try {
+    const result = await db.batch([
+      db.prepare("DELETE FROM orders WHERE state IN ('creating', 'created') AND created_at < ?1")
+        .bind(now - ORDER_TTL_MS),
+      db.prepare("DELETE FROM orders WHERE state IN ('claimed','refunded') AND updated_at < ?1")
+        .bind(now - ORDER_KEEP_MS),
+      db.prepare(
+        "INSERT INTO orders (ref, dev_fp, state, created_at, updated_at) " +
+        "SELECT ?1, ?2, 'creating', ?3, ?3 " +
+        "WHERE (SELECT COUNT(*) FROM orders WHERE dev_fp = ?2 " +
+        "AND state IN ('creating', 'created') AND created_at > ?4) < ?5"
+      ).bind(ref, devFp, now, now - ORDER_TTL_MS, ORDER_MAX_OPEN)
+    ]);
+    reserved = ((result && result[2] && result[2].meta && result[2].meta.changes) || 0) > 0;
+  } catch { return { branch: "unavailable" }; }
+  if (!reserved) return { branch: "throttled" };
+
+  const made = await dodoCheckout(env, ref, devFp);
+  if (made.branch !== "ok") {
+    try { await db.prepare("DELETE FROM orders WHERE ref = ?1 AND state = 'creating'").bind(ref).run(); }
+    catch { /* Expired reservations are swept before they can consume the cap. */ }
+    return made;
   }
+
+  try {
+    const activated = await db.prepare(
+      "UPDATE orders SET state = 'created', session_id = ?2, updated_at = ?3 " +
+      "WHERE ref = ?1 AND state = 'creating'"
+    ).bind(ref, made.sessionId, Date.now()).run();
+    if (!((activated && activated.meta && activated.meta.changes) || 0)) return { branch: "unavailable" };
+  } catch { return { branch: "unavailable" }; }
   return { branch: "ok", ref, url: made.url };
 }
 
@@ -1471,11 +1502,9 @@ async function orderPaid(env, ref, devFp, paymentId, customerId) {
       "VALUES (?1, ?2, 'paid', ?3, ?4, ?5, ?5) " +
       "ON CONFLICT(ref) DO UPDATE SET " +
       "  payment_id = excluded.payment_id, customer = excluded.customer, updated_at = excluded.updated_at, " +
-      "  state = CASE WHEN orders.state = 'created' THEN 'paid' ELSE orders.state END"
+      "  state = CASE WHEN orders.state IN ('creating', 'created') THEN 'paid' ELSE orders.state END"
     ).bind(ref, devFp, paymentId, customerId, now).run();
-    // The key may already have arrived and be waiting on this row.
-    await adoptParkedKey(env, paymentId);
-    return true;
+    return await adoptParkedKey(env, paymentId);
   } catch { return false; }
 }
 
@@ -1522,28 +1551,28 @@ async function orderFulfilled(env, paymentId, key, keyFp) {
   try {
     const res = await db.prepare(
       "UPDATE orders SET lic_key = ?2, key_fp = ?3, state = 'fulfilled', updated_at = ?4 " +
-      "WHERE payment_id = ?1 AND state IN ('created', 'paid')"
+      "WHERE payment_id = ?1 AND state IN ('creating', 'created', 'paid')"
     ).bind(paymentId, await storedLicKey(env, key), keyFp, Date.now()).run();
-    if (((res && res.meta && res.meta.changes) || 0) > 0) return true;
+    if (((res && res.meta && res.meta.changes) || 0) > 0) return "attached";
     /* No order carries this payment yet. Dodo delivers license_key.created
        before payment.succeeded often enough that discarding it here lost the
        key for good — the 200 we return means it is never redelivered. Park it;
        orderPaid() adopts it the moment the payment lands. */
-    await parkKey(env, paymentId, key, keyFp);
-    return false;
-  } catch { return false; }
+    return (await parkKey(env, paymentId, key, keyFp)) ? "parked" : null;
+  } catch { return null; }
 }
 
 /** Hold an unmatched key until its order exists. Overwrites: one key per payment. */
 async function parkKey(env, paymentId, key, keyFp) {
   const db = d1(env);
-  if (!db) return;
+  if (!db) return false;
   try {
     await db.prepare(
       "INSERT INTO pending_keys (payment_id, lic_key, key_fp, at) VALUES (?1, ?2, ?3, ?4) " +
       "ON CONFLICT(payment_id) DO UPDATE SET lic_key = excluded.lic_key, key_fp = excluded.key_fp, at = excluded.at"
     ).bind(paymentId, await storedLicKey(env, key), keyFp, Date.now()).run();
-  } catch { /* parked delivery is best effort; pullLicence is the other half */ }
+    return true;
+  } catch { return false; }
 }
 
 /** Attach a parked key to an order that has just been marked paid. */
@@ -1555,29 +1584,30 @@ async function adoptParkedKey(env, paymentId) {
     row = await db.prepare("SELECT lic_key, key_fp FROM pending_keys WHERE payment_id = ?1")
       .bind(paymentId).first();
   } catch { return false; }
-  if (!row || !row.lic_key) return false;
+  if (!row || !row.lic_key) return true;
   try {
     const res = await db.prepare(
       "UPDATE orders SET lic_key = ?2, key_fp = ?3, state = 'fulfilled', updated_at = ?4 " +
-      "WHERE payment_id = ?1 AND state IN ('created', 'paid')"
+      "WHERE payment_id = ?1 AND state IN ('creating', 'created', 'paid')"
     ).bind(paymentId, row.lic_key, row.key_fp, Date.now()).run();
     if (((res && res.meta && res.meta.changes) || 0) > 0) {
       await db.prepare("DELETE FROM pending_keys WHERE payment_id = ?1").bind(paymentId).run();
       return true;
     }
-  } catch { /* leave it parked for the sweep or the next event */ }
-  return false;
+    return true;
+  } catch { return false; }
 }
 
 /** A refunded purchase stops being claimable, and drops the key it was holding. */
 async function orderRefunded(env, keyFp) {
   const db = d1(env);
-  if (!db) return;
+  if (!db) return false;
   try {
     await db.prepare(
       "UPDATE orders SET state = 'refunded', lic_key = NULL, updated_at = ?2 WHERE key_fp = ?1"
     ).bind(keyFp, Date.now()).run();
-  } catch { /* the kill list is the thing that matters; this is bookkeeping */ }
+    return true;
+  } catch { return false; }
 }
 
 /**
@@ -1606,16 +1636,16 @@ async function pullLicence(env, row) {
  * in the body, so possession of a ref is not enough. That is the whole reason
  * this can be a plain identifier the client is allowed to remember.
  */
-async function claimOrder(env, devFp, ref) {
+async function claimOrder(env, devFp, ref, emailFp) {
   const db = d1(env);
-  if (!db) return { state: "pending" };
+  if (!db) return { state: "unavailable" };
 
   let row;
   try {
     row = await db.prepare(
       "SELECT dev_fp, state, payment_id, customer, lic_key, created_at, updated_at FROM orders WHERE ref = ?1"
     ).bind(ref).first();
-  } catch { return { state: "pending" }; }
+  } catch { return { state: "unavailable" }; }
 
   // Someone else's order reads exactly like one that never existed.
   if (!row || String(row.dev_fp) !== devFp) return { state: "unknown" };
@@ -1630,11 +1660,16 @@ async function claimOrder(env, devFp, ref) {
         row = await db.prepare(
           "SELECT dev_fp, state, payment_id, customer, lic_key, created_at, updated_at FROM orders WHERE ref = ?1"
         ).bind(ref).first();
-      } catch { return { state: "paid" }; }
+      } catch { return { state: "unavailable" }; }
     }
   }
 
   if (row && row.state === "fulfilled" && row.lic_key) {
+    const key = await heldLicKey(env, row.lic_key);
+    if (!key) return { state: "unavailable" };
+    if (!emailFp || !(await bindOwner(env, await sha256Hex(key), emailFp, key))) {
+      return { state: "unavailable" };
+    }
     /* Conditional, so two claims racing cannot both come away with a key and
        a caller cannot re-read one by asking twice. The loser is told the order
        is claimed, which is true. */
@@ -1645,14 +1680,8 @@ async function claimOrder(env, devFp, ref) {
         "WHERE ref = ?1 AND state = 'fulfilled'"
       ).bind(ref, Date.now()).run();
       won = ((res && res.meta && res.meta.changes) || 0) > 0;
-    } catch { return { state: "pending" }; }
+    } catch { return { state: "unavailable" }; }
     if (!won) return { state: "claimed" };
-    const key = await heldLicKey(env, row.lic_key);
-    /* The row is already marked claimed and the key already nulled. If it will
-       not decrypt — a rotated SIGNING_KEY — say "claimed" rather than hand back
-       a ciphertext the client would try to activate. The buyer still has the
-       key in their purchase email, and /restore still finds it. */
-    if (!key) return { state: "claimed" };
     return { state: "ready", key };
   }
 
@@ -1694,58 +1723,47 @@ async function claimSeat(env, keyFp, devFp, opts) {
       const rows = await seatRows(db, env, keyFp);
       const now = Date.now();
       const held = rows.some((r) => r.dev_fp === devFp);
-      const writes = [];
-      let evicted = "";
-
-      if (!held && rows.length >= SEAT_LIMIT) {
-        // Evict only genuinely idle seats; an active fleet must hit the wall.
-        const stale = rows
-          .filter((r) => now - Number(r.last_seen) > SEAT_IDLE_MS)
-          .sort((a, b) => Number(a.last_seen) - Number(b.last_seen));
-        if (!stale.length) return { ok: false, seats: rows.length };
-        evicted = stale[0].dev_fp;
-        writes.push(db.prepare("DELETE FROM seats WHERE key_fp = ?1 AND dev_fp = ?2")
-          .bind(keyFp, evicted));
-        writes.push(db.prepare("DELETE FROM sessions WHERE dev_fp = ?1 AND key_fp = ?2")
-          .bind(evicted, keyFp));
+      if (held) {
+        await db.prepare("UPDATE seats SET last_seen = ?3 WHERE key_fp = ?1 AND dev_fp = ?2")
+          .bind(keyFp, devFp, now).run();
+        return { ok: true, seats: await seatCount(db, keyFp) };
       }
 
-      writes.push(db.prepare(
-        "INSERT INTO seats (key_fp, dev_fp, last_seen) VALUES (?1, ?2, ?3) " +
-        "ON CONFLICT(key_fp, dev_fp) DO UPDATE SET last_seen = excluded.last_seen"
-      ).bind(keyFp, devFp, now));
+      const inserted = await db.prepare(
+        "INSERT INTO seats (key_fp, dev_fp, last_seen) " +
+        "SELECT ?1, ?2, ?3 WHERE (SELECT COUNT(*) FROM seats WHERE key_fp = ?1) < ?4"
+      ).bind(keyFp, devFp, now, SEAT_LIMIT).run();
+      if (((inserted && inserted.meta && inserted.meta.changes) || 0) > 0) {
+        return { ok: true, seats: await seatCount(db, keyFp) };
+      }
 
-      // One transaction: the eviction and the claim that depends on it cannot
-      // half-apply and leave the licence a seat short.
-      await db.batch(writes);
-      if (evicted) await dropMirror(env, keyFp, evicted);
+      const stale = rows
+        .filter((r) => now - Number(r.last_seen) > SEAT_IDLE_MS)
+        .sort((a, b) => Number(a.last_seen) - Number(b.last_seen))[0];
+      if (!stale) return { ok: false, seats: await seatCount(db, keyFp) };
+
+      const changed = await db.batch([
+        db.prepare("DELETE FROM seats WHERE key_fp = ?1 AND dev_fp = ?2 AND last_seen = ?3")
+          .bind(keyFp, stale.dev_fp, Number(stale.last_seen)),
+        db.prepare(
+          "DELETE FROM sessions WHERE dev_fp = ?1 AND key_fp = ?2 " +
+          "AND NOT EXISTS (SELECT 1 FROM seats WHERE key_fp = ?2 AND dev_fp = ?1)"
+        ).bind(stale.dev_fp, keyFp),
+        db.prepare(
+          "INSERT INTO seats (key_fp, dev_fp, last_seen) " +
+          "SELECT ?1, ?2, ?3 WHERE (SELECT COUNT(*) FROM seats WHERE key_fp = ?1) < ?4"
+        ).bind(keyFp, devFp, now, SEAT_LIMIT)
+      ]);
+      if (((changed && changed[0] && changed[0].meta && changed[0].meta.changes) || 0) > 0) {
+        await dropMirror(env, keyFp, stale.dev_fp);
+      }
+      if (((changed && changed[2] && changed[2].meta && changed[2].meta.changes) || 0) === 0) {
+        return { ok: false, seats: await seatCount(db, keyFp) };
+      }
       return { ok: true, seats: await seatCount(db, keyFp) };
-    } catch {
-      return { ok: true, seats: 0 };  // a DB outage must not lock a paying user out
-    }
+    } catch { return { ok: false, reason: "unavailable", seats: 0 }; }
   }
-
-  if (!env.RL) return { ok: true, seats: 0 };
-  const ledgerKey = `seats:${keyFp}`;
-  try {
-    const raw = await env.RL.get(ledgerKey, "json");
-    const seats = (raw && typeof raw === "object" ? raw : {});
-    const now = Date.now();
-
-    if (!seats[devFp] && Object.keys(seats).length >= SEAT_LIMIT) {
-      const stale = Object.entries(seats)
-        .filter(([, t]) => now - Number(t) > SEAT_IDLE_MS)
-        .sort((a, b) => Number(a[1]) - Number(b[1]));
-      if (!stale.length) return { ok: false, seats: Object.keys(seats).length };
-      delete seats[stale[0][0]];
-    }
-
-    seats[devFp] = now;
-    await env.RL.put(ledgerKey, JSON.stringify(seats), { expirationTtl: 400 * 86400 });
-    return { ok: true, seats: Object.keys(seats).length };
-  } catch {
-    return { ok: true, seats: 0 };   // KV down must not lock a paying user out
-  }
+  return { ok: false, reason: "unavailable", seats: 0 };
 }
 
 /** Rows for one licence, importing the pre-D1 KV ledger the first time we find
@@ -1796,11 +1814,7 @@ async function readSeats(env, keyFp) {
       return out;
     } catch { return null; }
   }
-  if (!env.RL) return null;
-  try {
-    const raw = await env.RL.get(`seats:${keyFp}`, "json");
-    return (raw && typeof raw === "object") ? raw : {};
-  } catch { return null; }
+  return null;
 }
 
 /**
@@ -1835,16 +1849,7 @@ async function releaseSeat(env, keyFp, targetFp) {
       return { ok: true, seats: await seatCount(db, keyFp) };
     } catch { return { ok: false, reason: "unavailable" }; }
   }
-  if (!env.RL) return { ok: false, reason: "unavailable" };
-  const ledgerKey = `seats:${keyFp}`;
-  try {
-    const raw = await env.RL.get(ledgerKey, "json");
-    const seats = (raw && typeof raw === "object") ? raw : {};
-    if (!seats[targetFp]) return { ok: true, seats: Object.keys(seats).length };
-    delete seats[targetFp];
-    await env.RL.put(ledgerKey, JSON.stringify(seats), { expirationTtl: 400 * 86400 });
-    return { ok: true, seats: Object.keys(seats).length };
-  } catch { return { ok: false, reason: "unavailable" }; }
+  return { ok: false, reason: "unavailable" };
 }
 
 /**
@@ -1862,7 +1867,7 @@ async function releaseSeat(env, keyFp, targetFp) {
  */
 async function evictOldestSeat(env, keyFp) {
   const db = d1(env);
-  if (!db) return false;
+  if (!db) return null;
   try {
     const row = await db.prepare(
       "SELECT dev_fp FROM seats WHERE key_fp = ?1 ORDER BY last_seen ASC LIMIT 1").bind(keyFp).first();
@@ -1874,7 +1879,7 @@ async function evictOldestSeat(env, keyFp) {
     ]);
     await dropMirror(env, keyFp, gone);
     return true;
-  } catch { return false; }
+  } catch { return null; }
 }
 
 /* ---------- sessions ----------
@@ -1975,7 +1980,7 @@ async function accountHasLicence(db, emailFp) {
     const row = await db.prepare("SELECT 1 AS ok FROM owners WHERE email_fp = ?1 LIMIT 1")
       .bind(emailFp).first();
     return !!(row && row.ok);
-  } catch { return false; }
+  } catch { return null; }
 }
 
 /**
@@ -1992,7 +1997,8 @@ async function accountHasLicence(db, emailFp) {
 async function enforceFreeDeviceLimit(env, emailFp, keepDev) {
   const limit = freeDeviceLimit(env);
   const db = d1(env);
-  if (!limit || !db || !emailFp) return;
+  if (!limit) return true;
+  if (!db || !emailFp) return false;
   try {
     const res = await db.prepare(
       "SELECT dev_fp FROM sessions WHERE email_fp = ?1 AND key_fp IS NULL " +
@@ -2000,7 +2006,7 @@ async function enforceFreeDeviceLimit(env, emailFp, keepDev) {
     ).bind(emailFp, limit).all();
     const over = ((res && res.results) || [])
       .map((r) => String(r.dev_fp)).filter((d) => d !== keepDev);
-    if (!over.length) return;
+    if (!over.length) return true;
     const now = Date.now();
     const writes = [];
     for (const devFp of over) {
@@ -2015,7 +2021,8 @@ async function enforceFreeDeviceLimit(env, emailFp, keepDev) {
       "UPDATE account_state SET version = version + 1, updated_at = ?2 WHERE email_fp = ?1"
     ).bind(emailFp, now));
     await db.batch(writes);
-  } catch { /* a cap is not worth failing the call it rode in on */ }
+    return true;
+  } catch { return false; }
 }
 
 /**
@@ -2027,7 +2034,7 @@ async function enforceFreeDeviceLimit(env, emailFp, keepDev) {
  */
 async function touchSession(env, { devFp, keyFp, emailFp, plat, geo, label }) {
   const db = d1(env);
-  if (!db) return;
+  if (!db) return false;
   const now = Date.now();
   let labelEnc = null;
   if (label) {
@@ -2054,7 +2061,8 @@ async function touchSession(env, { devFp, keyFp, emailFp, plat, geo, label }) {
          different session, so the watermark restarts with it. */
       "  claimed_at = CASE WHEN sessions.key_fp IS NOT ?3 THEN excluded.claimed_at ELSE sessions.claimed_at END"
     ).bind(devFp, emailFp || null, keyFp || null, now, labelEnc, plat || "", geo || "").run();
-  } catch { /* a session row must never cost somebody their token */ }
+    return true;
+  } catch { return false; }
 }
 
 /** The session row, adopting a pre-sessions seat the first time we find none.
@@ -2099,14 +2107,11 @@ async function accountEpoch(db, emailFp) {
 /**
  * Is this device still signed in?
  *
- * Throws on a ledger failure, deliberately: the caller turns that into a 503
- * and the client keeps working. The ONLY thing that may end an entitlement is
- * a successful read that says so — a database having a bad afternoon is not an
- * answer, and this is the function where that rule would be easiest to lose.
+ * Ledger failures become 503; an unexpired local token remains usable.
  */
 async function sessionVerdict(env, { devFp, keyFp, emailFp }) {
   const db = d1(env);
-  if (!db) return { live: true, reason: "no-ledger" };
+  if (!db) throw new Error("unavailable");
 
   /* The seat IS the entitlement. Releasing one from the device screen deletes
      this row, which is what finally makes that button do something on the
@@ -2490,13 +2495,13 @@ async function verifyWebhook(env, headers, raw) {
  */
 async function claimWebhook(env, id) {
   const db = d1(env);
-  if (!db) return true;                       // no ledger: revoking twice is a no-op
+  if (!db) return "unavailable";
   try {
     const r = await db.prepare(
       "INSERT INTO webhook_events (id, at) VALUES (?1, ?2) ON CONFLICT DO NOTHING"
     ).bind(id, Date.now()).run();
-    return (r.meta.changes || 0) > 0;
-  } catch { return true; }
+    return (r.meta.changes || 0) > 0 ? "claimed" : "duplicate";
+  } catch { return "unavailable"; }
 }
 
 async function releaseWebhook(env, id) {
@@ -2562,9 +2567,7 @@ async function revokeLicence(env, keyFp, reason) {
  * exactly those events and neither is a failure.
  */
 async function applyFulfilment(env, type, data) {
-  // No ledger bound at all: nothing to record, and retrying will not conjure
-  // one. Consistent with every other path here, which degrades open.
-  if (!d1(env)) return { ok: true, detail: { noledger: true } };
+  if (!d1(env)) return { ok: false };
 
   if (type === "payment.succeeded") {
     const meta = (data && data.metadata) || {};
@@ -2587,8 +2590,9 @@ async function applyFulfilment(env, type, data) {
   const key = str(data.key);
   const paymentId = str(data.payment_id);
   if (!key || !paymentId) return { ok: true, detail: { unattributed: true } };
-  const attached = await orderFulfilled(env, paymentId, key, await sha256Hex(key));
-  return { ok: true, detail: { fulfilled: attached } };
+  const fulfilled = await orderFulfilled(env, paymentId, key, await sha256Hex(key));
+  if (!fulfilled) return { ok: false };
+  return { ok: true, detail: { fulfilled: fulfilled === "attached", parked: fulfilled === "parked" } };
 }
 
 async function handleWebhook(request, env) {
@@ -2612,7 +2616,9 @@ async function handleWebhook(request, env) {
   if (!reason && !FULFILLING[type]) return json({ ok: true, ignored: type }, 200, "");
 
   const id = request.headers.get("webhook-id") || "";
-  if (!(await claimWebhook(env, id))) return json({ ok: true, duplicate: true }, 200, "");
+  const claim = await claimWebhook(env, id);
+  if (claim === "unavailable") return json({ error: "unavailable" }, 503, "", retryAfter(30e3));
+  if (claim === "duplicate") return json({ ok: true, duplicate: true }, 200, "");
 
   /* Everything past the claim, under one guard.
      Each failure path below already releases the claim before asking Dodo to
@@ -2648,10 +2654,11 @@ async function settleWebhook(env, id, type, data, reason) {
   let revoked = 0;
   for (const key of found.keys) {
     const keyFp = await sha256Hex(key);
-    if (await revokeLicence(env, keyFp, reason)) revoked++;
+    const killed = await revokeLicence(env, keyFp, reason);
+    const settled = killed && await orderRefunded(env, keyFp);
+    if (settled) revoked++;
     // The order stops being claimable too. Without this a refund taken in the
     // seconds before the buyer's first claim still hands them a live key.
-    await orderRefunded(env, keyFp);
   }
   // Resolved keys but wrote nothing: the ledger is down, not the refund absent.
   if (found.keys.length && !revoked) {
@@ -2756,8 +2763,12 @@ export default {
      a cleaner that throws must not become a pager. */
   async scheduled(_event, env, ctx) {
     ctx.waitUntil(sweepLedgers(env).then((r) => {
+      emitMetric(env, "sweep", r.failed.length ? "partial" : "ok");
       console.log("sweep: removed " + r.swept + " row(s)");
-    }).catch((e) => console.warn("sweep failed: " + String((e && e.message) || e))));
+    }).catch((e) => {
+      emitMetric(env, "sweep", "failed");
+      console.warn("sweep failed: " + String((e && e.message) || e));
+    }));
   },
 
   /**
@@ -2772,8 +2783,11 @@ export default {
    */
   async fetch(request, env) {
     const requestOrigin = request.headers.get("Origin") || "";
+    const metric = metricRoute(request);
+    const started = Date.now();
+    let response;
     try {
-      return await route(request, env);
+      response = await route(request, env);
     } catch (e) {
       console.error("unhandled: " + String((e && e.stack) || e));
       /* Guarded, because the thing that threw may be the reason origin policy
@@ -2783,8 +2797,10 @@ export default {
       let echo = "";
       try { echo = originAllowed(requestOrigin, env) ? requestOrigin : ""; }
       catch { /* nothing to echo */ }
-      return json({ error: "unavailable" }, 503, echo);
+      response = json({ error: "unavailable" }, 503, echo);
     }
+    emitMetric(env, metric, "s" + response.status, Date.now() - started);
+    return response;
   }
 };
 
@@ -3011,7 +3027,11 @@ async function route(request, env) {
   const devFp = await sha256Hex(devicePub, 16);
 
   /* ---------- step 3: single use ---------- */
-  if (await seenNonce(env, nonce, devFp)) {
+  const nonceClaim = await claimNonce(env, nonce, devFp);
+  if (nonceClaim === "unavailable") {
+    return json({ error: "unavailable" }, 503, origin, retryAfter(30e3));
+  }
+  if (nonceClaim === "replayed") {
     return json({ error: "replayed request" }, 409, origin);
   }
 
@@ -3058,12 +3078,13 @@ async function route(request, env) {
   if (route === "/identity/verify") {
     const emailFp = await emailFpOf(email);
     const res = await verifyOtp(env, emailFp, code);
-    if (res.ok) await rememberEmail(env, emailFp, email);
     if (!res.ok) {
       if (res.reason === "unavailable") return json({ error: "unavailable" }, 503, origin);
       return json({ error: res.reason, left: res.left }, 401, origin);
     }
-    await noteIdentity(env, emailFp, "otp");
+    if (!(await noteIdentity(env, emailFp, "otp")) || !(await rememberEmail(env, emailFp, email))) {
+      return json({ error: "unavailable" }, 503, origin, retryAfter(30e3));
+    }
     return identityAnswer(env, emailFp, devFp, origin, { plat: sessionPlat(body.plat), geo: sessionGeo(request), label: str(body.label) });
   }
 
@@ -3077,8 +3098,9 @@ async function route(request, env) {
     if (!googleEmail) return json({ error: "bad id_token" }, 401, origin);
     if (disposableDomain(googleEmail, env)) return json({ error: "disposable" }, 400, origin);
     const emailFp = await emailFpOf(googleEmail);
-    await noteIdentity(env, emailFp, "google");
-    await rememberEmail(env, emailFp, googleEmail);
+    if (!(await noteIdentity(env, emailFp, "google")) || !(await rememberEmail(env, emailFp, googleEmail))) {
+      return json({ error: "unavailable" }, 503, origin, retryAfter(30e3));
+    }
     return identityAnswer(env, emailFp, devFp, origin, { plat: sessionPlat(body.plat), geo: sessionGeo(request), label: str(body.label) });
   }
 
@@ -3093,6 +3115,7 @@ async function route(request, env) {
   if (route === "/restore") {
     if (!identityFp) return json({ error: "unverified" }, 401, origin);
     const owned = await ownedLicences(env, identityFp);
+    if (owned === null) return json({ error: "unavailable" }, 503, origin, retryAfter(30e3));
     if (!owned.length) return json({ ok: true, restored: false }, 200, origin);
 
     /* Bounded upstream work. `owners` returns up to eight rows and each one
@@ -3114,14 +3137,19 @@ async function route(request, env) {
       /* Full, and the caller owns it: this is a reinstall holding a new
          device key. Make room rather than refusing the buyer their own
          licence. See evictOldestSeat(). */
-      if (!seat.ok && await evictOldestSeat(env, lic.keyFp)) {
+      const evicted = !seat.ok ? await evictOldestSeat(env, lic.keyFp) : false;
+      if (evicted === null) return json({ error: "unavailable" }, 503, origin, retryAfter(30e3));
+      if (!seat.ok && evicted) {
         seat = await claimSeat(env, lic.keyFp, devFp, { emailFp: identityFp, activate: true });
       }
+      if (!seat.ok && seat.reason === "unavailable") {
+        return json({ error: "unavailable" }, 503, origin, retryAfter(30e3));
+      }
       if (!seat.ok) return json({ error: "device limit reached", seats: seat.seats }, 422, origin);
-      await touchSession(env, {
+      if (!(await touchSession(env, {
         devFp, keyFp: lic.keyFp, emailFp: identityFp,
         plat: sessionPlat(body.plat), geo: sessionGeo(request), label: str(body.label)
-      });
+      }))) return json({ error: "unavailable" }, 503, origin, retryAfter(30e3));
 
       const now = Date.now();
       const token = await mintToken(env, {
@@ -3169,11 +3197,12 @@ async function route(request, env) {
 
     // Register the trial device so it is on the account's device screen from
     // the first day, not only once it buys something.
-    await touchSession(env, {
+    if (!(await touchSession(env, {
       devFp, keyFp: null, emailFp: identityFp,
       plat: sessionPlat(body.plat), geo: sessionGeo(request), label: str(body.label)
-    });
-    await enforceFreeDeviceLimit(env, identityFp, devFp);
+    })) || !(await enforceFreeDeviceLimit(env, identityFp, devFp))) {
+      return json({ error: "unavailable" }, 503, origin, retryAfter(30e3));
+    }
 
     return json({
       startedAt: claimed.startedAt,
@@ -3206,6 +3235,7 @@ async function route(request, env) {
        say the store is not open rather than blame the network. */
     if (made.branch === "closed") return json({ error: "store closed" }, 503, origin);
     if (made.branch === "throttled") return json({ error: "slow down" }, 429, origin, retryAfter(RL_WINDOW_S * 1000));
+    if (made.branch === "unavailable") return json({ error: "unavailable" }, 503, origin, retryAfter(30e3));
     if (made.branch !== "ok") return json({ error: "upstream" }, 503, origin);
     return json({ ref: made.ref, url: made.url }, 200, origin);
   }
@@ -3215,14 +3245,9 @@ async function route(request, env) {
      not failures, and a client that reads the status code as the verdict
      would give up on "not yet". */
   if (route === "/checkout/claim") {
-    const claimed = await claimOrder(env, devFp, ref);
-    /* Ownership is written HERE, at the one moment the key and the buyer's
-       identity are both in hand. Waiting for the first /entitlement call
-       works too, but only if that call carries an identity token — and a
-       purchase that never got an owner row is a purchase that cannot be
-       restored, which is the failure this whole path exists to prevent. */
-    if (claimed.state === "ready" && identityFp) {
-      await bindOwner(env, await sha256Hex(claimed.key), identityFp, claimed.key);
+    const claimed = await claimOrder(env, devFp, ref, identityFp);
+    if (claimed.state === "unavailable") {
+      return json({ error: "unavailable" }, 503, origin, retryAfter(30e3));
     }
     return json(claimed, 200, origin);
   }
@@ -3248,7 +3273,9 @@ async function route(request, env) {
     /* Free accounts are on the device screen while SESSION_SCOPE is "all".
        Flipping it to "paid" is the whole switch — no extension release, and
        every ledger below stays exactly as it is. */
-    if (sessionScope(env) === "paid" && !(await accountHasLicence(db, identityFp))) {
+    const paid = sessionScope(env) === "paid" ? await accountHasLicence(db, identityFp) : true;
+    if (paid === null) return json({ error: "unavailable" }, 503, origin, retryAfter(30e3));
+    if (!paid) {
       return json({ error: "paid only" }, 403, origin);
     }
 
@@ -3257,11 +3284,12 @@ async function route(request, env) {
        find itself. List route only: on a terminate, the caller's row is either
        already there or is about to be killed. */
     if (route === "/sessions") {
-      await touchSession(env, {
+      if (!(await touchSession(env, {
         devFp, keyFp: null, emailFp: identityFp,
         plat: sessionPlat(body.plat), geo: sessionGeo(request), label: str(body.label)
-      });
-      await enforceFreeDeviceLimit(env, identityFp, devFp);
+      })) || !(await enforceFreeDeviceLimit(env, identityFp, devFp))) {
+        return json({ error: "unavailable" }, 503, origin, retryAfter(30e3));
+      }
     }
 
     let state, devices;
@@ -3371,6 +3399,7 @@ async function route(request, env) {
      the whole point — it is what makes revocation take minutes instead of
      the token's remaining life. */
   const killed = await revoked(env, keyFp);
+  if (killed === null) return json({ error: "unavailable" }, 503, origin, retryAfter(30e3));
 
   /* ---------- /session ----------
      The cheap, frequent question the 30-day token deliberately does not ask.
@@ -3475,28 +3504,38 @@ async function route(request, env) {
      licence: a reinstall carrying a new device key. Evict the stalest seat
      instead of refusing a buyer their own purchase. An unverified caller
      never reaches this — the seat cap has to stay a cap. */
-  if (!seat.ok && seat.reason !== "signed-out" && identityFp
-      && await ownsLicence(env, keyFp, identityFp) && await evictOldestSeat(env, keyFp)) {
-    seat = await claimSeat(env, keyFp, devFp, { emailFp: identityFp, activate: activating });
+  if (!seat.ok && seat.reason !== "signed-out" && identityFp) {
+    const owned = await ownsLicence(env, keyFp, identityFp);
+    if (owned === null) return json({ error: "unavailable" }, 503, origin, retryAfter(30e3));
+    if (owned) {
+      const evicted = await evictOldestSeat(env, keyFp);
+      if (evicted === null) return json({ error: "unavailable" }, 503, origin, retryAfter(30e3));
+      if (evicted) seat = await claimSeat(env, keyFp, devFp, { emailFp: identityFp, activate: activating });
+    }
   }
   if (!seat.ok && seat.reason === "signed-out") {
     return json({ error: "signed out" }, 403, origin);
+  }
+  if (!seat.ok && seat.reason === "unavailable") {
+    return json({ error: "unavailable" }, 503, origin, retryAfter(30e3));
   }
   if (!seat.ok) return json({ error: "device limit reached", seats: seat.seats }, 422, origin);
 
   /* Record who owns this, so /restore can find it after an uninstall. Done
      on every successful check rather than only at activation, so buyers who
      verify an identity months after paying are bound too. */
-  if (identityFp) await bindOwner(env, keyFp, identityFp, licenseKey);
+  if (identityFp && !(await bindOwner(env, keyFp, identityFp, licenseKey))) {
+    return json({ error: "unavailable" }, 503, origin, retryAfter(30e3));
+  }
 
   /* The row the device screen shows for this machine. `plat` and `label` are
      unsigned body fields on purpose: the row is keyed on a PROVEN dev_fp, so a
      device can only ever label itself, and adding fields to the signed input
      would 426 every installed client over a cosmetic string. */
-  await touchSession(env, {
+  if (!(await touchSession(env, {
     devFp, keyFp, emailFp: identityFp,
     plat: sessionPlat(body.plat), geo: sessionGeo(request), label: str(body.label)
-  });
+  }))) return json({ error: "unavailable" }, 503, origin, retryAfter(30e3));
 
   /* ---------- step 8: token ---------- */
   const now = Date.now();

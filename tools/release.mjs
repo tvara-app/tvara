@@ -90,7 +90,7 @@ console.log(`
 
   Next:
     1. Upload that zip to the Chrome Web Store as a new version
-    2. If docs/ changed, the live site is a separate repo:
-         cp docs/index.html docs/thanks.html /tmp/tvara-site/ && cd /tmp/tvara-site && git add -A && git commit && git push
+    2. If public copy changed, verify the canonical Pages site separately:
+         cd ../tvara-site && npm run build
     3. Commit and push this repo
 `);

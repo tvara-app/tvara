@@ -311,8 +311,8 @@ function _senderAllowed(sender) {
   if (/^(chrome|moz)-extension:\/\//i.test(url)) return true;
   // Accept: AI sites the content script runs on (matches manifest host_permissions)
   if (/^https:\/\/(chatgpt\.com|chat\.openai\.com|claude\.ai|gemini\.google\.com|www\.perplexity\.ai|chat\.deepseek\.com|grok\.com)/i.test(url)) return true;
-  // Our own post-purchase page, which activates the licence it was handed.
-  if (/^https:\/\/tvara-app\.github\.io\//i.test(url)) return true;
+  // Canonical post-purchase activation page.
+  if (/^https:\/\/tvara\.pages\.dev\/thanks(?:[/?#]|$)/i.test(url)) return true;
   // Accept: localhost and 127.0.0.1 (dev/test, http or https — matches manifest)
   if (/^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(url)) return true;
   return false;

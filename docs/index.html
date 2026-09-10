@@ -3,287 +3,117 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<!-- The licence key can arrive in the query string; never let it leave in a Referer. -->
 <meta name="referrer" content="no-referrer" />
-<title>Tvara · Make long AI chats fast again</title>
-<meta name="description" content="Speed engine, minimap, in-chat search, timestamps and encrypted local backups for AI chats. Free speed engine; one-time Pro licence." />
+<title>Tvara · AI Chat Speed &amp; Recall</title>
+<meta name="description" content="Keep long AI chats fast, searchable and backed up locally without sending chat text to Tvara." />
 <style>
-  :root {
-    --bg: #0e1117; --panel: #161b26; --text: #e8eaf0; --muted: #9aa3b5;
-    --accent: #7aa2ff; --line: rgba(255,255,255,0.08);
-  }
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: var(--bg); color: var(--text); font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-  .wrap { max-width: 860px; margin: 0 auto; padding: 0 24px; }
-  header { padding: 72px 0 48px; text-align: center; }
-  .logo { font-size: 52px; }
-  h1 { font-size: 40px; line-height: 1.2; margin: 16px 0 12px; }
-  .sub { color: var(--muted); font-size: 19px; max-width: 620px; margin: 0 auto; }
-  .cta { display: inline-block; margin-top: 28px; padding: 13px 28px; border-radius: 10px; background: var(--accent); color: #0b0e14; font-weight: 700; text-decoration: none; }
-  .cta.alt { background: transparent; color: var(--accent); border: 1px solid var(--accent); margin-left: 10px; }
-  .price-how { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); font-size: 14.5px; }
-  .price-how b { display: block; color: var(--text); margin-bottom: 6px; }
-  .badge { display: inline-block; margin-top: 18px; padding: 5px 14px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); font-size: 13.5px; }
-  section { padding: 44px 0; border-top: 1px solid var(--line); }
-  h2 { font-size: 26px; margin-bottom: 22px; }
-  h3 { font-size: 17px; margin: 18px 0 6px; }
-  p, li { color: var(--muted); }
-  strong { color: var(--text); }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 22px; }
-  .card .em { font-size: 26px; }
-  .card b { display: block; margin: 8px 0 6px; color: var(--text); font-size: 16.5px; }
-  .card p { font-size: 14.5px; }
-  .price-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
-  .price { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 26px; }
-  .price.hot { border-color: var(--accent); }
-  .price .amt { font-size: 34px; font-weight: 800; color: var(--text); }
-  .price .per { color: var(--muted); font-size: 14px; }
-  .price ul { list-style: none; margin-top: 14px; }
-  .price li { padding: 4px 0 4px 24px; position: relative; font-size: 14.5px; }
-  .price li::before { content: "✓"; position: absolute; left: 0; color: var(--accent); }
-  .legal p, .legal li { font-size: 14.5px; }
-  .legal ul { margin: 8px 0 8px 20px; }
-  footer { padding: 36px 0 56px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; text-align: center; }
-  a { color: var(--accent); }
-  nav { text-align: center; padding: 10px 0 0; font-size: 14px; }
-  nav a { margin: 0 10px; color: var(--muted); }
+  :root { --bg:#0e1117; --panel:#161b26; --text:#e8eaf0; --muted:#a8b1c2; --accent:#7aa2ff; --line:rgba(255,255,255,.12); }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  .wrap { max-width:860px; margin:auto; padding:0 24px; }
+  header { padding:64px 0 44px; text-align:center; }
+  h1 { font-size:40px; line-height:1.2; margin:0 0 14px; }
+  h2 { font-size:26px; margin:0 0 18px; }
+  h3 { font-size:18px; margin:24px 0 8px; }
+  section { border-top:1px solid var(--line); padding:42px 0; }
+  p, li { color:var(--muted); }
+  strong { color:var(--text); }
+  a { color:var(--accent); }
+  .sub { max-width:680px; margin:0 auto; color:var(--muted); font-size:18px; }
+  .badge { display:inline-block; margin-top:20px; padding:6px 14px; border:1px solid var(--line); border-radius:999px; color:var(--muted); font-size:14px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:14px; }
+  .card { padding:20px; background:var(--panel); border:1px solid var(--line); border-radius:12px; }
+  .card b { display:block; margin-bottom:6px; }
+  .price { padding:24px; max-width:410px; background:var(--panel); border:1px solid var(--accent); border-radius:12px; }
+  .amount { color:var(--text); font-size:34px; font-weight:800; }
+  nav { margin-top:20px; font-size:14px; }
+  footer { padding:36px 0 52px; border-top:1px solid var(--line); text-align:center; }
 </style>
 </head>
 <body>
 <div class="wrap">
-
 <header>
-  <div class="logo">⚡</div>
-  <h1>Make long AI chats fast again</h1>
-  <p class="sub">Tvara keeps your own AI history on your machine — every conversation across ChatGPT, Claude, Gemini, Perplexity, DeepSeek &amp; Grok, searchable in one box and still yours after a reinstall. It also keeps huge conversations fast, and adds the navigation those apps forgot: minimap, in-chat search, message timestamps, resume &amp; one-click backup.</p>
-  <div>
-    <a class="cta alt" href="mailto:tvara.exten@gmail.com">Contact</a>
-  </div>
-  <div class="badge">🔒 Your conversations never leave your device · no telemetry</div>
-  <nav>
-    <a href="#features">Features</a> · <a href="#pricing">Pricing</a> · <a href="#privacy">Privacy</a> · <a href="#terms">Terms</a> · <a href="#refunds">Refunds</a>
-  </nav>
+  <h1>Tvara: AI Chat Speed &amp; Recall</h1>
+  <p class="sub">Keep long AI chats fast, searchable and backed up locally—without deleting messages or sending chat text to us.</p>
+  <p class="badge">Local-first · no chat-content telemetry</p>
+  <nav><a href="#features">Features</a> · <a href="#pricing">Pricing</a> · <a href="#privacy">Privacy</a> · <a href="#terms">Terms</a> · <a href="#refunds">Refunds</a></nav>
 </header>
 
 <section id="features">
-  <h2>What it does</h2>
+  <h2>What Tvara does</h2>
   <div class="grid">
-    <div class="card"><span class="em">⚡</span><b>Speed engine</b><p>Messages outside your view are put to sleep and wake instantly as you scroll. A 2,000-message chat feels like a 20-message chat. Watch the 💤 counter work.</p></div>
-    <div class="card"><span class="em">➡️</span><b>Continue in a new chat</b><p>When a chat gets long, slow, or hits a limit: one click opens a fresh one with the context already in the prompt box: your original ask, your starred messages, the latest code. Quoted, never summarised. Nothing is sent for you.</p></div>
-    <div class="card"><span class="em">⏳</span><b>Told before the wall</b><p>These apps warn you by cutting you off. This warns you at 20% and again at 10%, on whichever AI is running down, from the provider's own figure.</p></div>
-    <div class="card"><span class="em">🕒</span><b>Message timestamps</b><p>AI chat sites don't show when anything was said. Hover any message to see its time: real send times on ChatGPT, honest "first seen" times elsewhere.</p></div>
-    <div class="card"><span class="em">🗺️</span><b>Minimap</b><p>A VS Code-style strip of the whole conversation. Hover for previews, click to jump anywhere.</p></div>
-    <div class="card"><span class="em">🔎</span><b>In-chat search</b><p>Instant full-text search with a match counter and one-key jumping, even across sleeping messages (⌘⇧F / Ctrl+Shift+F).</p></div>
-    <div class="card"><span class="em">⤵</span><b>Resume</b><p>Reopen a long chat and one tap returns you to the exact message you were reading.</p></div>
-    <div class="card"><span class="em">💾</span><b>One-click backup</b><p>Export the conversation to clean Markdown or JSON, with structure, code blocks and timestamps preserved. Your chats, on your disk.</p></div>
+    <div class="card"><b>Speed engine</b><p>Reduces rendering work for off-screen messages in long loaded chats. It does not delete or alter provider messages.</p></div>
+    <div class="card"><b>Minimap and in-chat search</b><p>Navigate and search the conversation open in the current tab.</p></div>
+    <div class="card"><b>Local archive search</b><p>Search chats previously opened on supported AI sites. The archive stays in extension storage on your device.</p></div>
+    <div class="card"><b>Context Bridge and backup</b><p>Add selected local context to a prompt, export chats, and create encrypted backup files in Downloads.</p></div>
   </div>
+  <p>Tvara supports ChatGPT, Claude, Gemini, Perplexity, DeepSeek, and Grok. Their interfaces can change, which can temporarily affect a provider-specific feature.</p>
+  <p>Public launch support: current Chrome Stable and Beta on Windows, macOS, Linux, and ChromeOS, plus current Edge on Windows and macOS. Mobile Chrome, Firefox, Safari, and unsupported browser versions are not supported for this launch.</p>
 </section>
 
 <section id="pricing">
-  <!-- Kept as an anchor and nothing else. Extensions shipped before checkout
-       moved into the product still deep-link to /#buy, and a URL that has been
-       handed out is retired, not deleted: this lands them on the prices and on
-       the paragraph telling them where the button went. -->
   <a id="buy"></a>
   <h2>Pricing</h2>
-  <div class="price-row">
-    <div class="price">
-      <div class="amt">Free</div>
-      <div class="per">forever</div>
-      <ul>
-        <li>No account, no sign-up, nothing to cancel</li>
-        <li>No card, not even to start</li>
-      </ul>
-    </div>
-    <div class="price hot">
-      <div class="amt" data-price="{price}"></div>
-      <div class="per">one-time, no subscription, forever</div>
-      <ul>
-        <li>Everything in Free, on every supported platform</li>
-        <li>5 devices, reassigned from the popup any time</li>
-        <li>All future Pro updates included</li>
-        <li>A key, not a login &mdash; still no account</li>
-        <li>Full refund within 14 days, no hoops</li>
-      </ul>
-      <!-- ══════════════════════════════════════════════════════════════════
-           THERE IS NO PAYMENT LINK ON THIS PAGE, AND ONE MUST NOT COME BACK.
-
-           A checkout URL hard-coded into a static page put the product id, the
-           provider and, in the redirect, the LICENCE KEY itself into content
-           that is cached, indexed and edited by hand. Price changes raced a CDN
-           purge, and a buyer's key rode home in a query string that browser
-           history, profile sync and every extension holding `tabs` can read.
-
-           Checkout is now opened server-side, per purchase: the extension asks
-           the issuer (POST /checkout), the issuer owns the product and price
-           and returns a one-off session URL carrying our order ref, the webhook
-           is what decides money moved, and the extension claims the licence
-           over the device proof it already holds. See the checkout section of
-           server/entitlement-worker.js.
-
-           This section is about MONEY and nothing else. What the product does
-           belongs in #features, what a device is belongs in #devices, and what
-           the licence server sees belongs in #privacy. Each of those already
-           says it once; saying it twice is how two answers start disagreeing.
-           ══════════════════════════════════════════════════════════════════ -->
-      <div class="price-how">
-        <b>Bought from inside the extension</b>
-        Open Tvara in your toolbar and press <strong>Get Pro</strong>. Checkout
-        opens in a tab, and the licence switches itself on when the payment
-        clears &mdash; nothing to copy, nothing to paste.
-        <br /><br />
-        If that button brings you back to this page instead, your copy predates
-        the change: update Tvara from your browser's extensions page, or
-        <a href="mailto:tvara.exten@gmail.com?subject=Tvara%20Pro">email me</a>
-        and I'll send you a licence key directly.
-      </div>
-    </div>
+  <div class="price">
+    <div class="amount" data-price="{price}"></div>
+    <p>One-time Pro purchase. No subscription. Includes local archive search, Context Bridge, encrypted backup, restore, and up to five devices.</p>
+    <p>Free features require no sign-in. Google sign-in is required only to start the seven-day trial or buy, restore, and manage Pro.</p>
+    <p>Checkout begins inside the extension. Payments are processed by our merchant of record.</p>
   </div>
-  <p style="margin-top:14px;">Payments are processed by our merchant of record, so VAT and invoices are theirs. Your key is emailed to you as well &mdash; that is how you activate a second machine. Nothing on this page takes money, and no licence key ever travels in a web address. <a href="#features">What you get</a> &middot; <a href="#devices">devices</a> &middot; <a href="#refunds">refunds</a>.</p>
 </section>
 
-<section id="devices" class="legal">
-  <h2>Devices</h2>
-  <p>One Pro licence activates on <strong>5 devices</strong>.</p>
-  <ul>
-    <li>A &ldquo;device&rdquo; is a signed-in browser profile. Your laptop and desktop on the same Chrome profile share one slot; Firefox, Edge, or a second profile each take their own.</li>
-    <li>Open the extension popup and click <strong>Devices</strong> to see them. <strong>Release</strong> frees the one you're on; <strong>Terminate</strong> frees any other.</li>
-    <li>If every slot is full when you activate, the extension frees your <em>oldest</em> device automatically and carries on. It only stops to ask when the slots are held by devices this browser has never seen.</li>
-    <li>Clicking <strong>Remove</strong> in the popup hands the slot back, so do that before wiping a machine. Removing a device does not switch it off: if that browser is still installed and still holds the key, it keeps Pro and claims a slot again at its next licence check &mdash; unless all five are taken by then, in which case it is refused and asks you to free one.</li>
-    <li>Lost a device without releasing it, or stuck at the limit? Email <a href="mailto:tvara.exten@gmail.com">tvara.exten@gmail.com</a> from your purchase address and we'll clear every slot on your licence, no questions.</li>
-  </ul>
-  <p>Licence keys issued before this change (they start <code>LCT1.</code>) are unaffected: they verify offline on your own machine and have no device limit.</p>
-</section>
-
-<section id="privacy" class="legal">
+<section id="privacy">
   <h2>Privacy Policy</h2>
-  <p><em>Effective: 30 August 2026. Two changes since the last version: signing in is now Google-only (the emailed-code route and the email provider behind it are gone), and a verified address is now stored, encrypted, rather than only hashed.</em></p>
-
-  <h3>The short version</h3>
-  <p><strong>Your conversations never leave your device.</strong> No chat text, no titles, no prompts and no exports are ever sent to us or to anyone else. That is the claim this product is built on, and it is the one you can verify by reading the source.</p>
-  <p><strong>Tvara does run one server</strong> &mdash; a licence issuer. It exists to decide whether a licence is real, how many devices are using it, and, once you sign in, which account it belongs to. It never sees a conversation. What it does see and store is listed below, in full.</p>
-
-  <h3>Where the extension connects, and why</h3>
-  <p>Three places. There is no fourth.</p>
-  <ol>
-    <li><strong>The AI sites you are already signed into</strong> &mdash; ChatGPT, Claude, Gemini, Perplexity, DeepSeek, Grok. It makes the same authenticated requests their own pages make, using the session cookie your browser already holds, to read <em>your own</em> conversation history and (while Allowance tracking is on) your own remaining plan allowance. That data is written to local extension storage on your machine. It is not sent anywhere.</li>
-    <li><strong>Our payment provider's licence API</strong> (Dodo Payments, merchant of record) &mdash; when you activate or release a device. It receives your licence key and a coarse device label such as &ldquo;Chrome &middot; macOS&rdquo;.</li>
-    <li><strong>Our licence issuer</strong> (<code>tvara.tharuntejandhe.workers.dev</code>, a Cloudflare Worker) &mdash; described in the next section.</li>
-    <li><strong>Google's own sign-in page</strong> &mdash; when you press &ldquo;Continue with Google&rdquo; to sign in. Described under &ldquo;Signing in&rdquo; below.</li>
-  </ol>
-
-  <h3>What our licence issuer receives and stores</h3>
-  <p>It is contacted when you start the free trial, when you activate Pro, when you view or remove a device, and on a routine re-check. The check that matters runs before a Pro action, whenever the last one was over fifteen minutes ago &mdash; that is what lets a cancelled or refunded licence stop working promptly rather than weeks later. A background alarm runs twice a day as well, but only contacts the issuer while the signed 30-day token is inside its final 10 days. <strong>Starting the free trial contacts it too</strong> &mdash; an earlier version of this policy said the free tier never did, which was not correct.</p>
-  <p>Each request carries: your licence key (Pro only), your device's public key, the activation receipt id from the payment provider, a random one-time number, a timestamp, and a signature. As with any web request, our server also sees your IP address.</p>
-  <p>It stores, per licence:</p>
+  <p><em>Effective: 10 September 2026</em></p>
+  <h3>Chat content stays on your device</h3>
+  <p>Tvara reads chats from supported AI sites only to provide its local features. It does not send chat text, titles, prompts, exports, or chat URLs to Tvara or another third party. Tvara does not use behavioural analytics, tracking pixels, advertising identifiers, or third-party SDKs.</p>
+  <h3>Services Tvara connects to</h3>
   <ul>
-    <li><strong>A hash of your licence key</strong> &mdash; the key itself is never written to disk by us. Retained up to 400 days after last use.</li>
-    <li><strong>A device fingerprint</strong> for each active device (a hash of that device's public key) with the time it was last seen, so the five-device limit can be enforced and so you can remove a device. Up to 400 days.</li>
-    <li><strong>Your trial start date</strong>, against your device fingerprint, so reinstalling does not hand out a second free week. Up to 400 days.</li>
-    <li><strong>A hash of your IP address</strong>, to notice one licence key being used from an implausible number of places. Not the address itself, and <strong>deleted after 30 days</strong>. It is used to flag a licence for a human to look at; it never automatically blocks anyone.</li>
-    <li><strong>Short-lived counters</strong> for rate limiting and to stop a request being replayed. Minutes to a couple of hours.</li>
-    <li><strong>A sharing flag</strong>, and only past a threshold: if one licence key is seen from more than twelve distinct IP hashes inside a window, the issuer records a count and a timestamp against that licence for <strong>90 days</strong> so a person can look at it. It is evidence for review, never an automatic block.</li>
+    <li><strong>Supported AI sites:</strong> Tvara reads conversations you open on ChatGPT, Claude, Gemini, Perplexity, DeepSeek, and Grok, using your existing browser session. The chat data is stored locally.</li>
+    <li><strong>Google:</strong> after you choose Google sign-in for trial, purchase, restore, or device management, Tvara requests only OpenID and email identity information.</li>
+    <li><strong>Licence issuer:</strong> Tvara uses a Cloudflare Worker to issue trials, validate purchases, restore purchases, enforce device limits, process refunds, and revoke entitlements. It receives entitlement and device proof, not chat content.</li>
+    <li><strong>Dodo Payments:</strong> our merchant of record processes checkout and refunds under its own privacy terms.</li>
   </ul>
-  <p><strong>What it handles but does not store:</strong> your email address as the payment provider knows it. The issuer asks Dodo Payments for it at the moment of a check and places it inside the signed token your own browser holds, so the extension can show you which account a licence belongs to. That copy is not written to our storage. The address you <em>sign in</em> with is a separate thing and is stored; see the next section. We do not use either for marketing, and there is no mailing list.</p>
-  <p><strong>What it never receives:</strong> conversation text, chat titles, prompts, URLs you visit, cookies, or anything read from an AI site. There is no analytics service, no tracking pixel, no advertising identifier, and no third-party SDK anywhere in the extension.</p>
-
-  <h3>Signing in</h3>
-  <p>A device slot alone does not survive a reinstall or a move to another browser. Signing in lets your trial and your purchase follow <em>you</em> instead, which is why it is asked for before a free trial or a purchase. Browsing with the free features needs no account at all.</p>
-  <p><strong>Continue with Google is the only way to sign in.</strong> It uses the browser's built-in <code>identity</code> API to open Google's own sign-in page and asks for <code>openid email</code> and nothing else &mdash; no profile, no contacts, no offline access, no ability to read anything in your Google account. Google returns an identity token straight to your browser, in the page fragment, which never reaches a server on its own; the extension then forwards that token to our licence issuer, which checks Google's published signing keys before believing a word of it. Sign-in always asks which account to use rather than silently reusing the one the browser is already signed into.</p>
-  <p>An earlier version of Tvara could also verify an address by emailing a six-digit code, which meant handing that address to a transactional email provider. <strong>That route and that provider are both gone.</strong> No third party other than Google is involved in signing in, and your address is no longer sent anywhere to be delivered to you.</p>
-  <p>What the issuer keeps once you have signed in:</p>
+  <h3>What the licence issuer stores</h3>
+  <p>The issuer stores the minimum records needed for account identity, trial eligibility, licence ownership, device limits, fraud prevention, refunds, and support: identity and email fingerprints, an encrypted signed-in email address, licence and device identifiers or hashes, purchase and webhook references, trial timestamps, revocation state, and short-lived security and rate-limit records. It retains identity and entitlement records for up to 400 days of inactivity and longer where a live licence, legal obligation, refund, fraud-prevention need, or support request requires it. It retains hashed IP abuse signals for up to 30 days.</p>
+  <h3>Permissions</h3>
   <ul>
-    <li><strong>An identity fingerprint</strong> &mdash; a salted hash of your canonicalised address. This, not the address, is what every other record is keyed on: your trial start date, and (if you buy Pro) the link to your licence.</li>
-    <li><strong>The address itself, encrypted.</strong> It is sealed with AES-GCM under a key that exists only in our server's secret store, kept in its own table, and read by no part of the service &mdash; no request returns it and none of our code sends it anywhere. It is held so that we can tell you what we have about you, delete it on request, and answer a support question about which account owns a licence. A copy of the database on its own is ciphertext.</li>
+    <li><code>storage</code> and <code>unlimitedStorage</code> keep settings and the archive locally.</li>
+    <li><code>downloads</code> writes exports and encrypted backup files to Downloads.</li>
+    <li><code>alarms</code> schedules local backups and entitlement checks.</li>
+    <li><code>notifications</code> displays local product notices.</li>
+    <li><code>identity</code> opens Google sign-in only after you choose it.</li>
+    <li>Host access is limited to supported AI sites and Tvara’s own post-purchase page.</li>
   </ul>
-  <p>Both are kept for up to 400 days of inactivity, and for as long as a live licence is attached to them, so a purchase stays restorable. Pressing <strong>Restore my purchase</strong> asks the issuer whether the signed-in identity owns a licence. <strong>Use a different account</strong> forgets the sign-in on that install only &mdash; it does not delete what the issuer holds; ask us for that, see &ldquo;Access and erasure&rdquo; below.</p>
-  <p><strong>Firefox.</strong> Firefox gives every installation a different internal address, which Google will not accept as a sign-in destination, so Continue with Google cannot work there. Free features work normally on Firefox; the trial and Pro cannot be started on it.</p>
-
-  <h3>Your device key</h3>
-  <p>On first use the extension generates a cryptographic key pair inside your browser and stores it there. The private half is created as <em>non-extractable</em>: the browser will not export it &mdash; not to the page, not to us, not to you. It is used only to prove to our licence issuer that a request came from this device, so that a device slot cannot be claimed by someone who merely has your key. Only the public half is ever sent.</p>
-
-  <h3>Scripts that run inside the AI pages</h3>
-  <ul>
-    <li><strong>ChatGPT message times</strong> &mdash; a read-only script reads each message's timestamp from the app's own state so real send times can be shown. It makes no network request and changes nothing on the page.</li>
-    <li><strong>The allowance reader</strong> &mdash; while <em>Allowance tracking</em> is on, this observes the rate-limit information the AI sites' own responses already carry, so the figure agrees with the site instead of being an estimate. It is strictly passive: requests are never altered, blocked, delayed or replayed. It reads rate-limit response headers, and opens a response body only when the URL's own path says the response is about limits &mdash; never chat traffic, never a stream. What crosses from the page into the extension is the rate-limit response headers, the URL <em>path</em> (never the query string), and &mdash; for those limit responses only &mdash; the parsed JSON, because the number has to be found inside it. That JSON is read in memory and discarded; what is written to disk is a redacted sample in which every string longer than 40 characters is replaced by its length, so a wrong reading stays diagnosable without keeping any prose. No part of it is transmitted anywhere. This is the only place the extension hooks <code>fetch</code>/<code>XHR</code>, it is switchable off in the popup, and with it off the hooks disable themselves.</li>
-  </ul>
-
-  <h3>What the extension keeps on your device</h3>
-  <ul>
-    <li><strong>Your archive</strong> &mdash; the conversations it has read, in the browser's own storage on your machine. The extension declares <code>unlimitedStorage</code> so a long history is not silently truncated. None of it is uploaded, and clearing it from the extension deletes it at once.</li>
-    <li><strong>Backup files</strong> &mdash; with automatic backup on, encrypted <code>.lctbackup</code> files are written to <code>Downloads/Tvara/</code> on your own disk and nowhere else. The passphrase is never stored, never synced, and cannot be recovered by us.</li>
-    <li><strong>Allowance diagnostics</strong> &mdash; the redacted response sample described above, kept so a wrong allowance figure can be explained rather than guessed at.</li>
-    <li><strong>An account tag</strong> &mdash; when you use more than one account on the same provider, the extension has to keep those archives apart. On Gemini it reads the signed-in address from Google's own account-switcher label, or the seat number in the URL, and stores only a salted hash of it. The address itself is not stored and never leaves your machine.</li>
-    <li><strong>Temporary chats</strong> &mdash; off by default, and switched on per your choice in the popup. A temporary or incognito-mode chat never gets a conversation id from the provider, so when this is on the extension derives one itself from a signal in the page and a hash of the opening message, then archives the chat the same way as any other &mdash; locally, nowhere else. A badge is shown on the page for as long as one is being archived, so it is never silent. Turning this off does not delete chats already archived; delete them from the extension like any other entry.</li>
-  </ul>
-
-  <h3>The permissions it asks for, and what each is for</h3>
-  <ul>
-    <li><code>storage</code>, <code>unlimitedStorage</code> &mdash; hold your archive and settings locally.</li>
-    <li><code>downloads</code> &mdash; write exports and scheduled encrypted backups into your Downloads folder.</li>
-    <li><code>notifications</code> &mdash; two local notices, and no others: a chat you had archived was deleted at the provider, and an allowance is running low. Both are raised on your machine; no notification service is involved.</li>
-    <li><code>alarms</code> &mdash; run the scheduled backup and the licence re-check on a timer.</li>
-    <li><code>identity</code> &mdash; used only for &ldquo;Continue with Google&rdquo;: opening Google's sign-in page and reading back the redirect. Used for nothing else, and untouched until you press that button.</li>
-    <li><strong>Host access</strong> to the AI sites listed above, and to <code>tvara-app.github.io</code> so the purchase page can hand a licence key back to the extension.</li>
-    <li><strong>Not requested:</strong> <code>cookies</code>, <code>tabs</code>, <code>history</code>, <code>bookmarks</code>, <code>webRequest</code>, <code>scripting</code>, or access to any site not named above. You can check this against <code>manifest.json</code> in the packaged extension.</li>
-  </ul>
-
-  <h3>Your data, your call</h3>
-  <ul>
-    <li><strong>Your archive is yours.</strong> Delete it at any time from the extension &mdash; that removes it from your device immediately, and we never held a copy to begin with.</li>
-    <li><strong>Exporting your archive never requires a licence.</strong> If your Pro licence lapses, is refunded, or you remove the device, you can still export everything the extension has archived. We will not hold your own conversations behind a paywall.</li>
-    <li><strong>Access and erasure.</strong> Email <a href="mailto:tvara.exten@gmail.com">tvara.exten@gmail.com</a> from your purchase address and we will tell you exactly what our licence issuer holds for your licence or your signed-in account &mdash; including the encrypted copy of your address &mdash; or delete it, within 30 days. Deleting either releases every device slot and cannot be undone. For payment records, the merchant of record is the controller &mdash; we will point you to them.</li>
-    <li><strong>This website</strong> is a static page with no cookies, no analytics and no third-party scripts.</li>
-  </ul>
-
-  <h3>Verifying any of this</h3>
-  <p>The extension ships as unminified, unobfuscated JavaScript, and the licence issuer's source is in the repository as <code>server/entitlement-worker.js</code>. Everything above is a statement about code you can read. If you find a place where the code and this page disagree, that is a bug &mdash; please report it and we will fix whichever one is wrong.</p>
-
-  <p>Questions: <a href="mailto:tvara.exten@gmail.com">tvara.exten@gmail.com</a></p>
+  <p>Tvara does not request browser history, tabs, cookies, bookmarks, web requests, scripting, or access to sites outside its named host permissions.</p>
+  <h3>Your choices</h3>
+  <p>You can remove local archive data from the extension and remove backup files from your device. For access, deletion, support, or refund requests, email <a href="mailto:tvara.exten@gmail.com">tvara.exten@gmail.com</a>. Deleting an identity or licence record can release device slots and prevent restoration.</p>
 </section>
 
-<section id="terms" class="legal">
+<section id="terms">
   <h2>Terms of Service</h2>
-  <p><em>Effective: 26 August 2026</em></p>
+  <p><em>Effective: 10 September 2026</em></p>
   <ul>
-    <li>Tvara is a browser extension that improves performance and navigation of third-party AI chat websites. It is an independent product, <strong>not affiliated with or endorsed by</strong> OpenAI, Anthropic, Google, Perplexity, DeepSeek or xAI. All product names belong to their owners.</li>
-    <li>The Free tier may be used without payment. A Pro licence is a one-time purchase that unlocks Pro features on supported platforms for personal use, with no recurring fees.</li>
-    <li><strong>The free trial</strong> runs for 7 days, needs no payment details, and is one per account. Starting it requires signing in with Google and registers your device with our licence issuer, so that reinstalling does not issue a second trial.</li>
-    <li><strong>Signing in with Google is required to start the free trial or to buy Pro</strong>, and is not required for the free features. It exists so your trial and your purchase follow you across a reinstall or a different browser instead of being stuck to one device slot; see #privacy for exactly what that stores. Because Firefox cannot complete Google sign-in, the trial and Pro are not available there.</li>
-    <li><strong>Pro works on up to 5 devices at once.</strong> Removing a device from the popup frees its slot immediately. It does not switch that device off: if the browser is still installed and still holds the key, it keeps Pro and claims a slot again at its next licence check, unless all five are taken by then. To stop a machine you no longer control, ask us to clear the licence rather than removing its slot.</li>
-    <li>Your licence key is yours; please don't redistribute it. We may revoke keys that are publicly shared or resold. We do not automatically revoke on suspicion &mdash; a person reviews it first.</li>
-    <li><strong>If your licence ends</strong> for any reason &mdash; refund, chargeback, or revocation &mdash; Pro features stop, but your archived conversations stay on your device and remain exportable. We will not withhold your own data.</li>
-    <li>Tvara reads your conversation history from AI services using your own signed-in session, on your instruction. Those services set their own terms for how their products may be accessed, and your use of them remains subject to those terms. If a provider changes its service so that a feature cannot work, we will say so rather than quietly degrade.</li>
-    <li>The software is provided "as is", without warranty of any kind. Third-party sites change frequently; features degrade gracefully but may temporarily break until we ship a fix.</li>
-    <li>Tvara is sold through a payment provider acting as merchant of record. Your contract for the payment is with them: they appear on your statement, collect any applicable tax, and handle chargebacks. Support for the software is ours.</li>
-    <li>The extension is distributed as readable, unobfuscated source, because software that reads private conversations should be inspectable by the people who install it. What you may do with that source is set by the <code>LICENSE</code> file in the repository the copy came from, and by nothing said on this page. Trade marks and the Tvara name are not covered by it.</li>
-    <li>These terms are governed by the laws of India.</li>
+    <li>Tvara is an independent browser extension and is not affiliated with or endorsed by OpenAI, Anthropic, Google, Perplexity, DeepSeek, or xAI.</li>
+    <li>Free features need no account. A Google sign-in is required only for trial, purchase, restore, and device management.</li>
+    <li>The free trial lasts seven days and needs no payment details. Pro is a one-time purchase for personal use on up to five devices.</li>
+    <li>If a provider changes its interface, a related feature can be unavailable while the rest of Tvara remains usable.</li>
+    <li>If a licence ends through refund, chargeback, or revocation, Pro features stop but locally archived chats remain on your device and can be exported.</li>
+    <li>Third-party AI sites and Dodo Payments have their own terms and privacy policies. Your use of them remains subject to those terms.</li>
+    <li>The software is provided as is to the extent permitted by law. These terms are governed by the laws of India.</li>
   </ul>
 </section>
 
-<section id="refunds" class="legal">
+<section id="refunds">
   <h2>Refund Policy</h2>
-  <p>If Pro doesn't work for you, email <a href="mailto:tvara.exten@gmail.com">tvara.exten@gmail.com</a> within <strong>14 days of purchase</strong> and we'll refund you in full, no questions, no hoops. Refunds are processed back to your original payment method by our payment provider, typically within 5–10 business days.</p>
+  <p>If Pro does not work for you, email <a href="mailto:tvara.exten@gmail.com">tvara.exten@gmail.com</a> within 14 days of purchase for a full refund. Refunds are returned to the original payment method by the merchant of record.</p>
 </section>
 
-<footer>
-  ⚡ Tvara · <a href="mailto:tvara.exten@gmail.com">tvara.exten@gmail.com</a>
-</footer>
-
+<footer>⚡ Tvara · <a href="mailto:tvara.exten@gmail.com">tvara.exten@gmail.com</a></footer>
 </div>
-
 <script>
-/* ── THE PRICE, as DISPLAYED. One line, and preflight fails the build if
-      lib/product.js disagrees with it.
-
-      Neither copy is authoritative any more: what a buyer is actually charged
-      is the product configured on the issuer (DODO_PRODUCT_ID), which is the
-      only place that can both quote a price and take the money. These two are
-      marketing copy, and preflight's job is to stop them drifting apart from
-      each other while somebody edits one of them. ── */
+/* Keep marketing price synchronized with the product. */
 var PRICE = "$1";
-
 (function () {
   for (var i = 0, els = document.querySelectorAll("[data-price]"); i < els.length; i++) {
     els[i].textContent = els[i].getAttribute("data-price").replace(/\{price\}/g, PRICE);

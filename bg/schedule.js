@@ -153,9 +153,8 @@ async function autoSyncTick(options = {}) {
 
 /* ---------- entitlement renewal ----------
    Without a clock, refresh() only ever ran from the popup — so a user who
-   never opened it never renewed, and a refunded licence was never told to
-   clear its token. Not forced: needsRefresh() (30d of life left) and
-   RETRY_FLOOR_MS (6h) decide whether a tick costs an issuer call. */
+   never opened it never renewed. needsRefresh() applies the renewal window
+   and bounded retry schedule. */
 const BG_ENT_ALARM = "lct-entitlement";
 const BG_ENT_PERIOD_MIN = 720;
 

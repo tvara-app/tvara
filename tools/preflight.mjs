@@ -27,10 +27,19 @@ const ok = (what, detail = "") => rows.push({ level: "ok", what, detail });
 const warn = (what, detail = "") => rows.push({ level: "warn", what, detail });
 const block = (what, detail = "") => rows.push({ level: "block", what, detail });
 
+const requiredNode = [24, 11, 0];
+const runningNode = process.versions.node.split(".").map(Number);
+const nodeReady = runningNode[0] > requiredNode[0] ||
+  (runningNode[0] === requiredNode[0] && (runningNode[1] > requiredNode[1] ||
+    (runningNode[1] === requiredNode[1] && runningNode[2] >= requiredNode[2])));
+if (!nodeReady) block("Node 24.11.0 or newer is required", `running ${process.versions.node}`);
+else ok(`Node ${process.versions.node} meets the release baseline`);
+
 const mf = JSON.parse(read("manifest.json"));
 const listing = read("store/listing.md");
 const readme = read("README.md");
 const docs = read("docs/index.html");
+const pack = read("tools/pack.mjs");
 
 /* ---------- 1. the artefact matches the code ---------- */
 
@@ -87,6 +96,10 @@ const declared = [...(mf.permissions || []), ...shippedHosts];
 const unjustified = declared.filter((p) => !new RegExp(`\`${p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\``).test(listing));
 if (!listing) block("store/listing.md missing");
 else {
+  const title = (listing.match(/## Title[^\n]*\n+([^\n]+)/) || [])[1] || "";
+  if (title !== "Tvara: AI Chat Speed & Recall") {
+    block("Store title does not match the approved launch title");
+  } else ok("Store title matches the launch title");
   if (unjustified.length) {
     block(`listing does not justify ${unjustified.length} permission(s): ${unjustified.join(", ")}`,
       "store forms ask per-permission; an unexplained one is a rejection");
@@ -101,9 +114,41 @@ else {
   if (short && short.length > 132) block(`short description is ${short.length} chars (Chrome allows 132)`);
   else if (short) ok(`short description fits (${short.length}/132)`);
   if (short && short.trim() !== (mf.description || "").trim()) {
-    warn("listing's short description and the manifest description differ");
+    block("listing's short description and the manifest description differ");
   }
 }
+
+if (mf.manifest_version !== 3) block("manifest is not Manifest V3");
+else ok("Manifest V3");
+if (mf.browser_specific_settings) block("manifest declares an unsupported Firefox target");
+else ok("manifest targets Chrome and Edge only");
+if (!/minifyScripts\(/.test(pack) || /javascript-obfuscator/i.test(pack + read("package.json"))) {
+  block("release packaging must use compliant minification and no obfuscator");
+} else ok("release package uses non-obfuscating minification");
+const sourceHiding = ["lib/entitlement.js", "lib/dodo.js"].filter((path) =>
+  /Object\.defineProperty\([\s\S]*?\btoString\b/.test(read(path)));
+if (sourceHiding.length) block(`release code hides function source: ${sourceHiding.join(", ")}`);
+else ok("release code contains no function-source hiding");
+
+for (const [name, text] of [["listing", listing], ["README", readme], ["site", docs]]) {
+  const match = text.match(/\b(zero lag|instant(?:ly)?|every chat|every platform)\b/i);
+  if (match) block(`${name} contains an unprovable claim: ${match[1]}`);
+}
+
+const localeLedger = read("store/locales/metadata.json");
+try {
+  const locales = JSON.parse(localeLedger).locales || {};
+  const expectedLocales = ["en", "es", "pt-BR", "fr", "de", "ja", "ko", "hi", "id", "tr"];
+  const missing = expectedLocales.filter((code) => !locales[code]);
+  if (missing.length) block(`localization tracker misses: ${missing.join(", ")}`);
+  else {
+    const publishedWithoutReview = Object.entries(locales)
+      .filter(([, value]) => value.status === "ready" && value.nativeReview !== "approved")
+      .map(([code]) => code);
+    if (publishedWithoutReview.length) block(`locales ready without native review: ${publishedWithoutReview.join(", ")}`);
+    else ok("localization tracker covers all launch locales");
+  }
+} catch { block("store/locales/metadata.json is missing or invalid"); }
 
 /* ---------- 3. claims that drift ---------- */
 
@@ -136,7 +181,21 @@ const product = read("lib/product.js");
 const worker = read("server/entitlement-worker.js");
 const entitlement = read("lib/entitlement.js");
 const wrangler = read("server/wrangler.toml");
-const thanks = read("docs/thanks.html");
+const canonicalSite = (product.match(/const SITE = "([^"]+)"/) || [])[1] || "";
+
+const allowedOrigins = (wrangler.match(/^ALLOWED_ORIGINS\s*=\s*"([^"]*)"/m) || [])[1] || "";
+const configuredOrigins = allowedOrigins.split(",").map((value) => value.trim()).filter(Boolean);
+const validOrigins = configuredOrigins.filter((origin) => /^chrome-extension:\/\/[a-p]{32}$/.test(origin));
+if (configuredOrigins.length !== 2 || validOrigins.length !== 2 || new Set(validOrigins).size !== 2) {
+  block("production issuer must allow exactly two published Chrome-extension origins");
+} else ok("issuer origin allow-list contains Chrome and Edge production IDs");
+if (!/^ALLOW_FIREFOX\s*=\s*"0"/m.test(wrangler)) block("ALLOW_FIREFOX must be 0 for this launch");
+else ok("Firefox issuer access is disabled");
+if (!/^SESSION_SCOPE\s*=\s*"paid"/m.test(wrangler)) block("live session sockets must be paid-only");
+else ok("live session sockets are paid-only");
+if (!/head_sampling_rate\s*=\s*0\.01/.test(wrangler) || !/binding\s*=\s*"ISSUER_METRICS"/.test(wrangler)) {
+  block("issuer observability must use 1% sampling and aggregate metrics");
+} else ok("issuer aggregate telemetry and 1% log sampling configured");
 
 /* The checkout is opened by the issuer, per purchase. These checks exist
    because the OLD arrangement — a payment link pasted into a static page, and a
@@ -144,17 +203,11 @@ const thanks = read("docs/thanks.html");
    back the first time someone is in a hurry. Each one is a regression guard for
    a specific way that would happen. */
 
-// 4a. No payment link on the marketing site. Not a stale one, not a new one.
+// 4a. No payment link in the retained compatibility reference.
 if (/checkout\.dodopayments\.com|id="checkout"/i.test(docs)) {
-  block("docs/index.html carries a checkout link again",
-    "checkout is opened by the issuer (POST /checkout); the site sells nothing");
-} else ok("the pricing page sells nothing — no payment link on a static page");
-
-// The anchor stays: extensions shipped before the move still deep-link to it.
-if (!/id="buy"/.test(docs)) {
-  block('docs/index.html dropped the #buy anchor',
-    "older installs still link to /#buy; retire the URL, do not delete it");
-} else ok("/#buy still lands somewhere for installs shipped before the move");
+  block("local compatibility reference carries a checkout link again",
+    "checkout is opened by the issuer (POST /checkout)");
+} else ok("checkout is issuer-only");
 
 // 4b. And no buy URL back in the extension either.
 if (/\bBUY\s*:/.test(product)) {
@@ -169,7 +222,7 @@ if (!/route === "\/checkout"/.test(worker) || !/route === "\/checkout\/claim"/.t
 } else if (!productId || /REPLACE|^pdt_x+$/i.test(productId)) {
   block("server/wrangler.toml has no DODO_PRODUCT_ID — /checkout has nothing to sell",
     "set DODO_PRODUCT_ID in server/wrangler.toml, then ./server/deploy.sh");
-} else ok("the issuer opens checkouts", productId);
+} else ok("the issuer opens checkouts");
 
 // The two halves of a signed request have to agree on the route name, or every
 // checkout fails its device proof at the issuer and nobody can buy anything.
@@ -187,8 +240,8 @@ const returnUrl = (wrangler.match(/RETURN_URL\s*=\s*"([^"]*)"/) || [])[1] || "";
 if (/license_key|licence_key|[?&]key=/i.test(returnUrl)) {
   block("RETURN_URL templates the licence key into a URL",
     "the extension claims its own licence over its device proof; the URL carries nothing");
-} else if (/license_key|licence_key/i.test(thanks)) {
-  block("docs/thanks.html reads a licence key out of the URL again");
+} else if (!canonicalSite || returnUrl !== canonicalSite.replace(/\/+$/, "") + "/thanks") {
+  block("RETURN_URL must use the canonical Pages purchase-activation route");
 } else ok("no licence key ever travels in a web address");
 
 /* ---------- 4b. one price, everywhere ---------- */
@@ -234,15 +287,8 @@ else {
 
 // The page someone lands on after paying. Without it a buyer's last impression
 // is the payment provider's own receipt screen and no idea what to do next.
-if (!thanks) block("docs/thanks.html is missing — no post-purchase page");
-else if (!/id="auto-activate"/.test(thanks)) {
-  block("the post-purchase page has no status box for the extension to write into");
-} else if (!/licence key/i.test(thanks)) {
-  // The automatic path is the one everybody takes; the emailed key is how a
-  // second machine is activated and how a lost delivery is recovered. A page
-  // that never mentions it strands both.
-  block("the post-purchase page never mentions the emailed licence key");
-} else ok("post-purchase page reports the automatic activation, and names the manual one");
+if (!/\/thanks/.test(returnUrl)) block("post-purchase activation route is missing");
+else ok("post-purchase activation uses the canonical Pages route");
 
 /* ---------- 5. the licence chain ---------- */
 
@@ -269,21 +315,15 @@ const head = async (url) => {
 
 if (offline) warn("skipped network checks (--offline)");
 else {
-  const site = (product.match(/const SITE = "([^"]+)"/) || [])[1];
-  const siteCode = await head(site);
-  siteCode === 200 ? ok("pricing/privacy page is live", site)
-    : block(`pricing page answered ${siteCode || "nothing"} — stores require a reachable privacy policy`, site);
+  const siteCode = await head(canonicalSite);
+  siteCode === 200 ? ok("canonical Pages site is live", canonicalSite)
+    : block(`canonical site answered ${siteCode || "nothing"} — stores require a reachable privacy policy`, canonicalSite);
 
-  /* The standalone pages are what the store form and Google's consent screen
-     link. They exist in docs/ from the moment they are generated; they are
-     only reachable once docs/ is deployed, which is a push, not a build — so
-     this warns rather than blocks. A listing submitted with a 404 behind its
-     privacy link is refused. */
-  for (const page of ["privacy.html", "terms.html"]) {
-    const url = site.replace(/\/+$/, "") + "/" + page;
+  for (const page of ["privacy", "terms", "thanks"]) {
+    const url = canonicalSite.replace(/\/+$/, "") + "/" + page;
     const code = await head(url);
     code === 200 ? ok(`${page} is live`, url)
-      : warn(`${page} answered ${code || "nothing"} — deploy docs/ before submitting`, url);
+      : block(`${page} answered ${code || "nothing"} — deploy the canonical Pages site before submitting`, url);
   }
 
   // A junk POST is enough: anything that answers proves a worker is deployed.
@@ -362,6 +402,14 @@ else {
       (w === 440 && h === 280) ? ok("small promo tile present (440×280)")
         : block(`${promo} is ${w}×${h}, Chrome requires exactly 440×280`);
     } catch { warn("could not measure the promo tile (sips unavailable)"); }
+  }
+
+  const shotSource = join(root, "test", "shoot-store.mjs");
+  if (existsSync(shotSource) && shots.length) {
+    const oldestShot = Math.min(...shots.map((f) => statSync(join(shotDir, f)).mtimeMs));
+    if (statSync(shotSource).mtimeMs > oldestShot) {
+      block("screenshots predate the evidence-copy generator", "npm run shoot-store");
+    } else ok("screenshots match the current evidence-copy generator");
   }
 
   // Optional, and only ever a nudge: the marquee is for the front page.

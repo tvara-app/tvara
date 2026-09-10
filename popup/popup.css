@@ -376,7 +376,7 @@ main { padding: 0 var(--gutter); }
    Nothing moves, ever — not when a download starts, not when it ends. */
 .fill-bar {
   position: absolute;
-  left: 0;
+  left: calc(var(--icon-col) + var(--icon-gap));
   right: 0;
   /* Not -1px. That reached one pixel into the NEXT row's own box, and because
      that row is later in DOM order it paints on top of this one at that
@@ -492,7 +492,7 @@ main { padding: 0 var(--gutter); }
 /* Spent to the cap. It stays dim — the ring is empty because the allowance
    is — and carries the warning in its colour instead. Brightening it here
    would draw exactly the shape that means "untouched". */
-.usage-track.spent { opacity: .5; }
+.usage-track.spent { opacity: .18; }
 
 /* The lit arc is the allowance still in hand, so it unfurls forward from the
    head of the count rather than sweeping the ring from twelve. */
@@ -598,6 +598,25 @@ main { padding: 0 var(--gutter); }
   white-space: nowrap;
 }
 .usage-val b { color: var(--ink); font-weight: 500; }
+.usage-row.unavailable { opacity: .62; }
+.usage-row.unavailable .usage-name { color: var(--ink-dim); }
+.usage-lock {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--ink-faint);
+  font-size: 10px;
+  font-weight: 600;
+}
+.usage-lock svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
 /* A row whose provider publishes more than one window: the figure is a button.
    Quiet until it is wanted — the panel is read at a glance and a row of live
    controls would compete with the numbers themselves. */
@@ -1334,11 +1353,6 @@ button:disabled { cursor: default; }
   *, *::before, *::after { animation: none !important; transition-duration: 1ms !important; }
 }
 
-/* A Pro licence that has not checked in for a while. Still Pro — the dot is a
-   reminder, not a warning, and the tooltip says how long. */
-.badge.overdue::after { content: ""; display: inline-block; width: 5px; height: 5px;
-  margin-left: 5px; border-radius: 50%; background: var(--ember); vertical-align: middle; }
-
 /* ---------- "you are not on a chat" ----------
    Set in the counter's own slot, not added below it: a card here costs 118px
    of a 600px pane and pushes the search panel past its floor. */
@@ -1482,8 +1496,6 @@ button:disabled { cursor: default; }
 #plan-badge.free  { color: var(--ink-dim); background: rgb(255 255 255 / .06); border-color: rgb(255 255 255 / .12); }
 #plan-badge.trial { color: #f0c48a; background: rgb(240 196 138 / .12); border-color: rgb(240 196 138 / .32); }
 #plan-badge.pro   { color: var(--ember); background: rgb(255 177 133 / .14); border-color: rgb(255 177 133 / .38); }
-#plan-badge.overdue { border-style: dashed; }
-
 /* Days, not a percentage: "4 days left" is the only form of this anybody
    acts on. Hidden entirely off-trial rather than reading "0". */
 .plan-days {

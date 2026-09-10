@@ -261,6 +261,26 @@ t("the primary window is the best-ranked live one",
     return p && p.key === "5h";
   })());
 
+t("an exhausted weekly allowance outranks a remaining session window",
+  (() => {
+    const record = { id: "claude", windows: [
+      { ...win("5h", 91, NOW + 3 * 3600e3), span: "5h", spanSec: 18000, observedAt: NOW },
+      { ...win("week", 0, NOW + 3 * 86400e3), span: "week", spanSec: 604800, observedAt: NOW }
+    ] };
+    const p = Q.primary(record, { now: NOW });
+    return p && p.span === "week" && Q.blocksProvider(p);
+  })());
+
+t("the latest exhausted provider window controls availability",
+  (() => {
+    const record = { id: "chatgpt", windows: [
+      { ...win("week", 0, NOW + 3 * 86400e3), span: "week", spanSec: 604800, observedAt: NOW },
+      { ...win("month", 0, NOW + 20 * 86400e3), span: "month", spanSec: 2592000, observedAt: NOW }
+    ] };
+    const p = Q.primary(record, { now: NOW });
+    return p && p.span === "month" && Q.blocksProvider(p);
+  })());
+
 t("a window past its reset is not shown as a percentage",
   (() => {
     // The allowance rolled over and nobody has told us the new figure. "0% left"

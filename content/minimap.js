@@ -11,6 +11,7 @@
   "use strict";
 
   let root = null, canvas = null, ctx = null, tooltip = null;
+  let toggle = null, approxBadge = null;
   let messages = [];       // [{el, role, hasCode, snippet}]
   let scroller = null;
   let scrollTarget = null; // what we bound the scroll listener to (element or window)
@@ -22,6 +23,7 @@
   let held = false;        // the tour pins the strip open
   let pin = null;          // set in build(), reaches the closure's setResting
   let raf = 0;
+  let ariaMax = "", ariaNow = "", ariaText = "", ariaLabel = "", approxState = null;
   let onResize = null;     // kept so destroy() can remove it
   let ro = null;           // ResizeObserver on the strip
   let hoverIdx = -1;
@@ -41,6 +43,11 @@
   // rendered right now. Un-seeded, it is the other way round.
   let seeded = false;
   let onStale = null;      // main.js hands us a "the seed looks wrong" callback
+  // The mounted projection changes on engine updates, not on every scroll
+  // frame. Keep its indices until that next update so a 5,000-turn map does
+  // not walk every row just to redraw the viewport lens.
+  const live = [];
+  let liveDirty = true;
 
   // Canvas can't inherit CSS — read the same --lct-* tokens the panels use.
   let palette = null, paletteKey = "";
@@ -92,7 +99,10 @@
     `;
     document.documentElement.appendChild(root);
     canvas = root.querySelector("#lct-mm-canvas");
+    toggle = root.querySelector("#lct-mm-toggle");
+    approxBadge = root.querySelector("#lct-mm-approx");
     ctx = canvas.getContext("2d");
+    canvas.setAttribute("aria-valuemin", "1");
 
     tooltip = document.createElement("div");
     tooltip.id = "lct-mm-tooltip";
@@ -122,10 +132,9 @@
     });
     root.addEventListener("transitionrun", scheduleDraw);
 
-    root.querySelector("#lct-mm-toggle").addEventListener("click", () => {
+    toggle.addEventListener("click", () => {
       collapsed = !collapsed;
       root.classList.toggle("lct-collapsed", collapsed);
-      const toggle = root.querySelector("#lct-mm-toggle");
       toggle.textContent = collapsed ? "›" : "‹";
       toggle.title = collapsed ? "Expand conversation navigator" : "Collapse conversation navigator";
       toggle.setAttribute("aria-label", toggle.title);
@@ -249,6 +258,7 @@
     catalog.clear();
     seeded = false;
     projectDirty = true;
+    liveDirty = true;
     // A new conversation is a new map: replay the entrance and let the lens
     // land where it lands instead of sliding in from the last chat's position.
     motion.intro = 0;
@@ -290,6 +300,7 @@
     let i = 0;
     let previous = null;
     let changed = false;
+    let offset = 0;
     while (i < keys.length) {
       const key = keys[i];
       if (catalogPositions.has(key)) {
@@ -302,15 +313,15 @@
       const additions = keys.slice(start, i);
       const next = i < keys.length ? keys[i] : null;
       if (next) {
-        const at = catalogPositions.get(next);
+        const at = catalogPositions.get(next) + offset;
         catalogOrder.splice(at, 0, ...additions);
       } else if (previous) {
-        const at = catalogPositions.get(previous);
+        const at = catalogPositions.get(previous) + offset;
         catalogOrder.splice(at + 1, 0, ...additions);
       } else {
         catalogOrder.push(...additions);
       }
-      reindexCatalog();
+      offset += additions.length;
       changed = true;
     }
     if (changed) reindexCatalog();
@@ -324,18 +335,22 @@
      soon as there is more text than a preview can show. */
   const BLOCK = /^(DIV|P|LI|UL|OL|H[1-6]|PRE|TABLE|TR|TD|BLOCKQUOTE|SECTION|ARTICLE|HEADER|FOOTER|BR|HR)$/;
 
-  function previewText(node, out, cap) {
+  function previewText(node, out, cap, state = { length: 0 }) {
+    const push = (text) => {
+      out.push(text);
+      state.length += text.length;
+    };
     for (const child of node.childNodes) {
-      if (out.join("").length >= cap) return;
+      if (state.length >= cap) return;
       if (child.nodeType === 3) {
-        out.push(child.nodeValue);
+        push(child.nodeValue || "");
       } else if (child.nodeType === 1 && child.tagName === "IMG") {
         // A pasted screenshot is the whole message often enough to deserve a
         // name in the preview. These hosts put the file name in alt.
         const name = (child.getAttribute("alt") || "").trim() ||
           (child.closest("[aria-label]")?.getAttribute("aria-label") || "")
             .replace(/^Open image:\s*/i, "").trim();
-        out.push(name ? `🖼 ${name}` : "🖼 image");
+        push(name ? `🖼 ${name}` : "🖼 image");
       } else if (child.nodeType === 1) {
         /* A rendered formula, taken as its source rather than walked. KaTeX
            writes the MathML and the glyphs side by side, so walking it returns
@@ -358,16 +373,16 @@
             math = "🖼 diagram";
           }
         } catch (_) { math = ""; }
-        if (math) { out.push(" " + math + " "); continue; }
+        if (math) { push(" " + math + " "); continue; }
         const block = BLOCK.test(child.tagName);
-        if (block && out.length && !/\s$/.test(out[out.length - 1])) out.push(" ");
-        previewText(child, out, cap);
-        if (block) out.push(" ");
+        if (block && out.length && !/\s$/.test(out[out.length - 1])) push(" ");
+        previewText(child, out, cap, state);
+        if (block) push(" ");
       }
     }
   }
 
-  function metaFor(el, adapter, isTail) {
+  function metaFor(el, adapter, isTail, role) {
     let meta = metaCache.get(el);
     if (!meta || isTail) {
       const text = (el.textContent || "").trim();
@@ -375,7 +390,9 @@
       previewText(el, parts, 140);
       const readable = parts.join("").replace(/\s+/g, " ").trim();
       meta = {
-        role: safeRole(adapter, el),
+        // resolveRoles() already read every stated role in this update. Only
+        // fall back to a second adapter read when that batch resolver failed.
+        role: role || safeRole(adapter, el),
         hasCode: !!el.querySelector("pre"),
         snippet: readable.slice(0, 80) || "Image / attachment",
         len: text.length      // drives tick width — see norm()
@@ -412,15 +429,17 @@
       // every engine tick, and a fresh object per message was the map's
       // steady-state garbage on Claude and Gemini.
       messages = msgEls.map((el, i) => {
-        const meta = metaFor(el, adapter, i >= msgEls.length - 3);
+        const role = resolved[i];
+        const meta = metaFor(el, adapter, i >= msgEls.length - 3, role);
         let row = rows.get(el);
         if (!row) { row = { el, key: "" }; rows.set(el, row); }
-        row.role = resolved[i] || meta.role;
+        row.role = role || meta.role;
         row.hasCode = meta.hasCode;
         row.snippet = meta.snippet;
         row.len = meta.len;
         return row;
       });
+      liveDirty = true;
       return;
     }
 
@@ -430,11 +449,12 @@
     for (let i = 0; i < msgEls.length; i++) {
       const el = msgEls[i];
       const key = keys[i];
-      const meta = metaFor(el, adapter, i >= msgEls.length - 3);
+      const role = resolved[i];
+      const meta = metaFor(el, adapter, i >= msgEls.length - 3, role);
       let entry = catalog.get(key);
       if (!entry) { entry = { key }; projectDirty = true; }
       entry.el = el;
-      entry.role = resolved[i] || meta.role;
+      entry.role = role || meta.role;
       // The index guesses at code from a ``` in the text; a mounted row has the
       // actual <pre>. The mark can therefore appear or vanish on mount — the
       // DOM is what the reader can see, so it wins.
@@ -444,6 +464,7 @@
       catalog.set(key, entry);
     }
     project();
+    liveDirty = true;
   }
 
   // The projection only changes when the ORDER does. Entries are mutated in
@@ -453,6 +474,7 @@
     if (!projectDirty) return;
     projectDirty = false;
     messages = catalogOrder.map((key) => catalog.get(key)).filter(Boolean);
+    liveDirty = true;
   };
 
   /**
@@ -531,14 +553,13 @@
     project();
 
     build();                              // paint before the engine's first tick
-    canvas.setAttribute("aria-valuemin", "1");
-    canvas.setAttribute("aria-valuemax", String(messages.length));
+    setAriaMax(messages.length);
     /* Shown from the FIRST message. The old floor was four, on the reasoning
        that a map of three dots says nothing — but it also meant a chat had no
        map until it had been going a while, which reads as the feature being
        broken rather than as it waiting. A short map is honest; an absent one
        is not. */
-    if (messages.length >= 1) root.style.display = "flex";
+    if (messages.length >= 1) setDisplay("flex");
     scheduleDraw();
     return true;
   }
@@ -552,14 +573,20 @@
     // across virtualized windows so loaded history remains represented.
     updateMessages(msgEls, adapter);
     computeApprox(msgEls, adapter);
-    canvas.setAttribute("aria-valuemin", "1");
-    canvas.setAttribute("aria-valuemax", String(messages.length));
-    root.dataset.lctApprox = approx ? "1" : "0";
-    const badge = root.querySelector("#lct-mm-approx");
-    if (badge) badge.hidden = !approx;
-    canvas.setAttribute("aria-label", approx
+    setAriaMax(messages.length);
+    const nextApprox = approx ? "1" : "0";
+    if (approxState !== nextApprox) {
+      approxState = nextApprox;
+      root.dataset.lctApprox = nextApprox;
+      if (approxBadge) approxBadge.hidden = !approx;
+    }
+    const label = approx
       ? "Conversation position — about " + messages.length + " turns"
-      : "Conversation position");
+      : "Conversation position";
+    if (ariaLabel !== label) {
+      ariaLabel = label;
+      canvas.setAttribute("aria-label", label);
+    }
 
     if (msgEls.length) bindScroller(msgEls);
 
@@ -576,7 +603,7 @@
        while; this is the live path agreeing with it.
        `held` is the tour pointing at this strip: it must outrank an empty list
        too, or the card explains a thing that is not on screen. */
-    root.style.display = !modalOpen && roomy && (held || messages.length >= 1) ? "flex" : "none";
+    setDisplay(!modalOpen && roomy && (held || messages.length >= 1) ? "flex" : "none");
     scheduleDraw();
   }
 
@@ -585,6 +612,29 @@
      still be right; it cannot be CALLED right, so the count says so. */
   let approx = false;
   let approxAt = -1;
+
+  function setDisplay(display) {
+    if (root.style.display !== display) root.style.display = display;
+  }
+
+  function setAriaMax(count) {
+    const max = String(count);
+    if (ariaMax === max) return;
+    ariaMax = max;
+    canvas.setAttribute("aria-valuemax", max);
+  }
+
+  function setPositionAria(value, text) {
+    const now = String(value);
+    if (ariaNow !== now) {
+      ariaNow = now;
+      canvas.setAttribute("aria-valuenow", now);
+    }
+    if (ariaText !== text) {
+      ariaText = text;
+      canvas.setAttribute("aria-valuetext", text);
+    }
+  }
 
   function computeApprox(msgEls, adapter) {
     if (!adapter || !adapter.canon || !msgEls.length) { approx = false; approxAt = -1; return; }
@@ -663,14 +713,17 @@
    * frame is collector pressure during exactly the scroll we are selling as
    * smooth. Indices only — the element is one lookup away.
    */
-  const live = [];
-
-  function visibleRange() {
+  function refreshLive() {
     live.length = 0;
     for (let i = 0; i < messages.length; i++) {
       const el = messages[i].el;
       if (el && el.isConnected) live.push(i);
     }
+    liveDirty = false;
+  }
+
+  function visibleRange() {
+    if (liveDirty) refreshLive();
     const n = live.length;
     if (!n) return null;
     let top = 0, bottom = innerHeight;
@@ -764,8 +817,7 @@
     }
     ctx.globalAlpha = 1;
 
-    canvas.setAttribute("aria-valuenow", String(vis ? vis.first + 1 : 1));
-    canvas.setAttribute("aria-valuetext", vis
+    setPositionAria(vis ? vis.first + 1 : 1, vis
       ? "Viewing messages " + (vis.first + 1) + " through " + (vis.last + 1) + " of " + n
       : n + " messages in this conversation");
   }
@@ -918,11 +970,10 @@
     }
 
     if (showLens) {
-      canvas.setAttribute("aria-valuenow", String(vis.first + 1));
-      canvas.setAttribute("aria-valuetext", "Viewing messages " + (vis.first + 1) + " through " + (vis.last + 1) + " of " + n);
+      setPositionAria(vis.first + 1,
+        "Viewing messages " + (vis.first + 1) + " through " + (vis.last + 1) + " of " + n);
     } else {
-      canvas.setAttribute("aria-valuenow", "1");
-      canvas.setAttribute("aria-valuetext", n + " messages in this conversation");
+      setPositionAria(1, n + " messages in this conversation");
     }
     return owed;
   }
@@ -934,8 +985,11 @@
     if (onResize) { window.removeEventListener("resize", onResize); onResize = null; }
     if (ro) { ro.disconnect(); ro = null; }
     if (root) { root.remove(); root = null; canvas = null; ctx = null; }
+    toggle = null; approxBadge = null;
+    ariaMax = ""; ariaNow = ""; ariaText = ""; ariaLabel = ""; approxState = null;
     if (tooltip) { tooltip.remove(); tooltip = null; }
-    messages = []; scroller = null; palette = null; hoverIdx = -1; resting = true;
+    messages = []; live.length = 0; liveDirty = true;
+    scroller = null; palette = null; hoverIdx = -1; resting = true;
     pin = null; held = false;               // the closure it reached is gone
     clearCatalog();
   }

@@ -319,17 +319,14 @@ reset(); setTok(mint());
 e = await E.evaluate({ key: KEY }, "99999999-8888-7777-6666-555555555555");
 t("E6 token bound to its device", e.entitled === false && e.reason === "device-mismatch");
 
-// E7. Age. A purchase is withdrawn by an ANSWER, never by an outage — so a
-// token past its expiry keeps working and says it is overdue. Our issuer being
-// unreachable (an outage, a lapsed domain, a proxy, us shutting it down years
-// from now) must never quietly unsell a copy we already sold.
+// E7. Expiry is a bounded local-offline contract.
 reset(); setTok(mint({ exp: Date.now() - 3 * 864e5 }));
 e = await E.evaluate({ key: KEY }, DEVICE);
-const shortOverdue = e.entitled === true && e.stale === true;
+const shortExpired = e.entitled === false && e.reason === "expired";
 reset(); setTok(mint({ exp: Date.now() - 400 * 864e5 }));  // over a year unreachable
 e = await E.evaluate({ key: KEY }, DEVICE);
-t("E7 a year past expiry still works, and says it is overdue",
-  shortOverdue && e.entitled === true && e.stale === true && e.overdueDays > 365);
+t("E7 expired tokens never remain entitled",
+  shortExpired && e.entitled === false && e.reason === "expired");
 
 // E7b. What DOES end it: being told. An unknown or inactive licence clears the
 // token in refresh(), and no token is no entitlement.
@@ -337,14 +334,13 @@ reset();
 e = await E.evaluate({ key: KEY }, DEVICE);
 t("E7b no token, no entitlement", e.entitled === false && e.reason === "no-token");
 
-// E8. Clock rollback still cannot un-stale a token: the high-water mark is what
-// the age is measured against, not whatever the machine currently claims.
+// E8. Clock rollback cannot revive an expired token.
 reset();
 store.set("lct-clock-hwm-v1", Date.now() + 40 * 864e5);   // we have seen "later"
 setTok(mint({ exp: Date.now() + 5 * 864e5 }));            // expires before that
 e = await E.evaluate({ key: KEY }, DEVICE);
-t("E8 winding the clock back does not hide that it is overdue",
-  e.entitled === true && e.stale === true && e.clockRolledBack === true);
+t("E8 winding the clock back cannot revive an expired token",
+  e.entitled === false && e.reason === "expired" && e.clockRolledBack === true);
 
 // E9. A revoked record is dead even holding a perfect token.
 reset(); setTok(mint());
@@ -382,13 +378,15 @@ const lct1Bad = await E.evaluate({ key: "LCT1.aaa.bbb" }, DEVICE);
 t("E13 LCT1 keys still verify offline, forgeries still fail",
   e.entitled === true && e.kind === "lct1" && lct1Bad.entitled === false);
 
-// E14. needsRefresh: renew before expiry, respect the failure floor.
+// E14. needsRefresh: renew before expiry, respect failed-refresh backoff.
 {
   const now = Date.now(), d = 864e5;
   t("E14 needsRefresh honours renewal window and backoff",
     E.needsRefresh({ lastAttemptAt: 0 }, { exp: now + 10 * d }, now) === true &&
     E.needsRefresh({ lastAttemptAt: 0 }, { exp: now + 60 * d }, now) === false &&
-    E.needsRefresh({ lastAttemptAt: now - 60e3 }, { exp: now + 10 * d }, now) === false &&
+    E.needsRefresh({ lastAttemptAt: now - 60e3, lastError: "network" }, { exp: now + 10 * d }, now) === false &&
+    E.needsRefresh({ lastError: "service", nextAttemptAt: now + 60e3 }, { exp: now + 10 * d }, now) === false &&
+    E.needsRefresh({ lastError: "service", nextAttemptAt: now - 1 }, { exp: now + 10 * d }, now) === true &&
     E.needsRefresh(null, null, now) === true);
 }
 

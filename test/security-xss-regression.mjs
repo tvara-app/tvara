@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* Regression lock for the innerHTML audit: 9 sites across the codebase were
+/* Regression lock for the innerHTML audit: 8 sites across the codebase were
    verified by hand to assign only static markup, never chat/archive/storage
    text, to innerHTML. eslint-plugin-no-unsanitized (see eslint.config.js)
    is the primary, ongoing defense — it flags ANY non-literal innerHTML RHS,
@@ -37,7 +37,6 @@ const SITES = [
   { file: "content/history-loader.js", pattern: /pill\.innerHTML\s*=/ },
   { file: "content/main.js", pattern: /bar\.innerHTML\s*=/ },
   { file: "diag/quota.js", pattern: /\$\("out"\)\.innerHTML\s*=/ },
-  { file: "content/indexer.js", pattern: /icon\.innerHTML\s*=/ },
 ];
 
 // From the `=` after a matched site, capture the RHS up to its real end:

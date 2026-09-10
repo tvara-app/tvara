@@ -497,16 +497,18 @@ const gpt = { id: "chatgpt", label: "ChatGPT", host: "chatgpt.com" };
 t("fetch: a 401 says to sign in, and says it once",
   fillWhy(gpt, "auth") === "ChatGPT: not signed in. Sign in, then tap to continue.");
 t("fetch: a rate limit is not a signed-out session",
-  fillWhy(gpt, "rate") === "ChatGPT is rate-limiting. It picks up again on its own.");
+  fillWhy(gpt, "rate") === "Waiting briefly before continuing with ChatGPT. Tvara resumes automatically.");
 t("fetch: a bot challenge names the remedy that works",
   fillWhy(gpt, "challenge") === "ChatGPT blocked the fetch. Open chatgpt.com in a tab.");
 t("fetch: an unreachable provider is not a signed-out session",
-  fillWhy(gpt, "net") === "Could not reach ChatGPT. It picks up again on its own.");
+  fillWhy(gpt, "net") === "Pausing ChatGPT's archive safely. Tvara will try again automatically.");
 t("fetch: no failure kind but auth ever says to sign in",
   ["rate", "challenge", "net", "gone", "", null, undefined]
     .every((k) => !/sign in/i.test(fillWhy(gpt, k))));
 t("fetch: every sentence carries its own remedy, so nothing is appended to it",
   ["auth", "rate", "challenge", "net"].every((k) => /\.$/.test(fillWhy(gpt, k))));
+t("fetch: a transport pause stops that provider before it can amplify failures",
+  /kind === "rate" \|\| kind === "net" \|\| kind === "shape"/.test(src));
 
 
 if (failed.length) {

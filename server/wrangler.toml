@@ -10,7 +10,7 @@ compatibility_date = "2026-08-01"
 # ─────────────────────────────────────────────────────────────────────────────
 #   Do not follow this file by hand. Run:
 #
-#       ./server/deploy.sh <chrome-extension-id>
+#       ./server/deploy.sh <chrome-extension-id> <edge-extension-id>
 #
 #   It fills in everything below, sets both secrets, deploys, and then proves
 #   the result works by calling it the way the extension does. The checklist
@@ -77,12 +77,9 @@ DODO_MODE = "live"
 
 # Who the device screen is for.
 #
-# "all"  — every verified account, free ones included. What it is set to now,
-#          deliberately: the monitoring path is worth exercising against real
-#          devices long before there are enough paying accounts to exercise it.
-# "paid" — accounts that own a licence. One flip, `wrangler deploy`, no
-#          extension release; the tables, the kills and the list do not change.
-SESSION_SCOPE = "all"
+# "all"  — every verified account, free ones included.
+# "paid" — accounts that own a licence. Keep sockets off free accounts.
+SESSION_SCOPE = "paid"
 
 # Devices a FREE account may keep signed in. 0 caps nothing, which is today.
 # Set it to 5 to hold free accounts to the same rule as paid ones — the oldest
@@ -99,18 +96,16 @@ FREE_DEVICE_LIMIT = "0"
 # order ref and claims against /checkout/claim over its device proof, so there
 # is nothing in this URL worth reading out of somebody's history.
 DODO_PRODUCT_ID = "pdt_0NlmnndQ1Zk8I5JzkYeSN"
-RETURN_URL = "https://tvara-app.github.io/thanks.html"
-# The chrome-extension://<id> origin allowed to call this worker.
-# In live mode an EMPTY value refuses everyone — deliberately. An open default
-# on a live payment endpoint is a standing invitation to spend our KV writes
-# and our upstream quota, and the failure it causes is silent.
+RETURN_URL = "https://tvara.pages.dev/thanks"
+# Exact Chrome and Edge origins allowed to call this worker. deploy.sh writes
+# both values into a temporary deploy config; this checked-in file stays intact.
 ALLOWED_ORIGINS = "chrome-extension://hbejlhhmbhkeaebcgmblchnodeampcgl"
 
 # Firefox has no stable extension origin — the moz-extension:// UUID is minted
 # per install, so ALLOWED_ORIGINS can never name it and every Firefox user got a
 # 403. "1" admits the scheme; the device signature stays the real gate. Set "0"
 # when the Firefox build (tools/pack.mjs --firefox) is not being shipped.
-ALLOW_FIREFOX = "1"
+ALLOW_FIREFOX = "0"
 
 # ─────────────────────────────────────────────────────────────────────────────
 #   Identity. The anchor that survives an uninstall.
@@ -149,9 +144,11 @@ MAIL_FROM = "Tvara <hello@tvara.app>"
 # them — the address never leaves the Worker.
 
 
-# Worker Traces — invocation logs, exceptions, timings. Server-side only: this
-# worker never sees chat text, so it costs the extension's no-telemetry promise
-# nothing. It is the only error tracking in the product by design.
+# Aggregate issuer health only. No chat text or user identifiers are emitted.
+[[analytics_engine_datasets]]
+binding = "ISSUER_METRICS"
+dataset = "tvara_issuer"
+
 [observability]
 enabled = true
-head_sampling_rate = 1
+head_sampling_rate = 0.01

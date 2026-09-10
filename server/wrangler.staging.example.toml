@@ -1,0 +1,52 @@
+name = "tvara-staging"
+main = "entitlement-worker.js"
+workers_dev = true
+preview_urls = false
+compatibility_date = "2026-08-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "tvara-staging"
+database_id = "REPLACE_WITH_STAGING_D1_ID"
+
+[[kv_namespaces]]
+binding = "RL"
+id = "REPLACE_WITH_STAGING_KV_ID"
+
+[[durable_objects.bindings]]
+name = "ACCOUNTS"
+class_name = "AccountDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AccountDO"]
+
+[[unsafe.bindings]]
+name = "EDGE_RL"
+type = "ratelimit"
+namespace_id = "REPLACE_WITH_STAGING_RATE_LIMIT_NAMESPACE"
+simple = { limit = 60, period = 60 }
+
+[[analytics_engine_datasets]]
+binding = "ISSUER_METRICS"
+dataset = "tvara_issuer_staging"
+
+[observability]
+enabled = true
+head_sampling_rate = 0.01
+
+[triggers]
+crons = ["23 4 * * *"]
+
+[vars]
+DODO_MODE = "test"
+DODO_PRODUCT_ID = "REPLACE_WITH_STAGING_DODO_PRODUCT"
+RETURN_URL = "https://staging.example.invalid/thanks"
+ALLOWED_ORIGINS = "chrome-extension://REPLACE_WITH_CHROME_ID,chrome-extension://REPLACE_WITH_EDGE_ID"
+ALLOW_FIREFOX = "0"
+SESSION_SCOPE = "paid"
+FREE_DEVICE_LIMIT = "0"
+GOOGLE_CLIENT_ID = "REPLACE_WITH_STAGING_GOOGLE_CLIENT_ID"
+DISPOSABLE_EXTRA = ""
+
+# Copy this file to an untracked wrangler.staging.toml and replace every value.

@@ -207,9 +207,24 @@
   let queryTimer = null;
   let queryToken = 0;
 
-  const SEARCH_ICON =
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
-    'stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.6-3.6"/></svg>';
+  const SVG_NS = "http://www.w3.org/2000/svg";
+
+  function searchIcon() {
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "2");
+    svg.setAttribute("stroke-linecap", "round");
+    const circle = document.createElementNS(SVG_NS, "circle");
+    circle.setAttribute("cx", "11");
+    circle.setAttribute("cy", "11");
+    circle.setAttribute("r", "7");
+    const path = document.createElementNS(SVG_NS, "path");
+    path.setAttribute("d", "M20 20l-3.6-3.6");
+    svg.append(circle, path);
+    return svg;
+  }
 
   function ensurePanel() {
     if (panel) return;
@@ -219,14 +234,10 @@
     head.className = "lct-r-head";
     const icon = document.createElement("span");
     icon.className = "lct-r-icon";
-    // SEARCH_ICON is the module-scope string literal defined above;
-    // test/security-xss-regression.mjs independently re-verifies that
-    // definition never gains interpolation.
-    // eslint-disable-next-line no-unsanitized/property -- static literal, never user or archive text
-    icon.innerHTML = SEARCH_ICON;
+    icon.appendChild(searchIcon());
     input = document.createElement("input");
     input.type = "text";
-    input.placeholder = "Search every chat on every platform…";
+    input.placeholder = "Search archived chats on supported sites…";
     input.autocomplete = "off";
     input.spellcheck = false;
     meta = document.createElement("span");

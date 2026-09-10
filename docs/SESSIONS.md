@@ -63,10 +63,9 @@ the server holds, not an event it forgets.
 read: does a row exist for my `dev_fp` under this account? No parallel truth to
 drift out of sync with the one that decides.
 
-**Withdrawal needs an answer, never a silence.** The codebase already commits
-to this — a purchase is withdrawn by an answer, never by an outage. A heartbeat
-that times out means keep working. Only a literal `live: false` clears a token.
-Every failure path in §7 obeys this.
+**D1 failure is not a verdict.** A heartbeat timeout or `503` leaves an
+unexpired local token intact. Only a signed expiry or a successful `live: false`
+answer removes access.
 
 **Compare timestamps, not flags.** A kill writes `at`. A session re-claimed
 afterwards carries `claimed_at > at` and is alive again. No tombstone cleanup,
@@ -78,7 +77,7 @@ cache can only delay a kill, never revive one or invent one.
 ```
 extension                    Cloudflare                       authority
 ─────────                    ──────────                       ─────────
-LCT2 token (30d, offline, survives any outage)
+LCT2 token (30d, offline until signed expiry)
   │
   ├─ WebSocket ──────────► AccountDO (per email_fp)  ─writes─► D1
   │   push: kill arrives     · single writer                    sessions
@@ -266,7 +265,7 @@ then, and the alarm floor catches it regardless.
 
 ## 7. Failure modes, and the answer to each
 
-- D1 unavailable → `503` → client keeps Pro. Never `live: false`.
+- D1 unavailable → `503` → client keeps unexpired Pro. Never `live: false`.
 - KV unavailable → fall through to D1. Never a verdict on its own.
 - Durable Object unavailable → mutations answer `503`, the UI says "Nothing
   changed", heartbeats still work off KV/D1. Degraded, not wrong.
@@ -277,8 +276,7 @@ then, and the alarm floor catches it regardless.
 - Partial batch → impossible; it is one transaction.
 - Duplicate submit → `op_id` replays the first answer.
 - Stale UI → `ifVersion` rejects it with the fresh list attached.
-- Issuer entirely unreachable for weeks → every device keeps working. This is
-  the promise in the README and the store listing, and it outranks the feature.
+- Issuer unavailable → each device keeps working until its signed token expiry.
 
 ## 8. Security rules
 

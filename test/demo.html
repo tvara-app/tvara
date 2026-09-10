@@ -93,7 +93,7 @@ GROUP  BY category;</pre><p>That took my test set from 1.8&nbsp;s to 11&nbsp;ms.
   return rows.filter(r => r.length > 1);
 }</pre><p>Then map <code>amount</code> → integer cents with <code>Math.round(parseFloat(a) * 100)</code>.</p>`],
       ["Last thing for today — how do I make the whole dashboard load feel instant?",
-       `<h3>Making it feel instant</h3><p>Three wins, cheapest first:</p><ul><li><b>Cache the last render</b> in localStorage and paint it before fetching — the app appears in one frame</li><li><b>One query per view</b>, not per widget — the rollup above already returns everything</li><li><b>Defer the chart</b> until the numbers are painted; users read digits first</li></ul><p>Measured on my machine: first paint 1.4&nbsp;s → 90&nbsp;ms.</p>`]
+       `<h3>Making it feel responsive</h3><p>Three wins, cheapest first:</p><ul><li><b>Cache the last render</b> in localStorage and paint it before fetching</li><li><b>One query per view</b>, not per widget — the rollup above already returns everything</li><li><b>Defer the chart</b> until the numbers are painted; users read digits first</li></ul><p>Start with the last known screen, then refresh in the background.</p>`]
     ];
 
     const chat = document.getElementById("chat");

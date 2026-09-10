@@ -954,12 +954,17 @@ async function quotaState() {
         basis: w.basis, unit: w.unit, remaining: w.remaining, limit: w.limit,
         observedAt: w.observedAt || 0, source: w.source || ""
       });
+      const blockers = all.filter((w) => self.LCTQuota.blocksProvider(w));
+      const blocker = blockers.reduce((latest, w) =>
+        !latest || (w.resetAt || 0) > (latest.resetAt || 0) ? w : latest, null);
       out.push({
         id: record.id || key.slice(QUOTA_PREFIX.length).split("|")[0],
         acct: record.acct || "",
         plan: record.plan || "",
         observedAt: record.observedAt || 0,
         source: record.source || "",
+        blocked: !!blocker,
+        blocker: blocker ? shape(blocker) : null,
         // Which window this is — "5h", "week". Claude publishes both and the
         // panel has to say which one the number belongs to.
         window: win ? shape(win) : null,

@@ -18,7 +18,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: 24
+          node-version: 24.11.0
           cache: npm
       - run: npm ci
       # Fast logic-level edge cases (real-scale timing is the separate,
@@ -36,7 +36,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: 24
+          node-version: 24.11.0
           cache: npm
       - run: npm ci
       - run: npx playwright install --with-deps chromium
@@ -53,7 +53,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: 24
+          node-version: 24.11.0
           cache: npm
       - run: npm ci
       - run: npx playwright install --with-deps chromium

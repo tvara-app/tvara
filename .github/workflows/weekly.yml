@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: 24
+          node-version: 24.11.0
           cache: npm
       - run: npm ci
       # Scoped to the Layer 2/3 files this pass added, per stryker.conf.json —

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /* Tvara — store screenshot generator.
-   Captures the 6 listing shots (1280×800, captions baked in) from the REAL
+   Captures evidence-led listing shots (1280×800, captions baked in) from the REAL
    extension running on test/demo.html. Output: test/.work/store/            */
 import { createHash } from "node:crypto";
 import { readFileSync, mkdirSync, rmSync } from "node:fs";
@@ -14,11 +14,6 @@ const ROOT = join(import.meta.dirname, "..");
    gated on a trial the ISSUER signs and the issuer refuses an unknown origin.
    Nothing visible differs: same code, same pixels, only the trust anchor. */
 const { EXT, priv: SHOOT_KEY } = mirrorExtension("shoot");
-/* The price comes from lib/product.js, the one place it is defined. Typed in
-   here instead, the pricing screenshot quietly kept advertising the old figure
-   after the price changed — a store listing charging something else. */
-const PRICE = (readFileSync(join(ROOT, "lib", "product.js"), "utf8")
-  .match(/PRICE:\s*"([^"]+)"/) || [])[1] || "$0";
 const WORK = join(ROOT, "test", ".work");
 const PROFILE = join(WORK, "shoot-profile");
 const OUT = join(WORK, "store");
@@ -128,7 +123,7 @@ await page.waitForFunction(() => {
   return c && getComputedStyle(c).visibility === "visible" && /\d/.test(c.textContent);
 }, null, { timeout: 8000 }).catch(() => {});
 await page.waitForTimeout(500);   // the width transition finishes
-await caption(page, "1,500 messages. Zero lag. Nothing deleted.");
+await caption(page, "Long conversation. Less rendering overhead. Nothing deleted.");
 await shoot(page, "1-hero.png");
 await page.mouse.move(640, 400);  // leave the map at rest for the next shots
 
@@ -165,7 +160,7 @@ await page.waitForFunction(() => {
   const c = document.querySelector("#lct-search .lct-s-count");
   return c && /\d+/.test(c.textContent) && !/^0/.test(c.textContent.trim());
 });
-await caption(page, "Search the whole conversation, instantly.");
+await caption(page, "Search the conversation you are viewing.");
 await shoot(page, "3-search.png");
 await page.keyboard.press("Escape");
 
@@ -239,6 +234,18 @@ await pop.evaluate(() => new Promise((res) => {
   });
 }));
 await page.waitForTimeout(600);
+
+const backup = await ctx.newPage();
+await backup.goto(`chrome-extension://${ID}/pages/archive.html`);
+await backup.waitForSelector("#backup-panel", { timeout: 8000 });
+await backup.locator("#backup-panel").scrollIntoViewIfNeeded();
+await backup.fill("#backup-passphrase", "Store-demo-backup-passphrase-2026");
+await backup.fill("#backup-passphrase-confirm", "Store-demo-backup-passphrase-2026");
+await backup.waitForTimeout(250);
+await caption(backup, "Encrypted local backup. Your passphrase stays with you.");
+await shoot(backup, "4-backup.png");
+await backup.close();
+
 await fireCmd(page, "open-recall");
 await page.waitForSelector("#lct-recall.lct-r-open", { timeout: 8000 });
 await page.fill("#lct-recall input", "webhook signature");
@@ -252,7 +259,7 @@ await page.waitForFunction(() => {
   return items.length >= 3 && items.every((el) => Number(getComputedStyle(el).opacity) === 1);
 }, null, { timeout: 8000 });
 await page.waitForTimeout(350);
-await caption(page, "Total Recall: search EVERY chat on EVERY platform. 100% local.");
+await caption(page, "Search saved chats on supported AI sites. Stored locally.");
 await shoot(page, "7-recall.png");
 await page.keyboard.press("Escape");
 
@@ -307,7 +314,7 @@ await comp.setContent(`<!DOCTYPE html><html><body style="margin:0;width:1280px;h
               padding:0 28px;background:#0b0c10;border-top:2px solid #7aa2ff;color:#fff;
               font-weight:600;font-size:24px">
     <span style="font-size:14px;font-weight:700;color:#7aa2ff;flex:1 0 0">⚡ Tvara</span>
-    <span style="flex:0 1 auto;text-align:center">7-day free trial. ${PRICE} once. Local archive, no telemetry.</span>
+    <span style="flex:0 1 auto;text-align:center">Allowance visibility when reported. Archive stays local.</span>
     <span style="flex:1 0 0"></span>
   </div></body></html>`);
 await comp.waitForTimeout(400);

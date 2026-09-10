@@ -107,7 +107,7 @@
         `The archive kept building the whole time, so nothing was lost. ${self.LCTProduct.PRICE} once, from the extension popup, unlocks search again forever.`;
     }
 
-    paintPaidSections(verdict);
+    paintPaidSections();
     paintArchiveState();
   }
 
@@ -117,7 +117,7 @@
   const LOCK_COPY = "Pro feature. Your archive keeps building either way, and \u201cExport archive\u201d below always works \u2014 Pro adds the encrypted, reinstall-proof backup and restore.";
 
   /** Disable rather than hide: a vanished backup button reads as data loss. */
-  function paintPaidSections(verdict) {
+  function paintPaidSections() {
     for (const [id, allowed] of [["create-backup", canBackup], ["backup-auto", canBackup],
       ["autobackup-run", canBackup], ["restore-run", canRestore]]) {
       const node = $(id);
@@ -132,11 +132,6 @@
     paintStrength();
     if (!canBackup) setStatus("backup-status", LOCK_COPY, "");
     if (!canRestore) setStatus("restore-status", LOCK_COPY, "");
-    // Grace period: signed, valid, but overdue a renewal. Works, warns.
-    if (verdict && verdict.stale) {
-      setStatus("backup-status",
-        "Licence hasn't been able to check in. Pro keeps working, and it re-checks by itself when it can.", "warn");
-    }
   }
 
   /**
