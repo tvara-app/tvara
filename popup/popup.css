@@ -811,19 +811,44 @@ label.row .row-sub { -webkit-line-clamp: 1; }
 }
 .row-action svg { width: 14px; height: 14px; }
 
-/* The pass percentage, in the third column with every other figure on this
-   panel. Width is RESERVED and the element is never removed: a number that
-   appears when a pass starts and vanishes when it ends would squeeze the
-   sentence beside it and re-wrap the row, twice per pass. */
-.row-pct {
-  min-width: 3.1em;
-  margin-top: -1px;                    /* onto the title's line, like .row-action */
-  color: var(--ink-dim);
-  font-size: 11px;
+.row-archive > .row-icon,
+.row-archive > .row-text,
+.row-archive > .archive-backup { position: relative; z-index: 1; }
+.row-archive > .row-text { pointer-events: none; }
+.archive-count {
+  display: inline-flex;
+  margin-left: 5px;
+  padding: 1px 5px;
+  border: 1px solid rgb(255 138 107 / .3);
+  border-radius: 999px;
+  background: rgb(255 138 107 / .1);
+  color: #ffb09a;
+  font-size: 9px;
+  font-weight: 650;
   font-variant-numeric: tabular-nums;
-  text-align: right;
+  letter-spacing: 0;
+  line-height: 1.25;
+  vertical-align: 1px;
   white-space: nowrap;
 }
+.archive-backup {
+  min-height: 25px;
+  margin-top: -4px;
+  padding: 4px 8px;
+  border: 1px solid rgb(255 138 107 / .35);
+  border-radius: 7px;
+  background: rgb(255 138 107 / .08);
+  color: #ffb09a;
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1;
+  white-space: nowrap;
+}
+.archive-backup:hover { border-color: rgb(255 138 107 / .62); background: rgb(255 138 107 / .15); color: #ffd3c5; }
+.archive-backup.needs-attention { border-color: rgb(255 112 112 / .58); color: #ffb0b0; }
+.archive-backup:focus-visible, #sync-history:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
 
 /* The two allowance settings, under the readings they govern. They used to sit
    in the toggle row as its entire description, which left the row naming a
@@ -1024,7 +1049,7 @@ body.searching footer { display: none; }
 .recall-result-info { display: none; }
 
 /* the only working animation: the archive core turning over */
-.row-button.syncing .sync-icon { animation: orbit 2s linear infinite; color: var(--ember); }
+.row-archive.syncing .sync-icon { animation: orbit 2s linear infinite; color: var(--ember); }
 @keyframes orbit { to { transform: rotate(360deg); } }
 
 /* ---------- pro / state ---------- */

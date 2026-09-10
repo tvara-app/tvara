@@ -1229,6 +1229,7 @@
   // age in the row tooltip rather than presented as current.
   paintPulse((cache && cache.stats && cache.stats.total) || 0,
              (cache && cache.archive) || null);
+  paintArchiveCount((cache && cache.archive && cache.archive.chats) || 0);
   paintUsage(
     (cache && cache.stats && cache.stats.total) || 0,
     (cache && cache.quota) || null
@@ -1272,6 +1273,7 @@
       const archive = { chats: st.chats || 0, msgs: st.msgs || 0 };
       saveCache({ archive });
       paintPulse(lastWindowed, archive);
+      paintArchiveCount(archive.chats);
     } catch { /* the panel keeps the number it has */ }
   }
 
@@ -1682,37 +1684,36 @@
      question "where do I set the password" had no answer in the popup — the
      row is the answer, and it opens the panel that owns it. */
   function paintBackup(auto, durable) {
-    const row = $("backup-archive");
-    const sub = $("backup-sub");
-    if (!row || !sub) return;
+    const button = $("backup-archive");
+    if (!button) return;
     const marker = (durable && durable.marker) || null;
-    row.classList.remove("stalled");
+    button.classList.remove("needs-attention");
+    button.textContent = "Back up";
+    button.title = "Create an encrypted backup file";
+    button.setAttribute("aria-label", "Back up your archive as an encrypted file");
     if (auto && auto.lastError) {
-      // An error is the one thing here worth interrupting for.
-      row.classList.add("stalled");
-      setLine(sub, "The last automatic backup failed. Open it to see why.");
+      button.classList.add("needs-attention");
+      button.textContent = "Review backup";
+      button.title = "Automatic backup needs attention";
+      button.setAttribute("aria-label", "Review automatic backup issue");
       return;
     }
     if (auto && auto.awaitingKey) {
-      row.classList.add("stalled");
-      setLine(sub, "Automatic backups are waiting for your password again.");
+      button.classList.add("needs-attention");
+      button.textContent = "Finish backup";
+      button.title = "Enter the backup password to resume automatic backups";
+      button.setAttribute("aria-label", "Finish setting up automatic backups");
       return;
     }
     if (auto && auto.enabled) {
-      setLine(sub, auto.lastAt
-        ? `Automatic · last ${agoLabel(auto.lastAt)}, ${(auto.lastChats || 0).toLocaleString()} chats.`
-        : "Automatic backups are on. The first one runs shortly.");
+      button.title = auto.lastAt
+        ? `Automatic backup last ran ${agoLabel(auto.lastAt)}`
+        : "Automatic backups are on";
       return;
     }
     if (marker && marker.createdAt) {
-      setLine(sub, `Last backup ${agoLabel(marker.createdAt)} · ` +
-        `${(marker.chats || 0).toLocaleString()} chats. Write a fresh one.`);
-      return;
+      button.title = `Last backup ${agoLabel(marker.createdAt)}`;
     }
-    /* Never backed up. The archive is on this machine and nowhere else, so this
-       is the sentence that says what is actually at stake — and names the
-       password, because that is what people come to this row looking for. */
-    setLine(sub, "Nothing saved yet. One encrypted file, locked with a password you set.");
   }
 
   async function refreshBackup() {
@@ -3283,13 +3284,12 @@
       : value;
   }
 
-  /* The pass percentage, in the column every other figure is in. Empty rather
-     than removed: the element keeps its reserved width, so a pass starting or
-     ending cannot re-wrap the sentence beside it. */
-  function setSyncPct(text) {
-    const el = $("sync-pct");
-    if (!el || el.textContent === text) return;
-    el.textContent = text;
+  function paintArchiveCount(chats) {
+    const el = $("archive-count");
+    if (!el) return;
+    const count = Math.max(0, Number(chats) || 0);
+    const text = `${count.toLocaleString()} chat${count === 1 ? "" : "s"} saved`;
+    if (el.textContent !== text) el.textContent = text;
   }
 
   function updateSyncStatus(text, cls) {
@@ -3304,7 +3304,7 @@
   function setSyncBusy(busy) {
     const button = $("sync-history");
     button.disabled = busy;
-    button.classList.toggle("syncing", busy);
+    button.closest(".row-archive")?.classList.toggle("syncing", busy);
   }
 
   function timeAgo(ms) {
@@ -3325,7 +3325,6 @@
       // The worker was still waking. Say what the button does rather than
       // sending the user somewhere else; checkFreshness retries behind this.
       setSyncBusy(false);
-      setSyncPct("");
       updateSyncStatus("Check your history for new chats");
       return;
     }
@@ -3333,23 +3332,17 @@
     setSyncBusy(isSyncing);
     switch (summary.state) {
       case "syncing": {
-        const pct = summary.total
-          ? `${Math.min(100, Math.round((summary.done / summary.total) * 100))}%` : "";
-        setSyncPct(pct);
         updateSyncStatus(summary.message || "Checking…");
         break;
       }
       case "current":
-        setSyncPct("");
         updateSyncStatus(summary.message + " · " + timeAgo(summary.checkedAt), "ok");
         saveCache({ sync: { text: summary.message + " · checked " + timeAgo(summary.checkedAt), cls: "ok" } });
         break;
       case "error":
-        setSyncPct("");
         updateSyncStatus(summary.message, "err");
         break;
       default:
-        setSyncPct("");
         updateSyncStatus(summary.message);
     }
   }

@@ -242,9 +242,10 @@ try {
     !/Claude\s*&amp;\s*Gemini/.test(readFileSync(join(SRC, "popup", "popup.html"), "utf8")),
     "popup/popup.html");
   const popupSource = readFileSync(join(SRC, "popup", "popup.html"), "utf8");
-  t("A1 archive actions follow the Archive row",
-    popupSource.indexOf('id="sync-history"') < popupSource.indexOf('id="fill-row"') &&
-    popupSource.indexOf('id="fill-row"') < popupSource.indexOf('id="backup-archive"'),
+  t("A1 archive actions share one clear archive row",
+    popupSource.indexOf('id="sync-history"') < popupSource.indexOf('id="backup-archive"') &&
+    popupSource.indexOf('id="backup-archive"') < popupSource.indexOf('id="fill-row"') &&
+    popupSource.includes('id="archive-count"') && !popupSource.includes('id="sync-pct"'),
     "popup/popup.html");
   /* The account photo is served by Google, and an extension page loads no
      remote image the CSP has not named. Without this line the header renders a
@@ -4725,7 +4726,7 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
       const row = document.getElementById("fill-row");
       const bar = document.getElementById("fill-bar");
       const fill = document.getElementById("fill-bar-fill");
-      const below = document.getElementById("backup-archive");
+      const below = document.getElementById("pro-upsell");
       const read = () => ({
         row: Math.round(row.getBoundingClientRect().height),
         below: Math.round(below.getBoundingClientRect().top),
@@ -4966,46 +4967,17 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
     t("B21g …side by side, and both of them a surface",
       offer.sameRow && offer.trialFilled && offer.buyFilled, JSON.stringify(offer));
 
-    /* ---- B21b the backup file, and where its password lives ----
-       The archive is in this browser and nowhere else, so the file is the
-       safety net — and it existed only on the Recall page, which is why "where
-       do I set the password" had no answer in the popup. */
+    /* ---- B21b the backup file ---- */
     const backupRow = await pop.evaluate(() => {
       const el = document.getElementById("backup-archive");
-      return el ? { hidden: el.hidden,
-                    title: document.getElementById("backup-title").textContent,
-                    sub: document.getElementById("backup-sub").textContent } : null;
+      return el ? { hidden: el.hidden, label: el.textContent, title: el.title } : null;
     });
     t("B21b the popup offers the backup file at all",
       !!backupRow && !backupRow.hidden, JSON.stringify(backupRow));
-    t("B21b …and reports the last one it wrote, with a count and a time",
-      /last backup/i.test(backupRow.sub) && /\d/.test(backupRow.sub), backupRow.sub);
-    /* The empty state is the one that has to name the password: it is the only
-       moment the reader is asking where to set it. */
-    const held = await pop.evaluate(async () => {
-      const k = "lct-recall-backup-marker-v1";
-      // The marker is durable: sync where it is available, local otherwise —
-      // getDurable() reads both, so clearing one leaves the other standing.
-      const was = (await chrome.storage.sync.get(k))[k] ||
-        (await chrome.storage.local.get(k))[k] || null;
-      await chrome.storage.sync.remove(k);
-      await chrome.storage.local.remove(k);
-      return was;
-    });
-    await pop.reload();
-    await pop.waitForTimeout(1200);
-    const emptyBackup = await pop.evaluate(() =>
-      document.getElementById("backup-sub").textContent);
-    t("B21b with nothing saved it says so, and names the password",
-      /nothing saved/i.test(emptyBackup) && /password/i.test(emptyBackup), emptyBackup);
-    await pop.evaluate(async (was) => {
-      if (was) await chrome.storage.sync.set({ "lct-recall-backup-marker-v1": was });
-      if (was) await chrome.storage.local.set({ "lct-recall-backup-marker-v1": was });
-    }, held);
-    await pop.reload();
-    await pop.waitForTimeout(1200);
+    t("B21b names the encrypted backup action",
+      /back up/i.test(backupRow.label) && /encrypted/i.test(backupRow.title), JSON.stringify(backupRow));
     t("B21b …in a different verb from the queue above it",
-      !/download/i.test(backupRow.title + backupRow.sub), JSON.stringify(backupRow));
+      !/download/i.test(backupRow.title + backupRow.label), JSON.stringify(backupRow));
 
     /* Stopping is a state of its own. Without it the row went on saying "tap to
        stop" after the tap — the click looked like it had done nothing. */

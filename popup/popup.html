@@ -200,16 +200,17 @@
           </span>
         </button>
 
-        <button class="row row-button" id="sync-history" type="button">
+        <div class="row row-button row-archive">
+          <button class="row-hit" id="sync-history" type="button" aria-labelledby="archive-title sync-status"></button>
           <span class="row-icon sync-icon" aria-hidden="true">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20.5 12a8.5 8.5 0 0 0-14.6-5.9L3.5 8.4"/><path d="M3.5 4.2v4.2h4.2"/><path d="M3.5 12a8.5 8.5 0 0 0 14.6 5.9l2.4-2.3"/><path d="M20.5 19.8v-4.2h-4.2"/></svg>
           </span>
           <span class="row-text">
-            <span class="row-title">Archive</span>
+            <span class="row-title" id="archive-title">Archive <span class="archive-count" id="archive-count" aria-live="polite">0 chats saved</span></span>
             <span class="row-sub" id="sync-status" aria-live="polite">Checking archive state…</span>
           </span>
-          <span class="row-pct" id="sync-pct" aria-hidden="true"></span>
-        </button>
+          <button class="archive-backup" id="backup-archive" type="button">Back up</button>
+        </div>
 
         <!-- One row, two controls. Choosing what to fetch was its own row and
              read as a second thing to do; it is one decision about THIS button,
@@ -237,18 +238,6 @@
           </button>
         </div>
 
-        <!-- The archive lives in this browser and nowhere else, so the file IS
-             the safety net. It used to exist only on the Recall page, which is
-             why nobody could find where to set its password. -->
-        <button class="row row-button" id="backup-archive" type="button">
-          <span class="row-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h14a1 1 0 0 1 1 1v3H4V5a1 1 0 0 1 1-1z"/><path d="M4 8h16v11a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"/><path d="M10 12h4"/></svg>
-          </span>
-          <span class="row-text">
-            <span class="row-title" id="backup-title">Back up your archive</span>
-            <span class="row-sub" id="backup-sub" aria-live="polite">Create an encrypted copy you can restore</span>
-          </span>
-        </button>
       </section>
 
       <section class="pro-card" id="pro-upsell" hidden>
