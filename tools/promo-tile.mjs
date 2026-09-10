@@ -32,7 +32,15 @@ const icon = readFileSync(join(EXT, "icons", "icon256_rounded.png")).toString("b
 const HEAD_1 = "Long AI chats,";
 const HEAD_2 = "without the lag.";
 const SUB = "Speed, local archive and search for long conversations across six supported AI chat services.";
-const PILLS = ["Chats stay local", "Free, no sign-in", "Nothing deleted"];
+/* A pill is a bare claim with no room for its own caveat, so it may only carry
+   something true with no qualifier attached. "Free, no sign-in" was true of the
+   FREE TIER and read as a claim about the product — and sign-in is exactly what
+   starting a trial or buying Pro requires, which is the first thing a shopper
+   finds out after installing. The three that survive are unconditional: no chat
+   text, title, prompt or URL is transmitted; the speed engine hides messages and
+   deletes none, and a chat the provider drops stays in the local archive; and
+   Pro is a one-time purchase with no subscription (README, docs/index.html). */
+const PILLS = ["Chats stay local", "No subscription", "Nothing deleted"];
 
 /* Deterministic, not random: a tile must be byte-identical on every rebuild or
    it becomes a diff nobody can review. */

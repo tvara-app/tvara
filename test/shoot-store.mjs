@@ -299,7 +299,7 @@ await page.evaluate(() => {
     boxes[i].checked = true; boxes[i].dispatchEvent(new Event("change", { bubbles: true }));
   }
 });
-await caption(page, "Context Bridge: pull past answers from any AI into your prompt.", "Pro");
+await caption(page, "Context Bridge: pull past answers from your other AI chats.", "Pro");
 await shoot(page, "8-bridge.png");
 await page.keyboard.press("Escape");
 
