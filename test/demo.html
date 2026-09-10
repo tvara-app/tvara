@@ -4,31 +4,36 @@
   <meta charset="utf-8" />
   <title>AI Chat — demo conversation (1,500 messages)</title>
   <style>
+    /* A generic host AI chat, in the warm greys Tvara's own surfaces sit on.
+       Deliberately NOT Tvara rose: this is somebody else's page, and a store
+       shot that brands the host misrepresents what the extension draws. The
+       one rule is no cool accents — periwinkle headings fought the rose
+       panels in every shot and read as a different product. */
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font: 15px/1.65 -apple-system, "Segoe UI", sans-serif; background: #1b1c20; color: #ececf1; }
+    body { font: 15px/1.65 -apple-system, "Segoe UI", sans-serif; background: #171214; color: #f0e9eb; }
     header { position: fixed; top: 0; left: 0; right: 0; height: 52px; padding: 0 20px;
-             background: #141519; display: flex; gap: 12px; align-items: center; z-index: 10;
-             border-bottom: 1px solid #26272c; }
+             background: #100c0e; display: flex; gap: 12px; align-items: center; z-index: 10;
+             border-bottom: 1px solid #241c1f; }
     header .dot { width: 10px; height: 10px; border-radius: 50%; background: #4ade80; }
     header b { font-size: 14px; }
     header span.sub { font-size: 12px; opacity: 0.55; }
     #chat { max-width: 720px; margin: 72px auto 110px; padding: 0 16px; }
     .msg { padding: 16px 18px; margin: 12px 0; border-radius: 14px; }
-    .msg.user { background: #2c2e35; margin-left: 60px; }
-    .msg.assistant { background: #222327; margin-right: 24px; }
+    .msg.user { background: #2a2124; margin-left: 60px; }
+    .msg.assistant { background: #201a1c; margin-right: 24px; }
     .msg .who { font-size: 11.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
                 opacity: 0.5; margin-bottom: 7px; }
-    .msg h3 { font-size: 15.5px; margin: 12px 0 6px; color: #b7c7ff; }
+    .msg h3 { font-size: 15.5px; margin: 12px 0 6px; color: #ffb185; }
     .msg ul { margin: 6px 0 6px 20px; }
     .msg p { margin: 6px 0; }
-    pre { background: #101114; border: 1px solid #24252b; border-radius: 10px; padding: 12px 14px;
+    pre { background: #0e0a0c; border: 1px solid #241c1f; border-radius: 10px; padding: 12px 14px;
           overflow-x: auto; font: 12.5px/1.55 ui-monospace, Menlo, monospace; margin: 10px 0 4px;
-          color: #a5d6ff; }
-    code { font: 13px ui-monospace, Menlo, monospace; color: #ffd28e; }
-    footer { position: fixed; bottom: 0; left: 0; right: 0; padding: 16px 20px 20px; background: #141519;
-             border-top: 1px solid #26272c; }
+          color: #ffc2d4; }
+    code { font: 13px ui-monospace, Menlo, monospace; color: #ffd0b0; }
+    footer { position: fixed; bottom: 0; left: 0; right: 0; padding: 16px 20px 20px; background: #100c0e;
+             border-top: 1px solid #241c1f; }
     footer .box { max-width: 688px; margin: 0 auto; padding: 13px 16px; border-radius: 12px;
-                  border: 1px solid #33353c; background: #222327; color: #7d7f88; font-size: 15px; }
+                  border: 1px solid #322629; background: #201a1c; color: #8a7378; font-size: 15px; }
   </style>
 </head>
 <body>
@@ -72,10 +77,10 @@ GROUP  BY category;</pre><p>That took my test set from 1.8&nbsp;s to 11&nbsp;ms.
   width: 180px; aspect-ratio: 1;
   border-radius: 50%;
   background: conic-gradient(
-    #7aa2ff 0 38%,
-    #4ade80 38% 61%,
-    #ffd28e 61% 83%,
-    #f87171 83% 100%);
+    #ff5d8a 0 38%,
+    #ffb185 38% 61%,
+    #e8c07a 61% 83%,
+    #b0788c 83% 100%);
   mask: radial-gradient(circle 55px, transparent 98%, #000);
 }</pre><p>Feed the percentages from the SQL rollup above.</p>`],
       ["How should I handle recurring transactions like rent and subscriptions?",

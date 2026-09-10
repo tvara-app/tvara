@@ -7,8 +7,10 @@
  *   node tools/promo-tile.mjs --all        # both
  *
  * Chrome requires the small tile for any featured placement, and the marquee
- * for the front-page one. Brand values are lifted from docs/index.html so the
- * tiles and the pricing page cannot drift apart.
+ * for the front-page one. Brand values are lifted from the shipping UI —
+ * content/styles.css (rose panels, minimap) and popup/popup.css (ember) — not
+ * from docs/index.html, which is still on the pre-launch blue. The tile a
+ * shopper sees has to be the product they install.
  *
  * The two are separate art boards rather than one scaled twice: 440×280 is
  * 1.57:1 and the marquee is 2.5:1, so the same layout at two sizes leaves the
@@ -30,7 +32,7 @@ const icon = readFileSync(join(EXT, "icons", "icon256_rounded.png")).toString("b
 const HEAD_1 = "Long AI chats,";
 const HEAD_2 = "without the lag.";
 const SUB = "Speed, local archive and search for long conversations across six supported AI chat services.";
-const PILLS = ["100% local", "No account", "Nothing deleted"];
+const PILLS = ["Chats stay local", "Free, no sign-in", "Nothing deleted"];
 
 /* Deterministic, not random: a tile must be byte-identical on every rebuild or
    it becomes a diff nobody can review. */
@@ -48,13 +50,13 @@ const stripScript = (bars) => `<script>
 </script>`;
 
 const small = `<!doctype html><meta charset="utf-8"><style>
-  :root { --bg:#0e1117; --panel:#161b26; --text:#e8eaf0; --muted:#9aa3b5;
-          --accent:#7aa2ff; --line:rgba(255,255,255,0.08); }
+  :root { --bg:#0d0709; --panel:#1a0c12; --text:#fbf6f8; --muted:#cbb2ba;
+          --accent:#ff5d8a; --ember:#ffb185; --line:rgba(255,220,230,0.14); }
   * { margin:0; padding:0; box-sizing:border-box; }
   html,body { width:440px; height:280px; }
   body { background:
-      radial-gradient(120% 90% at 82% 8%, rgba(122,162,255,.20), transparent 60%),
-      radial-gradient(90% 80% at 10% 100%, rgba(122,162,255,.10), transparent 55%),
+      radial-gradient(120% 90% at 82% 8%, rgba(255,18,80,.22), transparent 60%),
+      radial-gradient(90% 80% at 10% 100%, rgba(232,35,112,.13), transparent 55%),
       var(--bg);
     color:var(--text); font:16px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
     display:flex; flex-direction:column; justify-content:center;
@@ -63,9 +65,9 @@ const small = `<!doctype html><meta charset="utf-8"><style>
   .strip { position:absolute; right:30px; top:34px; bottom:34px; width:15px;
            border-radius:8px; background:var(--panel); border:1px solid var(--line);
            padding:7px 4px; display:flex; flex-direction:column; gap:3px; }
-  .strip i { display:block; border-radius:2px; background:#2c3550; }
-  .strip i.me  { background:var(--accent); opacity:.85; }
-  .strip i.code{ background:#4d5c86; }
+  .strip i { display:block; border-radius:2px; background:rgba(226,198,208,.30); }
+  .strip i.me  { background:var(--accent); opacity:.9; }
+  .strip i.code{ background:#ffc2d4; opacity:.55; }
   .row { display:flex; align-items:center; gap:11px; }
   img { width:34px; height:34px; border-radius:9px; }
   .name { font-size:25px; font-weight:800; letter-spacing:-.4px; }
@@ -91,13 +93,13 @@ ${stripScript(26)}`;
    at 1400px a full-bleed line of copy is unreadable at the size Chrome
    actually renders it in the store. */
 const marquee = `<!doctype html><meta charset="utf-8"><style>
-  :root { --bg:#0e1117; --panel:#161b26; --text:#e8eaf0; --muted:#9aa3b5;
-          --accent:#7aa2ff; --line:rgba(255,255,255,0.08); }
+  :root { --bg:#0d0709; --panel:#1a0c12; --text:#fbf6f8; --muted:#cbb2ba;
+          --accent:#ff5d8a; --ember:#ffb185; --line:rgba(255,220,230,0.14); }
   * { margin:0; padding:0; box-sizing:border-box; }
   html,body { width:1400px; height:560px; }
   body { background:
-      radial-gradient(80% 120% at 76% 0%, rgba(122,162,255,.22), transparent 62%),
-      radial-gradient(70% 110% at 6% 100%, rgba(122,162,255,.10), transparent 58%),
+      radial-gradient(80% 120% at 76% 0%, rgba(255,18,80,.24), transparent 62%),
+      radial-gradient(70% 110% at 6% 100%, rgba(232,35,112,.13), transparent 58%),
       var(--bg);
     color:var(--text); font:16px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
     display:flex; align-items:center; gap:72px;
@@ -119,15 +121,15 @@ const marquee = `<!doctype html><meta charset="utf-8"><style>
            border-radius:22px; background:var(--panel); border:1px solid var(--line);
            display:flex; gap:20px; padding:26px 26px 26px 30px; overflow:hidden; }
   .lines { flex:1 1 auto; display:flex; flex-direction:column; gap:13px; padding-top:6px; }
-  .lines b { display:block; height:12px; border-radius:6px; background:#222a3d; }
+  .lines b { display:block; height:12px; border-radius:6px; background:rgba(226,198,208,.13); }
   .lines b.w1 { width:88%; } .lines b.w2 { width:64%; } .lines b.w3 { width:76%; }
-  .lines b.hot { background:#2f3a5c; }
-  .strip { flex:0 0 26px; border-radius:12px; background:#10141d;
+  .lines b.hot { background:rgba(255,93,138,.28); }
+  .strip { flex:0 0 26px; border-radius:12px; background:#120709;
            border:1px solid var(--line); padding:11px 6px;
            display:flex; flex-direction:column; gap:5px; }
-  .strip i { display:block; border-radius:3px; background:#2c3550; }
-  .strip i.me  { background:var(--accent); opacity:.85; }
-  .strip i.code{ background:#4d5c86; }
+  .strip i { display:block; border-radius:3px; background:rgba(226,198,208,.30); }
+  .strip i.me  { background:var(--accent); opacity:.9; }
+  .strip i.code{ background:#ffc2d4; opacity:.55; }
 </style>
 <div class="col">
   <div class="row"><img src="data:image/png;base64,${icon}"><span class="name">Tvara</span></div>

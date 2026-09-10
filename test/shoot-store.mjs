@@ -310,15 +310,15 @@ const b64 = buf.toString("base64");
 const comp = await ctx.newPage();
 await comp.setContent(`<!DOCTYPE html><html><body style="margin:0;width:1280px;height:800px;
   display:flex;align-items:center;justify-content:center;
-  background:radial-gradient(900px 600px at 50% 30%, #232633 0%, #141519 70%);
+  background:radial-gradient(900px 600px at 50% 30%, #2a1a22 0%, #120c0f 70%);
   font-family:-apple-system,'Segoe UI',sans-serif">
   <img src="data:image/png;base64,${b64}"
        style="width:auto;height:640px;border-radius:16px;
               box-shadow:0 30px 80px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.06)"/>
   <div style="position:fixed;left:0;right:0;bottom:0;height:76px;display:flex;align-items:center;
-              padding:0 28px;background:#0b0c10;border-top:2px solid #7aa2ff;color:#fff;
+              padding:0 28px;background:#060406;border-top:2px solid #ff5d8a;color:#fbf6f8;
               font-weight:600;font-size:24px">
-    <span style="display:flex;align-items:center;gap:7px;font-size:14px;font-weight:700;color:#7aa2ff;flex:1 0 0"><img src="${BRAND_ICON}" alt="" style="width:24px;height:24px;border-radius:6px">Tvara</span>
+    <span style="display:flex;align-items:center;gap:7px;font-size:14px;font-weight:700;color:#ff5d8a;flex:1 0 0"><img src="${BRAND_ICON}" alt="" style="width:24px;height:24px;border-radius:6px">Tvara</span>
     <span style="flex:0 1 auto;text-align:center">Allowance visibility when reported. Archive stays local.</span>
     <span style="flex:1 0 0"></span>
   </div></body></html>`);
