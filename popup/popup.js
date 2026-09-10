@@ -1618,7 +1618,7 @@
     /* What it is FOR, in the reader's terms. "Download" was the wrong verb in
        the wrong place: this fills the archive, and the thing people came here
        looking for under that word is the backup file, one row below. */
-    setLine(sub, `${savedMessageLabel()} · these chats have titles only. About ${mins} min.`);
+    setLine(sub, `${savedMessageLabel()} · these title-only chats become searchable after this pass. About ${mins} min.`);
   }
 
   /* Set when we have asked the worker to start and have not yet seen it say so.

@@ -4710,8 +4710,8 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
     t("B21 the popup offers to fetch what is missing", !row.hidden, JSON.stringify(row));
     t("B21 …and says how many, and roughly how long",
       /\d/.test(row.title) && /min/.test(row.sub), JSON.stringify(row));
-  t("B21 …and says why it matters, in the reader's terms",
-      /Make saved chats searchable by adding message text/.test(row.sub), row.sub);
+  t("B21 …and distinguishes saved messages from title-only chats",
+      /messages already saved/.test(row.sub) && /title-only/.test(row.sub) && /searchable/.test(row.sub), row.sub);
     /* "Download" meant two different things in one panel: this queue, which
        fills the archive, and the backup FILE, which is what people were looking
        for under that word. Neither borrows the other's verb now. */
