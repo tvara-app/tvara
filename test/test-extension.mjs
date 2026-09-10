@@ -396,7 +396,7 @@ try {
 t("A1e unavailable providers use a reset time, not a paywall lock or window switch",
     !blockedClaude.switchable && !blockedClaude.headline && !/lock/i.test(blockedClaude.text), JSON.stringify(blockedClaude));
   t("A1e an exhausted provider keeps its own subdued ring colour",
-    blockedClaude.spentStrokes.includes("#e0805c") && Number(blockedClaude.spentOpacity) <= 0.2,
+    blockedClaude.spentStrokes.some((stroke) => /^(#e0805c|rgb\(224,\s*128,\s*92\))$/i.test(stroke)) && Number(blockedClaude.spentOpacity) <= 0.2,
     JSON.stringify(blockedClaude));
   /* A window with a reset and no figure is a real row when it is all a
      provider gave us. It is NOT one of the options behind a click: stepping
