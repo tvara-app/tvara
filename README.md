@@ -20,7 +20,13 @@ Free features need no sign-in. Google sign-in is required only to start the seve
 
 ## Privacy and permissions
 
-Tvara does not transmit chat text, titles, prompts, or chat URLs. It uses narrow host permissions for the named AI sites and its own post-purchase page. It does not request `tabs`, `history`, `cookies`, `bookmarks`, `webRequest`, or `scripting`.
+Tvara does not transmit chat text, titles, prompts, exports, or chat URLs. It uses narrow host permissions for the named AI sites so automatic local speed, archive, search, and usage features work when you open a chat; `tvara.pages.dev` is limited to the post-purchase activation page. It does not request `tabs`, `history`, `cookies`, `bookmarks`, `webRequest`, or `scripting`.
+
+- `storage` and `unlimitedStorage` keep settings and the archive on-device.
+- `downloads` writes exports and encrypted backup files you request or schedule.
+- `alarms` schedules local archive, backup, entitlement, and session checks across service-worker suspension.
+- `notifications` shows local deletion-review, sign-out, and allowance notices.
+- `identity` starts Google sign-in only after you choose trial, purchase, restore, or device management; it requests `openid email` only.
 
 See the [privacy policy](https://tvara.pages.dev/privacy), [terms](https://tvara.pages.dev/terms), and [Chrome Web Store copy](store/listing.md). The privacy policy and Store listing must be updated together.
 
@@ -32,6 +38,7 @@ Node 24.11 or newer is required.
 npm ci
 npm test
 npm run lint
+npm run store-assets
 npm run pack
 npm run preflight
 ```

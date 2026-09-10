@@ -29,6 +29,8 @@
   .card b { display:block; margin-bottom:6px; }
   .price { padding:24px; max-width:410px; background:var(--panel); border:1px solid var(--accent); border-radius:12px; }
   .amount { color:var(--text); font-size:34px; font-weight:800; }
+  .brand { display:inline-flex; align-items:center; gap:10px; color:var(--text); font-size:17px; font-weight:700; text-decoration:none; }
+  .brand img { width:32px; height:32px; border-radius:9px; }
   nav { margin-top:20px; font-size:14px; }
   footer { padding:36px 0 52px; border-top:1px solid var(--line); text-align:center; }
 </style>
@@ -37,7 +39,7 @@
 <div class="wrap">
 
 <header style="padding:56px 0 24px;">
-  <div class="logo">⚡</div>
+  <a class="brand" href="./" aria-label="Tvara home"><img src="../icons/icon128.png" alt="" />Tvara</a>
   <h1 style="font-size:32px;">Privacy Policy</h1>
   <nav><a href="./">Tvara</a> · <a href="./privacy.html">Privacy</a> · <a href="./terms.html">Terms</a> · <a href="mailto:tvara.exten@gmail.com">Contact</a></nav>
 </header>
@@ -46,7 +48,7 @@
   <h2>Privacy Policy</h2>
   <p><em>Effective: 10 September 2026</em></p>
   <h3>Chat content stays on your device</h3>
-  <p>Tvara reads chats from supported AI sites only to provide its local features. It does not send chat text, titles, prompts, exports, or chat URLs to Tvara or another third party. Tvara does not use behavioural analytics, tracking pixels, advertising identifiers, or third-party SDKs.</p>
+  <p>Tvara reads chats from supported AI sites only to provide local speed, navigation, search, archive, backup, context-handoff, and usage-tracking features. It does not send chat text, titles, prompts, exports, or chat URLs to Tvara or another third party. Tvara does not use behavioural analytics, tracking pixels, advertising identifiers, or third-party SDKs.</p>
   <h3>Services Tvara connects to</h3>
   <ul>
     <li><strong>Supported AI sites:</strong> Tvara reads conversations you open on ChatGPT, Claude, Gemini, Perplexity, DeepSeek, and Grok, using your existing browser session. The chat data is stored locally.</li>
@@ -60,10 +62,10 @@
   <ul>
     <li><code>storage</code> and <code>unlimitedStorage</code> keep settings and the archive locally.</li>
     <li><code>downloads</code> writes exports and encrypted backup files to Downloads.</li>
-    <li><code>alarms</code> schedules local backups and entitlement checks.</li>
-    <li><code>notifications</code> displays local product notices.</li>
-    <li><code>identity</code> opens Google sign-in only after you choose it.</li>
-    <li>Host access is limited to supported AI sites and Tvara’s own post-purchase page.</li>
+    <li><code>alarms</code> schedules local archive, backup, entitlement, and session checks across service-worker suspension.</li>
+    <li><code>notifications</code> displays local deletion-review, sign-out, and allowance notices.</li>
+    <li><code>identity</code> opens Google sign-in only after you choose it and requests <code>openid email</code> only.</li>
+    <li>Host access is limited to supported AI sites for automatic local features and Tvara’s own post-purchase page.</li>
   </ul>
   <p>Tvara does not request browser history, tabs, cookies, bookmarks, web requests, scripting, or access to sites outside its named host permissions.</p>
   <h3>Your choices</h3>

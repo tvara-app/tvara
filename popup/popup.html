@@ -211,8 +211,8 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 21h16"/></svg>
           </span>
           <span class="row-text">
-            <span class="row-title" id="fill-title">Fetch your chats' text</span>
-            <span class="row-sub" id="fill-sub" aria-live="polite">Search needs the words, not just the titles</span>
+            <span class="row-title" id="fill-title">Add message text to chats</span>
+            <span class="row-sub" id="fill-sub" aria-live="polite">Make saved chats searchable by adding their message text</span>
             <!-- Always mounted, never hidden: showing and hiding it moves
                  every row below. Empty at rest, determinate while there is a
                  proportion to state, a travelling sheen while there is not. -->
@@ -221,7 +221,7 @@
           <!-- Only while there is a queue and it is idle: a choice about work
                already under way is a second answer to a settled question. -->
           <button class="row-action" id="fill-choose" type="button" hidden
-                  aria-label="Customize what to fetch — the providers, or the chats inside one">
+                  aria-label="Choose services or individual chats">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h10"/><path d="M4 12h7"/><path d="M4 17h13"/><path d="m17 6 2 2 4-4"/></svg>
           </button>
         </div>
@@ -261,7 +261,7 @@
           <span class="pro-title">Unlock everything</span>
           <span class="price-pill" data-price="{price} · once, forever"></span>
         </div>
-        <p class="pro-note">Total Recall, Context Bridge and every tool on Claude &amp; Gemini.</p>
+        <p class="pro-note">Search your local archive, carry context forward, and keep encrypted backups of supported AI chats.</p>
         <div class="identity" id="identity" hidden>
           <p class="pro-note" id="identity-why">Sign in once &mdash; it follows your account.</p>
           <button id="identity-google" class="identity-google" type="button" hidden>Continue with Google</button>

@@ -29,6 +29,8 @@
   .card b { display:block; margin-bottom:6px; }
   .price { padding:24px; max-width:410px; background:var(--panel); border:1px solid var(--accent); border-radius:12px; }
   .amount { color:var(--text); font-size:34px; font-weight:800; }
+  .brand { display:inline-flex; align-items:center; gap:10px; color:var(--text); font-size:17px; font-weight:700; text-decoration:none; }
+  .brand img { width:32px; height:32px; border-radius:9px; }
   nav { margin-top:20px; font-size:14px; }
   footer { padding:36px 0 52px; border-top:1px solid var(--line); text-align:center; }
 </style>
@@ -37,7 +39,7 @@
 <div class="wrap">
 
 <header style="padding:56px 0 24px;">
-  <div class="logo">⚡</div>
+  <a class="brand" href="./" aria-label="Tvara home"><img src="../icons/icon128.png" alt="" />Tvara</a>
   <h1 style="font-size:32px;">Terms of Service</h1>
   <nav><a href="./">Tvara</a> · <a href="./privacy.html">Privacy</a> · <a href="./terms.html">Terms</a> · <a href="mailto:tvara.exten@gmail.com">Contact</a></nav>
 </header>

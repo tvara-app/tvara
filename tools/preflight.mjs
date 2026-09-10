@@ -405,11 +405,20 @@ else {
   }
 
   const shotSource = join(root, "test", "shoot-store.mjs");
+  const promoSource = join(root, "tools", "promo-tile.mjs");
   if (existsSync(shotSource) && shots.length) {
     const oldestShot = Math.min(...shots.map((f) => statSync(join(shotDir, f)).mtimeMs));
     if (statSync(shotSource).mtimeMs > oldestShot) {
-      block("screenshots predate the evidence-copy generator", "npm run shoot-store");
+      block("screenshots predate the evidence-copy generator", "npm run store-assets");
     } else ok("screenshots match the current evidence-copy generator");
+  }
+
+  if (existsSync(promoSource) && all.includes(promo)) {
+    const promoAssets = all.filter((f) => /^(promo|marquee)-/.test(f));
+    const oldestPromo = Math.min(...promoAssets.map((f) => statSync(join(shotDir, f)).mtimeMs));
+    if (statSync(promoSource).mtimeMs > oldestPromo) {
+      block("promo artwork predates its generator", "npm run store-assets");
+    } else ok("promo artwork matches the current generator");
   }
 
   // Optional, and only ever a nudge: the marquee is for the front page.

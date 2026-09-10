@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 /* Tvara — store screenshot generator.
    Captures evidence-led listing shots (1280×800, captions baked in) from the REAL
-   extension running on test/demo.html. Output: test/.work/store/            */
+   extension running on test/demo.html. It promotes the five approved images
+   to store/screenshots after every successful run.                            */
 import { createHash } from "node:crypto";
-import { readFileSync, mkdirSync, rmSync } from "node:fs";
+import { copyFileSync, readFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { chromium } from "playwright";
@@ -14,11 +15,14 @@ const ROOT = join(import.meta.dirname, "..");
    gated on a trial the ISSUER signs and the issuer refuses an unknown origin.
    Nothing visible differs: same code, same pixels, only the trust anchor. */
 const { EXT, priv: SHOOT_KEY } = mirrorExtension("shoot");
+const BRAND_ICON = `data:image/png;base64,${readFileSync(join(EXT, "icons", "icon128.png")).toString("base64")}`;
 const WORK = join(ROOT, "test", ".work");
 const PROFILE = join(WORK, "shoot-profile");
 const OUT = join(WORK, "store");
+const STORE = join(ROOT, "store", "screenshots");
 rmSync(PROFILE, { recursive: true, force: true });
 mkdirSync(OUT, { recursive: true });
+mkdirSync(STORE, { recursive: true });
 
 const server = spawn("python3", ["-m", "http.server", "8918", "--bind", "127.0.0.1"], { cwd: EXT, stdio: "ignore" });
 await new Promise((r) => setTimeout(r, 800));
@@ -70,12 +74,12 @@ const fireCmd = async (page, name) => {
 
 /* ---------- caption banner, injected into the live page ---------- */
 async function caption(page, text) {
-  await page.evaluate((t) => {
+  await page.evaluate(({ text: t, icon }) => {
     document.getElementById("lct-shoot-banner")?.remove();
     document.getElementById("lct-note")?.remove(); // no mid-fade toast in shots
     const b = document.createElement("div");
     b.id = "lct-shoot-banner";
-    b.innerHTML = `<span class="lb">⚡ Tvara</span><span class="lc">${t}</span><span class="lr"></span>`;
+    b.innerHTML = `<span class="lb"><img src="${icon}" alt="">Tvara</span><span class="lc">${t}</span><span class="lr"></span>`;
     Object.assign(b.style, {
       position: "fixed", left: 0, right: 0, bottom: 0, height: "76px", zIndex: 2147483647,
       display: "flex", alignItems: "center", padding: "0 28px",
@@ -83,11 +87,12 @@ async function caption(page, text) {
       font: "600 24px/1.2 -apple-system, 'Segoe UI', sans-serif", color: "#fbf6f8"
     });
     const lb = b.querySelector(".lb"), lc = b.querySelector(".lc"), lr = b.querySelector(".lr");
-    Object.assign(lb.style, { fontSize: "14px", fontWeight: "700", color: "#ff5d8a", flex: "1 0 0", whiteSpace: "nowrap" });
+    Object.assign(lb.style, { display: "flex", alignItems: "center", gap: "7px", fontSize: "14px", fontWeight: "700", color: "#ff5d8a", flex: "1 0 0", whiteSpace: "nowrap" });
+    Object.assign(lb.querySelector("img").style, { width: "24px", height: "24px", borderRadius: "6px" });
     Object.assign(lc.style, { flex: "0 1 auto", textAlign: "center" });
     Object.assign(lr.style, { flex: "1 0 0" });
     document.body.appendChild(b);
-  }, text);
+  }, { text, icon: BRAND_ICON });
 }
 const shoot = (page, name) =>
   page.screenshot({ path: join(OUT, name), scale: "css" }); // css scale → exactly 1280×800
@@ -313,7 +318,7 @@ await comp.setContent(`<!DOCTYPE html><html><body style="margin:0;width:1280px;h
   <div style="position:fixed;left:0;right:0;bottom:0;height:76px;display:flex;align-items:center;
               padding:0 28px;background:#0b0c10;border-top:2px solid #7aa2ff;color:#fff;
               font-weight:600;font-size:24px">
-    <span style="font-size:14px;font-weight:700;color:#7aa2ff;flex:1 0 0">⚡ Tvara</span>
+    <span style="display:flex;align-items:center;gap:7px;font-size:14px;font-weight:700;color:#7aa2ff;flex:1 0 0"><img src="${BRAND_ICON}" alt="" style="width:24px;height:24px;border-radius:6px">Tvara</span>
     <span style="flex:0 1 auto;text-align:center">Allowance visibility when reported. Archive stays local.</span>
     <span style="flex:1 0 0"></span>
   </div></body></html>`);
@@ -322,4 +327,7 @@ await comp.screenshot({ path: join(OUT, "6-popup-trial.png"), scale: "css" });
 
 await ctx.close();
 server.kill();
-console.log("Store shots written to", OUT);
+for (const name of ["1-hero.png", "3-search.png", "6-popup-trial.png", "7-recall.png", "8-bridge.png"]) {
+  copyFileSync(join(OUT, name), join(STORE, name));
+}
+console.log("Store shots written to", STORE);

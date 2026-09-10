@@ -234,6 +234,13 @@ try {
   const MF = JSON.parse(readFileSync(join(SRC, "manifest.json"), "utf8"));
   const MF_VERSION = MF.version;
   t("A1 version shown", (await pop.textContent("#version")).trim() === `v${MF_VERSION}`);
+  const sharedBrandPages = ["pages/recall.html", "pages/archive.html", "pages/fetch.html"];
+  t("A1 archive pages use the same Tvara mark as the popup",
+    sharedBrandPages.every((path) => /src="\.\.\/icons\/icon128\.png"/.test(readFileSync(join(SRC, path), "utf8"))),
+    sharedBrandPages.join(", "));
+  t("A1 Pro copy names capabilities instead of a partial provider list",
+    !/Claude\s*&amp;\s*Gemini/.test(readFileSync(join(SRC, "popup", "popup.html"), "utf8")),
+    "popup/popup.html");
   /* The account photo is served by Google, and an extension page loads no
      remote image the CSP has not named. Without this line the header renders a
      broken circle for every signed-in user and nothing says why. */
@@ -4693,8 +4700,8 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
     t("B21 the popup offers to fetch what is missing", !row.hidden, JSON.stringify(row));
     t("B21 …and says how many, and roughly how long",
       /\d/.test(row.title) && /min/.test(row.sub), JSON.stringify(row));
-    t("B21 …and says why it matters, in the reader's terms",
-      /Search needs the words, not just the titles/.test(row.sub), row.sub);
+  t("B21 …and says why it matters, in the reader's terms",
+      /Make saved chats searchable by adding message text/.test(row.sub), row.sub);
     /* "Download" meant two different things in one panel: this queue, which
        fills the archive, and the backup FILE, which is what people were looking
        for under that word. Neither borrows the other's verb now. */

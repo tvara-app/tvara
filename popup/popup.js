@@ -1570,7 +1570,7 @@
       const total = done + left;
       // The count belongs in the title: it is the thing being watched, and a
       // sub-line is where the eye goes last.
-      setLine(title, `Fetching text · ${done.toLocaleString()} of ${total.toLocaleString()}`);
+      setLine(title, `Adding message text · ${done.toLocaleString()} of ${total.toLocaleString()}`);
       setLine(sub, state.running
         ? "Tap to stop."
         : "The browser paused it; picking up again.");
@@ -1580,7 +1580,7 @@
     }
     row.classList.remove("busy");
     hideBar();
-    setLine(title, `Fetch the text of ${left.toLocaleString()} chat${left === 1 ? "" : "s"}`);
+    setLine(title, `Add message text to ${left.toLocaleString()} chat${left === 1 ? "" : "s"}`);
     /* The worker already worked out why it stopped, and it stopped PER
        PROVIDER — six download at once, so one platform refusing is not the run
        failing. Its own sentence carries its own remedy (fillWhy in bg/fill.js);
@@ -1611,7 +1611,7 @@
     /* What it is FOR, in the reader's terms. "Download" was the wrong verb in
        the wrong place: this fills the archive, and the thing people came here
        looking for under that word is the backup file, one row below. */
-    setLine(sub, `Search needs the words, not just the titles. About ${mins} min.`);
+    setLine(sub, `Make saved chats searchable by adding message text. About ${mins} min.`);
   }
 
   /* Set when we have asked the worker to start and have not yet seen it say so.

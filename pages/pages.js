@@ -904,7 +904,7 @@
     archive: "Conversations grouped by provider, then sorted by title. Untitled chats come last, newest first.",
     "chat.url": "Where the conversation lives on the provider's site.",
     "chat.messageCount": "Messages the archive holds for this conversation.",
-    "chat.textFetched": "false means only the title was archived — run “Fetch the text” to fill it in.",
+    "chat.textFetched": "false means only the title was archived — use “Choose chats to make searchable” to add message text.",
     "chat.temporaryChat": "Present when the provider itself never kept this chat.",
     "message.role": "“user” (you) or “assistant” (the model).",
     "message.at": "When it was sent, ISO 8601, or null where the provider did not say.",
@@ -1057,7 +1057,7 @@
         parts.push(`<p class="meta">${bits.join(" · ")}` +
           (chat.url ? ` · <a href="${esc(chat.url)}">open on ${esc(chat.provider)}</a>` : "") + "</p>");
         if (!chat.textFetched) {
-          parts.push('<p class="none">Only the title is archived so far — run “Fetch the text” to fill this in.</p>');
+          parts.push('<p class="none">Only the title is archived so far — choose this chat on the Message text page to add its text.</p>');
         }
         for (const m of chat.messages) {
           parts.push(`<div class="msg ${m.role === "user" ? "user" : "model"}">` +

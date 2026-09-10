@@ -62,9 +62,9 @@
     /* The number counts rather than jumps: ticking a provider with nine hundred
        chats in it should look like nine hundred arriving. The label is only
        rewritten when it actually changes, or the tween restarts on every tick. */
-    const label = n ? `Fetch ${n.toLocaleString()} selected` : "Fetch selected";
+    const label = n ? `Add text to ${n.toLocaleString()} chats` : "Add text to selected chats";
     if (!n || !M) { if (go.textContent !== label) go.textContent = label; return; }
-    M.number(go, "pick-total", n, (v) => `Fetch ${v.toLocaleString()} selected`);
+    M.number(go, "pick-total", n, (v) => `Add text to ${v.toLocaleString()} chats`);
   }
 
   /* ---------- one provider's row, made once ---------- */
@@ -375,12 +375,12 @@
            and this line claimed otherwise. */
         if (reply && reply.how === "busy") {
           setStatus("The previous fetch is still finishing. Your choice is saved — " +
-            "press Fetch selected again in a moment.", "warn");
+            "try again shortly.", "warn");
           go.disabled = false;
           return;
         }
-        setStatus(`Fetching ${asked.toLocaleString()} chats. ` +
-          "It keeps going with this page closed; the popup shows how far it has got.", "ok");
+        setStatus(`Adding message text to ${asked.toLocaleString()} chats. ` +
+          "This continues with the page closed; the popup shows progress.", "ok");
       } catch {
         setStatus("Could not start. Reload the page and try again.", "err");
         go.disabled = false;

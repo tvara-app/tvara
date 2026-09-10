@@ -15,6 +15,7 @@
     "preflight": "node tools/preflight.mjs",
     "ship": "npm test && node tools/pack.mjs && node tools/preflight.mjs",
     "shoot-store": "node test/shoot-store.mjs",
+    "store-assets": "node test/shoot-store.mjs && node tools/promo-tile.mjs --all",
     "test:accounts": "node test/test-accounts.mjs",
     "test:backup-password": "node test/test-backup-password.mjs",
     "test:quota": "node test/test-quota.mjs",

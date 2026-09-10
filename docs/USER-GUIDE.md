@@ -35,7 +35,7 @@ Exports are written to your Downloads folder without a licence. Encrypted backup
 
 ### Allowance display
 
-Tvara shows a plan allowance only when it can read a figure the provider displays. “Not reported” means it has no reliable value to show.
+Tvara shows a plan allowance only when it can read a figure the provider displays. It does not alter, delay, block, or replay provider requests. “Not reported” means it has no reliable value to show.
 
 ## Trial and Pro
 
@@ -47,11 +47,11 @@ The licence service receives entitlement and device proof for these actions; it 
 
 - `storage` and `unlimitedStorage` keep your settings and archive locally.
 - `downloads` writes exports and backup files you request.
-- `alarms` schedules local backup and entitlement checks.
-- `notifications` shows local status notices.
-- `identity` starts Google sign-in only after you choose it.
+- `alarms` schedules local archive, backup, entitlement, and session checks across service-worker suspension.
+- `notifications` shows local deletion-review, sign-out, and allowance notices.
+- `identity` starts Google sign-in only after you choose it and requests `openid email` only.
 
-Host access is limited to the supported AI sites and Tvara’s post-purchase page. Tvara does not request access to other sites, browser history, tabs, cookies, bookmarks, or web requests.
+Host access is limited to the supported AI sites for automatic local speed, archive, search, and usage features, plus Tvara’s post-purchase page. Tvara does not request access to other sites, browser history, tabs, cookies, bookmarks, or web requests.
 
 ## Help
 

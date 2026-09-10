@@ -29,7 +29,7 @@ const icon = readFileSync(join(EXT, "icons", "icon256_rounded.png")).toString("b
 /* The copy, in one place: the tiles say the same thing at two sizes. */
 const HEAD_1 = "Long AI chats,";
 const HEAD_2 = "without the lag.";
-const SUB = "Speed engine, minimap, outline &amp; cross-platform search for ChatGPT, Claude &amp; Gemini.";
+const SUB = "Speed, local archive and search for long conversations across six supported AI chat services.";
 const PILLS = ["100% local", "No account", "Nothing deleted"];
 
 /* Deterministic, not random: a tile must be byte-identical on every rebuild or

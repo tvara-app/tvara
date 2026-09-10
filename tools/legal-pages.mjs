@@ -58,7 +58,7 @@ ${style}
 <div class="wrap">
 
 <header style="padding:56px 0 24px;">
-  <div class="logo">⚡</div>
+  <a class="brand" href="./" aria-label="Tvara home"><img src="../icons/icon128.png" alt="" />Tvara</a>
   <h1 style="font-size:32px;">${title}</h1>
   <nav><a href="./">Tvara</a> · <a href="./privacy.html">Privacy</a> · <a href="./terms.html">Terms</a> · <a href="mailto:tvara.exten@gmail.com">Contact</a></nav>
 </header>
