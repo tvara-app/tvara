@@ -73,13 +73,22 @@ const fireCmd = async (page, name) => {
 };
 
 /* ---------- caption banner, injected into the live page ---------- */
-async function caption(page, text) {
-  await page.evaluate(({ text: t, icon }) => {
+/* `tag` marks a shot Free or Pro, in the slot the banner already reserved to
+   keep the caption centred. Only where the answer is the same on all six
+   providers: the minimap, the speed engine and the card are free everywhere,
+   Total Recall and Context Bridge both reach the archive through the gated
+   `recall-search`, and in-chat search is neither — free on four hosts, Pro on
+   Claude and Gemini (FREE_TOOL_PLATFORMS, content/main.js). A badge that is
+   right two thirds of the time is the confident wrong answer this project
+   spends most of its rules avoiding, so that shot carries none. */
+async function caption(page, text, tag = "") {
+  await page.evaluate(({ text: t, icon, tag: g }) => {
     document.getElementById("lct-shoot-banner")?.remove();
     document.getElementById("lct-note")?.remove(); // no mid-fade toast in shots
     const b = document.createElement("div");
     b.id = "lct-shoot-banner";
-    b.innerHTML = `<span class="lb"><img src="${icon}" alt="">Tvara</span><span class="lc">${t}</span><span class="lr"></span>`;
+    b.innerHTML = `<span class="lb"><img src="${icon}" alt="">Tvara</span><span class="lc">${t}</span>` +
+      `<span class="lr">${g ? `<span class="tg">${g}</span>` : ""}</span>`;
     Object.assign(b.style, {
       position: "fixed", left: 0, right: 0, bottom: 0, height: "76px", zIndex: 2147483647,
       display: "flex", alignItems: "center", padding: "0 28px",
@@ -90,9 +99,16 @@ async function caption(page, text) {
     Object.assign(lb.style, { display: "flex", alignItems: "center", gap: "7px", fontSize: "14px", fontWeight: "700", color: "#ff5d8a", flex: "1 0 0", whiteSpace: "nowrap" });
     Object.assign(lb.querySelector("img").style, { width: "24px", height: "24px", borderRadius: "6px" });
     Object.assign(lc.style, { flex: "0 1 auto", textAlign: "center" });
-    Object.assign(lr.style, { flex: "1 0 0" });
+    Object.assign(lr.style, { flex: "1 0 0", textAlign: "right" });
+    const tg = b.querySelector(".tg");
+    if (tg) Object.assign(tg.style, {
+      fontSize: "13px", fontWeight: "700", letterSpacing: ".09em", textTransform: "uppercase",
+      padding: "5px 12px", borderRadius: "999px", whiteSpace: "nowrap",
+      color: g === "Pro" ? "#ff5d8a" : "#cbb2ba",
+      border: `1px solid ${g === "Pro" ? "rgba(255,93,138,.45)" : "rgba(255,220,230,.20)"}`
+    });
     document.body.appendChild(b);
-  }, { text, icon: BRAND_ICON });
+  }, { text, icon: BRAND_ICON, tag });
 }
 const shoot = (page, name) =>
   page.screenshot({ path: join(OUT, name), scale: "css" }); // css scale → exactly 1280×800
@@ -128,7 +144,7 @@ await page.waitForFunction(() => {
   return c && getComputedStyle(c).visibility === "visible" && /\d/.test(c.textContent);
 }, null, { timeout: 8000 }).catch(() => {});
 await page.waitForTimeout(500);   // the width transition finishes
-await caption(page, "Long conversation. Less rendering overhead. Nothing deleted.");
+await caption(page, "Long conversation. Less rendering overhead. Nothing deleted.", "Free");
 await shoot(page, "1-hero.png");
 await page.mouse.move(640, 400);  // leave the map at rest for the next shots
 
@@ -264,7 +280,7 @@ await page.waitForFunction(() => {
   return items.length >= 3 && items.every((el) => Number(getComputedStyle(el).opacity) === 1);
 }, null, { timeout: 8000 });
 await page.waitForTimeout(350);
-await caption(page, "Search saved chats on supported AI sites. Stored locally.");
+await caption(page, "Search saved chats on supported AI sites. Stored locally.", "Pro");
 await shoot(page, "7-recall.png");
 await page.keyboard.press("Escape");
 
@@ -283,7 +299,7 @@ await page.evaluate(() => {
     boxes[i].checked = true; boxes[i].dispatchEvent(new Event("change", { bubbles: true }));
   }
 });
-await caption(page, "Context Bridge: pull past answers from any AI into your prompt.");
+await caption(page, "Context Bridge: pull past answers from any AI into your prompt.", "Pro");
 await shoot(page, "8-bridge.png");
 await page.keyboard.press("Escape");
 
