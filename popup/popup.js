@@ -2765,7 +2765,7 @@
   /* ---------- popup tour ---------- */
 
   /* One card per control, not one per group. The rows ARE the settings — a
-     card covering three switches at once is how "Archive core" and "Load full
+     card covering three switches at once is how "Archive" and "Load full
      history on open" went unexplained: named in a sentence about something
      else, anchored to a neighbour. */
   const ALL_POPUP_STEPS = [
@@ -2838,16 +2838,22 @@
       body: "Deleted there is not deleted here. When a chat you had archived disappears from the provider, this appears and you decide what to keep. Nothing is removed without your answer."
     },
     {
-      id: "fill",
-      anchor: () => $("fill-archive"),
-      title: "Download your chats' text",
-      body: "A listing gives up every title in one request; the text costs one request per chat. This fetches the text Recall cannot search until it has it, and says how far along it is."
-    },
-    {
       id: "core",
       anchor: () => $("sync-history")?.closest(".row"),
-      title: "Archive core",
+      title: "Archive",
       body: "The archive keeping itself current: it checks for new chats roughly every three hours and when you open a chat site, and writes only what is missing. The line under it is what has been saved, what is left, and how far the current pass has got — it resumes by itself after a browser restart."
+    },
+    {
+      id: "fill",
+      anchor: () => $("fill-archive"),
+      title: "Make chats searchable",
+      body: "A listing gives up every title in one request; message text takes one request per chat. This adds the text Total Recall needs to search inside those chats, and shows its progress."
+    },
+    {
+      id: "backup",
+      anchor: () => $("backup-archive"),
+      title: "Back up your archive",
+      body: "Creates one encrypted file in Downloads that restores this archive after a reinstall or on another supported browser. Your chat data stays on your device. Keep the password safe: Tvara cannot recover it."
     },
     {
       id: "account",

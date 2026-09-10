@@ -241,6 +241,11 @@ try {
   t("A1 Pro copy names capabilities instead of a partial provider list",
     !/Claude\s*&amp;\s*Gemini/.test(readFileSync(join(SRC, "popup", "popup.html"), "utf8")),
     "popup/popup.html");
+  const popupSource = readFileSync(join(SRC, "popup", "popup.html"), "utf8");
+  t("A1 archive actions follow the Archive row",
+    popupSource.indexOf('id="sync-history"') < popupSource.indexOf('id="fill-row"') &&
+    popupSource.indexOf('id="fill-row"') < popupSource.indexOf('id="backup-archive"'),
+    "popup/popup.html");
   /* The account photo is served by Google, and an extension page loads no
      remote image the CSP has not named. Without this line the header renders a
      broken circle for every signed-in user and nothing says why. */
@@ -5593,13 +5598,14 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
   const popupSteps = popupTour.seen.map((s) => s.step);
   /* Every switch in this window gets its own card. They used to be described
      three at a time in a sentence about something else, which is how "Archive
-     core" and "Load full history on open" ended up with no explanation at all
+     Archive" and "Load full history on open" ended up with no explanation at all
      while appearing to be covered. */
   for (const [id, wants] of [
     ["plan", /Free, Trial or Pro/], ["pulse", /asleep/], ["settings", /Speed engine|off-screen/],
     ["minimap", /one bar per message|Minimap|thin strip/i], ["times", /send time/],
     ["history", /older message back on the page|while you are reading/], ["temp", /temporary/i],
-    ["quota", /20%/], ["archive", /Total Recall/], ["core", /Archive core|checks for new chats/],
+    ["quota", /20%/], ["archive", /Total Recall/], ["core", /Archive|checks for new chats/],
+    ["backup", /encrypted file|password/i],
     ["account", /Pro is one payment|trial/i], ["footer", /Health|Shortcuts/],
     ["chat", /open it for you|continues there/i]
   ]) {

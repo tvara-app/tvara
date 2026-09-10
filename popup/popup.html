@@ -200,6 +200,17 @@
           </span>
         </button>
 
+        <button class="row row-button" id="sync-history" type="button">
+          <span class="row-icon sync-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20.5 12a8.5 8.5 0 0 0-14.6-5.9L3.5 8.4"/><path d="M3.5 4.2v4.2h4.2"/><path d="M3.5 12a8.5 8.5 0 0 0 14.6 5.9l2.4-2.3"/><path d="M20.5 19.8v-4.2h-4.2"/></svg>
+          </span>
+          <span class="row-text">
+            <span class="row-title">Archive</span>
+            <span class="row-sub" id="sync-status" aria-live="polite">Checking archive state…</span>
+          </span>
+          <span class="row-pct" id="sync-pct" aria-hidden="true"></span>
+        </button>
+
         <!-- One row, two controls. Choosing what to fetch was its own row and
              read as a second thing to do; it is one decision about THIS button,
              so it sits on it. The hit area is a real <button> laid over the
@@ -235,24 +246,8 @@
           </span>
           <span class="row-text">
             <span class="row-title" id="backup-title">Back up your archive</span>
-            <span class="row-sub" id="backup-sub" aria-live="polite">One encrypted file you can restore anywhere</span>
+            <span class="row-sub" id="backup-sub" aria-live="polite">Create an encrypted copy you can restore</span>
           </span>
-        </button>
-
-        <button class="row row-button" id="sync-history" type="button">
-          <span class="row-icon sync-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20.5 12a8.5 8.5 0 0 0-14.6-5.9L3.5 8.4"/><path d="M3.5 4.2v4.2h4.2"/><path d="M3.5 12a8.5 8.5 0 0 0 14.6 5.9l2.4-2.3"/><path d="M20.5 19.8v-4.2h-4.2"/></svg>
-          </span>
-          <span class="row-text">
-            <span class="row-title">Archive core</span>
-            <span class="row-sub" id="sync-status" aria-live="polite">Checking archive state…</span>
-          </span>
-          <!-- The figure belongs in the column every other figure on this panel
-               is in, not tacked onto the end of a sentence that is already the
-               longest line in the row. Always mounted and width-reserved: a
-               number that appears when a pass starts would otherwise squeeze
-               the sentence beside it and re-wrap the row. -->
-          <span class="row-pct" id="sync-pct" aria-hidden="true"></span>
         </button>
       </section>
 
