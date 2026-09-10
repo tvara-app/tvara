@@ -1,5 +1,7 @@
 # Tvara
 
+<img src="icons/icon256.png" alt="Tvara logo" width="96">
+
 Tvara keeps long AI chats responsive, searchable, and backed up locally without deleting messages or sending chat text to us.
 
 ## Launch support
