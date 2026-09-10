@@ -4901,7 +4901,8 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
         const sub = r.querySelector(".row-sub");
         const rb = r.getBoundingClientRect();
         const last = (sub || title).getBoundingClientRect();
-        return { h: +rb.height.toFixed(1), under: +(rb.top + rb.height - (last.top + last.height)).toFixed(1) };
+        const divider = Number.parseFloat(getComputedStyle(r).borderTopWidth) || 0;
+        return { h: +(rb.height - divider).toFixed(1), under: +(rb.top + rb.height - (last.top + last.height)).toFixed(1) };
       });
       return { icons, pairs, shape };
     });
