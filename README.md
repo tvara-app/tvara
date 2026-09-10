@@ -1,4 +1,4 @@
-# Tvara
+# <img src="icons/icon256.png" alt="Tvara logo" width="96"> Tvara
 
 <img src="icons/icon256.png" alt="Tvara logo" width="96">
 
