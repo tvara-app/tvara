@@ -55,4 +55,4 @@ Host access is limited to the supported AI sites for automatic local speed, arch
 
 ## Help
 
-For privacy, access, deletion, support, or refunds, contact [tvara.exten@gmail.com](mailto:tvara.exten@gmail.com). The current [privacy policy](https://tvara.pages.dev/privacy) and [terms](https://tvara.pages.dev/terms) govern the release.
+For privacy, access, deletion, support, or refunds, contact [tvara.exten@gmail.com](https://mail.google.com/mail/?view=cm&fs=1&to=tvara.exten%40gmail.com&su=Tvara%20support%20request&body=Hello%20Tvara%20Support%2C%0A%0AI%20need%20help%20with%3A%20%0A%0AThanks%2C). The current [privacy policy](https://tvara.pages.dev/privacy) and [terms](https://tvara.pages.dev/terms) govern the release.
