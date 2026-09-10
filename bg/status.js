@@ -65,13 +65,15 @@ async function bgSyncStatus() {
     };
   }
   const deletions = await deletionsList();
+  const fill = await fillState();
   return {
     platforms,
     running: !!(run && run.state === "running"),
     recovery,
     deletions: { count: deletions.items.length, policy: deletions.policy },
     autoBackup: await autoBackupState(),
-    summary: summarize(platforms, !!(run && run.state === "running"), recovery, run && run.id),
+    summary: summarize(platforms, !!(run && run.state === "running"), recovery, run && run.id, fill.total),
+    fill,
     run: run ? { state: run.state, startedAt: run.startedAt, interruptedAt: run.interruptedAt || 0 } : null
   };
 }
@@ -89,7 +91,7 @@ function unreachable(p) {
   return !!(p.progress && (p.progress.signedOut || p.progress.blocked));
 }
 
-function summarize(platforms, running, recovery, runId) {
+function summarize(platforms, running, recovery, runId, textPending = 0) {
   const entries = Object.values(platforms);
   if (running || entries.some((p) => p.progress && p.progress.state === "syncing")) {
     const live = entries.filter((p) => p.progress && p.progress.state === "syncing");
@@ -177,9 +179,12 @@ function summarize(platforms, running, recovery, runId) {
     // is new, so "everything is already backed up" would be a lie told by the
     // one line most people read.
     const held = recovery && recovery.state === "restore-offered";
+    const pending = Math.max(0, Number(textPending) || 0);
+    const message = held ? "New chats are backed up \u00b7 restore your archive for the rest"
+      : pending ? `All chat titles are saved \u00b7 ${pending.toLocaleString()} chat${pending === 1 ? "" : "s"} need message text`
+      : "Everything is already backed up";
     return { state: "current",
-      message: held ? "New chats are backed up \u00b7 restore your archive for the rest"
-                    : "Everything is already backed up",
+      message,
       checkedAt: oldest, archived, connected: connected.length };
   }
   if (current.length) {

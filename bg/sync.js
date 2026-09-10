@@ -636,13 +636,9 @@ async function bgSyncAccount(adapter, run, opts, ctx, tabs, seat = { seat: 0, se
             // without knowing who it belongs to.
             acct, msgs
           };
-          if (msgs.length < 2) {
+          if (msgs.length < 1) {
             record.msgs = []; record.meta = true;
-            /* Finished, not pending. importBatch records hasBody=false for a
-               meta write, so without this the id stays in the stub list and
-               every pass for the life of the install re-fetches a conversation
-               that will never have a body — and "everything is already backed
-               up" is unreachable. fillStart:4089 already gets this right. */
+            // Empty conversations have no message text to retain.
             await noteStub(record.id, adapter.host, true);
           }
           importQueue.push(record);

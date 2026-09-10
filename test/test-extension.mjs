@@ -242,11 +242,15 @@ try {
     !/Claude\s*&amp;\s*Gemini/.test(readFileSync(join(SRC, "popup", "popup.html"), "utf8")),
     "popup/popup.html");
   const popupSource = readFileSync(join(SRC, "popup", "popup.html"), "utf8");
+  const syncSource = readFileSync(join(SRC, "bg", "sync.js"), "utf8");
   t("A1 archive actions share one clear archive row",
     popupSource.indexOf('id="sync-history"') < popupSource.indexOf('id="backup-archive"') &&
     popupSource.indexOf('id="backup-archive"') < popupSource.indexOf('id="fill-row"') &&
     popupSource.includes('id="archive-count"') && !popupSource.includes('id="sync-pct"'),
     "popup/popup.html");
+  t("A1 sync keeps a one-message conversation",
+    /if \(msgs\.length < 1\)/.test(syncSource) && !/if \(msgs\.length < 2\)/.test(syncSource),
+    "bg/sync.js");
   /* The account photo is served by Google, and an extension page loads no
      remote image the CSP has not named. Without this line the header renders a
      broken circle for every signed-in user and nothing says why. */

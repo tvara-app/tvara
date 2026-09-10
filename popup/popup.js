@@ -1495,6 +1495,11 @@
      while you watch, and stops when you say. */
   let fillTimer = null;
 
+  function savedMessageLabel() {
+    const messages = Math.max(0, Number(cache && cache.archive && cache.archive.msgs) || 0);
+    return messages ? `${messages.toLocaleString()} messages already saved` : "No message text saved yet";
+  }
+
   /* The bar is mounted only when there is a real proportion to draw. A bar at
      0% of an unknown total is a spinner wearing a progress bar's clothes. */
   /* The rail is always there — see .fill-bar. What changes is how much of it
@@ -1572,17 +1577,17 @@
       const total = done + left;
       // The count belongs in the title: it is the thing being watched, and a
       // sub-line is where the eye goes last.
-      setLine(title, `Adding message text · ${done.toLocaleString()} of ${total.toLocaleString()}`);
+      setLine(title, `Adding text · ${done.toLocaleString()} of ${total.toLocaleString()} chats`);
       setLine(sub, state.running
-        ? "Tap to stop."
-        : "The browser paused it; picking up again.");
+        ? `${savedMessageLabel()} · tap to stop.`
+        : `${savedMessageLabel()} · the browser will continue.`);
       row.classList.add("busy");
       paintBar(done, total);
       return;
     }
     row.classList.remove("busy");
     hideBar();
-    setLine(title, `Add message text to ${left.toLocaleString()} chat${left === 1 ? "" : "s"}`);
+    setLine(title, `${left.toLocaleString()} chat${left === 1 ? "" : "s"} need message text`);
     /* The worker already worked out why it stopped, and it stopped PER
        PROVIDER — six download at once, so one platform refusing is not the run
        failing. Its own sentence carries its own remedy (fillWhy in bg/fill.js);
@@ -1613,7 +1618,7 @@
     /* What it is FOR, in the reader's terms. "Download" was the wrong verb in
        the wrong place: this fills the archive, and the thing people came here
        looking for under that word is the backup file, one row below. */
-    setLine(sub, `Make saved chats searchable by adding message text. About ${mins} min.`);
+    setLine(sub, `${savedMessageLabel()} · these chats have titles only. About ${mins} min.`);
   }
 
   /* Set when we have asked the worker to start and have not yet seen it say so.
@@ -3471,6 +3476,7 @@
     // A cold service worker can drop the very first message of a session.
     if (!status && retry) return setTimeout(() => checkFreshness(false), 350);
     paintSummary(status && status.summary);
+    if (status && status.fill) paintFill(status.fill);
     paintDeletionAlert(status && status.deletions);
     paintRestoreAlert(status && status.recovery);
   }
