@@ -172,8 +172,8 @@ function fillWhy(adapter, kind) {
   const label = adapter.label;
   if (kind === "auth") return `${label}: not signed in. Sign in, then tap to continue.`;
   if (kind === "challenge") return `${label} blocked the fetch. Open ${adapter.host} in a tab.`;
-  if (kind === "rate") return `Waiting briefly before continuing with ${label}. Tvara resumes automatically.`;
-  return `Pausing ${label}'s archive safely. Tvara will try again automatically.`;
+  if (kind === "rate") return "Archive updates will continue automatically.";
+  return "Archive updates will continue automatically.";
 }
 
 /* One note per PROVIDER. A single `note` field meant the last writer won, so

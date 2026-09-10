@@ -181,6 +181,7 @@
        moved. toggleAttribute writes the attribute itself. */
     $("open-recall-arrow").toggleAttribute("hidden", !unlocked);
     $("open-recall-lock").toggleAttribute("hidden", unlocked);
+    $("open-recall").closest(".row").classList.toggle("is-pro-locked", !unlocked && !offer);
     $("open-recall").setAttribute("aria-label", unlocked
       ? "Open Total Recall in a new tab"
       : "Locked — start the free trial to search your archive");
@@ -423,7 +424,7 @@
           "Your session is fine — open the site in a tab and this fills in on its own.";
       }
       if (why === "rate-limited") {
-        return `Waiting briefly before checking ${item.label} again. Your session is fine.`;
+        return "Allowance updates automatically.";
       }
       if (why === "could not reach the provider") {
         return `${item.label}'s latest allowance is not available yet. Tvara will check again automatically.`;
@@ -459,7 +460,7 @@
         "tracking off": "Allowance tracking is switched off.",
         "not signed in": "Could not refresh: not signed in to this provider.",
         "blocked by the provider": "Could not refresh: the provider answered a bot-protection challenge. Open its site in a tab.",
-        "rate-limited": "Waiting briefly before checking again.",
+        "rate-limited": "Allowance updates automatically.",
         "could not reach the provider": "The latest allowance is not available yet. Tvara will check again automatically.",
         "no working endpoint": "Could not refresh: this provider publishes no allowance endpoint we can read.",
         "provider reported nothing": "Refreshed, but the provider returned no allowance figure."
@@ -688,13 +689,8 @@
       // already seen at a different value — see the sweep in popup.css.
       let moved = false;
       if (it.blocked) {
-        val.classList.add("usage-lock");
-        val.setAttribute("role", "img");
+        val.classList.add("usage-reset");
         val.setAttribute("aria-label", `${it.label} unavailable${it.blockedUntil ? ` until ${new Date(it.blockedUntil).toLocaleString()}` : ""}`);
-        const lock = svgEl("svg", { viewBox: "0 0 24 24", "aria-hidden": "true" });
-        lock.append(svgEl("rect", { x: 5, y: 10, width: 14, height: 10, rx: 2 }),
-          svgEl("path", { d: "M8 10V7a4 4 0 0 1 8 0v3" }));
-        val.append(lock);
         if (it.blockedUntil) {
           const when = document.createElement("span");
           when.textContent = resetLabel(it.blockedUntil);
@@ -3274,7 +3270,9 @@
 
   function readableSyncMessage(text) {
     const value = String(text || "");
-    return /unexpected token\s*['"]?<?|doctype|valid json|unexpected provider response|invalid provider response/i.test(value)
+    return /rate[- ]?limit|waiting briefly before continuing/i.test(value)
+      ? "Archive updates will continue automatically."
+      : /unexpected token\s*['"]?<?|doctype|valid json|unexpected provider response|invalid provider response/i.test(value)
       ? "A provider returned an unexpected page. Open it, then retry."
       : value;
   }

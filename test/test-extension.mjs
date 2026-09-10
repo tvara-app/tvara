@@ -383,18 +383,18 @@ try {
   await pop.waitForTimeout(2500);
   const blockedClaude = await pop.evaluate(() => {
     const row = [...document.querySelectorAll(".usage-row")].find((r) => /Claude/.test(r.textContent));
-    const lock = row && row.querySelector(".usage-lock");
+    const reset = row && row.querySelector(".usage-reset");
     return { text: row ? row.textContent.replace(/\s+/g, " ").trim() : "(none)",
-      lock: lock ? lock.getAttribute("aria-label") || "" : "",
+      reset: reset ? reset.getAttribute("aria-label") || "" : "",
       switchable: !!(row && row.querySelector("button.usage-switch")),
       headline: !!document.querySelector(".usage-verdict"),
       spentStrokes: [...document.querySelectorAll(".usage-track.spent")].map((el) => el.style.stroke),
       spentOpacity: getComputedStyle(document.querySelector(".usage-track.spent")).opacity };
   });
   t("A1e an exhausted weekly limit locks the provider despite session allowance",
-    /Claude unavailable/i.test(blockedClaude.lock) && !/5h/.test(blockedClaude.text), JSON.stringify(blockedClaude));
-  t("A1e unavailable providers use the lock indicator, not a headline or window switch",
-    !blockedClaude.switchable && !blockedClaude.headline, JSON.stringify(blockedClaude));
+    /Claude unavailable/i.test(blockedClaude.reset) && !/5h/.test(blockedClaude.text), JSON.stringify(blockedClaude));
+t("A1e unavailable providers use a reset time, not a paywall lock or window switch",
+    !blockedClaude.switchable && !blockedClaude.headline && !/lock/i.test(blockedClaude.text), JSON.stringify(blockedClaude));
   t("A1e an exhausted provider keeps its own subdued ring colour",
     blockedClaude.spentStrokes.includes("#e0805c") && Number(blockedClaude.spentOpacity) <= 0.2,
     JSON.stringify(blockedClaude));
@@ -3006,13 +3006,13 @@ try {
   await recall.evaluate((at) => chrome.storage.local.set({
     "recall-sync-progress:chatgpt": {
       state: "paused", phase: "paused", runId: "run-C", platform: "chatgpt", done: 0, total: 0,
-      msg: "Waiting briefly before continuing with ChatGPT.", at
+      msg: "ChatGPT is rate-limiting. It resumes automatically.", at
     }
   }), Date.now());
   const cooled = await recall.evaluate(() => new Promise((res) =>
     chrome.runtime.sendMessage({ type: "recall-sync-status" }, res)));
-  t("B11c a provider pause reports as paused, never as an error",
-    cooled.summary.state === "paused" && /Waiting briefly/.test(cooled.summary.message),
+  t("B11c a provider pause reports as paused without exposing provider throttling",
+    cooled.summary.state === "paused" && cooled.summary.message === "Archive updates will continue automatically.",
     JSON.stringify(cooled.summary));
   await recall.evaluate(() => chrome.storage.local.remove("recall-sync-progress:chatgpt"));
 

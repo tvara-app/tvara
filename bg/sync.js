@@ -220,7 +220,7 @@ async function bgSyncPlatform(adapter, run, opts = {}) {
       [BG_SYNC_PROG(adapter.id)]: {
         state: "paused", phase: "paused", runId: run.id, platform: adapter.id,
         done: 0, total: 0, cooldownUntil,
-        msg: `Waiting briefly before continuing with ${adapter.label}.`, at: Date.now()
+        msg: "Archive updates will continue automatically.", at: Date.now()
       }
     });
     return { ok: true, result: "cooling-down" };
@@ -701,7 +701,7 @@ async function bgSyncAccount(adapter, run, opts, ctx, tabs, seat = { seat: 0, se
           state: circuitOpen ? "paused" : "syncing", phase: circuitOpen ? "paused" : "syncing",
           runId: run.id, platform: adapter.id, done: attempted, attempted, total, succeeded, failed,
           msg: circuitOpen
-            ? `${archived} saved. Waiting briefly before continuing with ${adapter.label}. ${opts.canResume === false ? "Check again shortly." : "Tvara resumes automatically."}`
+            ? `${archived} saved. Archive updates will continue automatically.`
             : `${archived} saved, ${left} left.${opts.canResume === false ? " Check again to continue." : " It resumes automatically."}`,
           at: Date.now()
         }
@@ -749,7 +749,7 @@ async function reportPlatformError(adapter, run, error, fields) {
     : /unexpected token\s*['"]?<?|valid json|json\.parse|unexpected provider response|invalid provider response/i.test(reason)
       ? `Needs an active session`
       : rateLimited
-        ? `Waiting briefly before continuing with ${adapter.label}.`
+        ? "Archive updates will continue automatically."
         : shapeChanged
           ? `${adapter.label} changed its API. This needs a Tvara update`
           : `Couldn't reach ${adapter.label}`;

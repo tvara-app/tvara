@@ -368,6 +368,17 @@ button {
 }
 button:hover { opacity: .87; }
 button:disabled { cursor: default; opacity: .4; }
+.is-pro-locked::before {
+  content: "";
+  width: 12px;
+  height: 12px;
+  flex: none;
+  background: var(--signal-warm);
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M17 8h-1V6a4 4 0 0 0-8 0v2H7a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V10a2 2 0 0 0-2-2Zm-7-2a2 2 0 0 1 4 0v2h-4V6Z'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+button.is-pro-locked:disabled { opacity: .58; color: var(--ink-faint); background: rgb(255 255 255 / .05); border-color: var(--line-strong); }
+.auto-sync.is-pro-locked { opacity: .58; }
+.auto-sync.is-pro-locked::before { margin-top: 2px; }
 .secondary {
   border-color: var(--line-strong);
   background: transparent;

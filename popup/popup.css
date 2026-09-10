@@ -600,23 +600,9 @@ main { padding: 0 var(--gutter); }
 .usage-val b { color: var(--ink); font-weight: 500; }
 .usage-row.unavailable { opacity: .62; }
 .usage-row.unavailable .usage-name { color: var(--ink-dim); }
-.usage-lock {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--ink-faint);
-  font-size: 10px;
-  font-weight: 600;
-}
-.usage-lock svg {
-  width: 13px;
-  height: 13px;
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.8;
-}
+.usage-reset { color: var(--ink-faint); font-size: 10px; font-weight: 600; }
+.row.is-pro-locked .row-text { opacity: .58; }
+.row.is-pro-locked .row-action { color: var(--ember); border-color: rgb(255 177 133 / .54); background: rgb(255 177 133 / .10); }
 /* A row whose provider publishes more than one window: the figure is a button.
    Quiet until it is wanted — the panel is read at a glance and a row of live
    controls would compete with the numbers themselves. */

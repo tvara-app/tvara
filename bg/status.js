@@ -8,6 +8,13 @@
  */
 "use strict";
 
+function safeProgressMessage(message) {
+  const text = String(message || "");
+  return /rate[- ]?limit|waiting briefly before continuing/i.test(text)
+    ? "Archive updates will continue automatically."
+    : text;
+}
+
 async function bgSyncStatus() {
   const recovery = await ensureRecoveryState();
   const run = await normalizeRun();
@@ -25,7 +32,8 @@ async function bgSyncStatus() {
     // identified the currently active account during a background check.
     const activeKey = String(activeAccounts[adapter.id] || "");
     const checkpoint = activeKey ? ledger.checkpoints[activeKey] || null : null;
-    const progress = store[BG_SYNC_PROG(adapter.id)] || null;
+    const heldProgress = store[BG_SYNC_PROG(adapter.id)] || null;
+    const progress = heldProgress ? { ...heldProgress, msg: safeProgressMessage(heldProgress.msg) } : null;
     const phase = progress?.phase || (checkpoint ? "up-to-date" : "needs-sync");
     // Every account this browser has synced on the platform, so a row can say
     // "two accounts" instead of silently describing whichever one went last.

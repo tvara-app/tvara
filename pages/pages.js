@@ -123,6 +123,8 @@
       const node = $(id);
       if (!node) continue;
       node.disabled = !allowed;
+      node.classList.toggle("is-pro-locked", !allowed);
+      node.closest("label")?.classList.toggle("is-pro-locked", !allowed);
       // The same sentence is set VISIBLY below (setStatus), so a tooltip
       // repeating it only covers the button it is about.
       node.setAttribute("aria-label", allowed ? "" : LOCK_COPY);
