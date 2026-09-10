@@ -148,6 +148,8 @@ export function startProviders(port = 8931) {
     /* ---------- Claude ---------- */
     if (platform === "claude") {
       if (!state.claude.signedIn) return deny(res);
+      const failure = state.claude.failures && state.claude.failures[path];
+      if (failure) return json(res, { error: "temporary failure" }, Number(failure) || 500);
       if (path === "/api/organizations") {
         return json(res, state.claude.orgs.map((o) => ({
           uuid: o.uuid, name: o.name, capabilities: o.capabilities || []

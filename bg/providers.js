@@ -588,6 +588,7 @@ const BG_ADAPTERS = [
          reported as one — but if NOTHING answers, it is the truest thing we
          know about why, and it is what the row should say. */
       let blocked = null;
+      let unavailable = null;
       try {
         const orgs = await bgJson(await bgFetch(this.base + "/api/organizations"));
         list = (Array.isArray(orgs) ? orgs : []).filter((o) => o && o.uuid);
@@ -596,6 +597,7 @@ const BG_ADAPTERS = [
         // second look at the endpoint the app itself uses.
         if (error && error.kind === "auth") throw error;
         if (error && error.kind === "challenge") blocked = error;
+        else unavailable = error;
       }
       if (!list.length) {
         try {
@@ -604,12 +606,13 @@ const BG_ADAPTERS = [
           const memberships = account && Array.isArray(account.memberships) ? account.memberships : [];
           list = memberships.map((m) => m && m.organization).filter((o) => o && o.uuid);
         } catch (error) {
-          /* neither answered — the throw below is then the truth */
+          if (error && error.kind === "auth") throw error;
           if (error && error.kind === "challenge") blocked = blocked || error;
+          else unavailable = unavailable || error;
         }
       }
       const org = list[0];
-      if (!org) throw blocked || new BgError("auth", "not signed in");
+      if (!org) throw blocked || unavailable || new BgError("auth", "not signed in");
       /* The org stays the first one — it is what every checkpoint and archived
          row is keyed to, and re-keying it would re-download the world. The PLAN
          does not: a login owns one subscription, and reading it off whichever

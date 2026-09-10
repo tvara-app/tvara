@@ -730,9 +730,7 @@ async function bgSyncAccount(adapter, run, opts, ctx, tabs, seat = { seat: 0, se
 async function reportPlatformError(adapter, run, error, fields) {
   const { attempted = 0, total = 0, succeeded = 0, failed = 0 } = fields || {};
   const reason = String((error && error.message) || error);
-  const signedOut = (error && error.kind) !== "challenge" &&
-    (reason.includes("unauthorized") || reason.includes("not signed in") ||
-     /unexpected provider response|invalid provider response/i.test(reason));
+  const signedOut = (error && error.kind) === "auth";
   const rateLimited = (error && error.kind) === "rate";
   /* The provider's edge refused the request shape (Cloudflare's managed
      challenge). Not a session verdict: the cookies are fine, and loading the
@@ -744,15 +742,15 @@ async function reportPlatformError(adapter, run, error, fields) {
   const shapeChanged = (error && error.kind) === "shape";
   const message = challenged
     ? `${adapter.label} blocked the background check. Open ${adapter.host} in a tab, then check again`
-    : reason.includes("unauthorized") || reason.includes("not signed in")
+    : signedOut
     ? `Not signed in`
     : /unexpected token\s*['"]?<?|valid json|json\.parse|unexpected provider response|invalid provider response/i.test(reason)
-      ? `Needs an active session`
+      ? "Checking again automatically."
       : rateLimited
         ? "Archive updates will continue automatically."
         : shapeChanged
           ? `${adapter.label} changed its API. This needs a Tvara update`
-          : `Couldn't reach ${adapter.label}`;
+          : "Checking again automatically.";
   progressPending = null;
   await chrome.storage.local.set({
     [BG_SYNC_PROG(adapter.id)]: {

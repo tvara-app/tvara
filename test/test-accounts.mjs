@@ -423,6 +423,23 @@ try {
   t("D3 the free organisation is recorded as free",
     Object.values(claudeRoster).some((a) => a.plan === "Free"));
 
+  /* Both Claude session endpoints can be briefly unavailable. That is not
+     evidence the user signed out. */
+  await providers.control({ claude: { failures: {
+    "/api/organizations": 418,
+    "/api/bootstrap": 418
+  } } });
+  await makeSweepDue();
+  await syncNow();
+  const claudeUnavailable = await local("recall-sync-progress:claude");
+  t("D4 a temporary Claude handshake failure is not called signed out",
+    !!claudeUnavailable && claudeUnavailable.signedOut === false,
+    JSON.stringify(claudeUnavailable));
+  t("D4 …and it tells the user it will retry automatically",
+    !!claudeUnavailable && claudeUnavailable.msg === "Checking again automatically.",
+    JSON.stringify(claudeUnavailable));
+  await providers.control({ claude: { failures: {} } });
+
   /* ================= E. a provider that names nobody ================= */
 
   const d1 = makeChats("dsone", 3, Date.UTC(2026, 1, 1));
