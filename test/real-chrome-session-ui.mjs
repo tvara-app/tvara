@@ -12,18 +12,17 @@
  * script runs, so the real popup.js and lib/entitlement.js execute unmodified.
  * The stub world is mutable, so a scenario can change what the issuer says
  * between clicks — which is what actually happens to somebody sitting there.
- * One browser, launched and closed by this file.
+ * It ATTACHES to the one Chrome tools/chrome-real.mjs owns and never closes
+ * it: two real-Chrome suites in a session share one window.
  *
  *   node test/real-chrome-session-ui.mjs [--shots <dir>]
  */
-import { chromium } from "playwright";
-import { spawn } from "node:child_process";
-import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { serve } from "../tools/serve.mjs";
+import { ensureChrome, detach } from "../tools/chrome-real.mjs";
 
 const ROOT = join(import.meta.dirname, "..");
 const PORT = 8931;
-const PROFILE = join(ROOT, "test", ".work", "chrome-real");
 /** `--shots <dir>` writes what a person would be looking at. */
 const SHOTS = process.argv.includes("--shots")
   ? process.argv[process.argv.indexOf("--shots") + 1] : "";
@@ -35,28 +34,20 @@ const t = (name, ok, got = "") => {
 };
 const step = (name) => console.log(`\n— ${name}`);
 
-const srv = spawn("python3", ["-m", "http.server", String(PORT), "--bind", "127.0.0.1"],
-  { cwd: ROOT, stdio: "ignore" });
-await new Promise((r) => setTimeout(r, 700));
+const srv = await serve(ROOT, PORT);
 
-/* python's http.server sends no Cache-Control, so Chrome is free to reuse a
-   cached popup.js or entitlement.js from the last run without revalidating —
-   and then the suite tests the previous edit. The profile is scratch; start it
-   empty. */
-rmSync(PROFILE, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
-
-const ctx = await chromium.launchPersistentContext(PROFILE, {
-  channel: "chrome",                 // real Google Chrome, never bundled Chromium
-  headless: false,
-  // Drops the "controlled by automated test software" bar, which Chrome also
-  // uses to disable features the popup reads.
-  ignoreDefaultArgs: ["--enable-automation"],
-  args: ["--no-first-run", "--no-default-browser-check"]
+/* No profile wipe. It was here because python3 -m http.server sends no
+   Cache-Control and Chrome would serve a popup.js from the previous run, so the
+   suite tested the edit before last; tools/serve.mjs sends no-store, which
+   fixes that without throwing away the browser between runs. */
+const { ctx } = await ensureChrome({ quiet: true }).catch((err) => {
+  console.error("✋ " + err.message);
+  process.exit(2);
 });
+
 const shut = async (code) => {
-  srv.kill();
-  await ctx.close().catch(() => {});
-  process.exit(code);
+  srv.close();
+  detach(code);
 };
 
 /**

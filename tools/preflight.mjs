@@ -110,6 +110,21 @@ else {
     block(`listing is written for v${listedVersion}, manifest is v${mf.version}`);
   } else if (listedVersion) ok(`listing version matches (v${listedVersion})`);
 
+  /* Rejected on 2026-09-11 ("Yellow Argon", Spam and Placement in the Store):
+     naming the six providers in the description read as keyword stuffing. The
+     host list still has to appear further down the file — the dashboard asks
+     for it per permission — so this is scoped to the description fields alone,
+     which are the only text that goes in that box. */
+  const BRANDS = /\b(ChatGPT|OpenAI|Claude|Anthropic|Gemini|Perplexity|DeepSeek|Grok)\b/g;
+  const longDesc = (listing.match(/## Long description\n([\s\S]*?)(?=\n## )/) || [])[1] || "";
+  const pitch = (longDesc.replace(/^>.*$/gm, "") + "\n" +
+    (listing.match(/## Short description[^\n]*\n+([^\n]+)/) || [])[1] || "");
+  const brands = [...new Set(pitch.match(BRANDS) || [])];
+  if (brands.length) {
+    block(`description names third-party products: ${brands.join(", ")}`,
+      "this is what the store rejected as excessive keywords; say the capability, not the brand");
+  } else ok("description names no third-party product");
+
   const short = (listing.match(/## Short description[^\n]*\n+([^\n]+)/) || [])[1] || "";
   if (short && short.length > 132) block(`short description is ${short.length} chars (Chrome allows 132)`);
   else if (short) ok(`short description fits (${short.length}/132)`);
