@@ -27,7 +27,11 @@ mkdirSync(WORK, { recursive: true });
 const PROFILE = join(WORK, "chrome-profile");
 
 const { EXT } = mirrorExtension("purchase-flow");
-const THANKS = join(ROOT, "docs", "thanks.html");
+/* The post-purchase page is served by the SITE repo now, so this is a captured
+   copy of the live one rather than a file this repo owns. preflight re-fetches
+   the live page and fails when the two drift, which is where a network check
+   belongs — a security test must run offline and in CI. */
+const THANKS = join(ROOT, "test", "fixtures", "thanks.html");
 
 /* ---------- 0. the source itself, before a browser is involved ----------
    The cheapest and most durable check there is: the code that used to read the

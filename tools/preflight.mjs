@@ -38,7 +38,23 @@ else ok(`Node ${process.versions.node} meets the release baseline`);
 const mf = JSON.parse(read("manifest.json"));
 const listing = read("store/listing.md");
 const readme = read("README.md");
-const docs = read("docs/index.html");
+/* The marketing site is its own repository now (tvara-site), so every check
+   about what the site SAYS reads the published pages. A copy in this tree could
+   be stale, and was: it sat here as the "site" long after the real one had been
+   rebuilt and redeployed somewhere else. */
+const SITE_URL = (read("lib/product.js").match(/const SITE = "([^"]+)"/) || [])[1] || "";
+const sitePages = {};
+for (const path of ["", "pricing", "features", "guide"]) {
+  try {
+    const res = await fetch(SITE_URL.replace(/\/$/, "") + "/" + path, { signal: AbortSignal.timeout(12000) });
+    sitePages[path] = res.ok ? await res.text() : "";
+  } catch { sitePages[path] = ""; }
+}
+const docs = Object.values(sitePages).join("\n");
+if (!docs.trim()) {
+  block("could not read the published site — every claim check below is blind",
+    SITE_URL || "lib/product.js declares no SITE");
+}
 const pack = read("tools/pack.mjs");
 
 /* ---------- 1. the artefact matches the code ---------- */
@@ -178,17 +194,9 @@ for (const [name, text] of [["listing", listing], ["README", readme], ["docs", d
 }
 if (period && !drift) ok(`sync interval claims agree with the code (${hours}h)`);
 
-/* The standalone policy pages are generated from docs/index.html, because a
-   privacy policy that says two different things on two URLs is a compliance
-   problem rather than an untidy repo. Google's consent screen wants a URL per
-   policy, so both must exist and both must still match their source. */
-try {
-  execFileSync(process.execPath, [join(root, "tools", "legal-pages.mjs"), "--check"], { stdio: "pipe" });
-  ok("privacy and terms pages match docs/index.html");
-} catch {
-  block("docs/privacy.html or docs/terms.html is stale or missing",
-    "node tools/legal-pages.mjs");
-}
+/* The policy pages are generated and served by the site repository, so all this
+   repo can check is that the published ones are reachable — which the live
+   section below already does. */
 
 /* ---------- 4. someone can actually pay ---------- */
 
@@ -292,9 +300,12 @@ const price = (product.match(/PRICE:\s*"([^"]+)"/) || [])[1];
 const priceNum = (product.match(/PRICE_NUM:\s*(\d+(?:\.\d+)?)/) || [])[1];
 if (!price) block("lib/product.js declares no PRICE");
 else {
-  const docsPrice = (docs.match(/var PRICE = "([^"]+)"/) || [])[1];
-  if (!docsPrice) block("docs/index.html declares no PRICE constant");
-  else if (docsPrice !== price) block(`the pricing page says ${docsPrice}, the extension says ${price}`);
+  /* The published pricing page states it in prose now, not as a constant, so
+     the check is that the price the extension charges APPEARS there — and the
+     contradiction scan below catches any other figure that does not belong. */
+  if (sitePages.pricing && !sitePages.pricing.includes(price)) {
+    block(`the published pricing page never states ${price}, which is what the extension charges`);
+  }
 
   if (priceNum && `$${priceNum}` !== price) {
     block(`PRICE (${price}) and PRICE_NUM (${priceNum}) disagree in lib/product.js`);
@@ -430,54 +441,34 @@ if (issuer && publishedIds.length) {
   }
 }
 
-/* Search Console ownership is a string on a page nobody looks at, and losing it
-   is silent: the site serves 200, the console just stops calling you an owner.
-   It is checked on the LIVE page because the copy in docs/index.html only
-   matters once Pages has deployed it. */
-const verifyTag = (read("docs/index.html").match(/name="google-site-verification"\s+content="([^"]+)"/) || [])[1] || "";
-if (!verifyTag) {
-  block("docs/index.html carries no Search Console verification tag",
-    "Search Console \u2192 Settings \u2192 Ownership verification \u2192 HTML tag");
+/* Search Console ownership. The tag is authored in the site repository, so the
+   only thing this repo can honestly check is that the PUBLISHED home page still
+   carries one — which is the thing that actually keeps the property verified,
+   and the thing that silently stopped being true once already. */
+if (/name="google-site-verification"\s+content="[^"]+"/.test(sitePages[""] || "")) {
+  ok("published site carries a Search Console verification tag");
 } else {
-  let served = "";
-  try {
-    const res = await fetch(canonicalSite, { signal: AbortSignal.timeout(12000) });
-    const html = await res.text();
-    served = (html.match(/name="google-site-verification"\s+content="([^"]+)"/) || [])[1] || "";
-  } catch { served = ""; }
-  if (served === verifyTag) ok("live site carries the Search Console verification tag");
-  else if (!served) {
-    block("the live site is NOT serving the verification tag — ownership will lapse",
-      `${canonicalSite} \u00b7 deploy docs/ to Pages`);
-  } else {
-    block("the live site serves a DIFFERENT verification tag than docs/index.html",
-      "one of the two is stale");
-  }
+  block("the published site carries NO Search Console verification tag — ownership will lapse",
+    "it is authored in the tvara-site repository, in prerender.mjs");
 }
 
-/* The second ownership method: google<token>.html at the site root. Search
-   Console keeps saying "verified" from a cached result long after the file is
-   gone, so the day it re-checks is the day you are locked out of your own
-   property with no warning. Both methods live in git and both are checked
-   here, because two methods only help if neither can vanish unnoticed. */
-const verifyFiles = readdirSync(join(root, "docs")).filter((f) => /^google[a-z0-9]+\.html$/.test(f));
-if (!verifyFiles.length) {
-  warn("no Search Console google\u2026.html ownership file in docs/",
-    "Search Console \u2192 Settings \u2192 Ownership verification \u2192 HTML file \u2192 Download");
+/* test/fixtures/thanks.html is a captured copy of the published post-purchase
+   page, so security-purchase-flow.mjs can run offline and in CI. A capture is
+   only worth anything while it still resembles the thing it captured — this is
+   where the network check belongs, not in the security test. */
+const thanksFixture = read("test/fixtures/thanks.html");
+if (!thanksFixture) {
+  block("test/fixtures/thanks.html is missing — the purchase-flow security test has no page to drive");
 } else {
-  for (const name of verifyFiles) {
-    let live = 0, body = "";
-    try {
-      const res = await fetch(canonicalSite.replace(/\/$/, "") + "/" + name, { signal: AbortSignal.timeout(12000) });
-      live = res.status;
-      body = (await res.text()).trim();
-    } catch { live = 0; }
-    const want = readFileSync(join(root, "docs", name), "utf8").trim();
-    if (live === 200 && body === want) ok(`live site serves the ownership file ${name}`);
-    else if (live === 200) block(`${name} is live but its contents differ from docs/${name}`);
-    else block(`the live site does not serve ${name} (${live || "unreachable"}) — ownership will lapse`,
-      `${canonicalSite} \u00b7 deploy docs/ to Pages`);
-  }
+  let liveThanks = "";
+  try {
+    const res = await fetch(SITE_URL.replace(/\/$/, "") + "/thanks", { signal: AbortSignal.timeout(12000) });
+    liveThanks = res.ok ? await res.text() : "";
+  } catch { liveThanks = ""; }
+  if (!liveThanks) warn("could not read the published /thanks page, so fixture drift is unchecked");
+  else if (liveThanks.trim() === thanksFixture.trim()) ok("the purchase-flow fixture matches the published /thanks");
+  else warn("test/fixtures/thanks.html no longer matches the published /thanks",
+    "re-capture it, then re-run the purchase-flow test against what ships");
 }
 
 /* ---------- 7. store assets ---------- */
