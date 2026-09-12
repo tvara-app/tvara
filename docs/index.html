@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="referrer" content="no-referrer" />
+<!-- Search Console ownership. Deleting this line unverifies the property,
+     and nothing on the site says so — tools/preflight.mjs checks the LIVE
+     page for it, which is the only place it counts. -->
+<meta name="google-site-verification" content="GYGJub4zOD_c7H8gGL4CSlIS_AMMsMdpoUIdcobc_2U" />
+<title>Tvara · AI Chat Speed &amp; Recall</title>
+<meta name="description" content="Keep long AI chats fast, searchable and backed up locally without sending chat text to Tvara." />
+<style>
+  :root { --bg:#0e1117; --panel:#161b26; --text:#e8eaf0; --muted:#a8b1c2; --accent:#7aa2ff; --line:rgba(255,255,255,.12); }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  .wrap { max-width:860px; margin:auto; padding:0 24px; }
+  header { padding:64px 0 44px; text-align:center; }
+  h1 { font-size:40px; line-height:1.2; margin:0 0 14px; }
+  h2 { font-size:26px; margin:0 0 18px; }
+  h3 { font-size:18px; margin:24px 0 8px; }
+  section { border-top:1px solid var(--line); padding:42px 0; }
+  p, li { color:var(--muted); }
+  strong { color:var(--text); }
+  a { color:var(--accent); }
+  .sub { max-width:680px; margin:0 auto; color:var(--muted); font-size:18px; }
+  .badge { display:inline-block; margin-top:20px; padding:6px 14px; border:1px solid var(--line); border-radius:999px; color:var(--muted); font-size:14px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:14px; }
+  .card { padding:20px; background:var(--panel); border:1px solid var(--line); border-radius:12px; }
+  .card b { display:block; margin-bottom:6px; }
+  .price { padding:24px; max-width:410px; background:var(--panel); border:1px solid var(--accent); border-radius:12px; }
+  .amount { color:var(--text); font-size:34px; font-weight:800; }
+  .brand { display:inline-flex; align-items:center; gap:10px; color:var(--text); font-size:17px; font-weight:700; text-decoration:none; }
+  .brand img { width:32px; height:32px; border-radius:9px; }
+  nav { margin-top:20px; font-size:14px; }
+  footer { padding:36px 0 52px; border-top:1px solid var(--line); text-align:center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <a class="brand" href="./" aria-label="Tvara home"><img src="../icons/icon128.png" alt="" />Tvara</a>
+  <h1>Tvara: AI Chat Speed &amp; Recall</h1>
+  <p class="sub">Keep long AI chats fast, searchable and backed up locally—without deleting messages or sending chat text to us.</p>
+  <p class="badge">Local-first · no chat-content telemetry</p>
+  <nav><a href="#features">Features</a> · <a href="#pricing">Pricing</a> · <a href="#privacy">Privacy</a> · <a href="#terms">Terms</a> · <a href="#refunds">Refunds</a></nav>
+</header>
+
+<section id="features">
+  <h2>What Tvara does</h2>
+  <div class="grid">
+    <div class="card"><b>Speed engine</b><p>Reduces rendering work for off-screen messages in long loaded chats. It does not delete or alter provider messages.</p></div>
+    <div class="card"><b>Minimap and in-chat search</b><p>Navigate and search the conversation open in the current tab.</p></div>
+    <div class="card"><b>Local archive search</b><p>Search chats previously opened on supported AI sites. The archive stays in extension storage on your device.</p></div>
+    <div class="card"><b>Context Bridge and backup</b><p>Add selected local context to a prompt, export chats, and create encrypted backup files in Downloads.</p></div>
+  </div>
+  <p>Tvara supports ChatGPT, Claude, Gemini, Perplexity, DeepSeek, and Grok. Their interfaces can change, which can temporarily affect a provider-specific feature.</p>
+  <p>Public launch support: current Chrome Stable and Beta on Windows, macOS, Linux, and ChromeOS, plus current Edge on Windows and macOS. Mobile Chrome, Firefox, Safari, and unsupported browser versions are not supported for this launch.</p>
+</section>
+
+<section id="pricing">
+  <a id="buy"></a>
+  <h2>Pricing</h2>
+  <div class="price">
+    <div class="amount" data-price="{price}"></div>
+    <p>One-time Pro purchase. No subscription. Includes local archive search, Context Bridge, encrypted backup, restore, and up to five devices.</p>
+    <p>Free features require no sign-in. Google sign-in is required only to start the seven-day trial or buy, restore, and manage Pro.</p>
+    <p>Checkout begins inside the extension. Payments are processed by our merchant of record.</p>
+  </div>
+</section>
+
+<section id="privacy">
+  <h2>Privacy Policy</h2>
+  <p><em>Effective: 10 September 2026</em></p>
+  <h3>Chat content stays on your device</h3>
+  <p>Tvara reads chats from supported AI sites only to provide local speed, navigation, search, archive, backup, context-handoff, and usage-tracking features. It does not send chat text, titles, prompts, exports, or chat URLs to Tvara or another third party. Tvara does not use behavioural analytics, tracking pixels, advertising identifiers, or third-party SDKs.</p>
+  <h3>Services Tvara connects to</h3>
+  <ul>
+    <li><strong>Supported AI sites:</strong> Tvara reads conversations you open on ChatGPT, Claude, Gemini, Perplexity, DeepSeek, and Grok, using your existing browser session. The chat data is stored locally.</li>
+    <li><strong>Google:</strong> after you choose Google sign-in for trial, purchase, restore, or device management, Tvara requests only OpenID and email identity information.</li>
+    <li><strong>Licence issuer:</strong> Tvara uses a Cloudflare Worker to issue trials, validate purchases, restore purchases, enforce device limits, process refunds, and revoke entitlements. It receives entitlement and device proof, not chat content.</li>
+    <li><strong>Dodo Payments:</strong> our merchant of record processes checkout and refunds under its own privacy terms.</li>
+  </ul>
+  <h3>What the licence issuer stores</h3>
+  <p>The issuer stores the minimum records needed for account identity, trial eligibility, licence ownership, device limits, fraud prevention, refunds, and support: identity and email fingerprints, an encrypted signed-in email address, licence and device identifiers or hashes, purchase and webhook references, trial timestamps, revocation state, and short-lived security and rate-limit records. It retains identity and entitlement records for up to 400 days of inactivity and longer where a live licence, legal obligation, refund, fraud-prevention need, or support request requires it. It retains hashed IP abuse signals for up to 30 days.</p>
+  <h3>Permissions</h3>
+  <ul>
+    <li><code>storage</code> and <code>unlimitedStorage</code> keep settings and the archive locally.</li>
+    <li><code>downloads</code> writes exports and encrypted backup files to Downloads.</li>
+    <li><code>alarms</code> schedules local archive, backup, entitlement, and session checks across service-worker suspension.</li>
+    <li><code>notifications</code> displays local deletion-review, sign-out, and allowance notices.</li>
+    <li><code>identity</code> opens Google sign-in only after you choose it and requests <code>openid email</code> only.</li>
+    <li>Host access is limited to supported AI sites for automatic local features and Tvara’s own post-purchase page.</li>
+  </ul>
+  <p>Tvara does not request browser history, tabs, cookies, bookmarks, web requests, scripting, or access to sites outside its named host permissions.</p>
+  <h3>Your choices</h3>
+  <p>You can remove local archive data from the extension and remove backup files from your device. For access, deletion, support, or refund requests, email <a href="https://mail.google.com/mail/?view=cm&amp;fs=1&amp;to=tvara.exten%40gmail.com&amp;su=Tvara%20support%20request&amp;body=Hello%20Tvara%20Support%2C%0A%0AI%20need%20help%20with%3A%20%0A%0AThanks%2C">tvara.exten@gmail.com</a>. Deleting an identity or licence record can release device slots and prevent restoration.</p>
+</section>
+
+<section id="terms">
+  <h2>Terms of Service</h2>
+  <p><em>Effective: 10 September 2026</em></p>
+  <ul>
+    <li>Tvara is an independent browser extension and is not affiliated with or endorsed by OpenAI, Anthropic, Google, Perplexity, DeepSeek, or xAI.</li>
+    <li>Free features need no account. A Google sign-in is required only for trial, purchase, restore, and device management.</li>
+    <li>The free trial lasts seven days and needs no payment details. Pro is a one-time purchase for personal use on up to five devices.</li>
+    <li>If a provider changes its interface, a related feature can be unavailable while the rest of Tvara remains usable.</li>
+    <li>If a licence ends through refund, chargeback, or revocation, Pro features stop but locally archived chats remain on your device and can be exported.</li>
+    <li>Third-party AI sites and Dodo Payments have their own terms and privacy policies. Your use of them remains subject to those terms.</li>
+    <li>The software is provided as is to the extent permitted by law. These terms are governed by the laws of India.</li>
+  </ul>
+</section>
+
+<section id="refunds">
+  <h2>Refund Policy</h2>
+  <p>If Pro does not work for you, email <a href="https://mail.google.com/mail/?view=cm&amp;fs=1&amp;to=tvara.exten%40gmail.com&amp;su=Tvara%20refund%20request&amp;body=Hello%20Tvara%20Support%2C%0A%0AI%20would%20like%20to%20request%20a%20refund%20for%3A%20%0A%0AThanks%2C">tvara.exten@gmail.com</a> within 14 days of purchase for a full refund. Refunds are returned to the original payment method by the merchant of record.</p>
+</section>
+
+<footer>Tvara · <a href="https://mail.google.com/mail/?view=cm&amp;fs=1&amp;to=tvara.exten%40gmail.com&amp;su=Tvara%20support%20request&amp;body=Hello%20Tvara%20Support%2C%0A%0AI%20need%20help%20with%3A%20%0A%0AThanks%2C">tvara.exten@gmail.com</a></footer>
+</div>
+<script>
+/* Keep marketing price synchronized with the product. */
+var PRICE = "$1";
+(function () {
+  for (var i = 0, els = document.querySelectorAll("[data-price]"); i < els.length; i++) {
+    els[i].textContent = els[i].getAttribute("data-price").replace(/\{price\}/g, PRICE);
+  }
+})();
+</script>
+</body>
+</html>

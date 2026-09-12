@@ -38,6 +38,7 @@ else ok(`Node ${process.versions.node} meets the release baseline`);
 const mf = JSON.parse(read("manifest.json"));
 const listing = read("store/listing.md");
 const readme = read("README.md");
+const docs = read("docs/index.html");
 const pack = read("tools/pack.mjs");
 
 /* ---------- 1. the artefact matches the code ---------- */
@@ -144,7 +145,7 @@ const sourceHiding = ["lib/entitlement.js", "lib/dodo.js"].filter((path) =>
 if (sourceHiding.length) block(`release code hides function source: ${sourceHiding.join(", ")}`);
 else ok("release code contains no function-source hiding");
 
-for (const [name, text] of [["listing", listing], ["README", readme]]) {
+for (const [name, text] of [["listing", listing], ["README", readme], ["site", docs]]) {
   const match = text.match(/\b(zero lag|instant(?:ly)?|every chat|every platform)\b/i);
   if (match) block(`${name} contains an unprovable claim: ${match[1]}`);
 }
@@ -170,15 +171,24 @@ try {
 const period = Number((workerSource(root).match(/BG_AUTO_PERIOD_MIN\s*=\s*(\d+)/) || [])[1] || 0);
 const hours = period / 60;
 let drift = 0;
-for (const [name, text] of [["listing", listing], ["README", readme]]) {
+for (const [name, text] of [["listing", listing], ["README", readme], ["docs", docs]]) {
   const claims = [...text.matchAll(/every (\d+)\s*hours/gi)].map((m) => Number(m[1]));
   const wrong = claims.filter((h) => h !== hours);
   if (wrong.length) { drift++; block(`${name} claims sync "every ${wrong[0]} hours"; the code says every ${hours}`); }
 }
 if (period && !drift) ok(`sync interval claims agree with the code (${hours}h)`);
 
-/* The canonical site owns its policy pages now. Network checks below verify
-   that the deployed URLs exist; this repository no longer mirrors their HTML. */
+/* The standalone policy pages are generated from docs/index.html, because a
+   privacy policy that says two different things on two URLs is a compliance
+   problem rather than an untidy repo. Google's consent screen wants a URL per
+   policy, so both must exist and both must still match their source. */
+try {
+  execFileSync(process.execPath, [join(root, "tools", "legal-pages.mjs"), "--check"], { stdio: "pipe" });
+  ok("privacy and terms pages match docs/index.html");
+} catch {
+  block("docs/privacy.html or docs/terms.html is stale or missing",
+    "node tools/legal-pages.mjs");
+}
 
 /* ---------- 4. someone can actually pay ---------- */
 
@@ -231,8 +241,11 @@ if (!/head_sampling_rate\s*=\s*0\.01/.test(wrangler) || !/binding\s*=\s*"ISSUER_
    back the first time someone is in a hurry. Each one is a regression guard for
    a specific way that would happen. */
 
-// 4a. The canonical site owns its checkout surface; the extension does not.
-ok("checkout is issuer-only");
+// 4a. No payment link in the retained compatibility reference.
+if (/checkout\.dodopayments\.com|id="checkout"/i.test(docs)) {
+  block("local compatibility reference carries a checkout link again",
+    "checkout is opened by the issuer (POST /checkout)");
+} else ok("checkout is issuer-only");
 
 // 4b. And no buy URL back in the extension either.
 if (/\bBUY\s*:/.test(product)) {
@@ -279,6 +292,10 @@ const price = (product.match(/PRICE:\s*"([^"]+)"/) || [])[1];
 const priceNum = (product.match(/PRICE_NUM:\s*(\d+(?:\.\d+)?)/) || [])[1];
 if (!price) block("lib/product.js declares no PRICE");
 else {
+  const docsPrice = (docs.match(/var PRICE = "([^"]+)"/) || [])[1];
+  if (!docsPrice) block("docs/index.html declares no PRICE constant");
+  else if (docsPrice !== price) block(`the pricing page says ${docsPrice}, the extension says ${price}`);
+
   if (priceNum && `$${priceNum}` !== price) {
     block(`PRICE (${price}) and PRICE_NUM (${priceNum}) disagree in lib/product.js`);
   }
@@ -290,7 +307,7 @@ else {
      a file whose whole purpose is to be read aloud on camera. Anything that
      quotes the price gets checked, including the things that are not code. */
   const prose = [["README", readme], ["listing", listing],
-                 ["user guide", read("docs/USER-GUIDE.md")],
+                 ["user guide", read("docs/USER-GUIDE.md")], ["pricing page", docs],
                  ["demo script", read("store/demo-script.md")]];
   const wrong = [];
   for (const [name, text] of prose) {
@@ -401,7 +418,7 @@ if (issuer && publishedIds.length) {
       });
       status = res.status;
       echoed = res.headers.get("access-control-allow-origin") || "";
-    } catch { /* status remains 0 when the issuer is unreachable */ }
+    } catch { status = 0; }
     if (status === 204 && echoed === origin) {
       ok(`issuer accepts the ${label} origin`, id.slice(0, 8) + "\u2026");
     } else if (!status) {
@@ -413,10 +430,55 @@ if (issuer && publishedIds.length) {
   }
 }
 
-/* Search Console ownership belongs to the canonical site repository, which
-   uses HTML-file verification. This extension repository no longer mirrors
-   that token or assumes a meta-tag method. */
-ok("Search Console ownership is maintained by the canonical site repository");
+/* Search Console ownership is a string on a page nobody looks at, and losing it
+   is silent: the site serves 200, the console just stops calling you an owner.
+   It is checked on the LIVE page because the copy in docs/index.html only
+   matters once Pages has deployed it. */
+const verifyTag = (read("docs/index.html").match(/name="google-site-verification"\s+content="([^"]+)"/) || [])[1] || "";
+if (!verifyTag) {
+  block("docs/index.html carries no Search Console verification tag",
+    "Search Console \u2192 Settings \u2192 Ownership verification \u2192 HTML tag");
+} else {
+  let served = "";
+  try {
+    const res = await fetch(canonicalSite, { signal: AbortSignal.timeout(12000) });
+    const html = await res.text();
+    served = (html.match(/name="google-site-verification"\s+content="([^"]+)"/) || [])[1] || "";
+  } catch { served = ""; }
+  if (served === verifyTag) ok("live site carries the Search Console verification tag");
+  else if (!served) {
+    block("the live site is NOT serving the verification tag — ownership will lapse",
+      `${canonicalSite} \u00b7 deploy docs/ to Pages`);
+  } else {
+    block("the live site serves a DIFFERENT verification tag than docs/index.html",
+      "one of the two is stale");
+  }
+}
+
+/* The second ownership method: google<token>.html at the site root. Search
+   Console keeps saying "verified" from a cached result long after the file is
+   gone, so the day it re-checks is the day you are locked out of your own
+   property with no warning. Both methods live in git and both are checked
+   here, because two methods only help if neither can vanish unnoticed. */
+const verifyFiles = readdirSync(join(root, "docs")).filter((f) => /^google[a-z0-9]+\.html$/.test(f));
+if (!verifyFiles.length) {
+  warn("no Search Console google\u2026.html ownership file in docs/",
+    "Search Console \u2192 Settings \u2192 Ownership verification \u2192 HTML file \u2192 Download");
+} else {
+  for (const name of verifyFiles) {
+    let live = 0, body = "";
+    try {
+      const res = await fetch(canonicalSite.replace(/\/$/, "") + "/" + name, { signal: AbortSignal.timeout(12000) });
+      live = res.status;
+      body = (await res.text()).trim();
+    } catch { live = 0; }
+    const want = readFileSync(join(root, "docs", name), "utf8").trim();
+    if (live === 200 && body === want) ok(`live site serves the ownership file ${name}`);
+    else if (live === 200) block(`${name} is live but its contents differ from docs/${name}`);
+    else block(`the live site does not serve ${name} (${live || "unreachable"}) — ownership will lapse`,
+      `${canonicalSite} \u00b7 deploy docs/ to Pages`);
+  }
+}
 
 /* ---------- 7. store assets ---------- */
 
