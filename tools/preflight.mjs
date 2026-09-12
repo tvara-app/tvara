@@ -430,6 +430,56 @@ if (issuer && publishedIds.length) {
   }
 }
 
+/* Search Console ownership is a string on a page nobody looks at, and losing it
+   is silent: the site serves 200, the console just stops calling you an owner.
+   It is checked on the LIVE page because the copy in docs/index.html only
+   matters once Pages has deployed it. */
+const verifyTag = (read("docs/index.html").match(/name="google-site-verification"\s+content="([^"]+)"/) || [])[1] || "";
+if (!verifyTag) {
+  block("docs/index.html carries no Search Console verification tag",
+    "Search Console \u2192 Settings \u2192 Ownership verification \u2192 HTML tag");
+} else {
+  let served = "";
+  try {
+    const res = await fetch(canonicalSite, { signal: AbortSignal.timeout(12000) });
+    const html = await res.text();
+    served = (html.match(/name="google-site-verification"\s+content="([^"]+)"/) || [])[1] || "";
+  } catch { served = ""; }
+  if (served === verifyTag) ok("live site carries the Search Console verification tag");
+  else if (!served) {
+    block("the live site is NOT serving the verification tag — ownership will lapse",
+      `${canonicalSite} \u00b7 deploy docs/ to Pages`);
+  } else {
+    block("the live site serves a DIFFERENT verification tag than docs/index.html",
+      "one of the two is stale");
+  }
+}
+
+/* The second ownership method: google<token>.html at the site root. Search
+   Console keeps saying "verified" from a cached result long after the file is
+   gone, so the day it re-checks is the day you are locked out of your own
+   property with no warning. Both methods live in git and both are checked
+   here, because two methods only help if neither can vanish unnoticed. */
+const verifyFiles = readdirSync(join(root, "docs")).filter((f) => /^google[a-z0-9]+\.html$/.test(f));
+if (!verifyFiles.length) {
+  warn("no Search Console google\u2026.html ownership file in docs/",
+    "Search Console \u2192 Settings \u2192 Ownership verification \u2192 HTML file \u2192 Download");
+} else {
+  for (const name of verifyFiles) {
+    let live = 0, body = "";
+    try {
+      const res = await fetch(canonicalSite.replace(/\/$/, "") + "/" + name, { signal: AbortSignal.timeout(12000) });
+      live = res.status;
+      body = (await res.text()).trim();
+    } catch { live = 0; }
+    const want = readFileSync(join(root, "docs", name), "utf8").trim();
+    if (live === 200 && body === want) ok(`live site serves the ownership file ${name}`);
+    else if (live === 200) block(`${name} is live but its contents differ from docs/${name}`);
+    else block(`the live site does not serve ${name} (${live || "unreachable"}) — ownership will lapse`,
+      `${canonicalSite} \u00b7 deploy docs/ to Pages`);
+  }
+}
+
 /* ---------- 7. store assets ---------- */
 
 const shotDir = join(root, "store", "screenshots");
