@@ -198,12 +198,35 @@ const entitlement = read("lib/entitlement.js");
 const wrangler = read("server/wrangler.toml");
 const canonicalSite = (product.match(/const SITE = "([^"]+)"/) || [])[1] || "";
 
-const allowedOrigins = (wrangler.match(/^ALLOWED_ORIGINS\s*=\s*"([^"]*)"/m) || [])[1] || "";
-const configuredOrigins = allowedOrigins.split(",").map((value) => value.trim()).filter(Boolean);
-const validOrigins = configuredOrigins.filter((origin) => /^chrome-extension:\/\/[a-p]{32}$/.test(origin));
-if (configuredOrigins.length !== 2 || validOrigins.length !== 2 || new Set(validOrigins).size !== 2) {
-  block("production issuer must allow exactly two published Chrome-extension origins");
-} else ok("issuer origin allow-list contains Chrome and Edge production IDs");
+/* The checked-in ALLOWED_ORIGINS is a PLACEHOLDER and wrangler.toml says so:
+   deploy.sh rewrites it into a temp config from the ids it is handed. Counting
+   entries here proved nothing about the worker anybody actually calls — it
+   passed on a file that never ships and blocked on one that does. The ids live
+   in server/published-origins.json and the LIVE issuer is asked about each one
+   further down, which is the only answer worth having. */
+const EXT_ID = /^[a-p]{32}$/;
+const published = (() => { try { return JSON.parse(read("server/published-origins.json")); } catch { return null; } })();
+const publishedIds = published
+  ? Object.entries(published).filter(([k, v]) => !k.startsWith("_") && typeof v === "string" && v)
+  : [];
+if (!published) {
+  block("server/published-origins.json is missing or unreadable",
+    "it is where the store-assigned extension ids are recorded");
+} else {
+  const malformed = publishedIds.filter(([, v]) => !EXT_ID.test(v));
+  if (malformed.length) {
+    block(`malformed extension id: ${malformed.map(([k]) => k).join(", ")}`);
+  } else if (!EXT_ID.test(published.chrome || "")) {
+    block("no Chrome Web Store id recorded — the listing cannot be submitted",
+      "the store assigns it on upload; it is not the id manifest.key derives");
+  } else {
+    ok(`Chrome Web Store id recorded (${published.chrome.slice(0, 8)}\u2026)`);
+    if (!EXT_ID.test(published.edge || "")) {
+      warn("Edge is not published, so no Edge origin is allow-listed",
+        "add it to server/published-origins.json and redeploy when that listing goes live");
+    }
+  }
+}
 if (!/^ALLOW_FIREFOX\s*=\s*"0"/m.test(wrangler)) block("ALLOW_FIREFOX must be 0 for this launch");
 else ok("Firefox issuer access is disabled");
 if (!/^SESSION_SCOPE\s*=\s*"paid"/m.test(wrangler)) block("live session sockets must be paid-only");
@@ -374,6 +397,36 @@ else {
        and "✓ issuer answered 500" used to exit 0 and green-light the ship. */
     block(`issuer answered ${code}, not 403 — the origin check never ran`,
       `${issuer} · a healthy issuer refuses an unknown extension origin with 403`);
+  }
+}
+
+/* Every recorded id must be ACCEPTED by the deployed worker. The stranger check
+   above proves the gate is closed; this proves it is not closed on US, which is
+   the failure that costs a sale: a store install whose origin was never
+   allow-listed gets 403 on trial and on purchase, and reads to the buyer as the
+   product being broken. Checked against the live issuer because the deployed
+   list is the only one that decides anything. */
+if (issuer && publishedIds.length) {
+  for (const [label, id] of publishedIds) {
+    const origin = "chrome-extension://" + id;
+    let status = 0, echoed = "";
+    try {
+      const res = await fetch(issuer + "/entitlement", {
+        method: "OPTIONS",
+        headers: { Origin: origin, "Access-Control-Request-Method": "POST" },
+        signal: AbortSignal.timeout(12000)
+      });
+      status = res.status;
+      echoed = res.headers.get("access-control-allow-origin") || "";
+    } catch { status = 0; }
+    if (status === 204 && echoed === origin) {
+      ok(`issuer accepts the ${label} origin`, id.slice(0, 8) + "\u2026");
+    } else if (!status) {
+      block(`issuer unreachable while checking the ${label} origin`, issuer);
+    } else {
+      block(`issuer REFUSES the ${label} origin (${status}) — every trial and purchase from it 403s`,
+        `fix: ./server/deploy.sh ${publishedIds.map(([, v]) => v).join(" ")}`);
+    }
   }
 }
 

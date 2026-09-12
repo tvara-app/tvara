@@ -1,0 +1,6 @@
+{
+  "_": "The published extension ids. A store assigns its own id when it signs the package; it is NOT the id manifest.key derives, which is only what an unpacked load uses. This file is the source of truth for ./server/deploy.sh and for tools/preflight.mjs, because until it existed the live Chrome id was written down nowhere in the repo.",
+  "chrome": "ajpnackhheeafgecocapboccaplcnaje",
+  "edge": null,
+  "dev": "hbejlhhmbhkeaebcgmblchnodeampcgl"
+}
