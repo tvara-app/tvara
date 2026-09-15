@@ -52,7 +52,7 @@
       '<div class="lct-hp-head">' +
         '<span class="lct-hp-title"></span>' +
         '<span class="lct-hp-count"></span>' +
-        '<button type="button" class="lct-hp-close" title="Close (Esc)" aria-label="Close">✕</button>' +
+        '<button type="button" class="lct-hp-close" aria-label="Close (Esc)">✕</button>' +
       '</div>' +
       '<div class="lct-hp-list" tabindex="0"></div>';
     document.documentElement.appendChild(panel);
@@ -66,6 +66,23 @@
     window.addEventListener("keydown", (e) => {
       if (open && e.key === "Escape") { e.stopPropagation(); close(); }
     }, true);
+    /* A press anywhere else closes it. A click makes the panel stick, and a
+       sticky panel that only an ✕ or Esc could close sat over the conversation
+       after somebody had plainly moved on to it (reported with a screenshot).
+       Pressed, not clicked, so it is gone before the host reacts; capture phase
+       and composedPath so a host handler that stops propagation cannot swallow
+       it and a press deep inside the panel is still recognised as inside.
+       Never prevented: whatever was pressed on the page still happens.
+       The map is exempt — pressing another mark SWITCHES the message, and
+       closing first would flash the panel shut and open again. */
+    document.addEventListener("pointerdown", (e) => {
+      if (!open || !panel) return;
+      const path = typeof e.composedPath === "function" ? e.composedPath() : [];
+      const inside = (el) => !!el && (path.includes(el) || el.contains(e.target));
+      if (inside(panel)) return;
+      if (inside(document.getElementById("lct-mm-canvas")) || inside(document.getElementById("lct-mm-stage"))) return;
+      close();
+    }, { capture: true, passive: true });
   }
 
   /* One row per turn. Clicking it does BOTH things somebody means by clicking a

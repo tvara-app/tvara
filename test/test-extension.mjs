@@ -2170,6 +2170,38 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
     landed.hitId === "virtual-1" && landed.inView, JSON.stringify(landed));
   t("B2g and the pill goes once the real message is on screen",
     landed.pillGone, JSON.stringify(landed));
+
+  /* B2g1 — a message a click made stick closes when somebody presses somewhere
+     else (reported with a screenshot: only ✕ or Esc could close it), but not
+     while they press inside it, and not when they press another mark — that
+     switches the message. */
+  const panelOpen = () => topClick.evaluate(() => !!document.querySelector("#lct-history-panel.lct-hp-open"));
+  await topClick.bringToFront();
+  await topClick.hover("#lct-minimap");
+  await topClick.waitForTimeout(300);
+  let mapBox = await topClick.locator("#lct-mm-canvas").boundingBox();
+  await topClick.mouse.click(mapBox.x + 5, mapBox.y + Math.round(mapBox.height * 0.5));
+  await topClick.waitForTimeout(500);
+  const stuckOpen = await panelOpen();
+  const hp = await topClick.locator("#lct-history-panel").boundingBox();
+  await topClick.mouse.click(hp.x + Math.round(hp.width / 2), hp.y + 20);
+  await topClick.waitForTimeout(250);
+  const afterInside = await panelOpen();
+  await topClick.hover("#lct-minimap");
+  await topClick.waitForTimeout(250);
+  mapBox = await topClick.locator("#lct-mm-canvas").boundingBox();
+  await topClick.mouse.click(mapBox.x + 5, mapBox.y + Math.round(mapBox.height * 0.7));
+  await topClick.waitForTimeout(400);
+  const afterMap = await panelOpen();
+  await topClick.mouse.click(40, 400);
+  await topClick.waitForTimeout(300);
+  const afterOutside = await panelOpen();
+  t("B2g1 a message opened by a click stays open while it is being read",
+    stuckOpen && afterInside, JSON.stringify({ stuckOpen, afterInside }));
+  t("B2g1 …pressing another mark on the map switches it rather than closing it", afterMap);
+  t("B2g1 …pressing anywhere else on the page closes it", !afterOutside);
+  t("B2g1 …and its close button carries no native tooltip",
+    await topClick.evaluate(() => !document.querySelector(".lct-hp-close[title]")));
   await topClick.close();
 
   /* B2g2 — a seek must stand down the instant the reader takes over, and must
