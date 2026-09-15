@@ -471,6 +471,50 @@ if (!thanksFixture) {
     "re-capture it, then re-run the purchase-flow test against what ships");
 }
 
+/* Google sign-in, asked of Google, for every published id.
+   Rejected 2026-09-14 ("Red Potassium"): the reviewer's Continue with Google
+   returned Error 400 redirect_uri_mismatch. The code was right — it uses
+   chrome.identity.getRedirectURL(), which is https://<id>.chromiumapp.org/ —
+   but the OAuth client listed only the DEV id. Every local load carries the
+   repo's manifest key and therefore that registered id, so sign-in could not
+   fail here; the store strips the key and mints its own, and only a reviewer
+   ever ran as it. The same class of fault as the issuer allow-list, one layer
+   further out. Google answers an unregistered redirect with a 302 to
+   /signin/oauth/error carrying the reason base64-encoded, before any login,
+   so this needs no account and no browser. */
+const clientId = (read("bg/paywall.js").match(/GOOGLE_CLIENT_ID = "([^"]+)"/) || [])[1] || "";
+if (!clientId) {
+  warn("no GOOGLE_CLIENT_ID in bg/paywall.js, so Google sign-in is off and unchecked");
+} else if (publishedIds.length) {
+  for (const [label, id] of publishedIds) {
+    const redirect = `https://${id}.chromiumapp.org/`;
+    const url = "https://accounts.google.com/o/oauth2/v2/auth?client_id=" + encodeURIComponent(clientId)
+      + "&response_type=id_token&scope=" + encodeURIComponent("openid email profile")
+      + "&redirect_uri=" + encodeURIComponent(redirect) + "&nonce=preflight&prompt=select_account";
+    let where = "", status = 0;
+    try {
+      const res = await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(12000) });
+      status = res.status;
+      where = res.headers.get("location") || "";
+    } catch { status = 0; }
+    const reason = (() => {
+      const m = where.match(/authError=([^&]+)/);
+      if (!m) return "";
+      try { return Buffer.from(decodeURIComponent(m[1]), "base64").toString("latin1"); } catch { return "undecodable"; }
+    })();
+    if (!status) {
+      warn(`could not reach Google to check sign-in for the ${label} id`);
+    } else if (/redirect_uri_mismatch/.test(reason)) {
+      block(`Google sign-in FAILS for the ${label} id — redirect_uri_mismatch`,
+        `Cloud Console → Credentials → the OAuth client → Authorized redirect URIs → add ${redirect}`);
+    } else if (/\/signin\/oauth\/error/.test(where)) {
+      block(`Google refuses sign-in for the ${label} id`, reason.replace(/[^\x20-\x7e]+/g, " ").trim().slice(0, 120));
+    } else {
+      ok(`Google sign-in accepts the ${label} id's redirect`);
+    }
+  }
+}
+
 /* ---------- 7. store assets ---------- */
 
 const shotDir = join(root, "store", "screenshots");
