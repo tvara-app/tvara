@@ -878,9 +878,18 @@ async function stampCreds() {
  */
 async function stampAltSecrets() {
   const v = await entitlementVerdict();
-  if (!v.entitled || v.via !== "trial") return [];
-  const prev = v.trial && v.trial.ksPrev;
-  return prev ? [String(prev)] : [];
+  if (!v.entitled) return [];
+  const t = v.trial || {};
+  /* A backup made during the trial is sealed under the TRIAL secret, and buying
+     Pro changes the sealing key to the licence's. This used to return nothing
+     unless the trial was still the active plan, so every backup made in the
+     trial week refused to open the moment its owner paid — the single most
+     common journey there is, answered with "not a licensed copy". The trial
+     record is still held, secret included; it is offered here to OPEN with,
+     never to seal. Only secrets this install already holds for itself, so a
+     stranger's file still does not open (test/test-backup-portability.mjs). */
+  const alts = v.via === "trial" ? [t.ksPrev] : [t.ks, t.ksPrev];
+  return [...new Set(alts.filter((x) => typeof x === "string" && x).map(String))];
 }
 
 /* ---------- point-of-use revalidation ----------

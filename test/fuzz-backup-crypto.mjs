@@ -106,7 +106,7 @@ async function sealValid(extra = {}, { stampKey, passphrase = PASSPHRASE, stampS
   try { await C.open(sealed.json, PASSPHRASE, { stampKey: foreignKey }); }
   catch (e) { threw = true; msg = e.message; }
   t("open() with the RIGHT passphrase but a FOREIGN stampKey still fails closed (stamp is verified, not decorative)",
-    threw && /not created by a licensed copy/.test(msg), msg || "opened despite a foreign stamp key");
+    threw && /different Tvara account or licence/.test(msg), msg || "opened despite a foreign stamp key");
 }
 
 // 4. No stampKey supplied to open() at all — must refuse, not silently skip the check.

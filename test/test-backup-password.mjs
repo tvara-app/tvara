@@ -80,13 +80,13 @@ const main = async () => {
 
   t("an unprotected file from another licence is refused",
     (await threw(() => C.open(plain.json, "", { stampKey: otherKey })))
-      .includes("not created by a licensed copy"));
+      .includes("different Tvara account or licence"));
 
   const unsigned = JSON.parse(plain.json);
   unsigned.ent.mac = "";
   t("an unprotected file with no stamp is refused",
     (await threw(() => C.open(JSON.stringify(unsigned), "", { stampKey })))
-      .includes("not created by a licensed copy"));
+      .includes("different Tvara account or licence"));
 
   const dropped = JSON.parse(plain.json);
   delete dropped.digest;
