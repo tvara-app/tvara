@@ -118,13 +118,26 @@ async function visitSync(platform) {
   // have no history endpoint for is not a reason to go poll the other four.
   if (!BG_PLATFORM_IDS.has(platform)) return { status: "unsupported" };
   if (!(await autoSyncEnabled())) return { status: "disabled" };
-  let last = 0;
+  /* A clock PER PROVIDER, and one that knows how the last pass went.
+     It was one timestamp for all six: open six tabs and five were throttled by
+     the first. And it held off a provider whose last pass had FAILED exactly as
+     long as one that had just succeeded — so somebody who signed in to Claude,
+     Grok and Perplexity went on reading "Not signed in" for all three, with the
+     next automatic pass three hours away. A page of the site loading after a
+     failure is the one signal that the session may now be alive, so it is
+     acted on at once. test/test-visit-sync.mjs */
+  let state = null, failedLast = false;
   try {
-    const { [BG_VISIT_STATE]: state } = await chrome.storage.local.get(BG_VISIT_STATE);
-    last = (state && state.at) || 0;
+    const got = await chrome.storage.local.get([BG_VISIT_STATE, BG_SYNC_PROG(platform)]);
+    state = got[BG_VISIT_STATE] || null;
+    const prog = got[BG_SYNC_PROG(platform)];
+    failedLast = !!(prog && (prog.state === "error" || prog.phase === "error"));
   } catch { /* no prior visit */ }
-  if (Date.now() - last < BG_VISIT_MIN_MS) return { status: "throttled", last };
-  try { await chrome.storage.local.set({ [BG_VISIT_STATE]: { at: Date.now() } }); }
+  const by = state && state.by && typeof state.by === "object" ? state.by : {};
+  // A record written before this was per provider holds one time for all of them.
+  const last = Number(by[platform]) || (state && !state.by ? Number(state.at) || 0 : 0);
+  if (!failedLast && Date.now() - last < BG_VISIT_MIN_MS) return { status: "throttled", last };
+  try { await chrome.storage.local.set({ [BG_VISIT_STATE]: { by: { ...by, [platform]: Date.now() } } }); }
   catch { /* dead context */ }
   return autoSyncTick();
 }
