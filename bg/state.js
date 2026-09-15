@@ -49,6 +49,13 @@ const BG_INTERVAL_MAX_MS = 8000;
    seconds between requests has to be allowed to teach the floor past it, or no
    pace this worker can reach is one it accepts. */
 const BG_FLOOR_MAX_MS = 60 * 1000;
+/* How long a host has to go without refusing before its learned rate relaxes a
+   step, and how big a step. A learned rate only ever rose, so a provider that
+   penalised an account for an hour capped it for good. 20 minutes and ×0.8 take
+   a 40s floor back to ~10s in about two hours; a step that goes too far costs one
+   refusal, which re-learns it at once. */
+const BG_TRIP_RELAX_AFTER_MS = 20 * 60 * 1000;
+const BG_TRIP_RELAX_FACTOR = 0.8;
 /* TWO WORKLOADS, ONE BUDGET — and only one of them has anybody waiting on it.
    The conversation in front of the reader is one request and it has to be
    instant. The backfill is thousands of requests and NOBODY is waiting for it:

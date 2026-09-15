@@ -255,6 +255,7 @@ async function noteRateLimit(host, retryAfterMs, attempt) {
      the capped figure anchored the floor to 8s for any provider that needs more,
      and every one of its requests was then refused. */
   s.trip = Math.max(s.trip, intervalFor(host));
+  s.refusedAt = Date.now();
   // …and halve the RATE, which is the number the provider is actually counting.
   s.interval = Math.min(BG_INTERVAL_MAX_MS, Math.max(base.minIntervalMs, (s.interval || base.minIntervalMs) * 2));
   /* Saved on EVERY refusal, not only when the breaker opens. An MV3 worker is
@@ -307,6 +308,24 @@ function noteOk(host) {
     const floor = intervalFloor(host);
     if (s.interval > floor) s.interval = Math.max(floor, Math.round(s.interval * 0.8));
   }
+  /* The learned rate relaxes after a quiet stretch — see BG_TRIP_RELAX_AFTER_MS.
+     Measured from the last refusal OR the last relaxation, so steps are spaced
+     even while nothing is refused; and saved, because a relaxation held only in
+     memory is lost with the worker thirty seconds later. The interval comes down
+     with the floor: after any refusal it was held at BG_INTERVAL_MAX_MS, and
+     intervalFor() takes the larger of the two, so a relaxed floor alone would
+     never have been felt. */
+  if (s.trip) {
+    const now = Date.now();
+    const quietSince = Math.max(s.refusedAt || 0, s.relaxedAt || 0);
+    if (quietSince && now - quietSince >= BG_TRIP_RELAX_AFTER_MS) {
+      const next = Math.round(s.trip * BG_TRIP_RELAX_FACTOR);
+      s.trip = next < BG_MIN_INTERVAL_MS ? 0 : next;
+      s.relaxedAt = now;
+      s.interval = Math.min(s.interval || 0, intervalFloor(host));
+      persistCooldown(host, s.cooldownUntil || 0, { relax: true }).catch(() => {});
+    }
+  }
 }
 
 /* The COOLDOWN and the learned rate, together.
@@ -316,7 +335,7 @@ function noteOk(host) {
    thrown away several times an hour and the next pass started at the floor and
    climbed straight back into the same refusal. An adaptive limiter with no
    memory is not adaptive; it is a loop. This is the memory. */
-async function persistCooldown(host, until) {
+async function persistCooldown(host, until, opts = {}) {
   try {
     const s = hostEntry(host);
     const { [BG_HOST_COOLDOWN]: raw } = await chrome.storage.local.get(BG_HOST_COOLDOWN);
@@ -326,10 +345,16 @@ async function persistCooldown(host, until) {
        not have read the saved one back yet, and writing its figure over the
        stored one is how a learned 19s became 0.5s. */
     const prev = map[host] && typeof map[host] === "object" ? map[host] : {};
+    /* A relaxation is the one write allowed to LOWER the learned rate, and only
+       from a worker that has read the saved one back (hostSlot guarantees that
+       before any request, so before any noteOk). */
+    const lower = !!opts.relax;
     map[host] = {
       u: Math.max(Number(prev.u) || 0, until || 0),
-      i: Math.max(Number(prev.i) || 0, s.interval || 0),
-      t: Math.max(Number(prev.t) || 0, s.trip || 0),
+      i: lower ? (s.interval || 0) : Math.max(Number(prev.i) || 0, s.interval || 0),
+      t: lower ? (s.trip || 0) : Math.max(Number(prev.t) || 0, s.trip || 0),
+      r: Math.max(Number(prev.r) || 0, s.refusedAt || 0),
+      x: Math.max(Number(prev.x) || 0, s.relaxedAt || 0),
     };
     await chrome.storage.local.set({ [BG_HOST_COOLDOWN]: map });
   } catch { /* best effort */ }
@@ -347,6 +372,11 @@ async function loadCooldown(host) {
     if (held && typeof held === "object") {
       s.trip = Math.max(s.trip || 0, Number(held.t) || 0);
       s.interval = Math.max(s.interval || 0, Number(held.i) || 0);
+      s.relaxedAt = Math.max(s.relaxedAt || 0, Number(held.x) || 0);
+      /* A record from before refusals were timed has a rate and no time. With no
+         time it could never be "quiet", and would never relax — which is the
+         permanent cap this exists to end — so its quiet clock starts now. */
+      s.refusedAt = Math.max(s.refusedAt || 0, Number(held.r) || 0) || (s.trip ? Date.now() : 0);
     }
     if (until > Date.now()) s.cooldownUntil = Math.max(s.cooldownUntil, until);
     return until;

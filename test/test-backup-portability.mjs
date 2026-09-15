@@ -32,7 +32,12 @@ function extract(src, name) {
   let at = src.indexOf(`async function ${name}(`);
   if (at < 0) at = src.indexOf(`function ${name}(`);
   if (at < 0) throw new Error(`no function ${name} in source`);
-  let depth = 0, i = src.indexOf("{", at), q = "", lineC = false, blockC = false;
+  // The body starts after the PARAMETER list closes: a default like `opts = {}`
+  // holds a brace of its own, and starting at the first "{" sliced that instead.
+  let i = src.indexOf("(", at), pd = 0;
+  for (; i < src.length; i++) { if (src[i] === "(") pd++; else if (src[i] === ")" && --pd === 0) break; }
+  i = src.indexOf("{", i);
+  let depth = 0, q = "", lineC = false, blockC = false;
   for (; i < src.length; i++) {
     const c = src[i], n = src[i + 1];
     if (lineC) { if (c === "\n") lineC = false; continue; }

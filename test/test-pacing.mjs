@@ -24,7 +24,12 @@ function extract(name) {
   let at = src.indexOf(`async function ${name}(`);
   if (at < 0) at = src.indexOf(`function ${name}(`);
   if (at < 0) throw new Error(`no function ${name}`);
-  let depth = 0, i = src.indexOf("{", at), q = "", lc = false, bc = false;
+  // The body starts after the PARAMETER list closes: a default like `opts = {}`
+  // holds a brace of its own, and starting at the first "{" sliced that instead.
+  let i = src.indexOf("(", at), pd = 0;
+  for (; i < src.length; i++) { if (src[i] === "(") pd++; else if (src[i] === ")" && --pd === 0) break; }
+  i = src.indexOf("{", i);
+  let depth = 0, q = "", lc = false, bc = false;
   for (; i < src.length; i++) {
     const c = src[i], n = src[i + 1];
     if (lc) { if (c === "\n") lc = false; continue; }
@@ -46,7 +51,7 @@ for (const m of src.matchAll(/^const (BG_[A-Z0-9_]+) = ([^;\n]+);/gm)) {
   try { const v = Function(`return (${m[2]})`)(); if (typeof v === "number" || typeof v === "string") consts[m[1]] = v; } catch { /* not a literal */ }
 }
 
-function pacer(limitMs, storage = new Map()) {
+function pacer(limitMs, storage = new Map(), clock = null) {
   const state = { chain: Promise.resolve(), nextAt: 0, fgNextAt: 0, cooldownUntil: 0, consecutiveRate: 0,
     interval: 0, trip: 0, tabOpen: false, activeAt: 0, trips: 0, windowAt: 0, used: 0, concurrency: 0, streak: 0 };
   const known = {
@@ -54,6 +59,7 @@ function pacer(limitMs, storage = new Map()) {
     hostEntry: () => state,
     policyFor: () => ({ minIntervalMs: consts.BG_MIN_INTERVAL_MS || 500, concurrency: 2 }),
     trace: async () => {}, sleep: async () => {},
+    ...(clock ? { Date: { now: () => clock.value } } : {}),
     BgError: class BgError extends Error { constructor(kind, msg, extra) { super(msg); this.kind = kind; Object.assign(this, extra || {}); } },
     // chrome.storage.local, in memory, shared across "workers" by the caller.
     chrome: { storage: { local: {
@@ -141,6 +147,36 @@ for (const limit of [3000, 8000, 12000]) {
   await c.hostSlot("chatgpt.com").catch(() => {});
   t("a fresh worker's first request is paced by the SAVED rate", c.intervalFor("chatgpt.com") >= 25000,
     `first gap ${c.intervalFor("chatgpt.com")}ms`);
+}
+
+/* A learned rate has to be able to RELAX. It only ever rose, so a provider that
+   penalised the account for an hour — measured on a real ChatGPT account: refused
+   even at 45s apart, floor pinned at 60s — capped that account for good, long
+   after the provider was taking requests normally again. Time is simulated, and
+   the worker is reclaimed between requests, because a relaxation that lives only
+   in memory would repeat the bug fixed in a9e9605. */
+{
+  const storage = new Map();
+  const clock = { value: 1_800_000_000_000 };
+  let limit = 30000, refused = 0, refusedAfterLift = 0, lastGap = 0;
+  const HOUR = 3600 * 1000;
+  const start = clock.value;
+  while (clock.value - start < 9 * HOUR) {
+    if (clock.value - start >= 2 * HOUR && limit !== 8000) limit = 8000;   // the penalty lifts
+    const p = pacer(limit, storage, clock);
+    await p.hostSlot("chatgpt.com").catch(() => {});
+    p.state.cooldownUntil = 0;
+    const gap = p.intervalFor("chatgpt.com");
+    if (gap < limit) { refused++; if (limit === 8000) refusedAfterLift++; await p.noteRateLimit("chatgpt.com", 0, 0); }
+    else p.noteOk("chatgpt.com");
+    lastGap = gap;
+    clock.value += Math.max(gap, 500);
+  }
+  console.log(`\n— penalty at 30s for 2h, then the normal 8s limit for 7h`, JSON.stringify({ refused, refusedAfterLift, finalGap: lastGap }));
+  t("after a penalty lifts, the learned rate relaxes back toward the real limit", lastGap <= 8000 * 1.5,
+    `still ${lastGap}ms apart, 7 hours after the provider went back to 8s`);
+  t("…without hammering it on the way down (refusals stay rare)", refusedAfterLift <= 20,
+    `${refusedAfterLift} refusals after the penalty lifted`);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

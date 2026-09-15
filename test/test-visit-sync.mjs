@@ -19,7 +19,12 @@ const t = (n, ok, got = "") => { ok ? pass++ : fail++; console.log(`${ok ? "PASS
 
 function extract(name) {
   let at = src.indexOf(`async function ${name}(`); if (at < 0) at = src.indexOf(`function ${name}(`);
-  let depth = 0, i = src.indexOf("{", at), q = "", lc = false, bc = false;
+  // The body starts after the PARAMETER list closes: a default like `opts = {}`
+  // holds a brace of its own, and starting at the first "{" sliced that instead.
+  let i = src.indexOf("(", at), pd = 0;
+  for (; i < src.length; i++) { if (src[i] === "(") pd++; else if (src[i] === ")" && --pd === 0) break; }
+  i = src.indexOf("{", i);
+  let depth = 0, q = "", lc = false, bc = false;
   for (; i < src.length; i++) {
     const c = src[i], n = src[i + 1];
     if (lc) { if (c === "\n") lc = false; continue; }
