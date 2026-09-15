@@ -68,7 +68,7 @@ step("a clean Google Chrome");
 await shutdown();   // never delete a profile a running Chrome still owns
 rmSync(PROFILE, { recursive: true, force: true });
 const t0 = Date.now();
-const { browser, ctx, extensionId, build } = await ensureChrome({ extPath: EXT }).catch((e) => {
+const { ctx, extensionId, build } = await ensureChrome({ extPath: EXT }).catch((e) => {
   console.error("✋ " + e.message); process.exit(2);
 });
 t("real Google Chrome, not Chromium or Chrome for Testing", /^Chrome\/\d/.test(build), build);
@@ -228,7 +228,6 @@ const cdp = (wsUrl) => new Promise((resolve) => {
   });
   ws.onerror = () => resolve(null);
 });
-const metric = (res, name) => (res.metrics || []).find((m) => m.name === name)?.value ?? 0;
 
 const IDLE_S = 45;
 /* Measured, not inferred. Performance.getMetrics answers NOTHING on a service

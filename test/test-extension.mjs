@@ -1457,10 +1457,6 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
   await page.waitForFunction(() => document.visibilityState === "visible", null, { timeout: 5000 }).catch(() => {});
   await page.hover("#lct-minimap");
   await page.waitForTimeout(300);
-  const mmBox2 = await page.locator("#lct-mm-canvas").boundingBox();
-  // Mid-chat, not the ends: block:"center" cannot centre a message the
-  // scroller is already clamped against, so those tell us nothing about aim.
-  const midY = mmBox2.y + Math.round(mmBox2.height * 0.40);
   /* Resolved at the moment of the click, not once up front. The map expands on
      hover and collapses when the pointer leaves, so a screen coordinate stored
      two seconds earlier can point at empty space by the time it is used — and on

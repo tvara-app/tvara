@@ -420,7 +420,7 @@ else {
 if (issuer && publishedIds.length) {
   for (const [label, id] of publishedIds) {
     const origin = "chrome-extension://" + id;
-    let status = 0, echoed = "";
+    let status, echoed = "";
     try {
       const res = await fetch(issuer + "/entitlement", {
         method: "OPTIONS",
@@ -460,7 +460,7 @@ const thanksFixture = read("test/fixtures/thanks.html");
 if (!thanksFixture) {
   block("test/fixtures/thanks.html is missing — the purchase-flow security test has no page to drive");
 } else {
-  let liveThanks = "";
+  let liveThanks;
   try {
     const res = await fetch(SITE_URL.replace(/\/$/, "") + "/thanks", { signal: AbortSignal.timeout(12000) });
     liveThanks = res.ok ? await res.text() : "";
@@ -491,7 +491,7 @@ if (!clientId) {
     const url = "https://accounts.google.com/o/oauth2/v2/auth?client_id=" + encodeURIComponent(clientId)
       + "&response_type=id_token&scope=" + encodeURIComponent("openid email profile")
       + "&redirect_uri=" + encodeURIComponent(redirect) + "&nonce=preflight&prompt=select_account";
-    let where = "", status = 0;
+    let where = "", status;
     try {
       const res = await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(12000) });
       status = res.status;
@@ -505,7 +505,8 @@ if (!clientId) {
     if (!status) {
       warn(`could not reach Google to check sign-in for the ${label} id`);
     } else if (/redirect_uri_mismatch/.test(reason)) {
-      block(`Google sign-in FAILS for the ${label} id — redirect_uri_mismatch`,
+      // The dev id only runs unpacked; a store install never carries it.
+      (label === "dev" ? warn : block)(`Google sign-in FAILS for the ${label} id — redirect_uri_mismatch`,
         `Cloud Console → Credentials → the OAuth client → Authorized redirect URIs → add ${redirect}`);
     } else if (/\/signin\/oauth\/error/.test(where)) {
       block(`Google refuses sign-in for the ${label} id`, reason.replace(/[^\x20-\x7e]+/g, " ").trim().slice(0, 120));
