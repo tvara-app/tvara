@@ -137,6 +137,45 @@
     paintStats(await send({ type: "recall-stats" }) || {});
   }
 
+  /* How much of the history still has no text, and roughly how long that takes.
+     The estimate is MEASURED from this run — chats finished over time elapsed —
+     and only once there is enough of it to mean something. Before that it says
+     it is estimating. A time the code cannot vouch for is worse than none: a
+     "5 minutes" that turns into an hour reads as broken. */
+  const fmtMinutes = (m) => {
+    if (m < 1) return "under a minute";
+    if (m < 20) return `about ${Math.round(m)} min`;
+    if (m < 60) return `about ${Math.round(m / 5) * 5} min`;
+    const h = Math.floor(m / 60), r = Math.round((m - h * 60) / 5) * 5;
+    return r ? `about ${h} h ${r} min` : `about ${h} h`;
+  };
+  async function refreshFill() {
+    const el = $("bg-progress");
+    if (!el) return;
+    const st = await send({ type: "archive-fill-state" });
+    // No answer is not "nothing left" — a reclaimed worker answers nothing.
+    if (!st) return;
+    const left = Number(st.total) || 0;
+    const done = Number(st.done) || 0;
+    const running = !!(st.running || st.resuming);
+    const why = Object.values(st.notes || {}).find((n) => typeof n === "string" && n) || "";
+    let line;
+    if (!left) {
+      line = "Every conversation found so far has its messages. New chats are added as you use the sites.";
+    } else if (running) {
+      const elapsedMin = st.startedAt ? (Date.now() - st.startedAt) / 60000 : 0;
+      const rate = elapsedMin >= 1 && done >= 5 ? done / elapsedMin : 0;
+      const eta = rate ? ` · ${fmtMinutes(left / rate)} left at the current pace` : " · estimating the time left…";
+      line = `Adding messages · ${done.toLocaleString()} of ${(done + left).toLocaleString()} chats${eta}`;
+    } else {
+      // The provider's own reason, when there is one, IS the explanation.
+      line = `${left.toLocaleString()} chats are still waiting for their messages. ` +
+        (why || "Tvara picks this up again on its own.");
+    }
+    if (why && running) line += ` ${why}`;
+    if (el.textContent !== line) el.textContent = line;
+  }
+
   async function refreshQuota() {
     paintQuota(await send({ type: "quota-state" }) || {});
   }
@@ -260,15 +299,20 @@
   // The install listener already started this. Calling again joins that run if
   // it is still active, or gives a restored worker a new chance to fetch.
   send({ type: "quota-sweep", reason: "install" });
+  refreshFill();
+  const fillTimer = setInterval(refreshFill, 5000);
   const statsTimer = setInterval(refreshStats, 5000);
   const quotaTimer = setInterval(refreshQuota, 5000);
   try {
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== "local") return;
       if (Object.keys(changes).some((key) => key.startsWith("quota:") || key === "lct-quota-probe-v1")) refreshQuota();
+      // The fill writes its progress here, so the line moves when a chat lands
+      // rather than up to five seconds later.
+      if (changes["lct-fill-v1"]) refreshFill();
     });
   } catch { /* a context that is closing simply stops polling */ }
   window.addEventListener("pagehide", () => {
-    clearInterval(statsTimer); clearInterval(quotaTimer);
+    clearInterval(fillTimer); clearInterval(statsTimer); clearInterval(quotaTimer);
   }, { once: true });
 })();

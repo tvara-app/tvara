@@ -234,3 +234,12 @@ button:active:not(:disabled) { transform: scale(.97); }
 @media (max-width: 520px) {
   .bubbles { grid-template-columns: repeat(2, 1fr); }
 }
+
+/* Background-copy notice on the welcome page. The progress line changes every
+   few seconds, so it holds two lines of room whether it needs them or not: a
+   line that rewraps would move everything under it (CLAUDE.md, "Nothing moves
+   that the reader did not move"). */
+.bg-note { margin: 18px 0 6px; padding: 14px 16px; border: 1px solid var(--line, rgba(255,255,255,.12));
+  border-radius: 12px; line-height: 1.5; }
+.bg-note p { margin: 0; }
+.bg-note .bg-progress { margin-top: 8px; min-height: 3em; opacity: .82; font-variant-numeric: tabular-nums; }

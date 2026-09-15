@@ -42,6 +42,13 @@
         <div class="stat"><strong id="message-count">0</strong><span>messages saved</span></div>
         <div class="stat"><strong id="provider-count">0</strong><span>sites answered</span></div>
       </div>
+      <!-- The archive fills in the background, and the first thing a new user
+           does is open a chat that has a title and no text yet. With nothing
+           saying so, that reads as blank pages and a broken product. -->
+      <div class="bg-note" id="bg-note">
+        <p><strong>Your history is copied in the background.</strong> It usually takes 5–10 minutes. A very large history, or a site that asks Tvara to slow down, can take longer. You can close this page and keep using your chats — nothing waits on it, and a chat shows its messages as soon as its text arrives.</p>
+        <p class="bg-progress" id="bg-progress" role="status" aria-live="polite">Checking what's left…</p>
+      </div>
       <div id="quota-list" class="quota-list" aria-live="polite">
         <div class="quota-row"><span class="quota-name">Claude</span><span class="quota-value pending">Checking…</span></div>
         <div class="quota-row"><span class="quota-name">Grok</span><span class="quota-value pending">Checking…</span></div>
