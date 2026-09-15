@@ -1705,6 +1705,29 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
       topOp: /⊤/.test(displayed.textContent || "")
     };
   });
+  /* Welded lines. Claude lays a question and its answer out as two
+     <span style="display:block"> with no whitespace between, and the archive
+     and the exported file both read them as one run-on line. */
+  const welds = await mathPage.evaluate(() => [
+    ["card", '<div style="display:flex"><div style="display:contents"><span style="display:block">Where will this run?</span><span style="display:block">on the free tier</span></div></div>', "Where will this run?\non the free tier"],
+    ["br", "<p>line one<br>line two</p>", "line one\nline two"],
+    ["divs", "<div>One</div><div>Two</div>", "One\nTwo"],
+    ["inline", "<p>foo<span>bar</span>baz and <strong>bold</strong>ly</p>", "foobarbaz and boldly"],
+    ["contents", '<div style="display:contents"><span>A</span><span>B</span></div>', "AB"],
+    ["chips", '<span style="display:inline-block">x</span><span style="display:inline-block">y</span>', "xy"]
+  ].map(([name, html, want]) => {
+    const host = document.createElement("div");
+    host.innerHTML = html;
+    document.body.appendChild(host);
+    const read = self.LCTRichText.textWithMath(host);
+    const file = self.LCTExporter ? self.LCTExporter.elementToText(host).replace(/\n+/g, "\n") : "(no exporter)";
+    host.remove();
+    return { name, read, file, want };
+  }));
+  for (const w of welds) {
+    t(`B2w-${w.name} archive text breaks lines where the page does`, w.read === w.want, JSON.stringify(w.read));
+    t(`B2w-${w.name} exported file agrees with the archive`, w.file === w.want, JSON.stringify(w.file));
+  }
   await mathPage.close();
 
   /* What the PANEL paints, which is a different renderer from the one above and

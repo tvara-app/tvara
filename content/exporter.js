@@ -108,7 +108,18 @@
     const isBlock = BLOCK_RE.test(tag);
     if (isBlock) out.push("\n");
     if (tag === "li") out.push("- ");
-    for (const child of node.childNodes) serialize(child, out);
+    // Archive walker's rule: neighbours welded with no space get a break if either is a box.
+    const isBox = (self.LCTRichText && self.LCTRichText.isBox) || ((el) => !!el && el.nodeType === 1 && BLOCK_RE.test(el.tagName.toLowerCase()));
+    let prevEl = null;
+    for (const child of node.childNodes) {
+      const start = out.length;
+      serialize(child, out);
+      if (out.length === start) continue;
+      let tail = ""; for (let i = start - 1; i >= 0; i--) if (out[i]) { tail = out[i]; break; }
+      let head = ""; for (let i = start; i < out.length; i++) if (out[i]) { head = out[i]; break; }
+      if (/\S$/.test(tail) && /^\S/.test(head) && (isBox(prevEl) || isBox(child))) out.splice(start, 0, "\n");
+      prevEl = child.nodeType === 1 ? child : null;
+    }
     if (isBlock) out.push("\n");
   }
 

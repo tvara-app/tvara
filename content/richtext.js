@@ -575,6 +575,16 @@
     return "\n```" + codeLang(pre) + "\n" + code + "\n```\n";
   }
 
+  /* Box by computed display, not tag: Claude's card is <span style="display:block">.
+     Shared with content/exporter.js so file and preview break lines alike. */
+  function isBox(el) {
+    if (!el || el.nodeType !== 1) return false;
+    try {
+      const d = getComputedStyle(el).display;
+      return !!d && d !== "none" && d !== "contents" && !d.startsWith("inline");
+    } catch { return /^(P|DIV|LI|H[1-6]|TR|BLOCKQUOTE|SECTION|ARTICLE)$/.test(el.tagName); }
+  }
+
   function textWithMath(root) {
     if (!root) return "";
     /* The block itself. extractText() hands each <pre> here on its own, and
@@ -593,14 +603,41 @@
        when the host keeps a Code/Diagram toggle. Whichever the walk reaches
        first emits the source; the other must not emit it a second time. */
     const emitted = new Set();
+    /* Where two neighbours meet with no space between them, a line break —
+       but only if one of them is laid out as a BOX. The walk used to add
+       nothing around any element, so text a host lays out in styled spans or
+       divs was fused: Claude's answer card is <span style="display:block">
+       pairs inside display:contents wrappers, and archived as "Where will this
+       run?on the Cloudflare free tierWhat do you want out of it?All of the
+       above". Style is read only at such a meeting point, which ordinary prose
+       almost never has, so a long chat pays nothing for it. display:contents
+       is not a box: it is exactly the wrapper that holds a question AND its
+       answer, and breaking there would split nothing. */
+    const boxy = isBox;
+    const tailOf = (end) => { for (let i = end - 1; i >= 0; i--) if (out[i]) return out[i]; return ""; };
+    const headOf = (from) => { for (let i = from; i < out.length; i++) if (out[i]) return out[i]; return ""; };
     const walk = (node) => {
+      let prevEl = null;
       for (const child of node.childNodes) {
-        if (child.nodeType === 3) { out.push(child.nodeValue); continue; }
-        if (child.nodeType !== 1) continue;
+        const start = out.length;
+        emit(child);
+        if (out.length === start) continue;
+        if (/\S$/.test(tailOf(start)) && /^\S/.test(headOf(start)) &&
+            (boxy(prevEl) || boxy(child))) {
+          out.splice(start, 0, "\n");
+        }
+        prevEl = child.nodeType === 1 ? child : null;
+      }
+    };
+    const emit = (child) => {
+        if (child.nodeType === 3) { out.push(child.nodeValue); return; }
+        if (child.nodeType !== 1) return;
+        // A line break the host wrote as one.
+        if (child.tagName === "BR") { out.push("\n"); return; }
         // The visual half of a KaTeX render is marked hidden from screen
         // readers precisely because the MathML beside it says the same thing.
         if (child.getAttribute && child.getAttribute("aria-hidden") === "true" &&
-            child.closest && child.closest(MATH_SEL)) continue;
+            child.closest && child.closest(MATH_SEL)) return;
         let isMath;
         try { isMath = !!(child.matches && child.matches(MATH_SEL)); } catch { isMath = false; }
         if (isMath) {
@@ -611,7 +648,7 @@
              says an equation is missing. Say so instead. */
           if (tex) out.push(isDisplayMath(child) ? `\n$$${tex}$$\n` : ` $${tex}$ `);
           else out.push(isDisplayMath(child) ? "\n[formula]\n" : " [formula] ");
-          continue;
+          return;
         }
         /* A drawing, not a paragraph. Checked before PRE, because a rendered
            mermaid block is a <svg> sitting where the <pre> used to be. */
@@ -623,18 +660,18 @@
         } catch { drawn = false; }
         if (drawn) {
           const found = diagramSource(child);
-          if (!found) { out.push("\n![diagram]()\n"); continue; }
-          if (found.node && emitted.has(found.node)) continue;   // already written out
+          if (!found) { out.push("\n![diagram]()\n"); return; }
+          if (found.node && emitted.has(found.node)) return;   // already written out
           if (found.node) emitted.add(found.node);
           out.push(park("\n```" + (found.kind || "") + "\n" + found.source + "\n```\n"));
-          continue;
+          return;
         }
         if (child.tagName === "PRE") {
-          if (emitted.has(child)) continue;
+          if (emitted.has(child)) return;
           emitted.add(child);
           const fenced = fencedCode(child);
           if (fenced) out.push(park(fenced));
-          continue;
+          return;
         }
         // A picture IS the message often enough to be worth keeping as one.
         if (child.tagName === "IMG") {
@@ -646,7 +683,7 @@
             || "";
           // A data: URI can be a megabyte of base64. Keep the fact, not the file.
           out.push(`\n![${alt || "image"}](${/^data:/.test(src) && src.length > 512 ? "" : src})\n`);
-          continue;
+          return;
         }
         let skip;
         /* Chrome, unless it is holding a picture. These hosts wrap an image in
@@ -657,9 +694,8 @@
           skip = !!(child.matches && child.matches(SKIP_SEL)) &&
             !(child.querySelector && child.querySelector("img"));
         } catch { skip = false; }
-        if (skip) continue;
+        if (skip) return;
         walk(child);
-      }
     };
     try { walk(root); } catch { return (root.textContent || "").trim(); }
     return out.join("")
@@ -671,7 +707,7 @@
 
   self.LCTRichText = {
     highlight, codeBlock, looksLikeCode, strongCode, math, splitInlineMath,
-    mathSource, textWithMath, fencedCode, codeLang, diagramSource, svgIsDiagram,
+    mathSource, textWithMath, isBox, fencedCode, codeLang, diagramSource, svgIsDiagram,
     MATH_SEL, DISPLAY_SEL, SKIP_SEL, THINK_SEL, DIAGRAM_SEL
   };
 })();
