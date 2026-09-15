@@ -138,7 +138,27 @@ function readerActive(host) {
   return Date.now() - hostEntry(String(host)).activeAt < BG_YIELD_MS;
 }
 
+/* Which hosts THIS worker has read the saved pace back for. A module variable on
+   purpose: it must reset with the worker, because a fresh worker is exactly the
+   one that has not read it yet. */
+const BG_PACE_LOAD = new Map();
+const BG_PACE_READY = new Set();
+
 function hostSlot(host, opts) {
+  /* The saved rate and cooldown are read back before the FIRST request to a host,
+     on every path. Only the chat listing used to do this; the text download
+     never did, so each new worker sent it at full speed, was refused, and
+     re-learned from nothing — and once refusals were saved as they happened, it
+     then saved that lower rate over the learned one. Measured on a real ChatGPT
+     account: 18,964ms learned, then 8,000, then 500. */
+  if (!BG_PACE_READY.has(host)) {
+    let loading = BG_PACE_LOAD.get(host);
+    if (!loading) {
+      loading = loadCooldown(host).catch(() => 0).then(() => { BG_PACE_READY.add(host); });
+      BG_PACE_LOAD.set(host, loading);
+    }
+    return loading.then(() => hostSlot(host, opts));
+  }
   const s = hostEntry(host);
   // The pacing figure is intervalFor(host) now — what this host has earned —
   // not the static policy row, so nothing here reads the row directly.
@@ -301,7 +321,16 @@ async function persistCooldown(host, until) {
     const s = hostEntry(host);
     const { [BG_HOST_COOLDOWN]: raw } = await chrome.storage.local.get(BG_HOST_COOLDOWN);
     const map = (raw && typeof raw === "object") ? raw : {};
-    map[host] = { u: until, i: s.interval || 0, t: s.trip || 0 };
+    /* Merged, never replaced. A learned rate only ever rises (see intervalFloor),
+       so a save must not lower it — whatever this worker happens to hold, it may
+       not have read the saved one back yet, and writing its figure over the
+       stored one is how a learned 19s became 0.5s. */
+    const prev = map[host] && typeof map[host] === "object" ? map[host] : {};
+    map[host] = {
+      u: Math.max(Number(prev.u) || 0, until || 0),
+      i: Math.max(Number(prev.i) || 0, s.interval || 0),
+      t: Math.max(Number(prev.t) || 0, s.trip || 0),
+    };
     await chrome.storage.local.set({ [BG_HOST_COOLDOWN]: map });
   } catch { /* best effort */ }
 }

@@ -54,6 +54,7 @@ function pacer(limitMs, storage = new Map()) {
     hostEntry: () => state,
     policyFor: () => ({ minIntervalMs: consts.BG_MIN_INTERVAL_MS || 500, concurrency: 2 }),
     trace: async () => {}, sleep: async () => {},
+    BgError: class BgError extends Error { constructor(kind, msg, extra) { super(msg); this.kind = kind; Object.assign(this, extra || {}); } },
     // chrome.storage.local, in memory, shared across "workers" by the caller.
     chrome: { storage: { local: {
       get: async (k) => (storage.has(k) ? { [k]: storage.get(k) } : {}),
@@ -65,8 +66,12 @@ function pacer(limitMs, storage = new Map()) {
     has: (o, k) => typeof k === "string" && !(k in globalThis) || k in o,
     get: (o, k) => (k in o ? o[k] : k in globalThis ? globalThis[k] : (() => undefined)),
   });
-  const body = ["intervalFloor", "intervalFor", "noteRateLimit", "noteOk", "persistCooldown", "loadCooldown"].map(extract).join("\n");
-  const make = new Function("scope", `with (scope) { ${body}\n return { intervalFloor, intervalFor, noteRateLimit, noteOk, persistCooldown, loadCooldown }; }`);
+  const names = ["intervalFloor", "intervalFor", "noteRateLimit", "noteOk", "persistCooldown", "loadCooldown", "hostSlot"];
+  const body = names.map(extract).join("\n");
+  // hostSlot's once-per-worker load cache lives at module level; a fresh one per
+  // worker is exactly what a reclaimed worker gets.
+  const cache = (src.match(/^const BG_PACE_LOAD = [^;]+;$/m) || [""])[0] + "\n" + (src.match(/^const BG_PACE_READY = [^;]+;$/m) || [""])[0];
+  const make = new Function("scope", `with (scope) { ${cache}\n${body}\n return { ${names.join(", ")} }; }`);
   const fns = make(scope);
   return { ...fns, state, limitMs };
 }
@@ -101,7 +106,10 @@ async function runReclaimed(limitMs, cycles = 600) {
   let refusals = 0, late = 0, p = null;
   for (let i = 0; i < cycles; i++) {
     p = pacer(limitMs, storage);            // a fresh worker, fresh memory
-    await p.loadCooldown("chatgpt.com");     // what a respawned worker restores
+    /* Through hostSlot(), the gate every real request passes — NOT a manual
+       loadCooldown(). The first version called loadCooldown() itself and passed
+       while the text download, which never did, overwrote the learned rate. */
+    await p.hostSlot("chatgpt.com").catch(() => {});
     p.state.cooldownUntil = 0;               // cooldown timing is not under test
     const gap = p.intervalFor("chatgpt.com");
     if (gap < limitMs) { refusals++; if (i >= cycles - 300) late++; await p.noteRateLimit("chatgpt.com", 0, 0); }
@@ -114,6 +122,25 @@ for (const limit of [3000, 8000, 12000]) {
   console.log(`\n— reclaimed between every request, limit ${limit}ms`, JSON.stringify(r));
   t(`the learned rate survives the worker being reclaimed (${limit}ms)`, r.late === 0,
     `${r.late} refusals in the last 300 requests, ${r.refusals} total`);
+}
+
+{
+  /* A save must never lower a learned rate. A worker that has not yet read the
+     saved rate back — or re-learns from full speed — must not overwrite 19s
+     with 0.5s. Measured on a real account: 18,964ms saved, then 8,000, then 500. */
+  const storage = new Map();
+  const a = pacer(20000, storage);
+  a.state.trip = 18964; a.state.interval = 8000;
+  await a.persistCooldown("chatgpt.com", 0);
+  const b = pacer(20000, storage);
+  b.state.trip = 500; b.state.interval = 500;           // a fresh worker, refused at full speed
+  await b.persistCooldown("chatgpt.com", 0);
+  const saved = storage.get(consts.BG_HOST_COOLDOWN)["chatgpt.com"];
+  t("a save never lowers the learned rate", saved.t === 18964, `saved t=${saved.t}`);
+  const c = pacer(20000, storage);
+  await c.hostSlot("chatgpt.com").catch(() => {});
+  t("a fresh worker's first request is paced by the SAVED rate", c.intervalFor("chatgpt.com") >= 25000,
+    `first gap ${c.intervalFor("chatgpt.com")}ms`);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
