@@ -596,6 +596,76 @@ try {
     JSON.stringify(await quarantined()));
   await providers.control({ gemini: { blankIds: false } });
 
+  /* ================= N. Gemini: several Google accounts in one browser =====
+     Found on a real browser (2026-09-15): 28 conversations on /u/1 were never
+     archived in the background, only /u/0 was ever read, and the row said
+     "Gemini changed its API" — a conversation asked of the wrong account
+     throws "shape". The mock now answers as Google did: /u/N/app per account,
+     an index past the last redirected to /u/0/app, a token refused on another
+     account's path, and a wrong-account read answered with no envelope. */
+  const liveWorker = async () => {
+    for (const w of ctx.serviceWorkers()) {
+      const ok = await w.evaluate(() => true).catch(() => false);
+      if (ok) return w;
+    }
+    return ctx.waitForEvent("serviceworker", { timeout: 10000 }).catch(() => null);
+  };
+  const gemBefore = (await checkpointsFor("gemini")).map(([key]) => key);
+  const gem2 = ["alpha", "beta", "gamma"].map((n, i) => ({
+    id: "gem2-" + n, title: "Second account, " + n,
+    createdAt: Date.UTC(2026, 5, 1 + i), updatedAt: Date.UTC(2026, 5, 1 + i, 2),
+    msgs: [
+      { r: "user", t: `A question asked on the second Google account (${n}).` },
+      { r: "assistant", t: `An answer that lives only on the second account (${n}).` }
+    ]
+  }));
+  await providers.control({
+    gemini: { signedIn: true, current: "gm1", seats: ["gm1", "gm2"], pinned: ["gemchat-2"], blankIds: false,
+      accounts: { gm1: { email: "gem@example.com", chats: gem }, gm2: { email: "gem2@example.com", chats: gem2 } } }
+  });
+  await syncNow();
+  all = await rows();
+  const second = all.filter((r) => r.id.startsWith("gemini.google.com/app/gem2-"));
+  t("GM1 a second Google account's conversations are archived", second.length === 3,
+    JSON.stringify(all.filter((r) => r.id.startsWith("gemini.google.com/")).map((r) => r.id)));
+  const secondMsgs = await Promise.all(gem2.map((c) => msgsOf("gemini.google.com/app/" + c.id)));
+  t("GM2 …with their messages, not as titles with nothing in them",
+    secondMsgs.every((m) => m.length === 2 && /second Google account/.test(m[0].t)),
+    JSON.stringify(secondMsgs.map((m) => m.length)));
+  t("GM3 the first account's conversations are untouched",
+    all.filter((r) => r.id.startsWith("gemini.google.com/app/") && !r.id.includes("gem2-")).length === 5);
+  const gemAfter = (await checkpointsFor("gemini")).map(([key]) => key);
+  t("GM4 the default account keeps the checkpoint it already had (nothing re-downloaded)",
+    gemBefore.length === 1 && gemAfter.includes(gemBefore[0]), JSON.stringify({ gemBefore, gemAfter }));
+  t("GM4 …and the second account has one of its own", gemAfter.length === 2, JSON.stringify(gemAfter));
+
+  /* The text download asks with the DEFAULT account's context for every chat. */
+  const gemWorker = await liveWorker();
+  const fromDefault = gemWorker ? await gemWorker.evaluate(async () => {
+    const g = BG_ADAPTERS.find((a) => a.id === "gemini");
+    geminiSeats = null; geminiPreferred = ""; geminiConvAccount.clear();
+    const def = await g.prepare();
+    try { return { n: (await g.detail(def, "gem2-beta")).length }; }
+    catch (e) { return { err: String(e && e.message || e) }; }
+  }) : { err: "no worker" };
+  t("GM5 a conversation from another account is fetched from the default account's context",
+    fromDefault && fromDefault.n === 2, JSON.stringify(fromDefault));
+
+  /* Google numbers accounts by sign-in order, so signing out and back in can
+     swap them. The checkpoints must follow the ACCOUNTS, and a sweep must not
+     read either account's chats as deleted. */
+  await providers.control({ gemini: { current: "gm2", seats: ["gm2", "gm1"] } });
+  await makeSweepDue();
+  await syncNow();
+  all = await rows();
+  t("GM6 after the accounts are renumbered, nothing is put up for deletion",
+    !(await quarantined()).some((id) => id.startsWith("gemini.google.com/")), JSON.stringify(await quarantined()));
+  t("GM6 …and every conversation from both accounts is still here",
+    all.filter((r) => r.id.startsWith("gemini.google.com/app/")).length === 8);
+  t("GM6 …still with no third checkpoint invented for the same two accounts",
+    (await checkpointsFor("gemini")).length === 2, JSON.stringify((await checkpointsFor("gemini")).map(([k]) => k)));
+  await providers.control({ gemini: { current: "gm1", seats: null } });
+
   /* ================= K. Grok: camelCase, and messages kept elsewhere ========
      Grok names its listing fields conversationId / createTime / modifyTime and
      nothing else. An adapter reading id / created_at / updated_at therefore

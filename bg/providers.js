@@ -113,6 +113,23 @@ const GEMINI_SHELVES = [1, 0];
 
 let geminiReqid = 0;
 
+/* A browser signed into several Google accounts holds Gemini history under each
+   of them — /u/0/app, /u/1/app — and only the default one was ever read. A real
+   account with 28 conversations on /u/1 had none archived in the background, and
+   its row said "Gemini changed its API": a request for a conversation on the
+   wrong account throws "shape", which is what that sentence is rendered from.
+   An index exists exactly when Google does not send it back to /u/0, and indices
+   are contiguous, so discovery stops at the first one that bounces.
+   The seat list and "which account answered for this conversation" are caches:
+   losing them with the worker costs a re-discovery, nothing more. A prefix is
+   deliberately NOT stored on a record — Google renumbers accounts by sign-in
+   order, and a stored /u/1 would quietly go on pointing at somebody else. */
+const GEMINI_MAX_ACCOUNTS = 10;
+const GEMINI_SEATS_TTL_MS = 5 * 60 * 1000;
+let geminiSeats = null;                    // { at, seats }
+let geminiPreferred = "";                  // the account that answered most recently
+const geminiConvAccount = new Map();       // conversation id -> account prefix
+
 /** End (exclusive) of the JSON array or object starting at `from`.
  *
  *  String- and escape-aware, because a bracket inside somebody's message would
@@ -836,10 +853,12 @@ const BG_ADAPTERS = [
     // No endpoint here names the signed-in account, so every account on this
     // host would share one device-level tag; the page's hint can do better.
     namesAccount: false,
-    async prepare() {
+    async prepare() { return this.prepareAt(""); },
+    /** The app shell for one Google account: "" is the default, "/u/1" the next. */
+    async prepareAt(accountPrefix) {
       // batchexecute's tokens live only in the app shell's HTML — no JSON
       // endpoint carries them — so this one request is deliberately not JSON.
-      const r = await bgFetch(this.base + "/app", {
+      const r = await bgFetch(this.base + (accountPrefix || "") + "/app", {
         headers: { Accept: "text/html,application/xhtml+xml,*/*" }
       });
       const html = await r.text();
@@ -855,8 +874,17 @@ const BG_ADAPTERS = [
          answer is empty: archiving still worked, the allowance never did. */
       let prefix = "";
       try {
-        const seen = /^\/(u\/\d+)\//.exec(new URL(r.url || "").pathname);
-        if (seen) prefix = "/" + seen[1];
+        /* Matched on the path AFTER the base's own path. A base that is not a bare
+           origin — a proxy, or the test harness at 127.0.0.1:8937/gemini — puts
+           its path in front of /u/1, and a match anchored at the start of the
+           pathname then found no account and read every login as one. */
+        const basePath = new URL(this.base).pathname.replace(/\/$/, "");
+        let landed = new URL(r.url || "").pathname;
+        if (basePath && landed.startsWith(basePath)) landed = landed.slice(basePath.length);
+        const seen = /^\/(u\/\d+)\//.exec(landed);
+        // /u/0 is the default account under another name; one spelling for it, so
+        // it is never counted as a second account.
+        if (seen && seen[1] !== "u/0") prefix = "/" + seen[1];
       } catch { /* no URL on the response — the bare path is the right guess */ }
       return {
         at,
@@ -1030,7 +1058,85 @@ const BG_ADAPTERS = [
       metas.sort((a, b) => b.updatedAt - a.updatedAt);
       return { metas, complete: !truncated, unreadable: sawRows > 0 && named === 0 };
     },
+    /** Every signed-in Google account with Gemini, default first. */
+    async seatContexts(primary) {
+      const base = primary || await this.prepareAt("");
+      const seats = [base];
+      const have = new Set([base.prefix || ""]);
+      let skipped = false;
+      for (let n = 1; n < GEMINI_MAX_ACCOUNTS; n++) {
+        const want = "/u/" + n;
+        let ctx;
+        try { ctx = await this.prepareAt(want); }
+        catch (error) {
+          /* Signed in to Google but not to Gemini (a workspace with it switched
+             off): the next index can still be a Gemini account — so ONE such
+             index is stepped over. Not more: a host that answered signed-out
+             for every index would otherwise cost nine requests a pass. */
+          if (error && error.kind === "auth" && !skipped) { skipped = true; continue; }
+          break;           // a network or rate refusal: sync the accounts found so far
+        }
+        if ((ctx.prefix || "") !== want) break;       // sent back to the default: no account here
+        if (have.has(want)) continue;
+        have.add(want);
+        seats.push(ctx);
+      }
+      geminiSeats = { at: Date.now(), seats };
+      return seats;
+    },
+    /* The sync gives each account its own pass. The default account keeps no
+       `account` value, so its existing checkpoint is the one it goes on using —
+       re-keying it would download the whole history again. Every other account
+       starts on a key of its own; resolveAnchor() then recognises each by the
+       oldest chat it holds, so a renumbering of the indices finds the right
+       checkpoint, and sweepVanished() refuses an empty or implausible listing. */
+    async accounts(primary) {
+      const seats = await this.seatContexts(primary);
+      return seats.map((seat) => (seat.prefix
+        ? { ...seat, account: "google" + seat.prefix.replace(/\//g, "-") }
+        : seat));
+    },
+    // The allowance panel reads the default account, as it always has.
+    quotaSeats(ctx) { return [ctx]; },
+    /* One conversation, fetched from the account that holds it. The text download
+       and every other caller ask with the default account's context; a conversation
+       from another account then throws "shape", and is tried on the others — the
+       account it was last found on first, then the one that last answered. Only
+       "shape" moves on: a rate limit or a sign-out is an answer, not a wrong door. */
     async detail(ctx, id, opts) {
+      const here = (ctx && ctx.prefix) || "";
+      const fresh = geminiSeats && Date.now() - geminiSeats.at < GEMINI_SEATS_TTL_MS;
+      let seats = fresh ? geminiSeats.seats : null;
+      const order = [geminiConvAccount.get(id), geminiPreferred, here];
+      const tried = new Set();
+      let firstShape = null;
+      for (let pass = 0; pass < 2; pass++) {
+        const prefixes = pass === 0
+          ? order.filter((x) => x !== undefined)
+          : (seats || []).map((seat) => seat.prefix || "");
+        for (const prefix of prefixes) {
+          if (tried.has(prefix)) continue;
+          const seat = prefix === here ? ctx : (seats || []).find((c) => (c.prefix || "") === prefix);
+          if (!seat) continue;
+          tried.add(prefix);
+          try {
+            const msgs = await this.detailOn(seat, id, opts);
+            geminiConvAccount.set(id, prefix);
+            if (prefix) geminiPreferred = prefix;
+            return msgs;
+          } catch (error) {
+            if (!error || error.kind !== "shape") throw error;
+            firstShape = firstShape || error;
+          }
+        }
+        if (pass === 0 && !seats) {
+          try { seats = await this.seatContexts(here === "" ? ctx : null); }
+          catch { break; }
+        }
+      }
+      throw firstShape || new BgError("shape", "provider conversation not understood");
+    },
+    async detailOn(ctx, id, opts) {
       const payloads = geminiPayloads(
         await this.rpc(ctx, GEMINI_RPC_READ, [id, GEMINI_TURN_MAX, null, 1, [1], [4], null, 1], opts),
         GEMINI_RPC_READ);

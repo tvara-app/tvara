@@ -287,15 +287,27 @@ export function startProviders(port = 8931) {
        every conversation backwards. */
     if (platform === "gemini") {
       if (!state.gemini.signedIn) return deny(res);
-      if (path === "/app") {
-        const id = state.gemini.current;
+      /* Several Google accounts in one browser, as Google answered a real one:
+         /u/N/app serves account N while it exists, and an index past the last
+         is redirected to /u/0/app. `seats` is the ordered list; without it the
+         login has one account, `current`, exactly as before. */
+      const seatList = state.gemini.seats || [state.gemini.current];
+      const seatAt = path.match(/^\/u\/(\d+)(\/.*)$/);
+      const acctFor = seatAt ? seatList[Number(seatAt[1])] : state.gemini.current;
+      const sub = seatAt ? seatAt[2] : path;
+      if (seatAt && acctFor === undefined) {
+        res.writeHead(302, { location: "/u/0" + sub, "cache-control": "no-store" });
+        return res.end();
+      }
+      if (sub === "/app") {
+        const id = acctFor;
         const who = state.gemini.accounts[id];
         res.writeHead(200, { "content-type": "text/html", "cache-control": "no-store" });
         if (!who) return res.end("<!doctype html><html><body>signed out</body></html>");
         return res.end(`<!doctype html><html><script>window.WIZ_global_data={` +
           `"SNlM0e":"at-${id}","cfb2h":"boq_bard_${id}","FdrFJe":"-sid-${id}"};</script></html>`);
       }
-      if (path === "/_/BardChatUi/data/batchexecute") {
+      if (sub === "/_/BardChatUi/data/batchexecute") {
         if (req.method !== "POST") return json(res, { error: "method" }, 400);
         const rpcid = q.get("rpcids") || "";
         let body = "";
@@ -305,11 +317,14 @@ export function startProviders(port = 8931) {
           // The token is what makes a batchexecute POST legitimate; without it
           // Google answers 400, so the mock does too.
           if (!form.get("at")) return json(res, { error: "missing at" }, 400);
+          // A token belongs to one account: sent to another account's path it is
+          // refused, which is what catches a context from the wrong account.
+          if (form.get("at") !== `at-${acctFor}`) return json(res, { error: "token for another account" }, 400);
           let payload = null;
           try { payload = JSON.parse(JSON.parse(form.get("f.req"))[0][0][1]); }
           catch { return json(res, { error: "bad f.req" }, 400); }
 
-          const chats = chatsOf("gemini", state.gemini.current);
+          const chats = chatsOf("gemini", acctFor);
           const pinnedIds = state.gemini.pinned || [];
           let out;
           if (rpcid === "MaZiqc") {
@@ -327,6 +342,13 @@ export function startProviders(port = 8931) {
             ])];
           } else if (rpcid === "hNvQHb") {
             const chat = chats.find((c) => c.id === payload[0]);
+            /* On ANOTHER of this login's accounts, Google does not 404: it answers
+               a frame with no envelope for the rpc, which reads as "shape". */
+            if (!chat && seatList.some((a) => a !== acctFor && chatsOf("gemini", a).some((c) => c.id === payload[0]))) {
+              const text = ")]}'\n" + `22\n[["e",4,null,null,131]]\n`;
+              res.writeHead(200, { "content-type": "application/json+protobuf", "cache-control": "no-store" });
+              return res.end(text);
+            }
             if (!chat) return json(res, { error: "not found" }, 404);
             const turns = [];
             for (let i = 0; i < (chat.msgs || []).length; i += 2) {
