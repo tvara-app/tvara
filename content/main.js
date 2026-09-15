@@ -335,7 +335,7 @@
       upsoldThisSession = true; // don't nag: one upsell line per session
       msg += ` Unlock minimap, search, timestamps & backup for ${self.LCTProduct.PRICE} once, in the extension popup.`;
     }
-    flashNote(msg);
+    flashNote(msg, { ambient: true });
   }
 
   /* ---------- resume where you left off ----------
@@ -626,7 +626,20 @@
   // Shared, so a module loaded before this one can still speak in the same
   // voice instead of inventing a second toast.
   self.LCTNote = (text) => flashNote(text);
-  function flashNote(text) {
+  /* One slot, two kinds of note. A REPLY answers something the reader just did
+     — a shortcut that is locked, a button with nothing to act on — and it is
+     the only explanation they will get for why nothing opened. An AMBIENT note
+     is the extension speaking on its own. Last-writer-wins let the second
+     replace the first: on real rendering the speed engine's once-per-chat note
+     landed a moment after "Total Recall is a Pro feature" and wiped it, so the
+     shortcut read as doing nothing at all. An ambient note now waits for a
+     reply's full time and is said afterwards rather than dropped. */
+  const NOTE_MS = 4500;
+  let replyUntil = 0;
+  let heldAmbient = "";
+  function flashNote(text, opts) {
+    const ambient = !!(opts && opts.ambient);
+    if (ambient && Date.now() < replyUntil) { heldAmbient = text; return; }
     let n = document.getElementById("lct-note");
     if (!n) {
       n = document.createElement("div");
@@ -635,8 +648,16 @@
     }
     n.textContent = text;
     n.classList.add("lct-note-show");
+    if (!ambient) replyUntil = Date.now() + NOTE_MS;
     clearTimeout(noteTimer);
-    noteTimer = setTimeout(() => n.classList.remove("lct-note-show"), 4500);
+    noteTimer = setTimeout(() => {
+      n.classList.remove("lct-note-show");
+      if (heldAmbient) {
+        const next = heldAmbient;
+        heldAmbient = "";
+        setTimeout(() => flashNote(next, { ambient: true }), 400);
+      }
+    }, NOTE_MS);
   }
 
   /* ---------- settings / license ---------- */
