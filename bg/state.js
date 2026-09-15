@@ -44,6 +44,11 @@ const BG_RAMP_AFTER = 24;
    interval adapts too, and it is the one that matters: doubled on a refusal,
    decayed back toward the policy figure on a clean run. */
 const BG_INTERVAL_MAX_MS = 8000;
+/* The slowest a LEARNED floor may settle. BG_INTERVAL_MAX_MS bounds how far one
+   refusal doubles the interval; a provider that genuinely needs more than eight
+   seconds between requests has to be allowed to teach the floor past it, or no
+   pace this worker can reach is one it accepts. */
+const BG_FLOOR_MAX_MS = 60 * 1000;
 /* TWO WORKLOADS, ONE BUDGET — and only one of them has anybody waiting on it.
    The conversation in front of the reader is one request and it has to be
    instant. The backfill is thousands of requests and NOBODY is waiting for it:

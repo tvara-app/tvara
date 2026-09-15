@@ -78,7 +78,17 @@ function intervalFor(host) {
    difference between converging on the ceiling and oscillating through it. */
 function intervalFloor(host) {
   const s = hostEntry(host);
-  return s.trip ? Math.max(BG_MIN_INTERVAL_MS, Math.round(s.trip * 0.75)) : BG_MIN_INTERVAL_MS;
+  /* trip is an INTERVAL — milliseconds between requests — and "three quarters
+     of the rate" is the interval divided by 0.75, not multiplied by it. The
+     multiplication put the floor a third FASTER than the rate that was just
+     refused, so every clean run decayed straight back through it: measured on a
+     real ChatGPT account as four breaker trips and hours of cooldown, and in
+     test/test-pacing.mjs as a pacer that never stops being refused at any limit.
+     Bounded, so a host that refuses everything cannot slow this to a crawl for
+     good — the cooldown is what handles a host that has stopped answering. */
+  return s.trip
+    ? Math.min(BG_FLOOR_MAX_MS, Math.max(BG_MIN_INTERVAL_MS, Math.round(s.trip / 0.75)))
+    : BG_MIN_INTERVAL_MS;
 }
 
 /* How many workers this host currently deserves. Read every iteration, not once
@@ -220,7 +230,11 @@ async function noteRateLimit(host, retryAfterMs, attempt) {
   const base = policyFor(host);
   s.concurrency = Math.max(1, Math.floor((s.concurrency || base.concurrency) / 2));
   // Remember the rate that failed BEFORE changing it — that is the threshold.
-  s.trip = Math.max(s.trip, s.interval || base.minIntervalMs);
+  /* The gap the refused request was ACTUALLY sent at — intervalFor(), floor
+     included — not s.interval, which is capped at BG_INTERVAL_MAX_MS. Recording
+     the capped figure anchored the floor to 8s for any provider that needs more,
+     and every one of its requests was then refused. */
+  s.trip = Math.max(s.trip, intervalFor(host));
   // …and halve the RATE, which is the number the provider is actually counting.
   s.interval = Math.min(BG_INTERVAL_MAX_MS, Math.max(base.minIntervalMs, (s.interval || base.minIntervalMs) * 2));
   /* The provider's own number wins outright and nothing of ours is added to
