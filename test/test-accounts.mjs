@@ -664,6 +664,28 @@ try {
     all.filter((r) => r.id.startsWith("gemini.google.com/app/")).length === 8);
   t("GM6 …still with no third checkpoint invented for the same two accounts",
     (await checkpointsFor("gemini")).length === 2, JSON.stringify((await checkpointsFor("gemini")).map(([k]) => k)));
+  /* The shape that exposed the shared-checkpoint fault on a real browser: the
+     DEFAULT account holds no Gemini chats, and the one that does is second. An
+     empty listing has no anchor and keeps the key it opened with, so if the
+     default account opened on the shared key it adopted the checkpoint of the
+     account behind it — two accounts, one watermark. */
+  await providers.control({ gemini: { current: "gmNone", seats: ["gmNone", "gm1"],
+    accounts: { gmNone: { email: "none@example.com", chats: [] }, gm1: { email: "gem@example.com", chats: gem },
+                gm2: { email: "gem2@example.com", chats: gem2 } } } });
+  await syncNow();
+  const emptyFirst = await gemWorker.evaluate(async () => {
+    const g = BG_ADAPTERS.find((a) => a.id === "gemini");
+    geminiSeats = null;
+    const seats = await g.accounts(await g.prepare());
+    const keys = await Promise.all(seats.map((c) => accountCheckpointKey(g, c)));
+    return { prefixes: seats.map((c) => c.prefix || ""), distinct: new Set(keys).size === keys.length };
+  });
+  t("GM7 with several accounts, no two start on the same checkpoint key",
+    emptyFirst.prefixes.length === 2 && emptyFirst.distinct, JSON.stringify(emptyFirst));
+  all = await rows();
+  t("GM7 …and nothing is lost or put up for deletion",
+    all.filter((r) => r.id.startsWith("gemini.google.com/app/")).length === 8 &&
+    !(await quarantined()).some((id) => id.startsWith("gemini.google.com/")));
   await providers.control({ gemini: { current: "gm1", seats: null } });
 
   /* ================= K. Grok: camelCase, and messages kept elsewhere ========
