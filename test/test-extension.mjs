@@ -4,7 +4,7 @@
    machine, license activation (incl. "key must never appear in the DOM"),
    storage persistence, and the speed engine on the 1,500-message torture page. */
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { chromium } from "playwright";
@@ -177,8 +177,52 @@ async function launchCtx(channel) {
   return null;
 }
 let loadedId = "";
+let realBrowser = null;
+/* Real Google Chrome on a machine that has it, bundled Chromium in CI, which
+   has none. The real path goes through tools/chrome-real.mjs: Chrome spawned
+   with no --load-extension and no --enable-automation — the two flags that paint
+   an "unsupported command-line flag" bar and an "automated test software" bar —
+   and the extension installed over CDP with no dialog and no keystrokes.
+   LCT_BROWSER=chromium forces the old path. */
+const REAL = process.env.LCT_BROWSER !== "chromium" && !process.env.CI &&
+  existsSync("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
+let chromeReal = null;
+async function launchReal() {
+  process.env.LCT_CHROME_PROFILE = PROFILE;
+  process.env.LCT_CDP_PORT = "9555";
+  chromeReal = await import("../tools/chrome-real.mjs");
+  // A browser left on this port by an earlier run must be GONE before its
+  // profile is deleted, or ensureChrome reuses it with the profile missing.
+  await chromeReal.shutdown();
+  rmSync(PROFILE, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
+  mkdirSync(join(PROFILE, "Default"), { recursive: true });
+  writeFileSync(join(PROFILE, "Default", "Preferences"), JSON.stringify({
+    extensions: { ui: { developer_mode: true } },
+    download: { default_directory: DOWNLOADS, prompt_for_download: false },
+  }));
+  const got = await chromeReal.ensureChrome({ extPath: EXT, quiet: true }).catch((e) => {
+    console.log("note: real Chrome could not load the extension (" + e.message + ")");
+    return null;
+  });
+  if (!got) return null;
+  realBrowser = got.browser;
+  loadedId = got.extensionId;
+  const c = got.ctx;
+  /* launchPersistentContext set a 900×800 viewport and the assertions below
+     measure against it; a CDP-attached context has no context-level viewport,
+     so every page gets it on creation instead. */
+  const open = c.newPage.bind(c);
+  c.newPage = async (...a) => {
+    const pg = await open(...a);
+    await pg.setViewportSize({ width: 900, height: 800 }).catch(() => {});
+    return pg;
+  };
+  console.log(`browser: ${got.build} (real, headed, no automation flags) · extension ${loadedId}`);
+  return c;
+}
 const WANT = process.env.PW_CHANNEL || "chromium";
-let ctx = await launchCtx(WANT);
+let ctx = REAL ? await launchReal() : null;
+if (!ctx) ctx = await launchCtx(WANT);
 if (!ctx && WANT !== "chromium") {
   console.log(`note: ${WANT} would not load an unpacked extension here (M136+ builds ` +
     "refuse --load-extension); falling back to the bundled Chromium — same engine, " +
@@ -190,6 +234,21 @@ await new Promise((r) => setTimeout(r, 1500)); // let Chrome register the extens
 // Context Bridge's clipboard fallback is asserted deterministically
 try { await ctx.grantPermissions(["clipboard-read", "clipboard-write"], { origin: "http://127.0.0.1:8917" }); } catch {}
 const POPUP = `chrome-extension://${loadedId || idFromProfile() || computedId}/popup/popup.html`;
+
+/* OUR service worker, by extension id. A branded Chrome profile ships Google's
+   Docs Offline extension with a worker of its own, so "the first worker" is a
+   coin toss: evaluating in the wrong one threw "readerActive is not defined"
+   and ended the suite. Bundled Chromium ships none, which is why it never did. */
+const ourWorker = async (timeout = 10000) => {
+  const mine = (w) => loadedId ? w.url().startsWith(`chrome-extension://${loadedId}/`) : /\/bg\.js(\?|$)/.test(w.url());
+  const end = Date.now() + timeout;
+  let w = ctx.serviceWorkers().find(mine);
+  while (!w && Date.now() < end) {
+    await new Promise((r) => setTimeout(r, 250));
+    w = ctx.serviceWorkers().find(mine);
+  }
+  return w || null;
+};
 
 const pageErrors = [];
 const trackErrors = (p) => {
@@ -1345,6 +1404,12 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
   // visible tab, then write the signal from an extension page.
   const fireCmd = async (name) => {
     await page.bringToFront();
+    /* The page ignores a command unless document.visibilityState is "visible",
+       which is right: a shortcut acts on the tab you are looking at. In real
+       headed Chrome that state flips a moment AFTER bringToFront() resolves, so
+       a command written straight away reached a page that still thought it was
+       hidden. Headless reports every tab visible and never showed this. */
+    await page.waitForFunction(() => document.visibilityState === "visible", null, { timeout: 5000 }).catch(() => {});
     await pop.evaluate((n) => chrome.storage.local.set({ "lct-cmd": { name: n, at: Date.now() } }), name);
   };
 
@@ -1384,19 +1449,36 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
   await page.evaluate(() =>
     document.querySelectorAll(".lct-hit").forEach((e) => e.classList.remove("lct-hit")));
 
+  /* The map is clicked by a person looking at this tab. In real headed Chrome
+     a background tab does not receive dispatched input reliably, and on a full
+     run the second pulse click never arrived — reading as "the pulse did not
+     restart". The same sequence on a visible tab restarts it (583ms → 100ms). */
+  await page.bringToFront();
+  await page.waitForFunction(() => document.visibilityState === "visible", null, { timeout: 5000 }).catch(() => {});
   await page.hover("#lct-minimap");
   await page.waitForTimeout(300);
   const mmBox2 = await page.locator("#lct-mm-canvas").boundingBox();
   // Mid-chat, not the ends: block:"center" cannot centre a message the
   // scroller is already clamped against, so those tell us nothing about aim.
   const midY = mmBox2.y + Math.round(mmBox2.height * 0.40);
+  /* Resolved at the moment of the click, not once up front. The map expands on
+     hover and collapses when the pointer leaves, so a screen coordinate stored
+     two seconds earlier can point at empty space by the time it is used — and on
+     a headed browser, anything that moves focus or the pointer does exactly
+     that. Twice on real Chrome it produced a pulse that "did not restart" and
+     then one that "never appeared", with the product doing both correctly. */
+  const clickMapAt = async (frac) => {
+    await page.hover("#lct-minimap");
+    const box = await page.locator("#lct-mm-canvas").boundingBox();
+    await page.mouse.click(box.x + 5, box.y + Math.round(box.height * frac));
+  };
 
   /* B2b2 — REGRESSION: the landing must HOLD. Sleeping neighbours are
      contain-intrinsic-size guesses, and the browser used to wake them only
      AFTER the scroll landed — their real heights then shoved the target off
      centre, which is the land-wrong-then-snap the settle loop had to paper
      over. nav.js wakes the band before the first aim instead. */
-  await page.mouse.click(mmBox2.x + 5, midY);
+  await clickMapAt(0.40);
   await page.waitForTimeout(150);
   await page.evaluate(() => {
     const h = document.querySelector(".lct-hit");
@@ -1420,10 +1502,10 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
     const h = document.querySelector(".lct-hit");
     return h ? Math.round(h.getAnimations()[0]?.currentTime ?? -1) : -1;
   });
-  await page.mouse.click(mmBox2.x + 5, midY);
+  await clickMapAt(0.40);
   await page.waitForTimeout(600);
   const aged = await pulseAge();
-  await page.mouse.click(mmBox2.x + 5, midY);
+  await clickMapAt(0.40);
   await page.waitForTimeout(100);
   const fresh = await pulseAge();
   t("B2b3 re-jumping the same message restarts the pulse",
@@ -2589,8 +2671,16 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
   t("B10 record: no fake creation time (non-ChatGPT)", !chatRec.e);
 
   // hover the sidebar link for THIS chat → card with real numbers
+  /* A person hovers a link in the tab they are LOOKING at. The popup was opened
+     since, and in real headed Chrome that made this chat a hidden background
+     tab, whose timers Chrome throttles — the card's show delay then did not
+     fire inside five seconds. Headless reports every tab visible, so this was
+     invisible there. The card was right; the hover was impossible. */
+  await page.bringToFront();
+  const cardVis = await page.evaluate(() => document.visibilityState);
   await page.locator("#t-conv-this").dispatchEvent("mouseover");
-  await page.waitForSelector("#lct-chatcard", { state: "visible", timeout: 5000 });
+  await page.waitForSelector("#lct-chatcard", { state: "visible", timeout: 5000 })
+    .catch((e) => { throw new Error(`chat card never showed (tab ${cardVis}): ${e.message.split("\n")[0]}`); });
   // the starred row is filled by an async storage read — wait for it
   await page.waitForFunction(() =>
     /Starred\s*[1-9]/.test(document.getElementById("lct-chatcard")?.textContent || ""),
@@ -2614,8 +2704,17 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
   await page.waitForTimeout(400);                                   // storage.onChanged
   await page.locator("#t-conv-external").dispatchEvent("mouseover");  // drop the open card
   await page.waitForTimeout(200);
+  await page.bringToFront();   // same reason as the first hover in B10
   await page.locator("#t-conv-this").dispatchEvent("mouseover");
-  await page.waitForSelector("#lct-chatcard", { state: "visible", timeout: 5000 });
+  await page.waitForSelector("#lct-chatcard", { state: "visible", timeout: 5000 })
+    .catch(async (e) => {
+      const why = await page.evaluate(() => {
+        const c = document.getElementById("lct-chatcard");
+        return { vis: document.visibilityState, focus: document.hasFocus(),
+                 card: c ? getComputedStyle(c).display + "/" + c.style.visibility : "absent" };
+      }).catch(() => ({}));
+      throw new Error(`second chat card never showed ${JSON.stringify(why)}: ${e.message.split("\n")[0]}`);
+    });
   const soloText = await page.textContent("#lct-chatcard");
   t("B10 no longest badge with a single record", !/longest/i.test(soloText), soloText.slice(0, 80));
 
@@ -3597,6 +3696,21 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
   });
   const backupPath = join(SCRATCH, "reinstall-archive.lctbackup");
   await backupDownload.saveAs(backupPath);
+  /* What the file must give back: every chat's title and every message, hashed
+     at the moment the backup was made. "chats >= 3" after a restore would pass
+     one that emptied every message. */
+  const archiveAtBackup = await recall.evaluate(async () => {
+    const snap = await new Promise((res) => chrome.runtime.sendMessage({ type: "recall-snapshot" }, res));
+    const chats = (snap && snap.chats) || [];
+    const parts = await Promise.all(chats.map(async (c) => {
+      // The storage shape: chat.msgs, each { r: role, t: text }.
+      const body = JSON.stringify([c.title || c.t || "", (c.msgs || []).map((m) => [m.r || "", m.t || ""])]);
+      const h = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body));
+      return [...new Uint8Array(h)].map((b) => b.toString(16).padStart(2, "0")).join("");
+    }));
+    const messages = chats.reduce((n, c) => n + ((c.msgs || []).length), 0);
+    return { chats: chats.length, messages, digest: parts.sort().join(",") };
+  });
   await recall.waitForSelector("#backup-status.ok", { timeout: 20000 });
   t("B11 reinstall backup is encrypted and downloaded",
     /encrypted/.test(await recall.textContent("#backup-status")) && /\.lctbackup/.test(backupDownload.suggestedFilename()));
@@ -3892,6 +4006,24 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
     return s && s.chats >= 3;
   }, null, { timeout: 30000 });
   t("B11 encrypted reinstall backup restores the archive in batches", true);
+  const archiveAfterRestore = await recall.evaluate(async () => {
+    const snap = await new Promise((res) => chrome.runtime.sendMessage({ type: "recall-snapshot" }, res));
+    const chats = (snap && snap.chats) || [];
+    const parts = await Promise.all(chats.map(async (c) => {
+      // The storage shape: chat.msgs, each { r: role, t: text }.
+      const body = JSON.stringify([c.title || c.t || "", (c.msgs || []).map((m) => [m.r || "", m.t || ""])]);
+      const h = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body));
+      return [...new Uint8Array(h)].map((b) => b.toString(16).padStart(2, "0")).join("");
+    }));
+    const messages = chats.reduce((n, c) => n + ((c.msgs || []).length), 0);
+    return { chats: chats.length, messages, digest: parts.sort().join(",") };
+  });
+  t("B11 the restored archive is the backed-up archive, message for message",
+    /* messages > 0 is the guard: a digest built from the wrong field names reads
+       every chat as empty on BOTH sides and matches while proving nothing. */
+    archiveAtBackup.chats > 0 && archiveAtBackup.messages > 0 &&
+    archiveAfterRestore.digest === archiveAtBackup.digest,
+    `backup ${archiveAtBackup.chats} chats/${archiveAtBackup.messages} msgs → restored ${archiveAfterRestore.chats}/${archiveAfterRestore.messages}`);
   const restoredLedger = await recall.evaluate(async () =>
     (await chrome.storage.sync.get("lct-recall-sync-ledger-v2"))["lct-recall-sync-ledger-v2"]);
   t("B11 reinstall restore merges the durable gap checkpoint",
@@ -3922,8 +4054,13 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
   await page.waitForFunction(() =>
     /Total Recall is a Pro feature/.test(document.getElementById("lct-note")?.textContent || ""),
     null, { timeout: 5000 }).catch(() => {});
+  /* Locked only counts if the command ARRIVED. With no note, a closed overlay
+     proves nothing — a command that never reached the page leaves it closed
+     too, and that read as a working paywall on a run where dispatch was broken. */
+  const recallNote = await page.textContent("#lct-note").catch(() => "");
   t("B11 overlay locked without pro/trial",
-    await page.evaluate(() => !document.querySelector("#lct-recall.lct-r-open")));
+    /Total Recall is a Pro feature/.test(recallNote) &&
+    await page.evaluate(() => !document.querySelector("#lct-recall.lct-r-open")), recallNote || "command never arrived");
   t("B11 locked open-recall explains why (not silent)",
     /Total Recall is a Pro feature/.test(await page.textContent("#lct-note").catch(() => "")),
     await page.textContent("#lct-note").catch(() => "NO NOTE"));
@@ -3931,8 +4068,10 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
   await page.waitForFunction(() =>
     /Context Bridge is a Pro feature/.test(document.getElementById("lct-note")?.textContent || ""),
     null, { timeout: 5000 }).catch(() => {});
+  const bridgeNote = await page.textContent("#lct-note").catch(() => "");
   t("B12 Context Bridge locked without pro/trial",
-    await page.evaluate(() => !document.querySelector("#lct-bridge.lct-b-open")));
+    /Context Bridge is a Pro feature/.test(bridgeNote) &&
+    await page.evaluate(() => !document.querySelector("#lct-bridge.lct-b-open")), bridgeNote || "command never arrived");
   t("B12 locked command explains why (not a silent no-op)",
     /Context Bridge is a Pro feature/.test(await page.textContent("#lct-note").catch(() => "")));
   // The lock lives on the SEARCH page; this handle was last on Archive.
@@ -4361,7 +4500,7 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
      host allows and the reader's click was answered with "Too many requests".
      The page now says it is here before anything else on a new route. */
   {
-    const w = ctx.serviceWorkers()[0] || await ctx.waitForEvent("serviceworker", { timeout: 10000 });
+    const w = await ourWorker();
     const yielded = await w.evaluate(() => {
       const host = "reader-test.example";
       const before = readerActive(host);
@@ -4378,7 +4517,7 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
   }
 
   const armNotes = async () => {
-    const w = ctx.serviceWorkers()[0] || await ctx.waitForEvent("serviceworker", { timeout: 10000 });
+    const w = await ourWorker();
     await w.evaluate(() => {
       self.__notes = [];
       chrome.notifications.create = (id, opts) => { self.__notes.push({ id, opts }); return Promise.resolve(id); };
@@ -4923,7 +5062,12 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
        heights — which is what "the spacing looks odd" turned out to mean. */
     const unders = align.shape.map((r) => r.under);
     const underSpread = +(Math.max(...unders) - Math.min(...unders)).toFixed(1);
-    const heights = [...new Set(align.shape.map((r) => r.h))];
+    /* Grouped to the pixel. On a device-pixel-ratio 2 display layout is
+       fractional, and one row height came back as 36.8 and 36.9 — two entries
+       in a Set of exact floats, one height to anybody looking at it. A dozen
+       slightly different heights is still caught: those differ by pixels. */
+    const heights = align.shape.map((r) => r.h).sort((x, y) => x - y)
+      .reduce((groups, h) => (groups.length && h - groups[groups.length - 1] < 1 ? groups : [...groups, h]), []);
     t("B21g the space under a row's text is the same in every row",
       underSpread < 1.5, `spread ${underSpread}px: ${JSON.stringify(unders)}`);
     t("B21g …and the panel settles into two row heights, not a dozen",
@@ -5817,7 +5961,7 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
   // The suite that stopped early is a FAILING suite, and says so.
   t("C0 suite ran to completion", false, String(e && e.stack || e).split("\n").slice(0, 3).join(" | "));
 } finally {
-  await ctx.close();
+  await (realBrowser ? chromeReal.shutdown() : ctx.close()).catch(() => {});
   server.kill();
   // in the finally so an abort mid-run still says what had failed before it
   console.log(`\n${pass} passed, ${fail} failed${suiteFinished ? "" : "  (SUITE DID NOT FINISH)"}`);

@@ -15,7 +15,7 @@
  *   import { ensureChrome, detach } from "../tools/chrome-real.mjs";
  *   const { ctx, extensionId } = await ensureChrome({ extPath });
  */
-import { spawn, execFileSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -40,7 +40,14 @@ const FLAGS = [
   `--user-data-dir=${PROFILE}`,
   "--no-first-run",
   "--no-default-browser-check",
-  "--hide-crash-restore-bubble"
+  "--hide-crash-restore-bubble",
+  /* Unlocks CDP Extensions.loadUnpacked. Chrome 137 removed --load-extension,
+     and the only other route is the native folder dialog, which has to be
+     driven with keystrokes — on a machine somebody is using, those land in
+     whatever they have focused. This installs with no window at all. Measured
+     on 153: it paints no infobar (87px of chrome on the startup tab and a fresh
+     one alike). */
+  "--enable-unsafe-extension-debugging"
 ];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -106,6 +113,20 @@ async function ensurePage() {
   await sleep(400);
 }
 
+/** One call on the browser-level CDP target. */
+async function browserCall(method, params = {}) {
+  const v = await cdp("/json/version");
+  if (!v || !v.webSocketDebuggerUrl) throw new Error(`nothing is listening on ${PORT}`);
+  const ws = new WebSocket(v.webSocketDebuggerUrl);
+  await new Promise((ok, bad) => { ws.onopen = ok; ws.onerror = () => bad(new Error("CDP socket refused")); });
+  try {
+    return await new Promise((ok) => {
+      ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d.id === 1) ok(d); };
+      ws.send(JSON.stringify({ id: 1, method, params }));
+    });
+  } finally { ws.close(); }
+}
+
 const infoOf = (pg) => pg.evaluate(() => new Promise((r) =>
   chrome.developerPrivate.getExtensionsInfo({}, (l) => r((l || []).map((e) => ({
     id: e.id, name: e.name, path: e.path || "", location: e.location, state: e.state
@@ -132,48 +153,24 @@ async function ensureExtension(ctx, extPath) {
   let mine = list.find((e) => e.location === "UNPACKED" && same(e.path, extPath));
 
   if (!mine) {
-    await pg.evaluate(() => {
-      const tb = document.querySelector("extensions-manager").shadowRoot
-        .querySelector("extensions-toolbar");
-      const tog = tb.shadowRoot.querySelector("#devMode");
-      if (tog && !tog.checked) tog.click();
-    });
-    await pg.waitForTimeout(600);
-    await pg.bringToFront();
-    await pg.evaluate(() => {
-      document.querySelector("extensions-manager").shadowRoot
-        .querySelector("extensions-toolbar").shadowRoot
-        .querySelector("#loadUnpacked").click();
-    });
-    await pg.waitForTimeout(1500);
-    // Chrome 153 takes an unpacked extension only through this native dialog:
-    // the command-line switch is gone and Extensions.loadUnpacked reports an id
-    // while installing nothing. Needs Accessibility permission for the terminal.
-    try {
-      execFileSync("osascript", ["-e", `
-        tell application "System Events"
-          keystroke "g" using {shift down, command down}
-          delay 0.6
-          keystroke "${extPath}"
-          delay 0.5
-          keystroke return
-          delay 0.9
-          keystroke return
-        end tell`]);
-    } catch (err) {
+    const res = await browserCall("Extensions.loadUnpacked", { path: extPath });
+    if (res.error) {
       await pg.close();
-      throw new Error("Could not drive the Load unpacked dialog — give this terminal " +
-        "Accessibility permission (System Settings → Privacy & Security → Accessibility), " +
-        `or load ${extPath} by hand in the Chrome window that is open. (${err.message})`,
-        { cause: err });
+      /* A browser reused from before this flag existed cannot load an
+         extension this way, and restarting somebody's session silently is not
+         this module's call to make. */
+      throw new Error(`Chrome refused to load ${extPath}: ${res.error.message}. ` +
+        `If this Chrome was started without --enable-unsafe-extension-debugging, quit it ` +
+        `(it is the one on port ${PORT}) and run again — it will be restarted with the flag.`);
     }
-    await pg.waitForTimeout(2500);
-    list = await infoOf(pg).catch(() => []);
-    mine = list.find((e) => e.location === "UNPACKED" && same(e.path, extPath));
+    for (let i = 0; i < 20 && !mine; i++) {
+      await pg.waitForTimeout(300);
+      list = await infoOf(pg).catch(() => []);
+      mine = list.find((e) => e.location === "UNPACKED" && same(e.path, extPath));
+    }
     if (!mine) {
       await pg.close();
-      throw new Error(`${extPath} is still not installed. Load it by hand at ` +
-        `chrome://extensions in the open window, then run this again.`);
+      throw new Error(`Chrome accepted ${extPath} but never listed it as installed.`);
     }
   }
 
@@ -208,6 +205,30 @@ export async function ensureChrome({ extPath, quiet = false } = {}) {
       (extensionId ? `  ·  extension ${extensionId}` : ""));
   }
   return { browser, ctx, extensionId, started, build };
+}
+
+/**
+ * Ends the Chrome on PORT and waits until the port is gone.
+ *
+ * browser.close() is not this. On a browser that was ATTACHED to rather than
+ * launched, it only disconnects: the process stays up with no windows. A suite
+ * that then deleted the profile and started again reused that browser — with its
+ * profile gone underneath it — and failed on the first test. Browser.close is
+ * sent without waiting for a reply, because the socket dies with the process.
+ */
+export async function shutdown() {
+  const v = await cdp("/json/version");
+  if (!v || !v.webSocketDebuggerUrl) return true;
+  await new Promise((done) => {
+    const ws = new WebSocket(v.webSocketDebuggerUrl);
+    ws.onopen = () => { ws.send(JSON.stringify({ id: 1, method: "Browser.close" })); setTimeout(done, 300); };
+    ws.onerror = () => done();
+  });
+  for (let i = 0; i < 40; i++) {
+    await sleep(250);
+    if (!(await probe())) return true;
+  }
+  return false;
 }
 
 /** Detach without closing: browser.close() would take every window with it and
