@@ -191,7 +191,13 @@ const QUOTA_ENDPOINTS = {
        limit_window_seconds, plus the account's plan_type at the top level.
        Ahead of conversation/init, whose counters are side features — deep
        research, image generation — that rank() already penalises. */
-    { path: "/backend-api/wham/usage", auth: "bearer" },
+    /* CODEX, not the chat allowance. This was taken for "the real allowance
+       every ChatGPT client reads"; its own body says "You're out of Codex
+       messages … upgrade to Plus to continue using Codex". On a Go account it
+       reads 100% used for the month while chat has hundreds left, and leading
+       the row with it told a paying user they had nothing. It stays — Codex is a
+       real limit — but as a named side meter (lib/quota.js SIDE_METER). */
+    { path: "/backend-api/wham/usage", auth: "bearer", meter: "codex" },
     { path: "/backend-api/conversation/init", method: "POST", body: {}, auth: "bearer" },
     { path: "/backend-api/conversation_limit", auth: "bearer" },
     { path: "/backend-api/models?history_and_training_disabled=false", auth: "bearer" },
@@ -270,6 +276,16 @@ async function quotaPrepare(adapter) {
 /** One candidate, called once. Returns what it found and what it cost, because
  *  the probe report has to be able to say "this endpoint is gone" as clearly as
  *  it says "this one works". */
+/* Which product an endpoint meters, looked up by path in QUOTA_ENDPOINTS rather
+   than carried on the endpoint object: the learned `working` list is rebuilt
+   from a field whitelist, and a field added only to the candidate would be
+   dropped between the probe and every poll after it. */
+function endpointMeter(adapter, endpoint) {
+  const list = QUOTA_ENDPOINTS[adapter && adapter.id] || [];
+  const spec = list.find((e) => e.path === (endpoint && endpoint.path));
+  return (spec && spec.meter) || (endpoint && endpoint.meter) || "";
+}
+
 async function quotaTry(adapter, ctx, endpoint) {
   const org = ctx && (ctx.org || ctx.account) ? String(ctx.org || ctx.account) : "";
   if (endpoint.needsOrg && !org) return { path: endpoint.path, skipped: "no organisation" };
@@ -296,7 +312,7 @@ async function quotaTry(adapter, ctx, endpoint) {
         path: endpoint.path, status: 200, ok: true, native: true,
         method: "RPC", body: null, needsOrg: false, auth: "cookie",
         plan,
-        windows: self.LCTQuota.fromJson(json, {}),
+        windows: self.LCTQuota.tagMeter(self.LCTQuota.fromJson(json, {}), endpointMeter(adapter, endpoint)),
         sample: self.LCTQuota.redact(json, 0)
       };
     } catch (error) {
@@ -336,7 +352,7 @@ async function quotaTry(adapter, ctx, endpoint) {
     let windows = [];
     try { windows = self.LCTQuota.fromHeaders(response.headers, {}) || []; }
     catch { windows = []; }
-    windows = windows.concat(self.LCTQuota.fromJson(json, {}));
+    windows = self.LCTQuota.tagMeter(windows.concat(self.LCTQuota.fromJson(json, {})), endpointMeter(adapter, endpoint));
     /* A grab-bag answers with the whole app's start-up state, and any
        remaining/limit pair anywhere inside it reads as an allowance — an
        untouched "30 of 30" for something the user never uses outranks the real
@@ -383,7 +399,7 @@ function quotaSig(list) {
     // Marking a grab-bag plan-only without them left yesterday's learned list
     // still treating its numbers as an allowance for a whole day.
     e.path, e.method || "", e.body || null, e.auth || "", !!e.needsOrg,
-    !!e.planOnly, !!e.native
+    !!e.planOnly, !!e.native, e.meter || ""
   ])).join("|");
 }
 

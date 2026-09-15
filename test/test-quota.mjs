@@ -638,6 +638,40 @@ t("a query-count payload keeps its unit",
     ] }, { now: NOW }).length === 1);
 }
 
+/* ChatGPT's /backend-api/wham/usage is the CODEX allowance, not the chat one.
+   Found on a real Go account (2026-09-15): the popup said "ChatGPT Go · 0 left ·
+   month" while the same account had 300 reasoning messages, 80 uploads and 4
+   deep research left. The response says so itself — "You're out of Codex
+   messages … To continue using Codex, upgrade to Plus". Codex stays visible,
+   named as Codex; it must not be the headline for ChatGPT. */
+{
+  const reset = Math.round(NOW / 1000) + 2144884;
+  const wham = { plan_type: "go", rate_limit: { allowed: false, limit_reached: true,
+    primary_window: { used_percent: 100, limit_window_seconds: 2592000, reset_after_seconds: 2144884, reset_at: reset },
+    secondary_window: null },
+    rate_limit_upsell: { title: "You're out of Codex messages" } };
+  const init = { limits_progress: [
+    { feature_name: "deep_research", remaining: 4 },
+    { feature_name: "file_upload", remaining: 80 },
+    { feature_name: "paste_text_to_file", remaining: 80 },
+    { feature_name: "reason", remaining: 300 },
+  ] };
+  const codexWindows = Q.fromJson(wham, {});
+  if (typeof Q.tagMeter === "function") Q.tagMeter(codexWindows, "codex");
+  const windows = [...codexWindows, ...Q.fromJson(init, {})].map((w) => ({ ...w, observedAt: NOW }));
+  const record = { id: "chatgpt", plan: "Go", windows };
+  const p = Q.primary(record, { now: NOW });
+  const isCodex = (w) => !!w && (/codex/i.test(`${w.meter || ""} ${w.label || ""}`) || /rate_limit\.primary_window/.test(w.path || ""));
+  t("ChatGPT's headline is not the Codex allowance", !!p && !isCodex(p),
+    p ? `led with ${JSON.stringify({ key: p.key, label: p.label, meter: p.meter, pctLeft: p.pctLeft, remaining: p.remaining })}` : "no headline");
+  const codex = Q.ranked(record, { now: NOW }).find(isCodex);
+  t("…Codex is still shown, and named as Codex", !!codex && /codex/i.test(codex.label || ""),
+    codex ? `label "${codex.label}"` : "codex window missing");
+  t("…only-Codex still reports Codex rather than nothing (penalty, never exclusion)",
+    (() => { const only = Q.primary({ id: "chatgpt", windows: codexWindows.map((w) => ({ ...w, observedAt: NOW })) }, { now: NOW });
+             return !!only && isCodex(only); })());
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) {
   console.log("\nfailures:");
