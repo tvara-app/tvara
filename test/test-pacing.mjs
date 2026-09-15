@@ -40,25 +40,33 @@ function extract(name) {
 // The real numeric constants, evaluated as written.
 const consts = {};
 for (const m of src.matchAll(/^const (BG_[A-Z0-9_]+) = ([^;\n]+);/gm)) {
-  try { const v = Function(`return (${m[2]})`)(); if (typeof v === "number") consts[m[1]] = v; } catch { /* not numeric */ }
+  // Numbers AND strings: BG_HOST_COOLDOWN is the storage key the learned rate is
+  // saved under, and a harness that dropped it tested persistence against a key
+  // that could never be read back.
+  try { const v = Function(`return (${m[2]})`)(); if (typeof v === "number" || typeof v === "string") consts[m[1]] = v; } catch { /* not a literal */ }
 }
 
-function pacer(limitMs) {
+function pacer(limitMs, storage = new Map()) {
   const state = { chain: Promise.resolve(), nextAt: 0, fgNextAt: 0, cooldownUntil: 0, consecutiveRate: 0,
     interval: 0, trip: 0, tabOpen: false, activeAt: 0, trips: 0, windowAt: 0, used: 0, concurrency: 0, streak: 0 };
   const known = {
     ...consts,
     hostEntry: () => state,
     policyFor: () => ({ minIntervalMs: consts.BG_MIN_INTERVAL_MS || 500, concurrency: 2 }),
-    persistCooldown: async () => {}, persistPace: async () => {}, trace: async () => {}, sleep: async () => {},
+    trace: async () => {}, sleep: async () => {},
+    // chrome.storage.local, in memory, shared across "workers" by the caller.
+    chrome: { storage: { local: {
+      get: async (k) => (storage.has(k) ? { [k]: storage.get(k) } : {}),
+      set: async (o) => { for (const [k, v] of Object.entries(o)) storage.set(k, structuredClone(v)); },
+    } } },
     backoffDelay: () => 0,
   };
   const scope = new Proxy(known, {
     has: (o, k) => typeof k === "string" && !(k in globalThis) || k in o,
     get: (o, k) => (k in o ? o[k] : k in globalThis ? globalThis[k] : (() => undefined)),
   });
-  const body = ["intervalFloor", "intervalFor", "noteRateLimit", "noteOk"].map(extract).join("\n");
-  const make = new Function("scope", `with (scope) { ${body}\n return { intervalFloor, intervalFor, noteRateLimit, noteOk }; }`);
+  const body = ["intervalFloor", "intervalFor", "noteRateLimit", "noteOk", "persistCooldown", "loadCooldown"].map(extract).join("\n");
+  const make = new Function("scope", `with (scope) { ${body}\n return { intervalFloor, intervalFor, noteRateLimit, noteOk, persistCooldown, loadCooldown }; }`);
   const fns = make(scope);
   return { ...fns, state, limitMs };
 }
@@ -85,5 +93,28 @@ for (const limit of [900, 3000, 8000, 12000, 20000]) {
   t(`…settled at or just slower than the limit, not far slower (${limit}ms)`, r.settled >= limit && r.settled <= limit * 1.6, `settled at ${r.settled}ms`);
   t(`…the learned floor itself is not faster than a refused rate (${limit}ms)`, r.floor >= r.trip || r.trip === 0, `floor ${r.floor}ms vs refused at ${r.trip}ms`);
 }
+/* The same, the way Chrome actually runs it: the worker is reclaimed and
+   replaced between requests, so all that survives is what was written to
+   storage. An in-memory pacer that learns proves nothing about this. */
+async function runReclaimed(limitMs, cycles = 600) {
+  const storage = new Map();
+  let refusals = 0, late = 0, p = null;
+  for (let i = 0; i < cycles; i++) {
+    p = pacer(limitMs, storage);            // a fresh worker, fresh memory
+    await p.loadCooldown("chatgpt.com");     // what a respawned worker restores
+    p.state.cooldownUntil = 0;               // cooldown timing is not under test
+    const gap = p.intervalFor("chatgpt.com");
+    if (gap < limitMs) { refusals++; if (i >= cycles - 300) late++; await p.noteRateLimit("chatgpt.com", 0, 0); }
+    else p.noteOk("chatgpt.com");
+  }
+  return { refusals, late, settled: p.intervalFor("chatgpt.com") };
+}
+for (const limit of [3000, 8000, 12000]) {
+  const r = await runReclaimed(limit);
+  console.log(`\n— reclaimed between every request, limit ${limit}ms`, JSON.stringify(r));
+  t(`the learned rate survives the worker being reclaimed (${limit}ms)`, r.late === 0,
+    `${r.late} refusals in the last 300 requests, ${r.refusals} total`);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

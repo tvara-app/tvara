@@ -237,6 +237,14 @@ async function noteRateLimit(host, retryAfterMs, attempt) {
   s.trip = Math.max(s.trip, intervalFor(host));
   // …and halve the RATE, which is the number the provider is actually counting.
   s.interval = Math.min(BG_INTERVAL_MAX_MS, Math.max(base.minIntervalMs, (s.interval || base.minIntervalMs) * 2));
+  /* Saved on EVERY refusal, not only when the breaker opens. An MV3 worker is
+     reclaimed about thirty seconds after it goes idle, and the rate learned on
+     refusals one and two lived in memory alone — so the next worker started
+     faster than the last one had been refused at, was refused again, and never
+     finished learning. Measured on a real account: a learned 8s restored as
+     5.1s after a reload. Refusals are rare once the rate has settled, so this
+     costs a write only while it is still being learned. */
+  await persistCooldown(host, s.cooldownUntil || 0);
   /* The provider's own number wins outright and nothing of ours is added to
      it — backoffDelay() used to take Retry-After as a FLOOR and then round it
      up with our own exponential curve, so a host asking for 2 seconds was given
