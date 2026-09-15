@@ -366,6 +366,35 @@ whether the browser is focused.
   on six ports, and keyed by hostname alone they were one host sharing one
   hourly budget — the later suites ran against a budget the earlier ones had
   spent. A port is not a permission: `BG_ALLOWED_HOSTS` stays hostname-only.
+- **A learned rate outlives the worker, and it comes down again.** Chrome
+  reclaims the worker ~30 s after it goes idle, so a rate held in memory is
+  re-learned by every new worker — at full speed, refused each time. Three rules
+  in `bg/fetch.js` / `bg/state.js`, all measured on a real ChatGPT account:
+  - `noteRateLimit()` saves the trip and interval on EVERY refusal, not only
+    when the breaker opens after three.
+  - `hostSlot()` — the gate on every request, foreground and background — reads
+    the saved rate back once per host per worker before the first request. Only
+    the listing used to, so the text download re-learned from 500 ms and its
+    save wrote 500 over a learned 18,964.
+  - `persistCooldown()` MERGES and never lowers a saved rate — except a
+    relaxation. After `BG_TRIP_RELAX_AFTER_MS` (20 min) with no refusal the rate
+    steps down by `BG_TRIP_RELAX_FACTOR` (×0.8), and again every 20 min it stays
+    quiet. ChatGPT also limits by a rolling window across the whole account, so
+    a floor that only rose capped that account at one chat a minute for good.
+    A step too far costs one refusal. `r`/`x` (refused/relaxed at) are stored
+    with it; a record older than those fields starts its quiet clock on load.
+  `test/test-pacing.mjs` builds a FRESH worker per request and restores only
+  what the real `loadCooldown()` reads back. Its first version kept the pacer in
+  memory and passed while all of this was broken.
+- **A page loading is proof the session is alive.** Each chat page asks the
+  worker to sync as it loads (`visitSync()`, `bg/schedule.js`). The 20-min floor
+  is PER PROVIDER, and a provider whose last pass FAILED is re-checked at once.
+  One shared timestamp meant six open tabs throttled five behind the first, and
+  somebody who had just signed in read "Not signed in" for three hours.
+- **The welcome page says the copy takes time.** A new user's first move is to
+  open a chat that has a title and no text yet, which reads as a blank page. It
+  says 5–10 minutes is TYPICAL, not promised (a rate-limited account can take
+  over an hour), then shows the real count and an ETA measured from this run.
 - **Six platforms run at once, so a read-modify-write on one key is a race.**
   `editLocal()` (`bg/state.js`) chains them per key. The sweep state and the
   trace ring were both read-then-written by every platform: the last writer
@@ -385,10 +414,16 @@ never worth a request of its own. `planFrom(path, json)` on an adapter
 (`bg/providers.js`) is where each provider states it, and what it says beats
 whatever the handshake inferred:
 
-- **ChatGPT** — `/backend-api/wham/usage` is the allowance its own clients read:
-  `rate_limit.primary_window` / `secondary_window`, each carrying
-  `used_percent`, `reset_at` and `limit_window_seconds`, plus `plan_type` at the
-  top level. Ahead of `conversation/init`, whose counters are side features.
+- **ChatGPT** — `/backend-api/wham/usage` is **Codex**, not the chat
+  allowance. Its own response says "You're out of Codex messages", and on a plan
+  that barely includes Codex it reads 100% used — so a Go account with 300
+  reasoning messages left read "0 left". It still carries
+  `rate_limit.primary_window` / `secondary_window` (`used_percent`, `reset_at`,
+  `limit_window_seconds`) and `plan_type`, and still counts, but the endpoint
+  names its meter (`meter: "codex"` in `QUOTA_ENDPOINTS`, looked up by PATH —
+  the learned `working` list is rebuilt from a field whitelist and would drop
+  it), `tagMeter()` stamps every window it produced, and the row says "Codex".
+  `conversation/init` carries the per-feature counters.
   `/backend-api/accounts/check/…` → `entitlement.subscription_plan`
   (`chatgptplusplan`, `chatgptproplan`, …). `/api/auth/session` does NOT carry a
   plan; the field the handshake used to read has never existed there, so every
@@ -497,8 +532,12 @@ this panel. The row names the window and says when it turns over: "76% left ·
 **A side feature is not the allowance.** ChatGPT meters deep research, image
 generation and voice separately from the plan, and `rank()` led with "4 left ·
 deep research" while the figure the reader asked about sat behind it. Niche
-meters take a tie-break penalty, never an exclusion: where one is all the
-provider published, it is still the truth and it is still shown.
+meters take a penalty, never an exclusion: where one is all the provider
+published, it is still the truth and it is still shown. The penalty is a TIER,
+not points: `rank()` orders a real allowance with a figure, then a side meter
+with a figure, then anything figure-less, and scores only within a tier. As −3
+on a score where a percentage is worth 8 and a count 4, Codex's percentage beat
+the real allowance's count every time.
 
 **A remover of readings only removes readings.** `forgetQuotaFor()` and
 `retireUnknownQuotaTags()` read with `getByPrefix(prefix, [QUOTA_PROBE_KEY])`
@@ -865,8 +904,20 @@ holds an `<img>`**: these hosts wrap a picture in
 the message away with its own toolbar. An icon button holds an `<svg>`, never an
 `<img>`.
 
-`content/exporter.js` runs the same three rules, so a file and a preview of the
-same conversation cannot disagree.
+**Where two elements meet with no space, the page decides whether it is a new
+line.** Claude lays each question and answer of a card out as two
+`<span style="display:block">` with nothing between them, so a walk that joined
+text nodes stored "Where will this run?on the free tier". `textWithMath()` adds a
+break at a junction where both sides are non-space and either neighbour is a
+BOX by computed display (`LCTRichText.isBox`: block, flex, grid, list-item —
+never `inline*`, never `contents`). A `<br>` is a break. Tag names are only the
+fallback when there is no computed style. Records already archived welded stay
+so; the provider's own transcript, which the text download writes, never was.
+
+`content/exporter.js` runs the same rules — the three above and `isBox` from the
+same file — so a file and a preview of the same conversation cannot disagree.
+It had its own tag list and exported the welded line while the preview was
+fixed. `test/test-extension.mjs` B2w checks both walkers on the same cases.
 
 **A fence must not swallow the answer.** `renderMarkdown()` is what the panel
 paints an archived message with, and its opener demanded nothing after the
@@ -928,7 +979,10 @@ token at a time, `\frac{a}{b}` inside a matrix loses its arguments.
 The preview panel reads the ARCHIVE, not the DOM — so it is only ever as fresh
 as the last flush. `content/indexer.js` bumps `self.LCTArchiveRev` on every write
 and the panel re-reads on it; while open it re-checks every 2.5 s, keeping the
-reader's scroll position and repainting only on a real change. An empty panel
+reader's scroll position and repainting only on a real change. A press
+anywhere outside it closes it (`pointerdown`, capture phase, `composedPath`, never
+prevented, so what was pressed still happens); a press on another mark of the
+map switches the message instead. An empty panel
 keeps asking: a brand-new conversation has nothing archived for a few seconds,
 and painting "not archived yet" once and stopping is what made a new chat look
 broken until the page was reloaded.
@@ -988,6 +1042,29 @@ archive can hold a chat under one spelling while the reader arrives by the
 other. `chatIdCandidates()` resolves both on READ; canonicalising the write is
 the real fix and has to migrate what is already stored.
 
+## One Google login, several Gemini accounts
+
+Google serves each signed-in account at `/u/N/app` and redirects an index past
+the last one to `/u/0/app` (measured). Only `/u/0` was ever read, so a browser
+whose Gemini chats lived on the second account archived none, and the row said
+"Gemini changed its API": a conversation asked of the wrong account throws
+`shape`, which is what that sentence is rendered from.
+
+- `seatContexts()` asks `/u/1`, `/u/2`… and stops at the first redirect; one
+  signed-out index is stepped over, not more. Match the landed prefix on the
+  path AFTER the base's own path, or a non-origin base reads every login as one.
+- `accounts()` gives the sync one pass per account. The default keeps no
+  `account` value, so it keeps the checkpoint it always had and nothing is
+  downloaded again; the rest get `google-u-N`. Google renumbers indices by sign-in
+  order, so `resolveAnchor()` (oldest chat) finds each account's checkpoint and
+  `sweepVanished()` refuses an empty or implausible listing — a renumbering
+  deletes nothing.
+- `detail()` tries the account that last held the chat, then the default, then
+  every other. ONLY `shape` moves on; a rate limit or sign-out is an answer. The
+  account is remembered in memory and deliberately NOT on the record: a stored
+  `/u/1` points at somebody else after a renumbering.
+- `quotaSeats()` keeps the allowance panel on the default account.
+
 ## Reinstall
 
 `storage.sync` survives a local wipe; an uninstall takes it too. The durable
@@ -1014,15 +1091,25 @@ host, so the whole suite spent a single provider's budget and the J block ran
 against a host that could not be asked for anything — three assertions that
 read as product bugs and, before the cap refused fast, a suite that hung.
 
-**Bundled Chromium, not branded Chrome.** Chrome removed `--load-extension` and
-`--disable-extensions-except` in M137, and the `DisableLoadExtensionCommandLineSwitch`
-kill switch that brought them back went in M139 — checked on 152. Playwright's
-own guidance is now "Google Chrome and Microsoft Edge removed the command-line
-flags needed to side-load extensions, so use Chromium that comes bundled with
-Playwright" (https://playwright.dev/docs/chrome-extensions). The suites default
-to `chromium`; `LCT_CHANNEL=chrome` / `PW_CHANNEL=chrome` still try the branded
-build and fall back rather than report a suite that never ran. One browser
-instance per run.
+**Real Google Chrome, installed over CDP.** Chrome removed `--load-extension`
+in M137 and its kill switch in M139, so `tools/chrome-real.mjs` spawns the
+branded binary itself — never `chromium.launch()`, which adds
+`--enable-automation` and its infobar — with `--remote-debugging-port`, its own
+`--user-data-dir` and `--enable-unsafe-extension-debugging`, then installs with
+CDP `Extensions.loadUnpacked`. Without that flag the call returns an id and
+installs nothing. It paints no bar. `test/test-extension.mjs` uses it by
+default; `CI` or `LCT_BROWSER=chromium` falls back to bundled Chromium. One
+browser instance per run. Close it with CDP `Browser.close`: `browser.close()` on
+an attached browser only disconnects. Never drive the Load unpacked dialog with
+keystrokes — it types into whatever Chrome window the human has focused.
+
+**A local build is not the store's identity.** Unpacked, the manifest `key`
+makes the id `hbejlhhmbhkeaebcgmblchnodeampcgl`; the store strips the key and
+assigns `ajpnackhheeafgecocapboccaplcnaje`. Two rejections and a live 403 came
+from things registered only for the dev id (issuer origins, the OAuth redirect
+URI). `npm run preflight` checks both against the LIVE service for every id in
+`server/published-origins.json`; `test/reviewer-run.mjs` rehearses a review
+from the packed zip in a clean profile.
 
 `test/chatgpt-turns.html` is the two-message fixture with four `data-message-id`
 nodes in it: two ticks is the only right answer. `test/claude-code.html` is the
