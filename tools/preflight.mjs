@@ -113,9 +113,12 @@ const unjustified = declared.filter((p) => !new RegExp(`\`${p.replace(/[.*+?^${}
 if (!listing) block("store/listing.md missing");
 else {
   const title = (listing.match(/## Title[^\n]*\n+([^\n]+)/) || [])[1] || "";
-  if (title !== "Tvara: AI Chat Speed & Recall") {
-    block("Store title does not match the approved launch title");
-  } else ok("Store title matches the launch title");
+  /* The store shows the MANIFEST name as the title, so that is the only thing
+     the listing file can disagree with. Frozen here as a literal, it blocked
+     the release the day the name was deliberately changed. */
+  if (title !== mf.name) {
+    block("listing title does not match the manifest name", `listing "${title}" vs manifest "${mf.name}"`);
+  } else ok("listing title matches the manifest name");
   if (unjustified.length) {
     block(`listing does not justify ${unjustified.length} permission(s): ${unjustified.join(", ")}`,
       "store forms ask per-permission; an unexplained one is a rejection");

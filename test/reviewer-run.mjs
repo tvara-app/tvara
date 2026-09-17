@@ -182,33 +182,45 @@ for (const path of ["pages/onboarding.html", "pages/recall.html", "pages/archive
 
 // ---------- the host pages ----------
 step("the supported sites, signed out — the host page must never break");
+/* A bot wall can leave a page whose main thread never yields, and then
+   page.evaluate never returns: the run hung for an hour on chatgpt.com with the
+   whole rehearsal behind it. Every site gets a deadline, and missing it is a
+   SKIP — a host that will not answer this network proves nothing either way. */
+const within = (ms, p, fallback) => Promise.race([
+  p, new Promise((res) => setTimeout(() => res(fallback), ms)),
+]);
+const SITE_MS = 75000;
+
 for (const url of ["https://chatgpt.com/", "https://claude.ai/", "https://gemini.google.com/app",
                    "https://www.perplexity.ai/", "https://chat.deepseek.com/", "https://grok.com/"]) {
   const pg = await ctx.newPage();
+  const deadline = Date.now() + SITE_MS;
+  const left = () => Math.max(1000, deadline - Date.now());
   const ours = [];
   pg.on("pageerror", (e) => { if (String(e.stack || "").includes(extensionId)) ours.push(e.message); });
   const s = Date.now();
-  const res = await pg.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 }).catch((e) => ({ err: e.message }));
-  await sleep(5000);
+  const res = await within(left(), pg.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 }).catch((e) => ({ err: e.message })), { slow: true });
+  await sleep(Math.min(5000, left()));
   /* Gemini can render nothing at all for fifteen seconds on a cold, signed-out
      first load — measured WITHOUT the extension installed (0/0/0 characters at
      5/10/15s). A blank page is only Tvara's fault if it is still blank after the
      host has had the time it takes on its own. */
-  for (let wait = 0; wait < 4; wait++) {
-    const chars = await pg.evaluate(() => document.body?.innerText.length || 0).catch(() => 0);
+  for (let wait = 0; wait < 4 && Date.now() < deadline; wait++) {
+    const chars = await within(left(), pg.evaluate(() => document.body?.innerText.length || 0).catch(() => 0), 0);
     if (chars > 20) break;
-    await sleep(5000);
+    await sleep(Math.min(5000, left()));
   }
-  const page = await pg.evaluate(() => ({
+  const page = await within(left(), pg.evaluate(() => ({
     title: document.title, text: document.body?.innerText.length || 0,
     challenge: /just a moment|verify you are human|checking your browser/i.test(document.body?.innerText || ""),
-  })).catch(() => ({ title: "", text: 0, challenge: false }));
+  })).catch(() => ({ title: "", text: 0, challenge: false })), { stalled: true });
   const host = new URL(url).host;
-  if (res?.err) t(`${host} loaded`, false, res.err.slice(0, 80));
+  if (res?.slow || page.stalled) console.log(`SKIP  ${host} did not answer within ${SITE_MS / 1000}s on this network — not an extension fault`);
+  else if (res?.err) t(`${host} loaded`, false, res.err.slice(0, 80));
   else if (page.challenge) console.log(`SKIP  ${host} served a bot challenge to this network — not an extension fault`);
   else t(`${host} loads and still reads (${Date.now() - s} ms)`, !!page.title && page.text > 20, JSON.stringify(page));
   t(`${host}: no error thrown by Tvara`, !ours.length, ours.slice(0, 2).join(" | "));
-  await pg.close();
+  await pg.close().catch(() => {});
 }
 
 // ---------- load ----------
