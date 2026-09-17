@@ -99,7 +99,7 @@ async function worker() {
     const probe = w.evaluate(() => ({ n: chrome.runtime.getManifest().name, id: chrome.runtime.id }))
       .catch(() => null);
     const info = await Promise.race([probe, new Promise((r) => setTimeout(() => r(null), 2500))]);
-    return info && info.n === "Tvara" ? info.id : null;
+    return info && /^Tvara\b/.test(info.n || "") ? info.id : null;
   };
   const all = ctx.serviceWorkers();
   const ordered = all.filter((w) => /\/bg\.js(\?|$)/.test(w.url()))

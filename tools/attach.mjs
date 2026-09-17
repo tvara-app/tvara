@@ -81,7 +81,7 @@ async function worker() {
     if (!/^chrome-extension:\/\//.test(w.url())) return false;
     const probe = w.evaluate(() => chrome.runtime.getManifest().name).catch(() => null);
     const name = await Promise.race([probe, new Promise((r) => setTimeout(() => r(null), 2500))]);
-    return name === "Tvara";
+    return /^Tvara\b/.test(name || "");
   };
   const candidates = ctx.serviceWorkers();
   // Ours is bg.js; try those first so a stranger's worker is never even asked.

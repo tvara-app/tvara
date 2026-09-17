@@ -26,7 +26,8 @@ import { join } from "node:path";
 
 const ROOT = join(import.meta.dirname, "..");
 const WORK = join(ROOT, "test", ".work");
-const ZIP = join(ROOT, "dist", "tvara-v1.0.0.zip");
+const VERSION = JSON.parse(readFileSync(join(ROOT, "manifest.json"), "utf8")).version;
+const ZIP = join(ROOT, "dist", `tvara-v${VERSION}.zip`);
 const EXT = join(WORK, "reviewer-ext");
 const PROFILE = join(WORK, "reviewer-profile");
 
@@ -45,7 +46,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---------- the package ----------
 step("the package a reviewer receives");
-t("dist/tvara-v1.0.0.zip exists", existsSync(ZIP));
+t(`dist/tvara-v${VERSION}.zip exists`, existsSync(ZIP));
 const mfSrc = JSON.parse(readFileSync(join(ROOT, "manifest.json"), "utf8"));
 rmSync(EXT, { recursive: true, force: true });
 mkdirSync(EXT, { recursive: true });
