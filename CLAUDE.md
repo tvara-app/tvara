@@ -976,6 +976,31 @@ the centrepiece of exactly the answers this matters for, and it used to render
 as the word "begin" followed by its own letters. Cells are parsed WHOLE: fed one
 token at a time, `\frac{a}{b}` inside a matrix loses its arguments.
 
+**The strip is one mark per message, and each mark is exactly its message.**
+Three rules in `content/minimap.js` and `content/preview.js`, all from one
+screen recording on claude.ai:
+
+- **The panel is told WHICH message, not only where its mark sits.** The strip
+  counts what the page renders and the panel counts the archive; they need not
+  agree. Asked by position alone, every mark past the archive's end opened its
+  last message — the bottom third of the strip all showed one answer.
+  `identity()` sends the provider id, the speaker and the opening words
+  (`probe`); `resolve()` finds the row by id, else by those words nearest the
+  scaled position, else by the position scaled to its own count, so the last
+  mark is always the last message.
+- **Marks never get closer than `MIN_PITCH` (2.5px).** Past that they cannot be
+  told apart or pointed at, so the strip scrolls instead of squeezing: the wheel
+  moves the strip, the thread hairline becomes its scrollbar, and it follows the
+  reading position until the reader scrolls it. `yToIndex()` and `draw()` use
+  the same slot arithmetic, and the mark under the pointer is highlighted.
+- **No one-line hover box.** It said less than the panel, covered the page and
+  cut its text mid-word. What it said is the canvas's `aria-valuetext` now,
+  which is also what the suite reads (B2e, B2f, B2h, B2k, B2l).
+
+**The star answers only on the star.** An invisible `::after` bridge reached
+48px to its left, so it lit up and starred the message with the pointer beside
+it. The trip from the message is covered by the hide delay in `outline.js`.
+
 The preview panel reads the ARCHIVE, not the DOM — so it is only ever as fresh
 as the last flush. `content/indexer.js` bumps `self.LCTArchiveRev` on every write
 and the panel re-reads on it; while open it re-checks every 2.5 s, keeping the

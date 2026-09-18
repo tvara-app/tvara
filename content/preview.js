@@ -168,6 +168,38 @@
    */
   let showing = -1;
   let wanted = 0;          // the message asked for, even before one is held
+  let wantedAs = null;     // …and which message the strip meant by it — see resolve()
+
+  /* The strip's marks come from the page and these rows from the archive, and
+     the two need not number the same: a page can render a row the transcript
+     does not count, or hold only part of a long chat. Asked by position alone,
+     every mark past the archive's end opened its last message. So the strip
+     says WHICH message: the provider id when it has one; else the speaker and
+     the opening words, looked for near where the position points; else the
+     position scaled to this count, so the last mark is the last message. */
+  const fold = (t) => String(t || "").slice(0, 400).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+  function resolve(index, as) {
+    const n = rows.length;
+    if (!n) return 0;
+    const clamp = (k) => Math.max(0, Math.min(n - 1, k));
+    if (!as) return clamp(index);
+    if (as.id) for (let k = 0; k < n; k++) if (rows[k].i === as.id) return k;
+    const of = Number(as.of) || n;
+    const guess = of > 1 && of !== n ? clamp(Math.round((index / (of - 1)) * (n - 1))) : clamp(index);
+    const probe = String(as.probe || "");
+    if (probe.length >= 6) {
+      const say = (r) => (r.r === "user" ? "user" : "assistant");
+      let best = -1;
+      for (let k = 0; k < n; k++) {
+        if (as.role && say(rows[k]) !== as.role) continue;
+        const head = fold(rows[k].t).slice(0, 24);
+        if (head.length < 6 || !probe.includes(head)) continue;
+        if (best < 0 || Math.abs(k - guess) < Math.abs(best - guess)) best = k;
+      }
+      if (best >= 0) return best;
+    }
+    return guess;
+  }
   let loadedRev = -1;
   let watchTimer = null;
 
@@ -188,7 +220,7 @@
        page was reloaded. Keep waiting instead; the tick brings it in. */
     if (!rows.length) return;
     const at = showing < 0
-      ? Math.max(0, Math.min(wanted, rows.length - 1))
+      ? resolve(wanted, wantedAs)
       : Math.max(0, Math.min(showing, rows.length - 1));
     const nowLen = rows[at] ? String(rows[at].t || "").length : 0;
     if (nowLen === wasLen && rows.length === wasCount && showing >= 0) return;
@@ -209,6 +241,7 @@
     if (!(opts && opts.transient)) transient = false;
     else if (!open) transient = true;
     wanted = Math.max(0, Number(index) || 0);
+    wantedAs = opts && (opts.id || opts.probe || opts.of) ? opts : null;
     const n = await load(false);
     if (!n) {
       panel.classList.add("lct-hp-open");
@@ -219,7 +252,7 @@
       watchTimer = setInterval(refreshOpen, 2500);
       return;
     }
-    const at = Math.max(0, Math.min(rows.length - 1, Number(index) || 0));
+    const at = resolve(wanted, wantedAs);
     if (at !== showing || !listEl.firstChild) {
       showing = at;
       listEl.replaceChildren(row(rows[at], at));

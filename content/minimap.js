@@ -10,7 +10,7 @@
 (() => {
   "use strict";
 
-  let root = null, canvas = null, ctx = null, tooltip = null;
+  let root = null, canvas = null, ctx = null;
   let toggle = null, approxBadge = null;
   let messages = [];       // [{el, role, hasCode, snippet}]
   let scroller = null;
@@ -27,6 +27,10 @@
   let onResize = null;     // kept so destroy() can remove it
   let ro = null;           // ResizeObserver on the strip
   let hoverIdx = -1;
+  let hoverText = "";      // what the mark under the pointer is, for screen readers
+  // The strip scrolls only once its marks would be too close to tell apart.
+  let mapScroll = 0;       // css px of strip above its visible top
+  let mapFollow = true;    // keep the reading position in view until the reader scrolls the strip
   const metaCache = new WeakMap(); // el -> {role, hasCode, snippet}
   const rows = new WeakMap();      // el -> projected row (hosts with no stable ids)
   let projectDirty = true;         // the projection is stale — see project()
@@ -83,7 +87,6 @@
       // The host app tore our node out during its own re-render. Re-attach the
       // SAME element (listeners intact) instead of leaving the minimap gone.
       document.documentElement.appendChild(root);
-      if (tooltip && !tooltip.isConnected) document.documentElement.appendChild(tooltip);
       return;
     }
     root = document.createElement("div");
@@ -104,10 +107,6 @@
     ctx = canvas.getContext("2d");
     canvas.setAttribute("aria-valuemin", "1");
 
-    tooltip = document.createElement("div");
-    tooltip.id = "lct-mm-tooltip";
-    document.documentElement.appendChild(tooltip);
-
     // Rest ⇄ open. CSS owns the width transition; JS only needs to know which
     // picture to paint, and to keep painting while the box is still moving.
     const setResting = (next) => {
@@ -115,7 +114,7 @@
       if (resting === next) return;
       resting = next;
       root.classList.toggle("lct-mm-rest", resting);
-      if (resting) { hoverIdx = -1; motion.hoverY = -1; tooltip.style.display = "none"; }
+      if (resting) { hoverIdx = -1; hoverText = ""; motion.hoverY = -1; mapFollow = true; }
       scheduleDraw();
     };
     root.classList.add("lct-mm-rest");
@@ -146,45 +145,49 @@
       const idx = yToIndex(e.offsetY);
       if (idx >= 0) jumpToIndex(idx);
     });
-    /* Pointing at a mark asks what it says, and the tooltip can only answer in
-       one line. The panel answers in full, from the copy on this machine — no
-       request, no scrolling, and it works when the provider will not talk to us.
+    /* Pointing at a mark opens that message in the panel, in full, from the copy
+       on this machine. There is no one-line box as well: it said less than the
+       panel, covered the page beside the strip, and cut its text off mid-word.
        A short dwell so sweeping across the rail does not thrash it. */
     let peekTimer = null;
     const peek = (idx) => {
       clearTimeout(peekTimer);
       if (idx < 0) return;
       peekTimer = setTimeout(() => {
-        try { self.LCTHistoryPanel.show(idx, { transient: true }); }
+        try { self.LCTHistoryPanel.show(idx, { transient: true, ...identity(idx) }); }
         catch (_) { /* panel not up */ }
       }, 140);
     };
 
+    const hoverAt = (idx) => {
+      if (idx === hoverIdx) return;
+      hoverIdx = idx;
+      hoverText = describe(idx);
+      peek(idx);
+    };
     canvas.addEventListener("mousemove", (e) => {
-      const idx = yToIndex(e.offsetY);
-      if (idx !== hoverIdx) peek(idx);
       motion.hoverY = e.offsetY;
-      if (idx !== hoverIdx) hoverIdx = idx;
+      hoverAt(yToIndex(e.offsetY));
       scheduleDraw();          // the magnifier follows the cursor, not the index
-      if (idx >= 0 && messages[idx]) {
-        const m = messages[idx];
-        // A seeded entry has no element yet — its snippet came from the
-        // provider, and there is no DOM node to read a timestamp off.
-        const time = m.el && self.LCTTimeline ? self.LCTTimeline.label(m.el) : "";
-        tooltip.textContent =
-          (m.role === "user" ? "You: " : "AI: ") + m.snippet + (time ? "  ·  " + time : "");
-        tooltip.style.display = "block";
-        tooltip.style.top = Math.max(8, e.clientY - 14) + "px";
-      } else {
-        tooltip.style.display = "none";
-      }
     });
+    /* Only a strip too dense to point at scrolls. The wheel moves the strip, not
+       the page, and the message under the pointer follows it. */
+    canvas.addEventListener("wheel", (e) => {
+      const max = scrollMax();
+      if (max <= 0) return;
+      e.preventDefault();
+      mapFollow = false;
+      const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * canvas.clientHeight : e.deltaY;
+      mapScroll = Math.max(0, Math.min(max, mapScroll + dy));
+      if (motion.hoverY >= 0) hoverAt(yToIndex(motion.hoverY));
+      scheduleDraw();
+    }, { passive: false });
     canvas.addEventListener("mouseleave", () => {
       clearTimeout(peekTimer);
       // Hand the page back: a hover-opened panel must not outlive the hover.
       try { self.LCTHistoryPanel.release(); } catch (_) { /* panel not up */ }
-      tooltip.style.display = "none";
       hoverIdx = -1;
+      hoverText = "";
       motion.hoverY = -1;
       scheduleDraw();
     });
@@ -221,17 +224,58 @@
     }
   }
 
-  // At 1,500 messages one pixel row covers three of them, so the ends of the
-  // rail cannot address the first or last message by arithmetic alone. Snap
-  // them: the top of a scrollbar has always meant "the beginning".
+  // The ends of the strip mean the first and last message whenever the strip is
+  // showing them: the top of a scrollbar has always meant "the beginning".
   const END_SNAP = 4;
+  /* One mark per message, always. Below this spacing marks can no longer be
+     told apart or pointed at — at 1,500 messages a pixel row held three, so the
+     mark under the pointer was a guess — and the strip keeps this spacing and
+     scrolls instead. */
+  const MIN_PITCH = 2.5;
 
+  /** Height of one message's slot on the strip, in css px. */
+  function pitch() {
+    const h = canvas ? canvas.clientHeight : 0;
+    return messages.length && h ? Math.max(MIN_PITCH, h / messages.length) : 0;
+  }
+
+  function scrollMax() {
+    if (!canvas || !messages.length) return 0;
+    return Math.max(0, messages.length * pitch() - canvas.clientHeight);
+  }
+
+  /** The mark under a y in the strip — the same slot draw() paints it in. */
   function yToIndex(y) {
     if (!messages.length) return -1;
     const h = canvas.clientHeight;
-    if (y <= END_SNAP) return 0;
-    if (y >= h - END_SNAP) return messages.length - 1;
-    return Math.min(messages.length - 1, Math.max(0, Math.floor((y / h) * messages.length)));
+    const max = scrollMax();
+    if (y <= END_SNAP && mapScroll <= 0) return 0;
+    if (y >= h - END_SNAP && mapScroll >= max) return messages.length - 1;
+    return Math.min(messages.length - 1, Math.max(0, Math.floor((y + mapScroll) / pitch())));
+  }
+
+  /* The panel numbers messages from the archive and the strip from the page;
+     the two need not agree. So the panel is told WHICH message, not only where
+     its mark sits: the provider id when there is one, else the opening words
+     and the speaker, else the position scaled to its own count. */
+  function identity(idx) {
+    const m = messages[idx];
+    if (!m) return { of: messages.length };
+    return {
+      id: m.key && m.key.startsWith("id:") ? m.key.slice(3) : "",
+      role: m.role === "user" ? "user" : "assistant",
+      probe: m.probe || "",
+      of: messages.length,
+    };
+  }
+
+  function describe(idx) {
+    const m = messages[idx];
+    if (!m) return "";
+    // A seeded entry has no element yet, and no DOM node to read a time off.
+    const time = m.el && self.LCTTimeline ? self.LCTTimeline.label(m.el) : "";
+    return "Message " + (idx + 1) + " of " + messages.length + ". " +
+      (m.role === "user" ? "You: " : "AI: ") + m.snippet + (time ? " · " + time : "");
   }
 
   // Cached for good: an id never changes, and the fallback branch is a subtree
@@ -386,6 +430,9 @@
     let meta = metaCache.get(el);
     if (!meta || isTail) {
       const text = (el.textContent || "").trim();
+      // Letters and digits of the opening text, to find this message in the
+      // archive whatever markup each side wraps it in.
+      const probe = text.slice(0, 400).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
       const parts = [];
       previewText(el, parts, 140);
       const readable = parts.join("").replace(/\s+/g, " ").trim();
@@ -395,6 +442,7 @@
         role: role || safeRole(adapter, el),
         hasCode: !!el.querySelector("pre"),
         snippet: readable.slice(0, 80) || "Image / attachment",
+        probe,
         len: text.length      // drives tick width — see norm()
       };
       metaCache.set(el, meta);
@@ -436,6 +484,7 @@
         row.role = role || meta.role;
         row.hasCode = meta.hasCode;
         row.snippet = meta.snippet;
+        row.probe = meta.probe;
         row.len = meta.len;
         return row;
       });
@@ -460,6 +509,7 @@
       // DOM is what the reader can see, so it wins.
       entry.hasCode = meta.hasCode;
       entry.snippet = meta.snippet;
+      entry.probe = meta.probe;
       entry.len = meta.len;
       catalog.set(key, entry);
     }
@@ -676,7 +726,7 @@
      this extension exists to remove. draw() returns whether it still owes a
      frame; nothing else schedules one. */
   const motion = {
-    lensY: null, lensH: 0,   // eased lens geometry; null = snap on first paint
+    lensY: null, lensH: 0,   // eased lens, in messages (first, count); null = snap on first paint
     hoverY: -1, hoverK: 0,   // cursor position in canvas px + magnifier strength
     intro: 0                 // 0..1 entrance sweep
   };
@@ -793,6 +843,7 @@
    */
   function drawRest(w, h, c, vis, n) {
     const railW = Math.min(w, 4.5);
+    const per = h / n;            // the rail is the whole conversation, never scrolled
     const x = (w - railW) / 2;
     const r = railW / 2;
 
@@ -807,8 +858,8 @@
     if (vis) {
       // Same floor as the lens: a true-to-scale thumb in a 1,500-turn chat is
       // three pixels of nothing.
-      const th = Math.max(18, Math.min(h, motion.lensH));
-      const ty = Math.max(0, Math.min(h - th, motion.lensY + (motion.lensH - th) / 2));
+      const th = Math.max(18, Math.min(h, motion.lensH * per));
+      const ty = Math.max(0, Math.min(h - th, motion.lensY * per + (motion.lensH * per - th) / 2));
       const thumb = ctx.createLinearGradient(0, ty, 0, ty + th);
       thumb.addColorStop(0, c["thumb-a"]);
       thumb.addColorStop(1, c["thumb-b"]);
@@ -842,7 +893,8 @@
     const padX = 1.5;
     const full = w - padX * 2;
     const trackW = Math.max(3, full - GUTTER);
-    const step = h / n;
+    const step = Math.max(MIN_PITCH, h / n);   // one slot per message — see pitch()
+    const maxScroll = Math.max(0, n * step - h);
     let owed = false;
 
     /* ---- eased state ---- */
@@ -850,16 +902,14 @@
     else if (motion.intro < 1) { motion.intro = Math.min(1, motion.intro + 0.07); owed = true; }
 
     const vis = visibleRange();
-    const lensToY = vis ? vis.first * step : 0;
-    // Floor of 15px: in a 1,500-turn chat a true-to-scale lens is 3px tall and
-    // simply cannot be found. Slightly generous beats invisible.
-    const lensToH = vis ? Math.max(15, (vis.last - vis.first + 1) * step) : h;
+    const lensToY = vis ? vis.first : 0;
+    const lensToH = vis ? vis.last - vis.first + 1 : n;
     if (motion.lensY === null || reduceMotion) {
       motion.lensY = lensToY; motion.lensH = lensToH;
     } else {
       motion.lensY = ease(motion.lensY, lensToY, .26);
       motion.lensH = ease(motion.lensH, lensToH, .26);
-      if (Math.abs(motion.lensY - lensToY) > .4 || Math.abs(motion.lensH - lensToH) > .4) owed = true;
+      if (Math.abs(motion.lensY - lensToY) > .02 || Math.abs(motion.lensH - lensToH) > .02) owed = true;
       else { motion.lensY = lensToY; motion.lensH = lensToH; }
     }
 
@@ -873,7 +923,21 @@
 
     if (resting) { drawRest(w, h, c, vis, n); return owed; }
 
-    const lensTop = motion.lensY, lensBot = motion.lensY + motion.lensH;
+    /* A strip that scrolls keeps where you are reading in view, until the
+       reader scrolls the strip themselves; leaving it hands control back. */
+    if (mapFollow && vis) {
+      const mid = (motion.lensY + motion.lensH / 2) * step;
+      const to = Math.max(0, Math.min(maxScroll, mid - h / 2));
+      if (reduceMotion || Math.abs(to - mapScroll) < .5) mapScroll = to;
+      else { mapScroll = ease(mapScroll, to, .3); owed = true; }
+    }
+    mapScroll = Math.max(0, Math.min(maxScroll, mapScroll));
+    const top = mapScroll;
+
+    // Floor of 15px: in a 1,500-turn chat a true-to-scale lens is a few pixels
+    // tall and simply cannot be found. Slightly generous beats invisible.
+    const lensPxH = Math.max(15, motion.lensH * step);
+    const lensTop = motion.lensY * step - top, lensBot = lensTop + lensPxH;
     const falloff = h * .28;
     /** Attention, as a number: full inside the lens, easing away outside it. */
     const focus = (y) => {
@@ -897,79 +961,72 @@
     ctx.globalAlpha = 1;
 
     /* ---- the lens: a soft band with two caps, never a boxed outline ---- */
-    const lh = Math.min(motion.lensH, h - motion.lensY);
-    const showLens = vis && vis.last - vis.first + 1 < n;
+    const showLens = vis && vis.last - vis.first + 1 < n && lensBot > 0 && lensTop < h;
     if (showLens) {
+      const ly = Math.max(0, lensTop), lh = Math.min(h, lensBot) - ly;
       ctx.globalAlpha = motion.intro;
       ctx.fillStyle = c.lens;
-      box(0, motion.lensY, w, lh, 4);
+      box(0, ly, w, lh, 4);
       // Caps, not a border. Two bright rules spanning the full width read as a
       // film-strip selection; a rectangle outline reads as a form field.
       ctx.fillStyle = c["lens-edge"];
-      ctx.fillRect(0, motion.lensY, w, 1.5);
-      ctx.fillRect(0, motion.lensY + lh - 1.5, w, 1.5);
+      if (lensTop >= 0) ctx.fillRect(0, lensTop, w, 1.5);
+      if (lensBot <= h) ctx.fillRect(0, lensBot - 1.5, w, 1.5);
       ctx.globalAlpha = 1;
     }
 
-    if (step < 1.4) {
-      // Below ~1px per message the ticks fuse, so each pixel row reports the
-      // longest turn it covers — the waveform survives the compression. Plain
-      // fillRect here: at this density rounded paths cost more than they show.
-      const rows = Math.max(1, Math.round(h));
-      const per = n / rows;
-      for (let y = 0; y < rows; y++) {
-        const a = Math.floor(y * per);
-        const b = Math.min(n, Math.max(a + 1, Math.floor((y + 1) * per)));
-        let wide = 0, code = false;
-        for (let i = a; i < b; i++) {
-          const m = messages[i];
-          const v = norm(m);
-          if (v > wide) wide = v;
-          if (m.hasCode) code = true;
-        }
-        const alpha = reveal(a) * Math.min(1, focus(y) + magnify(y) * .5);
-        if (alpha <= 0) continue;
-        // No role colouring here, deliberately. Turns alternate, so every pixel
-        // row covers both speakers and any two-tone split floods to a solid
-        // accent bar that claims a distinction it cannot actually resolve. The
-        // accent is spent on something it can still say honestly at this scale:
-        // where you are.
-        ctx.globalAlpha = alpha;
-        ctx.fillStyle = (y >= lensTop && y <= lensBot) ? c.user : c.ai;
-        ctx.fillRect(padX, y, trackW * (.2 + .8 * wide), 1);
-        if (code) {
-          ctx.fillStyle = c.code;
-          ctx.fillRect(padX + trackW + 1.5, y, CODE_W, 1);
-        }
+    const gap = step > 6 ? 2.2 : step > 3 ? 1.1 : .6;
+    const barH = Math.max(1.4, Math.min(TICK_MAX, step - gap));
+    const r = Math.min(barH / 2, 2);
+
+    /* ---- the mark under the pointer: exactly the message the panel shows ---- */
+    if (hoverIdx >= 0 && hoverIdx < n) {
+      const hy = hoverIdx * step - top;
+      if (hy + step > 0 && hy < h) {
+        ctx.fillStyle = c["lens-edge"];
+        ctx.globalAlpha = .35 * motion.hoverK;
+        box(0, hy + (step - Math.max(barH + 3, Math.min(step, 8))) / 2, w, Math.max(barH + 3, Math.min(step, 8)), 3);
+        ctx.globalAlpha = 1;
       }
-      ctx.globalAlpha = 1;
-    } else {
-      const gap = step > 6 ? 2.2 : step > 3 ? 1.1 : step > 1.8 ? .6 : 0;
-      const barH = Math.max(1.4, Math.min(TICK_MAX, step - gap));
-      const r = Math.min(barH / 2, 2);
-      for (let i = 0; i < n; i++) {
-        const m = messages[i];
-        // Centred in its slot, so sparse chats stay evenly spaced hairlines.
-        const y = i * step + (step - barH) / 2;
-        const mid = y + barH / 2;
-        const shown = reveal(i);
-        if (shown <= 0) continue;
-        const mag = magnify(mid);
-        const user = m.role === "user";
-        // A prompt never shrinks below a readable stub, however terse it was.
-        const base = trackW * (user ? .3 + .7 * norm(m) : .2 + .8 * norm(m));
-        ctx.globalAlpha = shown * Math.min(1, focus(mid) + mag * .5);
-        ctx.fillStyle = user ? c.user : c.ai;
-        box(padX, y, Math.min(trackW, base + mag * 3.5), barH, r);
-        if (m.hasCode) {
-          ctx.fillStyle = c.code;
-          box(padX + trackW + 1.5, y, CODE_W, barH, .75);
-        }
+    }
+
+    const from = Math.max(0, Math.floor(top / step));
+    const to = Math.min(n, Math.ceil((top + h) / step));
+    for (let i = from; i < to; i++) {
+      const m = messages[i];
+      // Centred in its slot, so sparse chats stay evenly spaced hairlines.
+      const y = i * step - top + (step - barH) / 2;
+      const mid = y + barH / 2;
+      const shown = reveal(i);
+      if (shown <= 0) continue;
+      const mag = magnify(mid);
+      const user = m.role === "user";
+      const hot = i === hoverIdx;
+      // A prompt never shrinks below a readable stub, however terse it was.
+      const base = trackW * (user ? .3 + .7 * norm(m) : .2 + .8 * norm(m));
+      ctx.globalAlpha = hot ? 1 : shown * Math.min(1, focus(mid) + mag * .5);
+      ctx.fillStyle = user ? c.user : c.ai;
+      box(padX, y, hot ? trackW : Math.min(trackW, base + mag * 3.5), barH, r);
+      if (m.hasCode) {
+        ctx.fillStyle = c.code;
+        box(padX + trackW + 1.5, y, CODE_W, barH, .75);
       }
+    }
+    ctx.globalAlpha = 1;
+
+    /* ---- scrolled: the thread itself becomes the scrollbar ---- */
+    if (maxScroll > 0) {
+      const th = Math.max(14, h * h / (n * step));
+      const ty = (h - th) * (top / maxScroll);
+      ctx.fillStyle = c["lens-edge"];
+      ctx.globalAlpha = .9 * motion.intro;
+      box(padX - .5, ty, 2, th, 1);
       ctx.globalAlpha = 1;
     }
 
-    if (showLens) {
+    if (hoverIdx >= 0 && hoverText) {
+      setPositionAria(hoverIdx + 1, hoverText);
+    } else if (showLens) {
       setPositionAria(vis.first + 1,
         "Viewing messages " + (vis.first + 1) + " through " + (vis.last + 1) + " of " + n);
     } else {
@@ -987,9 +1044,9 @@
     if (root) { root.remove(); root = null; canvas = null; ctx = null; }
     toggle = null; approxBadge = null;
     ariaMax = ""; ariaNow = ""; ariaText = ""; ariaLabel = ""; approxState = null;
-    if (tooltip) { tooltip.remove(); tooltip = null; }
     messages = []; live.length = 0; liveDirty = true;
-    scroller = null; palette = null; hoverIdx = -1; resting = true;
+    scroller = null; palette = null; hoverIdx = -1; hoverText = ""; resting = true;
+    mapScroll = 0; mapFollow = true;
     pin = null; held = false;               // the closure it reached is gone
     clearCatalog();
   }
@@ -1094,7 +1151,7 @@
     /* Hovering already opened this message in the panel; clicking is the ask to
        ARRIVE. Called anyway for the paths that reach here without a hover —
        the outline's starred rows, and the keyboard. */
-    try { self.LCTHistoryPanel.show(index); } catch (_) { /* panel not up */ }
+    try { self.LCTHistoryPanel.show(index, identity(index)); } catch (_) { /* panel not up */ }
     if (mounted(entry) || remount(entry)) return jump(entry.el);
     if (!entry.key || !scroller) return;      // no stable id — nothing to seek to
 

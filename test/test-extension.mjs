@@ -110,6 +110,16 @@ const server = spawn("python3", ["-m", "http.server", "8917", "--bind", "127.0.0
 
 let pass = 0, fail = 0, suiteFinished = false;
 const failed = []; // reprinted at the end: one FAIL in 180 lines scrolls past
+/* A strip with more marks than it can space 2.5px apart scrolls; "the top of
+   the strip" then means the top of what it shows. Clicks that mean "the first
+   message" scroll it to its start first, as a person would. */
+const mapToTop = async (pg) => {
+  await pg.hover("#lct-mm-canvas");
+  await pg.mouse.wheel(0, -1e7);
+  await pg.waitForTimeout(200);
+};
+const mapText = (pg) => pg.evaluate(() => document.getElementById("lct-mm-canvas")?.getAttribute("aria-valuetext") || "");
+
 const t = (name, cond, extra = "") => {
   const line = `${name}${cond || !extra ? "" : "  → " + extra}`;
   cond ? pass++ : (fail++, failed.push(line));
@@ -1437,7 +1447,8 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
   // B2b — minimap jump: ONE click must land, even across sleeping regions
   // (real bug: smooth-scroll + estimated heights crawled and landed short)
   const scrollBefore = await page.evaluate(() => window.scrollY);
-  await page.locator("#lct-mm-canvas").click({ position: { x: 5, y: 4 } });
+  await mapToTop(page);
+  await page.locator("#lct-mm-canvas").click({ position: { x: 5, y: 2 } });
   await page.waitForFunction((was) => window.scrollY < was / 10, scrollBefore, { timeout: 3000 });
   t("B2b minimap click jumps across the whole chat in one go", true);
   t("B2b jump target pulses", (await page.locator(".lct-hit").count()) >= 1);
@@ -1630,6 +1641,24 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
     document.getElementById("lct-mm-canvas")?.getAttribute("aria-valuemax") || "");
   t("B2j a match inside a turn does not become a second tick",
     nestedTicks === "6", nestedTicks);
+
+  /* B2k — one mark per message, and each mark is exactly its message: the
+     last mark and only the last mark is the last message (a strip that handed
+     the panel positions it did not share opened the last message from the
+     bottom third of the marks). A short chat never scrolls. */
+  await nestPage.hover("#lct-minimap");
+  await nestPage.waitForTimeout(400);
+  const nb = await nestPage.locator("#lct-mm-canvas").boundingBox();
+  const markAt = async (y) => { await nestPage.mouse.move(nb.x + 5, nb.y + y); await nestPage.waitForTimeout(120); return mapText(nestPage); };
+  const perMark = nb.height / 6;
+  const saw = [];
+  for (let k = 0; k < 6; k++) saw.push((await markAt(Math.round(perMark * k + perMark / 2))).match(/^Message (\d+) of (\d+)/)?.slice(1).join("/") || "?");
+  t("B2k each of the 6 marks is its own message, in order", saw.join(",") === "1/6,2/6,3/6,4/6,5/6,6/6", saw.join(","));
+  const beforeLast = await markAt(Math.round(perMark * 5 - 2));
+  t("B2k the mark above the last is not the last message", /^Message 5 of 6/.test(beforeLast), beforeLast);
+  await nestPage.mouse.wheel(0, 400);
+  await nestPage.waitForTimeout(150);
+  t("B2k a short chat's strip does not scroll", /^Message 1 of 6/.test(await markAt(Math.round(perMark / 2))));
   await nestPage.close();
 
   const mathPage = await ctx.newPage();
@@ -2026,14 +2055,15 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
   // A message the page has never rendered is still readable from the map.
   await seeded.hover("#lct-minimap");
   await seeded.waitForTimeout(400);
+  await mapToTop(seeded);
   const mmBox = await seeded.locator("#lct-mm-canvas").boundingBox();
   await seeded.mouse.move(mmBox.x + 5, mmBox.y + Math.round(mmBox.height * 0.08));
   await seeded.waitForTimeout(300);
-  t("B2e hovering an unmounted tick shows the provider's own snippet",
-    await seeded.evaluate(() => {
-      const tip = document.getElementById("lct-mm-tooltip");
-      return !!tip && tip.style.display === "block" && /Virtual history message \d+/.test(tip.textContent);
-    }));
+  const unmountedSays = await mapText(seeded);
+  t("B2e hovering an unmounted tick names the provider's own snippet",
+    /^Message \d+ of 1500\. .*Virtual history message \d+/.test(unmountedSays), unmountedSays);
+  t("B2e there is no one-line hover box beside the strip",
+    await seeded.evaluate(() => !document.getElementById("lct-mm-tooltip")));
 
   // Previews used to be built with textContent, which welds block elements
   // together: a "#820" label and the paragraph under it came back as
@@ -2045,10 +2075,7 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
   const mmb = await page.locator("#lct-mm-canvas").boundingBox();
   await page.mouse.move(mmb.x + 5, mmb.y + Math.round(mmb.height * 0.5));
   await page.waitForTimeout(300);
-  const tipText = await page.evaluate(() => {
-    const tip = document.getElementById("lct-mm-tooltip");
-    return tip && tip.style.display === "block" ? tip.textContent : "";
-  });
+  const tipText = await mapText(page);
   /* An image message previewed as nothing, exported as a blank line and matched
      no search. These hosts write the file name into alt, which is the handle a
      person actually has on their own screenshots — so the preview uses it.
@@ -2074,13 +2101,10 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
   for (let i = 0; i < 10 && !/Screenshot/.test(shotTip); i++) {
     await page.mouse.move(mmShot.x + 5, mmShot.y + mmShot.height - 1 - i);
     await page.waitForTimeout(120);
-    shotTip = await page.evaluate(() => {
-      const t = document.getElementById("lct-mm-tooltip");
-      return t && t.style.display === "block" ? t.textContent : "";
-    });
+    shotTip = await mapText(page);
   }
   t("B2h an image message previews by its file name, not as nothing",
-    /🖼/.test(shotTip) && /Screenshot 2026-04-07\.png/.test(shotTip), shotTip || "(no tooltip)");
+    /🖼/.test(shotTip) && /Screenshot 2026-04-07\.png/.test(shotTip), shotTip || "(nothing announced)");
   await page.evaluate(() => document.getElementById("lct-shot-msg")?.remove());
   await page.mouse.move(400, 400);
   await page.waitForTimeout(500);
@@ -2089,6 +2113,30 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
     !!tipText && !/#\d+[A-Za-z]/.test(tipText) && !/[a-z][A-Z]/.test(tipText.replace(/ChatGPT|DeepSeek/g, "")),
     tipText);
   await page.mouse.move(400, 400);
+
+  /* B2l — a strip too dense to point at scrolls instead, one 2.5px slot per
+     message, and once it shows an end that end is the conversation's end. */
+  await mapToTop(page);
+  const db = await page.locator("#lct-mm-canvas").boundingBox();
+  const denseN = Number(await page.getAttribute("#lct-mm-canvas", "aria-valuemax"));
+  const dense = async (y) => {
+    await page.mouse.move(db.x + 5, db.y + y);
+    await page.waitForTimeout(120);
+    return (await mapText(page)).match(/^Message (\d+) of/)?.[1] || "?";
+  };
+  const firstSays = await dense(1);
+  const eleventh = await dense(26);
+  await page.mouse.wheel(0, 1e7);
+  await page.waitForTimeout(200);
+  const lastSays = await dense(db.height - 3);
+  const lastRaw = await mapText(page);
+  t("B2l a 1,500-message strip scrolls rather than squeezing its marks together",
+    db.height / denseN < 2.5, `${Math.round(db.height)}px for ${denseN}`);
+  t("B2l at its top the first mark is message 1, and 26px down is message 11",
+    firstSays === "1" && eleventh === "11", `${firstSays}, ${eleventh}`);
+  t("B2l scrolled to its end, the last mark is the last message", lastSays === String(denseN), `${lastSays} of ${denseN} · ${lastRaw.slice(0, 90)}`);
+  await page.mouse.move(400, 400);
+  await page.waitForTimeout(400);
 
   // The map is the conversation, not the render window: recycling every mounted
   // row must not shrink it, and a new reply must extend it by exactly one.
@@ -2125,6 +2173,7 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
     null, { timeout: 20000 });
   await topClick.hover("#lct-minimap");
   await topClick.waitForTimeout(400);
+  await mapToTop(topClick);
   const topBox = await topClick.locator("#lct-mm-canvas").boundingBox();
   await topClick.mouse.click(topBox.x + 5, topBox.y + 1);
   await topClick.waitForTimeout(300);
@@ -2233,6 +2282,7 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
     null, { timeout: 20000 });
   await stopped.hover("#lct-minimap");
   await stopped.waitForTimeout(400);
+  await mapToTop(stopped);
   const stopBox = await stopped.locator("#lct-mm-canvas").boundingBox();
   await stopped.mouse.click(stopBox.x + 5, stopBox.y + 1);
   await stopped.waitForFunction(() =>
@@ -2647,6 +2697,17 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
   await page.waitForTimeout(600); // well past the grace window
   t("B8 star stays while the cursor rests on it",
     await page.locator("#lct-star").isVisible());
+  /* An invisible bridge reached 48px left of the star and 12px above it, so the
+     star lit up — and a click starred the message — with the pointer beside it. */
+  const beside = await page.evaluate(() => {
+    const r = document.getElementById("lct-star").getBoundingClientRect();
+    const at = (x, y) => !!document.elementFromPoint(x, y)?.closest?.("#lct-star");
+    return { on: at(r.left + r.width / 2, r.top + r.height / 2), left: at(r.left - 12, r.top + r.height / 2), above: at(r.left + r.width / 2, r.top - 6) };
+  });
+  t("B8 the star answers only on the star itself, not the space beside it",
+    beside.on && !beside.left && !beside.above, JSON.stringify(beside));
+  t("B8 the star carries no native tooltip",
+    await page.evaluate(() => !document.getElementById("lct-star").hasAttribute("title")));
   await page.click("#lct-star");
   await page.waitForFunction(() => document.getElementById("t-msg").classList.contains("lct-starred"));
   t("B8 message gets starred marker", true);

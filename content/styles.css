@@ -827,16 +827,9 @@
   #lct-b-toast { background: rgba(255, 255, 255, 0.99); color: #2a1018; border-color: rgba(209, 31, 79, 0.35); }
 }
 
-/* invisible hover bridge: covers the gap between the message edge and the
-   star button so the cursor never crosses "dead" ground on the way over */
-#lct-star::after {
-  content: "";
-  position: absolute;
-  left: -48px;
-  top: -12px;
-  bottom: -12px;
-  right: -6px;
-}
+/* No invisible hover bridge. One reached 48px left of the star, so it lit up
+   and starred the message with the pointer beside it, not on it. The trip from
+   the message to the star is covered by the hide delay in outline.js. */
 
 /* ===== 2026 visual system: quiet precision, shared across every injected tool ===== */
 :root {
@@ -892,7 +885,6 @@
    pointer moves them out from under the click. */
 #lct-minimap:hover { opacity: 1; }
 #lct-export-bar button:hover { border-color: color-mix(in srgb, var(--lct-accent) 32%, transparent); background: var(--lct-accent-soft); color: var(--lct-accent); transform: translateY(-1px); }
-#lct-mm-tooltip,
 #lct-time-tag,
 #lct-note,
 #lct-b-toast {
@@ -1468,25 +1460,6 @@ html[data-lct-history-state="running"] #lct-minimap { opacity: 1; }
 }
 #lct-minimap #lct-export-bar button:active { transform: scale(.94); }
 
-#lct-mm-tooltip {
-  display: none;
-  position: fixed;
-  z-index: 2147483001;
-  pointer-events: none;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  right: calc(54px + var(--lct-rail-inset, 0px));
-  width: min(280px, calc(100vw - 72px));
-  max-width: none;
-  padding: 8px 10px;
-  border: 1px solid var(--lct-line);
-  border-radius: 10px;
-  background: var(--lct-surface-strong);
-  color: var(--lct-ink);
-  box-shadow: var(--lct-shadow);
-  font: 500 11px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  white-space: normal;
-}
 
 @media (max-height: 420px), (max-width: 640px) {
   #lct-minimap { display: none !important; }
