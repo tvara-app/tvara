@@ -876,7 +876,7 @@
       return {
         id: String((chat && chat.id) || ""),
         provider: String((chat && chat.platform) || host || "Other"),
-        url: host ? `https://${host}${path}` : "",
+        url: (host && self.LCTProduct && self.LCTProduct.chatUrl(host, path)) || (host ? `https://${host}${path}` : ""),
         title: String((chat && chat.title) || ""),
         createdAt: iso(chat && chat.createdAt),
         updatedAt: iso(chat && chat.updatedAt),

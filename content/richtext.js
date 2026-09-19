@@ -421,7 +421,12 @@
     '[role="group"][aria-label*="action" i]',
     ".ds-icon-button", ".ds-atom-button", ".ds-icon",
     '[class*="banner-wrap" i]',
-    '[aria-label*="copy" i]', '[aria-label*="regenerate" i]', '[aria-label*="retry" i]'
+    '[aria-label*="copy" i]', '[aria-label*="regenerate" i]', '[aria-label*="retry" i]',
+    // Screen-reader-only labels. claude.ai heads every turn with an sr-only
+    // "You said:" / "Claude responded:", and they were archived as the first
+    // words of every message.
+    // Gemini's are Angular's .cdk-visually-hidden.
+    ".sr-only", ".cdk-visually-hidden"
   ].join(",");
 
   const MATH_SEL = ".katex, .katex-display, mjx-container, math, [data-latex], [data-tex]";

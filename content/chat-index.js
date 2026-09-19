@@ -24,7 +24,7 @@
   function supported(adapter) {
     if (!adapter) return false;
     if (testHost()) return true;
-    return adapter.id === "chatgpt" && adapter.convPath && adapter.convPath.test(location.pathname);
+    return !!(adapter.convPath && adapter.convPath.test(location.pathname));
   }
 
   /**
@@ -44,7 +44,8 @@
     return new Promise((resolve) => {
       try {
         chrome.runtime.sendMessage(
-          { type: "chat-index", host: location.hostname, path: location.pathname, force: !!force },
+          // foreground: the reader has this conversation open and is waiting on it
+          { type: "chat-index", host: location.hostname, path: location.pathname, force: !!force, foreground: true },
           (r) => { void chrome.runtime.lastError; resolve(r || null); }
         );
       } catch (_) { resolve(null); }    // extension context already invalidated

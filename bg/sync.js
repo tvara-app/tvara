@@ -37,9 +37,20 @@ async function historyWindowFloor() {
  */
 async function chatIndex(host, path, opts = {}) {
   const adapter = BG_ADAPTERS.find((a) => a.host === host && String(path || "").startsWith(a.prefix));
-  // Gemini and Perplexity have no history endpoint here at all — answer before
-  // touching the network rather than failing somewhere deeper.
-  if (!adapter || adapter.id !== "chatgpt" || !adapter.detailFull) return { status: "unsupported" };
+  if (!adapter) return { status: "unsupported" };
+  /* Where there is no full-transcript read (ChatGPT and Claude Code have one),
+     the map comes from the archive, with no request of its own.
+     claude.ai renders the last five of an eighteen-message chat, and a map drawn
+     from the page had five marks; the archived transcript has all eighteen.
+     Rows without ids are kept and keyed by place. */
+  if (!adapter.detailFull) {
+    try {
+      const rec = await recordFor(host, path);
+      if (!rec || !Array.isArray(rec.msgs) || !rec.msgs.length) return { status: "missing" };
+      return { status: "ok", source: "archive", stale: false, title: rec.title || "",
+        entries: indexFromMsgs(rec.msgs, { host, keepAll: true }) };
+    } catch { return { status: "unavailable" }; }
+  }
   const convId = String(path).slice(adapter.prefix.length).split(/[?#/]/)[0];
   if (!convId) return { status: "unsupported" };
   const recordId = adapter.host + adapter.prefix + convId;
@@ -48,8 +59,12 @@ async function chatIndex(host, path, opts = {}) {
     try {
       const d = await db();
       const rec = await reqP(tx(d, "readonly").get(recordId));
-      if (rec && rec.mv === 1 && rec.n >= 1) {
-        return { status: "ok", source: "archive", stale: true, entries: indexFromMsgs(rec.msgs), title: rec.title || "" };
+      // ChatGPT's copy must carry ids to bind to its page; elsewhere any copy
+      // paints a complete map at once, and the provider's read corrects it.
+      const other = adapter.id !== "chatgpt";
+      if (rec && Array.isArray(rec.msgs) && rec.msgs.length && (rec.mv === 1 || other)) {
+        return { status: "ok", source: "archive", stale: true, title: rec.title || "",
+          entries: indexFromMsgs(rec.msgs, { host, keepAll: other }) };
       }
     } catch { /* fall through to the provider */ }
   }

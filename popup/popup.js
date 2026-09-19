@@ -712,6 +712,8 @@
            says nothing about what it is a percentage OF, and the reset is the
            thing people actually plan around. */
         const bits = [];
+        // A side meter says what it is: "0% left · Codex", never passed off as the plan.
+        if (it.side && it.meter) bits.push(it.meter);
         if (it.span) bits.push(it.span);
         if (it.resetAt) bits.push("resets " + resetLabel(it.resetAt));
         if (stale) bits.push("read " + agoLabel(it.observedAt));
@@ -964,6 +966,8 @@
            without this the row read "3 left" and never said 3 of what. A
            generic key names nothing, so it stays quiet instead. */
         meter: (win && (win.label || (GENERIC_METER.test(win.key || "") ? "" : win.key))) || "",
+        // Codex, deep research, image generation: a meter beside the plan, never the plan itself.
+        side: !!(win && win.side),
         unit: (win && win.unit) || "",
         basis: (win && win.basis) || "",
         source: (win && win.source) || rec.source || "",
@@ -1093,7 +1097,11 @@
     // A count is a reading too — "25 deep research left" is as much an answer
     // as "62%", and a panel that ignored it would say "nothing reported" while
     // showing a number.
-    const reported = ranked.filter((it) => it.pctLeft !== null);
+    /* A side meter never speaks for the provider. An eight-hour-old ChatGPT
+       reading kept only its Codex window — the chat counters had reset and aged
+       out, the month-long Codex window had not — and the panel headlined
+       "ChatGPT is out" to somebody who could chat all day. */
+    const reported = ranked.filter((it) => it.pctLeft !== null && !it.side);
     // Ordered by what is closest to running out: with two counts in hand, "3
     // pro searches left" is the sentence worth writing, not "25 deep research".
     const counted = ranked

@@ -110,7 +110,17 @@
       return; // selector drift → degrade to doing nothing
     }
 
-    if (messages.length < MIN_MESSAGES) {
+    /* Our own rows too. On a host that mounts only its last few turns (ChatGPT
+       holds six of a 106-message chat), history-loader.js puts the rest back
+       from the archive — a hundred rows this engine never saw, so every one of
+       them was painted and the count read 0 on the longest chat there is.
+       They are older than anything the host mounted, so they go first. The
+       minimap still gets the host's rows alone: ours are not the host's turns. */
+    let own;
+    try { own = Array.from(document.querySelectorAll("#lct-old-turns [data-lct-turn-id]")); } catch (_) { own = []; }
+    const managed = own.length ? own.concat(messages) : messages;
+
+    if (managed.length < MIN_MESSAGES) {
       unwindowAll();
       windowedCount = 0;
       if (onUpdate) onUpdate(messages, 0);
@@ -121,12 +131,12 @@
 
     // rebuild tail set (newest messages stay live for streaming)
     tailSet = new WeakSet();
-    for (let i = Math.max(0, messages.length - KEEP_TAIL); i < messages.length; i++) {
-      tailSet.add(messages[i]);
+    for (let i = Math.max(0, managed.length - KEEP_TAIL); i < managed.length; i++) {
+      tailSet.add(managed[i]);
     }
 
     let count = 0;
-    for (const el of messages) {
+    for (const el of managed) {
       if (!observedSet.has(el)) {
         observedSet.add(el);
         io.observe(el); // initial IO callback will classify it

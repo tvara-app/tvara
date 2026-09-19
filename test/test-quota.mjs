@@ -389,7 +389,21 @@ t("a figure outranks a deadline",
         reset_after: new Date(NOW + 36e5).toISOString() }]
     }, { now: NOW });
     const p = Q.primary({ id: "chatgpt", windows: wins, observedAt: NOW }, { now: NOW });
-    return p && p.remaining === 25 && p.label === "deep_research";
+    return p && p.remaining === 25 && p.label === "deep research";   // named for a person, see FEATURE_LABELS
+  })());
+
+t("ChatGPT's reasoning messages lead its row, not pasted files or Codex",
+  (() => {
+    // Live, 2026-09-19: a Go account's init counters and its Codex meter.
+    const wins = Q.fromJson({ limits_progress: [
+      { feature_name: "paste_text_to_file", remaining: 80, reset_after: new Date(NOW + 36e5).toISOString() },
+      { feature_name: "file_upload", remaining: 77, reset_after: new Date(NOW + 36e5).toISOString() },
+      { feature_name: "reason", remaining: 299, reset_after: new Date(NOW + 72e5).toISOString() },
+      { feature_name: "image_gen", remaining: 120, reset_after: new Date(NOW + 864e5).toISOString() }] }, { now: NOW });
+    const codex = Q.tagMeter(Q.fromJson({ rate_limit: { primary_window: { used_percent: 100, limit_window_seconds: 2592000,
+      reset_at: Math.floor((NOW + 20 * 864e5) / 1000) } } }, { now: NOW }), "codex");
+    const p = Q.primary({ id: "chatgpt", windows: wins.concat(codex), observedAt: NOW }, { now: NOW });
+    return p && p.label === "reasoning messages" && p.remaining === 299;
   })());
 
 t("the best window wins whatever order it arrived in",

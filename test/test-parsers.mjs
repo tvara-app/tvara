@@ -48,12 +48,14 @@ const grab = (name) => {
 
 const NAMES = ["geminiValueEnd", "geminiFrames", "geminiPayloads", "geminiTime", "geminiAt", "geminiText", "geminiTierName",
   "bgHealTries", "quotaWhy", "keysUnder", "fillWhy",
-  "pplxTime", "pplxFromTrace", "pplxAnswer", "xaiTime", "chatBranch", "chatgptMsgs", "turnMsgs", "planName", "claudeOrgCtx", "planRank", "bestPlanSeat", "clampText", "planFromAny", "pickAllowanceSeat", "bgHealNext", "narrowsFrom"];
+  "pplxTime", "pplxFromTrace", "pplxAnswer", "xaiTime", "chatBranch", "chatgptMsgs", "turnMsgs", "planName", "claudeOrgCtx", "planRank", "bestPlanSeat", "clampText", "planFromAny", "pickAllowanceSeat", "bgHealNext", "narrowsFrom",
+  "claudeCodeMsgs", "claudeClean", "grokBranch"];
 const {
   geminiFrames, geminiPayloads, geminiTime, geminiAt, geminiText, geminiTierName, pplxTime, pplxFromTrace, pplxAnswer, xaiTime,
   chatgptMsgs, turnMsgs, planName, claudeOrgCtx, bestPlanSeat, planRank, clampText, planFromAny, pickAllowanceSeat, bgHealNext, narrowsFrom,
-  quotaWhy, keysUnder, fillWhy
+  quotaWhy, keysUnder, fillWhy, claudeCodeMsgs, claudeClean, grokBranch
 } = await import("data:text/javascript," + encodeURIComponent(
+  (src.match(/^const CLAUDE_STUB = .*;$/m) || [""])[0] + "\n" +
   NAMES.map(grab).join("\n") + `\nexport {${NAMES.join(",")}};`));
 
 let pass = 0, fail = 0;
@@ -510,6 +512,61 @@ t("fetch: every sentence carries its own remedy, so nothing is appended to it",
 t("fetch: a transport pause stops that provider before it can amplify failures",
   /kind === "rate" \|\| kind === "net" \|\| kind === "shape"/.test(src));
 
+
+/* Claude Code, read from the event stream claude.ai itself loads. Shapes are the
+   live site's (2026-09-18): newest first, one assistant event per model call. */
+{
+  let seq = 100;
+  const ev = (payload) => ({ event_id: "e" + seq, sequence_num: String(seq--), payload });
+  const user = (content, extra = {}) => ev({ type: "user", uuid: "u" + seq, message: { role: "user", content }, parent_tool_use_id: null, ...extra });
+  const asst = (content, extra = {}) => ev({ type: "assistant", uuid: "a" + seq, message: { role: "assistant", content }, parent_tool_use_id: null, ...extra });
+  const desc = [
+    asst([{ type: "text", text: "Second answer." }]),
+    user([{ type: "tool_result", tool_use_id: "t2", content: "ok" }]),
+    user("[Request interrupted by user]", { origin: { kind: "human" } }),
+    user("<command-name>/compact</command-name><command-args>keep tests</command-args>", { origin: { kind: "human" } }),
+    ev({ type: "system", uuid: "s1" }),
+    asst([{ type: "text", text: "and the rest of it." }]),
+    asst([{ type: "tool_use", id: "t1", name: "Bash", input: {} }]),
+    asst([{ type: "text", text: "Sub-agent chatter" }], { parent_tool_use_id: "t0" }),
+    asst([{ type: "text", text: "First answer," }]),
+    user("<task-notification>done</task-notification>", { origin: { kind: "task-notification" } }),
+    user([{ type: "text", text: "Switch mode." }], { isSynthetic: true }),
+    user([{ type: "text", text: "Fix the map.<system-reminder>injected</system-reminder>" }], { origin: { kind: "human" } }),
+  ];
+  const got = claudeCodeMsgs(desc).map((m) => m.r[0] + ":" + m.t);
+  t("claude code: prompts and answers only, oldest first",
+    got.join(" | ") === "u:Fix the map. | a:First answer,\n\nand the rest of it. | u:/compact keep tests | a:Second answer.",
+    got.join(" | "));
+  t("claude code: every message keeps the provider's id", claudeCodeMsgs(desc).every((m) => m.i));
+  t("claude code: an empty or foreign stream is no messages", claudeCodeMsgs(null).length === 0 && claudeCodeMsgs([{}]).length === 0);
+}
+{
+  const stub = "This block is not supported on your current device yet.";
+  t("claude text: a tool placeholder is cut, with the label line it opened with",
+    claudeClean("```\nmacOS 27 bugs\n" + stub + "\n```\n\nIf none of that") === "If none of that");
+  t("claude text: a real code block is left alone",
+    claudeClean("run\n```js\nconst a = 1;\n```\nend") === "run\n```js\nconst a = 1;\n```\nend");
+  t("claude text: the sr-only turn label a page capture read is dropped",
+    claudeClean("You said: hello there") === "hello there" && claudeClean("Claude responded: hi") === "hi");
+}
+
+/* Grok lists every node it ever made. Shape from the live API (2026-09-18):
+   an edited prompt and a regenerated answer each hang off the turn they replaced. */
+{
+  const nodes = [
+    { responseId: "u1", sender: "human" },
+    { responseId: "a1", sender: "ASSISTANT", parentResponseId: "u1" },
+    { responseId: "u2", sender: "human", parentResponseId: "a1" },
+    { responseId: "u2b", sender: "human", parentResponseId: "a1" },          // the prompt, edited
+    { responseId: "a2", sender: "ASSISTANT", parentResponseId: "u2" },
+    { responseId: "a2b", sender: "ASSISTANT", parentResponseId: "u2b" },     // its answer
+    { responseId: "a2c", sender: "ASSISTANT", parentResponseId: "u2b" },     // regenerated: the one on screen
+  ];
+  t("grok: the branch on screen, not every edit and regeneration", grokBranch(nodes).join(",") === "u1,a1,u2b,a2c", grokBranch(nodes).join(","));
+  t("grok: nodes that do not chain are kept whole rather than guessed at",
+    grokBranch([{ responseId: "x", parentResponseId: "gone" }, { responseId: "y", parentResponseId: "x" }]).join(",") === "x,y");
+}
 
 if (failed.length) {
   console.log("\nfailed:");

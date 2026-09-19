@@ -158,11 +158,19 @@
     try { return new URL(url, location.href).pathname; } catch (_) { return ""; }
   }
 
+  /* ChatGPT's page start-up call. Its name says "conversation" but its body is
+     the account's counters (limits_progress: reasoning, uploads, deep research,
+     image generation) plus banners and a model name — never a message. It is
+     the only place the chat allowance is published, so without it the panel
+     knew ChatGPT only through its Codex meter. */
+  const INIT_PATH = /^\/backend-api\/conversation\/init$/;
+
   function bodyWorthReading(path, response) {
-    if (!LIMIT_PATH.test(path)) return false;
+    const init = INIT_PATH.test(path);
+    if (!LIMIT_PATH.test(path) && !init) return false;
     // A limits endpoint that is also conversation traffic is conversation
     // traffic. Headers only.
-    if (CHAT_PATH.test(path) && !/(limit|quota|allowance|usage)/i.test(path)) return false;
+    if (!init && CHAT_PATH.test(path) && !/(limit|quota|allowance|usage)/i.test(path)) return false;
     try {
       const type = String(response.headers.get("content-type") || "").toLowerCase();
       if (type.indexOf("json") < 0) return false;           // never a stream, never HTML

@@ -1819,7 +1819,7 @@
    * @param {object} target { id, index, total, arrive() }
    */
   function seekTo(adapter, target) {
-    if (!adapter || !target || !target.id) return false;
+    if (!adapter || !target || (!target.id && typeof target.find !== "function")) return false;
     if (active) { active.cancelled = true; finish(active, "cancelled"); }
 
     const route = location.href;
@@ -1836,6 +1836,13 @@
        ChatGPT even once the walk itself was general. */
     const found = () => {
       try {
+        /* The caller may know the row better than an id can: Claude puts no id
+           in its page, and the map binds rows by their words as they mount. */
+        if (typeof target.find === "function") {
+          const el = target.find();
+          if (el) return el;
+          if (!target.id) return null;
+        }
         const direct = document.querySelector('[data-message-id="' + CSS.escape(target.id) + '"]');
         if (direct) return direct;
         /* Rows mountArchive() rendered from the copy already on this machine.

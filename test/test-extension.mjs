@@ -3432,8 +3432,11 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
 
   const unsupported = await pop.evaluate(() => new Promise((res) =>
     chrome.runtime.sendMessage({ type: "chat-index", host: "gemini.google.com", path: "/app/x" }, res)));
-  t("B11e a platform with no history endpoint is answered, not attempted",
-    unsupported.status === "unsupported", JSON.stringify(unsupported));
+  /* Every provider's map now comes from the archive; one with no full-transcript
+     read of its own answers from there and never touches the network. A chat
+     the archive does not hold is "missing" — still answered, not attempted. */
+  t("B11e a platform with no history endpoint is answered from the archive, not attempted",
+    unsupported.status === "missing" || unsupported.status === "ok", JSON.stringify(unsupported));
 
   /* --- deleted upstream: a question, never an event ---
      Losing the archived copy the moment the provider loses theirs makes the

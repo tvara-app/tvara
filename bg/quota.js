@@ -968,7 +968,9 @@ async function quotaState() {
         key: w.key, label: w.label, pctLeft: w.pctLeft, resetAt: w.resetAt,
         span: w.span || "", spanSec: w.spanSec || 0,
         basis: w.basis, unit: w.unit, remaining: w.remaining, limit: w.limit,
-        observedAt: w.observedAt || 0, source: w.source || ""
+        observedAt: w.observedAt || 0, source: w.source || "",
+        // The popup does not load lib/quota.js; it is told, not left to guess.
+        side: self.LCTQuota.isSideMeter(w)
       });
       const blockers = all.filter((w) => self.LCTQuota.blocksProvider(w));
       const blocker = blockers.reduce((latest, w) =>

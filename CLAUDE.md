@@ -477,13 +477,19 @@ from the week. `SPAN_SEC_KEYS` in `lib/quota.js` reads it BEFORE `LIMIT_KEYS` �
 `limit_window_seconds` matches those too, and taken as a ceiling it becomes a
 limit of 18000 of nothing.
 
-**Perplexity's answers are keyed by ID, not by class.** `id^="markdown-content-"`
-— one per answer — is the only hook on that host that is neither a hashed class
-nor a guess, and because every probe looked at CLASSES the whole platform fell
-through to nothing: no map at all. The layer lifts each answer to the turn that
-holds exactly one of them, then splits that turn into what was asked and what
-came back, or the strip would draw one tick per exchange and report "0 asked".
-`test/perplexity-turns.html` is two exchanges; four ticks, two each way.
+**Perplexity drops its hooks; the thread's shape is what holds.** It keyed
+answers `id="markdown-content-N"` until 2026-09, and then did not: every probe
+fell through and the map, outline, search and export all read nearly nothing
+(a 20-message thread exported 290 bytes). An answer body is now
+`.prose[data-renderer="lm"]`, and the thread is ONE list whose children
+alternate question, answer — including EMPTY placeholders for exchanges not yet
+drawn. Layer 1a (`content/adapters.js`) anchors on the first answer body outside
+`#lct-freeze` / `#lct-old-turns` (anchored inside the seek's still copy, every
+row it found was a clone and dropped), takes the children holding text, and
+marks each `data-lct-pplx` so `role()` need not guess. `slotFor(index, total)`
+answers the placeholder at a message's place when the list has one per message,
+so a jump to an exchange Perplexity has not drawn goes there instead of a seek
+that runs the whole thread and finds nothing.
 
 **A percentage is not a ratio.** Anthropic documents `utilization` as 0..100.
 Read through the generic "a value under 1 is a fraction" rule, a session 0.4%
@@ -519,6 +525,23 @@ challenge and has no quota endpoint, so its row could only ever say "no limit
 published" — a permanent line of nothing among the figures. It is archived like
 every other provider; only the placeholder is suppressed, so the day it does
 publish a number the row comes back.
+
+**ChatGPT's chat allowance is `reason`.** `conversation/init` is where ChatGPT
+publishes it: `limits_progress` of `{feature_name, remaining, reset_after}` —
+`reason` (reasoning messages on a paid plan), `file_upload`,
+`paste_text_to_file`, `image_gen`, `deep_research`. The allowlist for chatgpt
+had no word matching "reason", so that one figure was dropped as not an
+allowance, and a Go account's row could only ever show side meters — Codex's
+month at 0%, headlined "ChatGPT is out" to somebody with 299 messages left.
+Now: `reason` is on the allowlist; `FEATURE_LABELS` names the counters for a
+person ("reasoning messages", "pasted files"); uploads and pastes are side
+meters with images and deep research; a bare ceiling (a blocked feature with a
+limit and no remaining) ranks below any real reading; `quotaState()` marks each
+window `side` for the popup, which does not load `lib/quota.js`, and a side
+meter never produces the provider's "is out" verdict. `content/inject/quota-probe.js`
+reads `/backend-api/conversation/init`'s body — its name says conversation but
+it carries counters, banners and a model slug, never a message — so the figure
+is as fresh as the last time the site was opened.
 
 **The session limit is the one that stops you.** A window now carries how long
 it IS (`spanSec`, from what the provider calls it — `five_hour`, `seven_day`,
@@ -810,7 +833,14 @@ it there.
   thoughts, browsing displays and streaming placeholders were stored as
   messages. A two-message chat then mapped as FOUR ticks, two of them inside the
   answer — which reads as parts of one long response being counted separately,
-  and is how it was reported.
+  and is how it was reported. Since 2026-09 the turn is a `<section
+  data-testid="conversation-turn-N">`, and `chatgptTurns()` takes either tag.
+- **ChatGPT now mounts only its last few messages** (six of a 106-message chat),
+  and `history-loader.js` puts the rest back from the archive under
+  `#lct-old-turns`. The engine windowed only the host's rows, so on the longest
+  chat there is it slept NOTHING and painted a hundred rows of ours. `rescan()`
+  now manages our own rows too, older than anything the host mounted; the map is
+  still handed the host's rows alone. Measured: 100 of 106 asleep.
 - **An empty message is only a turn when it is a picture.** The fetch keeps one
   that carries a non-text part and marks it `m: 1`; everything else empty is
   dropped. Records written before that still hold the placeholders, so
@@ -976,6 +1006,26 @@ the centrepiece of exactly the answers this matters for, and it used to render
 as the word "begin" followed by its own letters. Cells are parsed WHOLE: fed one
 token at a time, `\frac{a}{b}` inside a matrix loses its arguments.
 
+**On every site the map is the transcript, not the render window.** claude.ai
+holds the last five rows of an eighteen-message chat and a Claude Code session
+nineteen of ninety-seven, and a map drawn from the page had five and nineteen
+marks. `chatIndex()` now answers for every provider from the archive (only
+ChatGPT and Claude Code also ask the provider), keeping rows without ids keyed by
+place (`pos:N`). With no ids in the page, `alignToSeed()` binds each rendered row
+to the entry whose opening words it carries, in order and only by a role the page
+STATES; a row matching nothing is not a mark (a tool step), and rows after the
+transcript's end are new and get marks until it is read again. A jump to an
+unmounted message passes `find()` to `seekTo()`, because an id cannot find a row
+on a page that carries none.
+
+**What claude.ai sends is not all message.** Its legacy `text` field stands a
+fenced "This block is not supported on your current device yet." (sometimes
+after the tool's label line) in for every tool call — four ahead of one answer on
+a real chat — so the Claude reader takes the `text` content blocks first and
+`claudeClean()` cuts the fences whole. Its page heads every turn with an sr-only
+"You said:" / "Claude responded:", now in `SKIP_SEL`. Records archived before
+either fix are cleaned on read (`chatArchive`, `indexFromMsgs`), on claude.ai only.
+
 **The strip is one mark per message, and each mark is exactly its message.**
 Three rules in `content/minimap.js` and `content/preview.js`, all from one
 screen recording on claude.ai:
@@ -991,7 +1041,9 @@ screen recording on claude.ai:
 - **Marks never get closer than `MIN_PITCH` (2.5px).** Past that they cannot be
   told apart or pointed at, so the strip scrolls instead of squeezing: the wheel
   moves the strip, the thread hairline becomes its scrollbar, and it follows the
-  reading position until the reader scrolls it. `yToIndex()` and `draw()` use
+  reading position until the reader scrolls it — and again as soon as the
+  reading position moves (the page scrolls) or the pointer leaves. Only leaving
+  used to, so a strip wheeled once stayed parked while the chat moved on. `yToIndex()` and `draw()` use
   the same slot arithmetic, and the mark under the pointer is highlighted.
 - **No one-line hover box.** It said less than the panel, covered the page and
   cut its text mid-word. What it said is the canvas's `aria-valuetext` now,
@@ -1042,20 +1094,34 @@ whole back-catalogue up for deletion in one dialog.
 
 ## Claude Code
 
-Sessions live at `claude.ai/code/<id>` and are a different resource from
-`chat_conversations` — the chats adapter never saw them.
+Sessions live at `claude.ai/code/session_<id>` and are a different resource from
+`chat_conversations`. They are read the way claude.ai itself reads them, observed
+on the live site on 2026-09-18 (not guessed; that rule stands):
 
-- There is **no documented endpoint**. The Compliance API that lists them is
-  Enterprise-only with its own access key. A guessed private URL is how you ship
-  a feature that archives nothing while reporting success, so the `claude-code`
-  adapter stays dormant until it has a real one.
-- It learns that path from Resource Timing: `content/main.js` reports which
-  `/api/…` paths claude.ai already fetched — paths only, no bodies, no queries —
-  and `bg/state.js` keeps them. Not a hook; the browser publishes the list.
-- Meanwhile `noteCodeSessions()` records sessions straight off the page: every
-  one is a `/code/<id>` link.
-- `convPath` is `/^\/(chat|code)\//`. It gates every per-chat feature at once,
-  which is why no card appeared on a Code link.
+- `GET /v1/code/sessions?limit=100&cursor=…` lists them. The list names a
+  session `cse_<suffix>`; its page and its events use `session_<suffix>`.
+- `GET /v1/code/sessions/{id}/events?limit=500&sort_order=desc&cursor=…` is the
+  whole transcript, newest first. `GET /v1/code/sessions/{id}` wraps the
+  session in `response_shape`.
+- Every call needs the headers the page sends: `anthropic-beta:
+  ccr-byoc-2025-07-29`, `anthropic-version: 2023-06-01`, `x-organization-uuid`.
+  Without them it is a 400.
+- `claudeCodeMsgs()` (`bg/providers.js`) turns the stream into messages a person
+  would call messages: prompts with `origin.kind` human (or none), and ONE answer
+  per turn — every assistant text between two prompts, merged, however many tool
+  calls it was spread across. Tool calls and results, system, rate-limit and
+  control events, sub-agent traffic (`parent_tool_use_id`), `isSynthetic` text,
+  task notifications and "[Request interrupted by user]" are machinery. A
+  3,465-event session is 97 messages.
+- It has `detailFull`, so `chatIndex()` reads it for the open page like ChatGPT,
+  and the background sync archives every session, so the sidebar card counts a
+  session nobody has opened here.
+- `convPath` is `/^\/(chat|code)\//`. It gates every per-chat feature at once.
+
+The page is a virtual transcript: 19 rows mounted of 97 messages. That is also
+why the speed engine has nothing to put to sleep on claude.ai — the host already
+unloads what is off screen — and a 0 there is the truth, not a fault.
+
 
 ## One chat, two ids
 
@@ -1066,6 +1132,26 @@ Perplexity serves `/search/` and `/thread/`, Grok `/c/` and `/chat/`. So the
 archive can hold a chat under one spelling while the reader arrives by the
 other. `chatIdCandidates()` resolves both on READ; canonicalising the write is
 the real fix and has to migrate what is already stored.
+
+## Grok keeps every branch, the page shows one
+
+`response-node?includeThreads=true` lists every node ever made: each edited
+prompt and each regenerated answer hangs off the turn it replaced. Flattened, a
+28-message chat archived as 36, prompts twice and answers side by side.
+`grokBranch()` takes the last node listed — the newest leaf, the branch on
+screen — and its parents; anything that does not chain is kept whole. Grok keys
+a turn `<div id="response-<uuid>">`, which `keyOf()` reads, and has
+`detailFull`, so the map binds to the page by id.
+
+## Gemini: the archive says c_<id>, the page says <id>
+
+Gemini's listing names a conversation `c_<id>` and that is the archive key, but
+the page lives at `/app/<id>`; `/app/c_<id>` opens an empty new chat. So every
+link built from the archive — Total Recall's open, the export's `url` — went
+nowhere, and the sidebar card for any chat the page reached by its real URL read
+"not tracked". `chatUrl()` strips the `c_`; `chatIdCandidates()` answers both
+spellings. The write is unchanged: re-keying would duplicate every record.
+Gemini's sr-only turn labels are Angular's `.cdk-visually-hidden`, in `SKIP_SEL`.
 
 ## One Google login, several Gemini accounts
 

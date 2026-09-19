@@ -185,7 +185,8 @@
     const seen = new Map();               // turn element -> role -> the node kept
     const out = [];
     for (const el of els) {
-      const turn = el.closest && el.closest('article[data-testid^="conversation-turn"], article[data-turn]');
+      // An <article> until 2026-09; a <section> since, with the same testid.
+      const turn = el.closest && el.closest('article[data-testid^="conversation-turn"], article[data-turn], section[data-testid^="conversation-turn"], section[data-turn]');
       if (!turn) { out.push(el); continue; }
       // Keyed by role as well as by turn: two speakers under one container are
       // two messages whatever the container is called, and a build that grouped
@@ -348,7 +349,8 @@
 
         // Layer 2: data-message-author-role without data-message-id
         // (in case the id attribute is dropped but role remains)
-        els = Array.from(document.querySelectorAll('[data-message-author-role]'));
+        // Not our own archive rows: they carry the role attribute too.
+        els = Array.from(document.querySelectorAll('[data-message-author-role]')).filter((el) => !el.closest("#lct-old-turns"));
         if (els.length) return chatgptTurns(els);
 
         // Layer 3 (legacy): article-based conversation turns
@@ -535,7 +537,7 @@
       // The layer-1 selector, quoted for the health check: matched messages that
       // do NOT satisfy it mean this platform has drifted and we are running on
       // a fallback layer — working, but on borrowed time.
-      canon: '[data-testid*=message], [data-testid*=answer], [data-testid*=query], [id^="markdown-content-"]',
+      canon: '[data-testid*=message], [data-testid*=answer], [data-testid*=query], [id^="markdown-content-"], .prose[data-renderer="lm"], [data-lct-pplx]',
       hostRe: /(^|\.)perplexity\.ai$/,
       // Best-effort: Perplexity's React DOM shifts often with hashed class names.
       // Five fallback layers: data attrs → class partials → prose containers
@@ -546,6 +548,33 @@
           '[data-lct-message], [data-testid*="message"], [data-testid*="answer"], [data-testid*="query"]'
         ));
         if (els.length) return els;
+
+        /* Layer 1a (live, 2026-09): the markdown-content ids are gone. An answer
+           body is .prose[data-renderer="lm"], and the thread is ONE list whose
+           children alternate question, answer — ten exchanges are twenty
+           children, the older ones empty placeholders until scrolled to. The
+           children holding text are the messages. Marked so role() and the
+           health check can say so without guessing. */
+        // Never the seek's still copy or our own archive rows: anchored there,
+        // the list found was a clone, and every row of it is dropped as one.
+        const lm = Array.from(document.querySelectorAll('.prose[data-renderer="lm"]'))
+          .find((e) => !e.closest("#lct-freeze, #lct-old-turns"));
+        if (lm) {
+          let turn = lm;
+          while (turn.parentElement && turn.parentElement.querySelectorAll('.prose[data-renderer="lm"]').length === 1) turn = turn.parentElement;
+          const list = turn.parentElement;
+          if (list && !list.closest("nav, aside, header, footer")) {
+            const kids = Array.from(list.children).filter((c) =>
+              (c.textContent || "").trim().length > 0 || (c.querySelector && c.querySelector("img")));
+            if (kids.length >= 2) {
+              for (const c of kids) {
+                const says = c.querySelector('.prose[data-renderer="lm"]') ? "assistant" : "user";
+                if (c.dataset.lctPplx !== says) c.dataset.lctPplx = says;
+              }
+              return kids;
+            }
+          }
+        }
 
         /* Layer 1b: the answer's own id. Perplexity numbers them —
            markdown-content-0, -1, -2 — one per answer, which is the only hook
@@ -629,8 +658,23 @@
         // Layer 5: shared heuristic (last resort)
         return heuristicInConversation(this);
       },
+      /* Every exchange keeps its place in the thread list before it is drawn —
+         an empty question and an empty answer, filled in when scrolled near.
+         When the list holds exactly as many places as the transcript has
+         messages, place k IS message k, and a jump can go there before it has
+         any text to be recognised by. */
+      slotFor(index, total) {
+        const lm = Array.from(document.querySelectorAll('.prose[data-renderer="lm"]'))
+          .find((e) => !e.closest("#lct-freeze, #lct-old-turns"));
+        if (!lm) return null;
+        let turn = lm;
+        while (turn.parentElement && turn.parentElement.querySelectorAll('.prose[data-renderer="lm"]').length === 1) turn = turn.parentElement;
+        const kids = turn.parentElement ? Array.from(turn.parentElement.children) : [];
+        return kids.length === total ? kids[index] || null : null;
+      },
       role(el) {
         if (el.hasAttribute("data-lct-message")) return el.getAttribute("data-lct-role") || "assistant";
+        if (el.dataset && el.dataset.lctPplx) return el.dataset.lctPplx;   // see layer 1a
         // The answer's own id, and the only role marker this host really gives.
         if (el.id && el.id.startsWith("markdown-content-")) return "assistant";
         if (el.querySelector && el.querySelector('[id^="markdown-content-"]')) return "assistant";

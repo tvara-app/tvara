@@ -80,6 +80,28 @@ function resolveMsgRoles(msgs) {
  * flag existed cannot prove it, and an empty row is worth nothing to any
  * feature here — no tick text, no search hit, no export line.
  */
+/* Claude's words, not the conversation's: the tool-call placeholder its legacy
+   text field carries, and the sr-only turn labels a page capture read. Records
+   archived before either was fixed still hold them, so readers clean on the way
+   out. Only on claude.ai, where these exact strings come from. */
+const CLAUDE_STUB = "This block is not supported on your current device yet";
+/* Cut each fenced stub whole. The fence may open with the tool's own label line
+   (a search query) before the stub; real code blocks are left alone. */
+function claudeClean(t) {
+  let s = String(t || "");
+  for (let i = s.indexOf(CLAUDE_STUB); i >= 0; i = s.indexOf(CLAUDE_STUB, i)) {
+    const open = s.lastIndexOf("```", i);
+    const close = s.indexOf("```", i + CLAUDE_STUB.length);
+    if (open < 0 || close < 0 || i - open > 300) { i += CLAUDE_STUB.length; continue; }
+    let end = close + 3;
+    while (end < s.length && (s[end] === "\n" || s[end] === " " || s[end] === "\t")) end++;
+    s = s.slice(0, open) + s.slice(end);
+    i = open;
+  }
+  return s.replace(/^\s*(You said|Claude responded):\s*/, "").trim();
+}
+const cleanFor = (host) => (/(^|\.)claude\.ai$/.test(String(host || "")) ? claudeClean : (t) => t);
+
 function turnMsgs(msgs) {
   const list = Array.isArray(msgs) ? msgs : [];
   const kept = list.filter((m) => m && (String(m.t || "").trim() || m.m === 1));
@@ -87,15 +109,17 @@ function turnMsgs(msgs) {
 }
 
 /** The map only needs shape and a label — never the full transcript. */
-function indexFromMsgs(msgs) {
+function indexFromMsgs(msgs, opts = {}) {
   const out = [];
   const list = turnMsgs(msgs);
   const roles = resolveMsgRoles(list);
+  const clean = cleanFor(opts.host);
   for (let i = 0; i < list.length; i++) {
     const m = list[i];
-    if (!m || !m.i) continue;
-    const t = m.t || "";
-    out.push({ i: m.i, r: roles[i] === "user" ? "user" : "assistant", n: t.length, c: IDX_CODE.test(t) ? 1 : 0, s: t.slice(0, IDX_SNIP) });
+    // Without ids the map keys a row by its place — see seed() in minimap.js.
+    if (!m || (!m.i && !opts.keepAll)) continue;
+    const t = clean(m.t || "");
+    out.push({ i: m.i || "", r: roles[i] === "user" ? "user" : "assistant", n: t.length, c: IDX_CODE.test(t) ? 1 : 0, s: t.slice(0, IDX_SNIP) });
   }
   return out;
 }
@@ -149,7 +173,12 @@ function chatIdCandidates(host, path) {
   const h = String(host || "");
   const p = String(path || "");
   const out = [h + p];
-  const seg = p.split("/").filter(Boolean).pop() || "";
+  const seg0 = p.split("/").filter(Boolean).pop() || "";
+  // Gemini: the archive keys a chat c_<id> (its listing's name), the page is /app/<id>.
+  const seg = h === "gemini.google.com" ? seg0.replace(/^c_/, "") : seg0;
+  if (h === "gemini.google.com" && seg) {
+    for (const v of [h + "/app/c_" + seg, h + "/app/" + seg]) if (!out.includes(v)) out.push(v);
+  }
   if (seg) {
     for (const a of BG_ADAPTERS) {
       if (a.host !== h) continue;
@@ -382,12 +411,13 @@ async function chatArchive(host, path) {
     const rec = await recordFor(host, path);
     if (!rec || !Array.isArray(rec.msgs) || !rec.msgs.length) return { status: "missing" };
     const msgs = turnMsgs(rec.msgs);
+    const clean = cleanFor(host);
     return {
       status: "ok",
       title: rec.title || "",
       n: Math.max(msgs.length, (Number(rec.n) || msgs.length) - (rec.msgs.length - msgs.length)),
       msgs: msgs.map((m) => ({
-        i: m.i || "", r: m.r, t: m.t || "", ts: m.ts || 0,
+        i: m.i || "", r: m.r, t: clean(m.t || ""), ts: m.ts || 0,
         // Records written before the flag existed are recognised by length.
         ...(m.c || (m.t || "").length >= MAX_MSG_CHARS ? { c: 1 } : {})
       }))

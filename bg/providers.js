@@ -714,11 +714,15 @@ const BG_ADAPTERS = [
       const msgs = [];
       for (const m of (conv.chat_messages || [])) {
         const role = m.sender === "human" ? "user" : "assistant";
-        let text = String(m.text || "").trim();
-        if (!text && Array.isArray(m.content)) {
-          text = m.content.filter((c) => c && c.type === "text").map((c) => c.text).join("\n").trim();
-        }
-        if (text) msgs.push({ r: role, t: text, ts: m.created_at ? Math.floor(new Date(m.created_at).getTime() / 1000) : 0 });
+        /* The content blocks first. The legacy `text` stands a fenced "This
+           block is not supported on your current device yet." in for every tool
+           call — four of them ahead of one answer on a real chat — and that is
+           what was archived as the answer's opening words. */
+        let text = Array.isArray(m.content)
+          ? m.content.filter((c) => c && c.type === "text" && c.text).map((c) => c.text).join("\n\n").trim()
+          : "";
+        if (!text) text = claudeClean(String(m.text || ""));
+        if (text) msgs.push({ r: role, t: text, ...(m.uuid ? { i: m.uuid } : {}), ts: m.created_at ? Math.floor(new Date(m.created_at).getTime() / 1000) : 0 });
       }
       return msgs;
     }
@@ -803,9 +807,8 @@ const BG_ADAPTERS = [
     async detail(ctx, id, opts) {
       const conv = "/rest/app-chat/conversations/" + encodeURIComponent(id);
       const nodes = await this.get(ctx, conv + "/response-node?includeThreads=true", opts);
-      const ids = (nodes.responseNodes || nodes.response_nodes || [])
-        .map((n) => n && String(n.responseId || n.response_id || ""))
-        .filter(Boolean);
+      // The branch on screen, not every edit and regeneration ever made.
+      const ids = grokBranch(nodes.responseNodes || nodes.response_nodes || []);
 
       const msgs = [];
       for (let at = 0; at < ids.length; at += GROK_RESPONSE_BATCH) {
@@ -834,14 +837,19 @@ const BG_ADAPTERS = [
         for (const m of responses) {
           const text = String((m && (m.message || m.content || m.text)) || "").trim();
           if (!text) continue;
+          const rid = String((m && (m.responseId || m.response_id)) || "");
           msgs.push({
             r: /user|human/i.test(String((m.sender || m.role) || "")) ? "user" : "assistant",
             t: text,
+            ...(rid ? { i: rid } : {}),
             ts: Math.floor(xaiTime(m.createTime || m.created_at) / 1000)
           });
         }
       }
       return msgs;
+    },
+    async detailFull(ctx, id, opts) {
+      return { msgs: await this.detail(ctx, id, opts), title: "", createdAt: 0, updatedAt: 0 };
     }
   },
   {
@@ -1262,84 +1270,141 @@ const BG_ADAPTERS = [
     }
   },
   /* ---------- Claude Code (claude.ai/code) ----------
-     A different resource from chat_conversations, so none of it was archived.
-     No documented endpoint — the Compliance API is Enterprise-only — so this
-     uses the path claude.ai was seen calling, and stays dormant until it has
-     one. content/main.js records sessions off the page meanwhile. */
+     A different resource from chat_conversations. Read the way claude.ai itself
+     reads it, observed on the live site on 2026-09-18: GET /v1/code/sessions and
+     /v1/code/sessions/{id}/events, with the headers the page sends. The list
+     names a session cse_…; its page and its events use session_…, same suffix. */
   {
     id: "claude-code", label: "Claude Code", base: "https://claude.ai",
     host: "claude.ai", prefix: "/code/",
-    async available() { return !!(await claudeCodeListPath()); },
     async prepare() {
-      const listPath = await claudeCodeListPath();
-      if (!listPath) throw new BgError("net", "no code listing endpoint seen yet");
       const orgs = await bgJson(await bgFetch(this.base + "/api/organizations"));
       const list = (Array.isArray(orgs) ? orgs : []).filter((o) => o && o.uuid);
-      const org = list[0];
-      if (!org) throw new BgError("auth", "not signed in");
-      return { ...claudeOrgCtx(org), orgs: list, listPath };
+      if (!list.length) throw new BgError("auth", "not signed in");
+      return { ...claudeOrgCtx(list[0]), orgs: list };
     },
     accounts(ctx) {
       const list = Array.isArray(ctx.orgs) && ctx.orgs.length ? ctx.orgs : [{ uuid: ctx.org }];
       return list.map((org) => ({ ...ctx, ...claudeOrgCtx(org) }));
     },
-    async list(ctx, sinceMs, progress) {
-      const path = claudeFillOrg(ctx.listPath, ctx.org);
-      return pageThrough(this, {
-        pageSize: 50, sinceMs, progress,
-        fetchPage: async (page, limit) => {
-          const body = await bgJson(await bgFetch(`${this.base}${path}?limit=${limit}&${page}`));
-          for (const v of [body, body && body.data, body && body.sessions, body && body.results]) {
-            if (Array.isArray(v)) return v;
-          }
-          return [];
-        },
-        // Field names undocumented; a half-parsed listing is still a title and
-        // a date, which is the difference between findable and absent.
-        toMeta: (it) => {
-          const at = (v) => (v ? new Date(v).getTime() || 0 : 0);
-          return {
-            id: String(it.uuid || it.id || it.session_id || ""),
-            title: String(it.name || it.title || it.summary || it.description || ""),
-            createdAt: at(it.created_at || it.createdAt || it.started_at),
-            updatedAt: at(it.updated_at || it.updatedAt || it.last_active_at) || Date.now()
-          };
-        }
-      });
+    async get(ctx, path, opts) {
+      return bgJson(await bgFetch(this.base + path, { ...(opts || {}), headers: {
+        "anthropic-beta": "ccr-byoc-2025-07-29", "anthropic-version": "2023-06-01",
+        "content-type": "application/json", "x-organization-uuid": ctx.org
+      } }));
     },
-    async detail(ctx, id, opts) {
-      const path = claudeFillOrg(ctx.listPath, ctx.org);
-      const body = await bgJson(await bgFetch(`${this.base}${path}/${encodeURIComponent(id)}`, opts));
-      const turns = [body && body.chat_messages, body && body.messages, body && body.events,
-                     body && body.transcript, body && body.turns].find(Array.isArray) || [];
-      const msgs = [];
-      for (const m of turns) {
-        if (!m || typeof m !== "object") continue;
-        const who = String(m.sender || m.role || m.type || "").toLowerCase();
-        if (who.includes("tool") || who.includes("system")) continue;   // not a turn anybody wrote
-        const role = who.includes("human") || who.includes("user") ? "user" : "assistant";
-        let text = String(m.text || m.content || "").trim();
-        if (!text && Array.isArray(m.content)) {
-          text = m.content.filter((c) => c && c.type === "text").map((c) => c.text).join("\n").trim();
+    // Cursor-paged, so not pageThrough(): that caches one paging scheme per HOST,
+    // and claude.ai's chat listing pages another way.
+    async list(ctx, sinceMs, progress) {
+      const metas = [];
+      let cursor = "", pages = 0, complete = false;
+      while (pages < 40) {
+        const body = await this.get(ctx, "/v1/code/sessions?limit=100" + (cursor ? "&cursor=" + encodeURIComponent(cursor) : ""));
+        const data = Array.isArray(body && body.data) ? body.data : [];
+        pages++;
+        for (const it of data) {
+          const m = codeSessionMeta(it);
+          if (m.id && !(sinceMs && m.updatedAt && m.updatedAt < sinceMs)) metas.push(m);
         }
-        if (!text) continue;
-        const ts = m.created_at || m.createdAt || m.timestamp;
-        msgs.push({ r: role, t: text, ts: ts ? Math.floor(new Date(ts).getTime() / 1000) || 0 : 0 });
+        if (typeof progress === "function") progress(metas.length);
+        cursor = (body && body.next_cursor) || "";
+        if (!cursor || !data.length) { complete = true; break; }
       }
-      return msgs;
+      return { metas, complete, paged: pages > 1, unreadable: false };
+    },
+    async events(ctx, id, opts) {
+      const out = [];
+      let cursor = "", pages = 0;
+      do {
+        const body = await this.get(ctx, `/v1/code/sessions/${encodeURIComponent(id)}/events?limit=500&sort_order=desc` +
+          (cursor ? "&cursor=" + encodeURIComponent(cursor) : ""), opts);
+        if (Array.isArray(body && body.data)) out.push(...body.data);
+        cursor = (body && body.next_cursor) || "";
+      } while (cursor && ++pages < 60);
+      return out;
+    },
+    async detail(ctx, id, opts) { return claudeCodeMsgs(await this.events(ctx, id, opts)); },
+    async detailFull(ctx, id, opts) {
+      const raw = await this.get(ctx, `/v1/code/sessions/${encodeURIComponent(id)}`, opts).catch(() => ({}));
+      const meta = codeSessionMeta((raw && (raw.response_shape || raw.data)) || raw);
+      return { msgs: await this.detail(ctx, id, opts), title: meta.title, createdAt: meta.createdAt, updatedAt: meta.updatedAt };
     }
   }
 ];
 
-/** Put the real organisation back into a learned path template. */
-const claudeFillOrg = (template, org) =>
-  String(template || "").replace(/\/organizations\/\*/, "/organizations/" + org);
+/* Grok lists every node it ever made (includeThreads): each edit and each
+   regeneration is a node whose parent is the turn it replaced. Flattened, a
+   28-message chat archived as 36, with prompts twice and answers side by side.
+   The last node listed is the newest leaf — the branch on screen — so the chat
+   is that leaf and its parents. Anything that does not chain is kept whole. */
+function grokBranch(nodes) {
+  const list = (Array.isArray(nodes) ? nodes : []).filter((n) => n && (n.responseId || n.response_id));
+  const idOf = (n) => String(n.responseId || n.response_id);
+  const parentOf = (n) => String(n.parentResponseId || n.parent_response_id || "");
+  if (!list.length) return [];
+  const byId = new Map(list.map((n) => [idOf(n), n]));
+  const chain = [];
+  const seen = new Set();
+  for (let n = list[list.length - 1]; n && !seen.has(idOf(n)); n = byId.get(parentOf(n))) {
+    seen.add(idOf(n));
+    chain.push(idOf(n));
+  }
+  const rooted = chain.length && !parentOf(byId.get(chain[chain.length - 1]));
+  return rooted ? chain.reverse() : list.map(idOf);
+}
 
-/* Learned listing path. A trailing "*" is one session, not the list. */
-async function claudeCodeListPath() {
-  const seen = await readApiSeen("claude.ai");
-  return seen
-    .filter((p) => /session/i.test(p) && !p.endsWith("/*"))
-    .filter((p) => !/(message|event|permission|setting|feature|usage)/i.test(p))
-    .sort((a, b) => b.length - a.length)[0] || "";
+function codeSessionMeta(it) {
+  const at = (v) => (v ? new Date(v).getTime() || 0 : 0);
+  const raw = String((it && it.id) || "");
+  return {
+    id: raw.startsWith("cse_") ? "session_" + raw.slice(4) : raw,
+    title: String((it && it.title) || ""),
+    createdAt: at(it && it.created_at),
+    updatedAt: at(it && (it.last_event_at || it.updated_at)) || Date.now()
+  };
+}
+
+/* One Claude Code session as the messages a person would call messages: what
+   they typed, and what Claude wrote back — one answer per turn, however many
+   tool calls it was spread across. The rest of the event stream is machinery:
+   tool calls and their results, system, rate-limit and control events,
+   sub-agent traffic, and text the client injected (isSynthetic, or an origin
+   other than a human, such as a task notification). */
+function claudeCodeMsgs(events) {
+  const list = (Array.isArray(events) ? events : []).filter((e) => e && e.payload)
+    .sort((a, b) => Number(a.sequence_num || 0) - Number(b.sequence_num || 0));
+  const textOf = (c) => (typeof c === "string" ? c
+    : Array.isArray(c) ? c.filter((x) => x && x.type === "text" && x.text).map((x) => x.text).join("\n\n") : "");
+  const tsOf = (pl) => (pl.timestamp ? Math.floor(new Date(pl.timestamp).getTime() / 1000) || 0 : 0);
+  const msgs = [];
+  const seen = new Set();
+  let answer = null;
+  for (const e of list) {
+    const pl = e.payload;
+    if (pl.parent_tool_use_id) continue;
+    const id = String(pl.uuid || e.event_id || "");
+    if (id && seen.has(id)) continue;
+    if (id) seen.add(id);
+    const content = pl.message && pl.message.content;
+    if (pl.type === "user") {
+      const kind = pl.origin && pl.origin.kind;
+      if (pl.isSynthetic || (kind && kind !== "human")) continue;
+      let t = textOf(content).replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
+      const cmd = /^<command-name>([^<]*)<\/command-name>/.exec(t);
+      if (cmd) {
+        const args = /<command-args>([^<]*)<\/command-args>/.exec(t);
+        t = (cmd[1].trim() + (args && args[1].trim() ? " " + args[1].trim() : "")).trim();
+      } else if (t.startsWith("<") || /^\[Request interrupted/.test(t)) continue;   // the client wrote it, not a person
+      if (!t) continue;
+      answer = null;
+      msgs.push({ r: "user", t, i: id, ts: tsOf(pl) });
+    } else if (pl.type === "assistant") {
+      const t = textOf(content).trim();
+      if (!t) continue;
+      if (answer) { answer.t += "\n\n" + t; continue; }
+      answer = { r: "assistant", t, i: id, ts: tsOf(pl) };
+      msgs.push(answer);
+    }
+  }
+  return msgs;
 }

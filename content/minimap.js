@@ -31,6 +31,7 @@
   // The strip scrolls only once its marks would be too close to tell apart.
   let mapScroll = 0;       // css px of strip above its visible top
   let mapFollow = true;    // keep the reading position in view until the reader scrolls the strip
+  let lensSeen = "";       // the reading position last drawn — its moving hands follow back
   const metaCache = new WeakMap(); // el -> {role, hasCode, snippet}
   const rows = new WeakMap();      // el -> projected row (hosts with no stable ids)
   let projectDirty = true;         // the projection is stale — see project()
@@ -46,6 +47,7 @@
   // catalog is the truth and the mounted window is just what happens to be
   // rendered right now. Un-seeded, it is the other way round.
   let seeded = false;
+  let seedHasIds = false;  // a transcript keyed by provider id, not by place
   let onStale = null;      // main.js hands us a "the seed looks wrong" callback
   // The mounted projection changes on engine updates, not on every scroll
   // frame. Keep its indices until that next update so a 5,000-turn map does
@@ -287,8 +289,10 @@
     if (!el) return "";
     let k = keyCache.get(el);
     if (k !== undefined) return k;
-    const id = el.getAttribute("data-message-id") ||
-      el.querySelector?.("[data-message-id]")?.getAttribute("data-message-id");
+    // Grok keys a turn by its response id: <div id="response-<uuid>">.
+    const own = (n) => n && (n.getAttribute("data-message-id") ||
+      (/^response-[0-9a-f-]{8,}$/.test(n.id || "") ? n.id.slice(9) : ""));
+    const id = own(el) || own(el.querySelector?.('[data-message-id], [id^="response-"]'));
     k = id ? "id:" + id : "";
     keyCache.set(el, k);
     return k;
@@ -470,6 +474,10 @@
     let resolved = [];
     try { resolved = self.LCTAdapters.resolveRoles(adapter, msgEls); } catch (_) { resolved = []; }
 
+    if (!allStable && seeded) {
+      alignToSeed(msgEls, resolved, adapter);
+      return;
+    }
     if (!allStable) {
       // Other platforms often keep their whole transcript mounted. Do not risk
       // merging identical text-only prompts into a false history there.
@@ -492,6 +500,11 @@
       return;
     }
 
+    /* A transcript keyed by place cannot be merged with a page keyed by id —
+       nothing would ever match, the seed would be dropped as a stale branch
+       and asked for again, forever. The page's ids win until the provider's
+       own read (which carries ids) arrives. */
+    if (seeded && !seedHasIds) { clearCatalog(route); catalogAdapter = adapter; }
     if (seeded) mergeIntoSeed(keys);
     else mergeCatalogOrder(keys, msgEls);
 
@@ -515,6 +528,68 @@
     }
     project();
     liveDirty = true;
+  }
+
+  const fold = (t) => String(t || "").slice(0, 400).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+  const extraKeys = new WeakMap();   // el -> "el:n", rows newer than the transcript
+  let extraSeq = 0;
+  let staleAsked = -1;
+
+  /* Claude and the rest put no message id in the page, and render only part of
+     a long chat: claude.ai holds the last five of eighteen. With a transcript in
+     hand the map IS the transcript — one mark per message, whatever the page
+     happens to hold. A rendered row lends its element to the entry whose opening
+     words it carries, searched in order; a row matching nothing is not a mark
+     (a tool step, a status line). Rows after the transcript's last message are
+     newer than it: they get marks, and the transcript is asked for again. */
+  function alignToSeed(msgEls, resolved, adapter) {
+    const base = catalogOrder.map((key) => catalog.get(key)).filter(Boolean);
+    for (const e of base) if (e.el && !e.el.isConnected) e.el = null;
+    let from = 0, lastBound = -1, tailUnmatched = false;
+    const fresh = [];
+    for (let d = 0; d < msgEls.length; d++) {
+      const el = msgEls[d];
+      const meta = metaFor(el, adapter, d >= msgEls.length - 3, resolved[d]);
+      const role = resolved[d] || meta.role;
+      // Only a role the page STATES narrows the search. A Claude Code row states
+      // none, and the alternation guess would rule out the right entry.
+      let stated;
+      try { stated = adapter.role(el) || ""; } catch (_) { stated = ""; }
+      let hit = -1;
+      for (let k = from; k < base.length; k++) {
+        const e = base[k];
+        if (stated && e.role && e.role !== stated) continue;
+        if (e.head && e.head.length >= 6 && meta.probe.includes(e.head)) { hit = k; break; }
+      }
+      if (hit >= 0) {
+        const e = base[hit];
+        e.el = el; e.hasCode = meta.hasCode; e.probe = meta.probe; e.len = meta.len;
+        // The transcript's words beat a page row that previewed as nothing.
+        if (meta.snippet && meta.snippet !== "Image / attachment") e.snippet = meta.snippet;
+        from = hit + 1; lastBound = hit;
+        fresh.length = 0; tailUnmatched = false;   // an unmatched row before a match was not new
+        continue;
+      }
+      tailUnmatched = true;
+      if (lastBound === base.length - 1) {
+        let row = rows.get(el);
+        if (!row) {
+          let key = extraKeys.get(el);
+          if (!key) { key = "el:" + (++extraSeq); extraKeys.set(el, key); }
+          row = { el, key };
+          rows.set(el, row);
+        }
+        row.role = role || meta.role; row.hasCode = meta.hasCode; row.snippet = meta.snippet;
+        row.probe = meta.probe; row.len = meta.len;
+        fresh.push(row);
+      }
+    }
+    messages = fresh.length ? base.concat(fresh) : base;
+    liveDirty = true;
+    if (tailUnmatched && staleAsked !== msgEls.length && onStale) {
+      staleAsked = msgEls.length;
+      onStale();
+    }
   }
 
   // The projection only changes when the ORDER does. Entries are mutated in
@@ -573,13 +648,16 @@
 
     const order = [];
     const known = new Set();
-    for (const e of entries) {
-      if (!e || !e.i) continue;
-      const key = "id:" + e.i;
+    for (let x = 0; x < entries.length; x++) {
+      const e = entries[x];
+      if (!e) continue;
+      // An archive row with no provider id still is a message: keyed by place.
+      const key = e.i ? "id:" + e.i : "pos:" + x;
       if (known.has(key)) continue;       // a provider that repeats an id must not double a tick
       known.add(key);
       order.push(key);
       const entry = catalog.get(key) || { key, el: null };
+      entry.head = fold(e.s).slice(0, 24);
       // Whatever is mounted beats the index — it is what the reader can see.
       if (!entry.el) {
         entry.role = e.r === "user" ? "user" : "assistant";
@@ -597,9 +675,11 @@
       const entry = catalog.get(key);
       if (entry && entry.el && entry.el.isConnected) order.push(key);
     }
+    staleAsked = -1;
     catalogOrder = order;
     reindexCatalog();
     seeded = true;
+    seedHasIds = order.some((k) => k.startsWith("id:"));
     project();
 
     build();                              // paint before the engine's first tick
@@ -687,6 +767,8 @@
   }
 
   function computeApprox(msgEls, adapter) {
+    // A transcript in hand is the count; the page's selectors are not asked.
+    if (seeded) { approx = false; approxAt = -1; return; }
     if (!adapter || !adapter.canon || !msgEls.length) { approx = false; approxAt = -1; return; }
     if (approxAt === msgEls.length) return;          // only when the shape changes
     approxAt = msgEls.length;
@@ -924,7 +1006,11 @@
     if (resting) { drawRest(w, h, c, vis, n); return owed; }
 
     /* A strip that scrolls keeps where you are reading in view, until the
-       reader scrolls the strip themselves; leaving it hands control back. */
+       reader scrolls the strip themselves; leaving it, or scrolling the PAGE
+       (the reading position moves), hands control back. Only leaving did, so a
+       strip wheeled once stayed parked while the chat below it moved on. */
+    const lensNow = vis ? vis.first + ":" + vis.last : "";
+    if (lensNow !== lensSeen) { if (lensSeen) mapFollow = true; lensSeen = lensNow; }
     if (mapFollow && vis) {
       const mid = (motion.lensY + motion.lensH / 2) * step;
       const to = Math.max(0, Math.min(maxScroll, mid - h / 2));
@@ -1046,7 +1132,7 @@
     ariaMax = ""; ariaNow = ""; ariaText = ""; ariaLabel = ""; approxState = null;
     messages = []; live.length = 0; liveDirty = true;
     scroller = null; palette = null; hoverIdx = -1; hoverText = ""; resting = true;
-    mapScroll = 0; mapFollow = true;
+    mapScroll = 0; mapFollow = true; lensSeen = "";
     pin = null; held = false;               // the closure it reached is gone
     clearCatalog();
   }
@@ -1095,7 +1181,7 @@
 
   /** Re-resolve a catalog entry against the live DOM (the row may have remounted). */
   function remount(entry) {
-    if (!entry || !entry.key) return null;
+    if (!entry || !entry.key || !entry.key.startsWith("id:")) return null;
     const id = entry.key.slice(3);            // "id:<message-id>"
     let el = null;
     try {
@@ -1153,6 +1239,10 @@
        the outline's starred rows, and the keyboard. */
     try { self.LCTHistoryPanel.show(index, identity(index)); } catch (_) { /* panel not up */ }
     if (mounted(entry) || remount(entry)) return jump(entry.el);
+    // A host that keeps an empty place for every message: go to the place.
+    let slot = null;
+    try { slot = catalogAdapter && catalogAdapter.slotFor ? catalogAdapter.slotFor(index, messages.length) : null; } catch (_) { slot = null; }
+    if (slot) return jump(slot);
     if (!entry.key || !scroller) return;      // no stable id — nothing to seek to
 
     /* No preview panel. It was here so that reading a message did not have to
@@ -1172,7 +1262,10 @@
     // clicking the top of the map did nothing.
     if (above < 0) {
       const began = self.LCTHistoryLoader.seekTo(catalogAdapter, {
-        id: entry.key.slice(3),
+        id: entry.key.startsWith("id:") ? entry.key.slice(3) : "",
+        // Bound and in the document is enough: while the seek runs the host's
+        // own rows sit hidden under the freeze, so they measure zero high.
+        find: () => ((entry.el && entry.el.isConnected) || remount(entry) ? entry.el : null),
         index,
         total: messages.length,
         arrive: () => {
