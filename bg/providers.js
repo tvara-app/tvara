@@ -1342,6 +1342,8 @@ function grokBranch(nodes) {
   const idOf = (n) => String(n.responseId || n.response_id);
   const parentOf = (n) => String(n.parentResponseId || n.parent_response_id || "");
   if (!list.length) return [];
+  // A listing with no parents anywhere is already the reading order, whole.
+  if (!list.some((n) => parentOf(n))) return list.map(idOf);
   const byId = new Map(list.map((n) => [idOf(n), n]));
   const chain = [];
   const seen = new Set();
@@ -1349,7 +1351,7 @@ function grokBranch(nodes) {
     seen.add(idOf(n));
     chain.push(idOf(n));
   }
-  const rooted = chain.length && !parentOf(byId.get(chain[chain.length - 1]));
+  const rooted = chain.length > 1 && !parentOf(byId.get(chain[chain.length - 1]));
   return rooted ? chain.reverse() : list.map(idOf);
 }
 

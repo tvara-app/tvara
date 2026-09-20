@@ -1240,7 +1240,7 @@
     try { self.LCTHistoryPanel.show(index, identity(index)); } catch (_) { /* panel not up */ }
     if (mounted(entry) || remount(entry)) return jump(entry.el);
     // A host that keeps an empty place for every message: go to the place.
-    let slot = null;
+    let slot;
     try { slot = catalogAdapter && catalogAdapter.slotFor ? catalogAdapter.slotFor(index, messages.length) : null; } catch (_) { slot = null; }
     if (slot) return jump(slot);
     if (!entry.key || !scroller) return;      // no stable id — nothing to seek to

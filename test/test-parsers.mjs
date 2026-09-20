@@ -564,6 +564,8 @@ t("fetch: a transport pause stops that provider before it can amplify failures",
     { responseId: "a2c", sender: "ASSISTANT", parentResponseId: "u2b" },     // regenerated: the one on screen
   ];
   t("grok: the branch on screen, not every edit and regeneration", grokBranch(nodes).join(",") === "u1,a1,u2b,a2c", grokBranch(nodes).join(","));
+  t("grok: a listing with no parents at all is already the reading order",
+    grokBranch([{ responseId: "a" }, { responseId: "b" }, { responseId: "c" }]).join(",") === "a,b,c");
   t("grok: nodes that do not chain are kept whole rather than guessed at",
     grokBranch([{ responseId: "x", parentResponseId: "gone" }, { responseId: "y", parentResponseId: "x" }]).join(",") === "x,y");
 }
