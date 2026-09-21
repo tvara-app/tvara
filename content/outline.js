@@ -126,17 +126,44 @@
     el.classList.toggle("lct-starred", on);
   }
 
+  const STAR = 26;
+  let placed = null;   // message + geometry the star was last placed for
+
   function positionStarBtn(m) {
     ensureStarBtn();
-    const r = m.getBoundingClientRect();
-    starBtn.style.display = "flex";
-    starBtn.style.top = Math.max(4, r.top + 6) + "px";
-    // OUTSIDE the message's right edge — floating it inside covers the text
-    // (real bug seen on ChatGPT: the button sat on the last words of a line).
-    // Falls back to just-inside only when the layout leaves no room.
-    const outside = innerWidth - r.right - 34;
-    starBtn.style.right = (outside >= 8 ? outside : Math.max(2, innerWidth - r.right + 4)) + "px";
     starBtn.classList.toggle("lct-star-on", !!stars[keyOf(m)]);
+    const r = m.getBoundingClientRect();
+    const sig = [r.top, r.right, r.bottom, innerWidth, innerHeight].join();
+    if (placed && placed.m === m && placed.sig === sig && starBtn.style.display === "flex") return;
+    placed = { m, sig };
+    // Beside the part of the message that shows: a host header pinned over
+    // the top holds controls (ChatGPT's sticky Copy code), never the star.
+    const top = self.LCTPlace.visibleTop(m, r, r.right - 12) + 6;
+    // OUTSIDE the right edge first — inside covers the text (seen on ChatGPT:
+    // the button sat on the last words of a line); inside only with no room,
+    // and never on a host control.
+    const inX = r.right - STAR - 4;
+    const spots = [[r.right + 8, top]];
+    for (let y = top; y + STAR <= Math.min(r.bottom, top + 110); y += STAR + 8) spots.push([inX, y]);
+    for (let x = inX - STAR - 8; x > r.left && x >= inX - 3 * (STAR + 8); x -= STAR + 8) spots.push([x, top]);
+    const at = self.LCTPlace.pick(spots, STAR, STAR);
+    // Nowhere clear: no star. One on a host button takes that button's click.
+    if (!at) { starBtn.style.display = "none"; return; }
+    placed.dx = at[0] - r.left;
+    placed.dy = at[1] - r.top;
+    starBtn.style.display = "flex";
+    starBtn.style.right = "auto";
+    starBtn.style.left = at[0] + "px";
+    starBtn.style.top = at[1] + "px";
+  }
+
+  /** Mid-scroll the star rides with its message; placing it again hit-tests
+      the page, and doing that every frame slowed a 1,500-message scroll. */
+  function slideStarBtn(m) {
+    if (!placed || placed.m !== m || placed.dx === undefined || starBtn.style.display !== "flex") return;
+    const r = m.getBoundingClientRect();
+    starBtn.style.left = r.left + placed.dx + "px";
+    starBtn.style.top = r.top + placed.dy + "px";
   }
 
   let starHideTimer = null;
@@ -369,14 +396,21 @@
     // auto-scroll on open, while streaming, and on every jump, so the button
     // was gone more often than not. Follow the message instead, and only give
     // up once it has actually left the viewport.
+    let frame = 0, settle = 0;
+    const follow = (full) => {
+      if (!hoverMsg) return;
+      if (!hoverMsg.isConnected) { hoverMsg = null; starBtn.style.display = "none"; return; }
+      const r = hoverMsg.getBoundingClientRect();
+      if (r.bottom < 40 || r.top > innerHeight - 20) { starBtn.style.display = "none"; return; }
+      if (full) { placed = null; positionStarBtn(hoverMsg); } else slideStarBtn(hoverMsg);
+    };
     window.addEventListener(
       "scroll",
       () => {
         if (!starBtn || !hoverMsg) return;
-        if (!hoverMsg.isConnected) { hoverMsg = null; starBtn.style.display = "none"; return; }
-        const r = hoverMsg.getBoundingClientRect();
-        if (r.bottom < 40 || r.top > innerHeight - 20) { starBtn.style.display = "none"; return; }
-        positionStarBtn(hoverMsg);
+        clearTimeout(settle);
+        settle = setTimeout(() => follow(true), 150);   // placed properly once it stops
+        if (!frame) frame = requestAnimationFrame(() => { frame = 0; follow(false); });
       },
       { passive: true, capture: true }
     );

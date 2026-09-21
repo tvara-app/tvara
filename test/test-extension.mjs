@@ -2745,6 +2745,73 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
   await page.waitForSelector(".lct-starred", { timeout: 15000 });
   t("B8 star survives page reload", true);
 
+  /* ============ B8b. the star and the time label cover no host control ============
+     ChatGPT keeps a code block's Copy at the top right of the answer, in a header
+     that sticks under the page's own pinned bar. 1.0.0 put an invisible hit area
+     over it and starred the answer on every press of Copy; the label sat on it. */
+  const b8bScroll = await page.evaluate(() => scrollY);
+  await page.evaluate(() => {
+    const div = document.createElement("div");
+    div.className = "msg assistant";
+    div.id = "t-code-msg";
+    div.setAttribute("data-lct-message", "");
+    div.setAttribute("data-lct-role", "assistant");
+    const top = document.querySelector("header").getBoundingClientRect().bottom;
+    div.innerHTML =
+      `<div id="t-code-head" style="position:sticky;top:${top}px;z-index:2;display:flex;justify-content:space-between;align-items:center;height:32px;padding:0 8px;background:#333">` +
+      '<span>text</span><button id="t-copy" style="width:24px;height:24px">C</button></div>' +
+      '<pre style="height:1400px;margin:0">the college hackathon.</pre>';
+    document.getElementById("chat").appendChild(div);
+  });
+  await page.waitForTimeout(1200); // engine + outline notice the new message
+  const coverCheck = async (label) => {
+    await page.evaluate(() => {
+      const el = document.getElementById("t-code-msg");
+      scrollTo(0, el.getBoundingClientRect().top + scrollY + 300); // its top under the pinned bar
+    });
+    await page.waitForTimeout(400);
+    const copy = await page.locator("#t-copy").boundingBox();
+    const cx = copy.x + copy.width / 2, cy = copy.y + copy.height / 2;
+    await page.mouse.move(cx - 60, cy + 120);
+    await page.mouse.move(cx, cy, { steps: 4 });
+    await page.waitForSelector("#lct-star", { state: "visible" });
+    const g = await page.evaluate(() => {
+      const box = (el) => el && el.style.display !== "none" ? el.getBoundingClientRect() : null;
+      const hit = (a, b) => !!a && !!b && a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+      const copy = document.getElementById("t-copy").getBoundingClientRect();
+      const bar = document.querySelector("header").getBoundingClientRect().bottom;
+      const star = box(document.getElementById("lct-star"));
+      const tag = box(document.getElementById("lct-time-tag"));
+      const onTop = document.elementFromPoint(copy.left + copy.width / 2, copy.top + copy.height / 2);
+      return {
+        starOnCopy: hit(star, copy), tagOnCopy: hit(tag, copy),
+        starUnderBar: !!star && star.top < bar, tagUnderBar: !!tag && tag.top < bar,
+        copyOnTop: onTop && onTop.id === "t-copy", tag: !!tag,
+      };
+    });
+    t(`B8b ${label}: the star is not on the code block's Copy`, !g.starOnCopy, JSON.stringify(g));
+    t(`B8b ${label}: the time label is not on the code block's Copy`, !g.tagOnCopy, JSON.stringify(g));
+    t(`B8b ${label}: neither sits on the page's pinned bar`, !g.starUnderBar && !g.tagUnderBar, JSON.stringify(g));
+    t(`B8b ${label}: Copy is the topmost thing under its own centre`, g.copyOnTop, JSON.stringify(g));
+    await page.mouse.click(cx, cy);
+    await page.waitForTimeout(250);
+    t(`B8b ${label}: pressing Copy does not star the answer`,
+      await page.evaluate(() => !document.getElementById("t-code-msg").classList.contains("lct-starred")));
+  };
+  await coverCheck("wide");
+  // no gutter: the star has to go inside, and inside is where Copy is. Only this
+  // message widens — reflowing 1,500 others moves the page under later blocks.
+  await page.evaluate(() => {
+    document.getElementById("t-code-msg").style.cssText =
+      "position:relative;left:calc(50% - 50vw + 10px);width:calc(100vw - 20px)";
+  });
+  await page.mouse.move(640, 5);
+  await page.waitForTimeout(600);
+  await coverCheck("narrow");
+  await page.mouse.move(640, 5);
+  await page.evaluate((y) => { document.getElementById("t-code-msg").remove(); scrollTo(0, y); }, b8bScroll);
+  await page.waitForTimeout(600);
+
   /* ============ B9. honest metrics ============ */
   await pop.waitForFunction(async () => {
     const s = (await chrome.storage.local.get("stats:127.0.0.1"))["stats:127.0.0.1"];

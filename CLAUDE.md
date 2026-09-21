@@ -1053,6 +1053,18 @@ screen recording on claude.ai:
 48px to its left, so it lit up and starred the message with the pointer beside
 it. The trip from the message is covered by the hide delay in `outline.js`.
 
+**Nothing we float sits on a host control.** 1.0.0 still had that bridge, and
+on ChatGPT it lay over a code block's Copy — every press of Copy starred the
+answer, and the time label sat on top of it. `content/place.js` is the one rule
+for the star and the label: a short list of spots, each taken only when nothing
+pressable (a real control, a `role`, or a pointer cursor) lies within 3px of it,
+looked for beneath our own map too. A spot starts below whatever the host pins
+over the top of the message (`visibleTop()` — ChatGPT's bar, a sticky code
+header), never at the viewport's edge. No clear spot means no star and no label.
+Mid-scroll the star slides with its message and is placed properly once the
+scroll stops; hit-testing every frame slowed a 1,500-message page. B8b covers
+the wide and the gutterless layout.
+
 The preview panel reads the ARCHIVE, not the DOM — so it is only ever as fresh
 as the last flush. `content/indexer.js` bumps `self.LCTArchiveRev` on every write
 and the panel re-reads on it; while open it re-checks every 2.5 s, keeping the

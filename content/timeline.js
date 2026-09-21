@@ -277,6 +277,8 @@
     return null;
   }
 
+  let placed = null;   // message + geometry + text the label was last placed for
+
   function onHover(e) {
     if (!display) return;
     const m = messageOf(e.target);
@@ -285,10 +287,30 @@
     if (!text) return hideTag();
     ensureTag();
     const r = m.getBoundingClientRect();
+    const sig = [r.top, r.left, r.right, innerWidth, innerHeight, text].join();
+    if (placed && placed.m === m && placed.sig === sig && tag.style.display === "block") return;
+    placed = { m, sig };
     tag.textContent = text;
+    tag.style.visibility = "hidden";
     tag.style.display = "block";
-    tag.style.top = Math.max(4, r.top - 24) + "px";
-    tag.style.right = Math.max(8, innerWidth - r.right + 4) + "px";
+    const w = tag.offsetWidth, h = tag.offsetHeight;
+    // Above the message, else at the top of what shows of it — right, then
+    // left — and never over a host control: a label on a code block's Copy
+    // hid it. No clear spot means no label.
+    const vt = self.LCTPlace.visibleTop(m, r, r.right - 12);
+    const floor = vt > Math.max(0, r.top) ? vt : 4;
+    const above = r.top - h - 4;
+    const at = self.LCTPlace.pick([
+      above >= floor && [r.right - w - 4, above],
+      above >= floor && [r.left + 4, above],
+      [r.right - w - 4, vt + 4],
+      [r.left + 4, vt + 4],
+    ], w, h);
+    if (!at) { tag.style.display = "none"; tag.style.visibility = ""; return; }
+    tag.style.right = "auto";
+    tag.style.left = at[0] + "px";
+    tag.style.top = at[1] + "px";
+    tag.style.visibility = "";
   }
 
   function init(a) {

@@ -75,6 +75,7 @@
         "content/minimap.js",
         "content/exporter.js",
         "content/search.js",
+        "content/place.js",
         "content/timeline.js",
         "content/outline.js",
         "content/chatcard.js",
