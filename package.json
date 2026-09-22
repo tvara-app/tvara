@@ -1,6 +1,6 @@
 {
   "name": "tvara",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "description": "Keep long AI chats fast, searchable and backed up locally—without deleting messages or sending chat text to us.",
   "type": "module",
