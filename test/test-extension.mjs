@@ -1525,7 +1525,7 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
      the assertion that used to ride on the default has to state the setting it
      is testing. Unticked means unticked: no walk, no paging, no state. */
   await pop.evaluate(() => chrome.storage.local.set({
-    settings: { enabled: true, minimap: true, time: true, history: false }
+    settings: { enabled: true, minimap: true, time: true, mountHistory: false }
   }));
   const quiet = await ctx.newPage();
   trackErrors(quiet);
@@ -2326,7 +2326,7 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
      reach the earliest turn, stop, and restore the reader without relying on
      a magic scroll height. */
   await pop.evaluate(() => chrome.storage.local.set({
-    settings: { enabled: true, minimap: true, time: true, history: true }
+    settings: { enabled: true, minimap: true, time: true, mountHistory: true }
   }));
   /* B2c1 — the setting is ON and a long chat has just opened. The whole
      conversation must arrive, and the reader must never see it happen. The walk
@@ -2557,7 +2557,7 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
     JSON.stringify({ partial, finished }));
   await resumed.close();
   await pop.evaluate(() => chrome.storage.local.set({
-    settings: { enabled: true, minimap: true, time: true, history: false }
+    settings: { enabled: true, minimap: true, time: true, mountHistory: false }
   }));
 
   /* B2f — the strip is not allowed to just not be there. Everything we draw
@@ -4708,7 +4708,7 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
   };
 
   const setWarn = (on) => pop.evaluate((v) => chrome.storage.local.set({
-    settings: { enabled: true, minimap: true, time: true, history: false, quota: true, quotaWarn: v }
+    settings: { enabled: true, minimap: true, time: true, mountHistory: false, quota: true, quotaWarn: v }
   }), on);
 
   /** Feed the worker a reading the way an observed response arrives.

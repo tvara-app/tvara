@@ -17,11 +17,13 @@
     time: true,
     tempArchive: false,  // opt-in: the host was told not to keep these
 
-    /* ON by default. It was opt-in, and opt-in meant off: the whole promise of
-       this extension is that a long conversation is all there, and a toggle
-       nobody finds does not keep that promise. Turning it off is still one
-       click — see "Load full history on open" in the popup. */
-    history: true,     // mount older turns in the page — see history-loader.js
+    /* OFF by default, under a new key. The hosts load their own older turns
+       as you scroll up — ChatGPT reaches message 1 of 107 with every image —
+       and 96 archived rows put above its list were text with the images
+       stripped, duplicated what it then loaded itself, and moved the page
+       under the reader. The old `history` key is ignored on purpose: every
+       install that ever saved a setting holds `history: true`. */
+    mountHistory: false,   // mount older turns in the page — see history-loader.js
     pro: false,
     trialUntil: 0      // ms epoch; 0 = no trial started
   };
@@ -674,11 +676,7 @@
       state.enabled = settings.enabled !== false;
       state.minimap = settings.minimap !== false;
       state.time = settings.time !== false;
-      /* !== false, not === true. A stored settings object written before this
-         default flipped has no `history` key at all, and reading that as "off"
-         would leave every existing install opted out of the thing they
-         installed this for. */
-      state.history = settings.history !== false;
+      state.mountHistory = settings.mountHistory === true;
       state.tempArchive = settings.tempArchive === true;
     }
     // The worker holds the signed entitlement; content scripts only ask.
@@ -710,7 +708,7 @@
 
   function applyState() {
     self.LCTRecall.setTempArchive(state.enabled && state.tempArchive);
-    self.LCTHistoryLoader.setAuto(state.enabled && state.history && toolsUnlocked());
+    self.LCTHistoryLoader.setAuto(state.enabled && state.mountHistory && toolsUnlocked());
     self.LCTTimeline.setDisplay(state.enabled && state.time && toolsUnlocked());
     self.LCTOutline.setEnabled(state.enabled && toolsUnlocked());
     /* Free everywhere, like the minimap. The card shows four integers about the

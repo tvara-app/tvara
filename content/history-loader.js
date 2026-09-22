@@ -12,7 +12,7 @@
  * never in the open. Full-text history comes from the background sync and the
  * map from the provider index, neither of which touches the page, so this walk
  * is only ever for putting the messages THEMSELVES back: the ⤒ button, or
- * settings.history.
+ * settings.mountHistory.
  *
  * The automatic path does both, and neither is something a reader watches.
  * mountArchive() renders the older turns straight from the copy already on this
@@ -67,7 +67,7 @@
   const INPUT_EVENTS = ["wheel", "touchstart", "pointerdown", "keydown"];
 
   let active = null;
-  let autoAllowed = false;             // settings.history — off unless asked for
+  let autoAllowed = false;             // settings.mountHistory — off unless asked for
   const startedRoutes = new Set();     // auto-start fires once per route
   const completedRoutes = new Set();   // reached the oldest turn — never redo
 
@@ -834,7 +834,7 @@
      above the host's list, inserted with the scroll paid for in the same task so
      the reader's view does not shift by a pixel.
 
-     This is what settings.history does now. No scroller is touched, so there is
+     This is what settings.mountHistory does now. No scroller is touched, so there is
      no movement to hide, no freeze, and no waiting for a background tab. The
      walk stays for the ⤒ button alone, where somebody asked for it. */
   const MOUNT_ID = "lct-old-turns";
@@ -1707,7 +1707,7 @@
     return true;
   }
 
-  /** Auto path. Off unless settings.history says otherwise — see the header. */
+  /** Auto path. Off unless settings.mountHistory says otherwise — see the header. */
   function maybeStart(adapter, messages) {
     if (!autoAllowed) return;
     const route = location.href;

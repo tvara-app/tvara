@@ -213,8 +213,8 @@
     $("toggle-enabled").checked = !s || s.enabled !== false;
     $("toggle-minimap").checked = !s || s.minimap !== false;
     $("toggle-time").checked = !s || s.time !== false;
-    // Default ON, and a settings object saved before that flip has no key.
-    $("toggle-history").checked = !s || s.history !== false;
+    // Off unless chosen: the hosts load their own history (see content/main.js).
+    $("toggle-history").checked = !!(s && s.mountHistory === true);
     $("toggle-temp").checked = !!(s && s.tempArchive === true);
     // Default on. It is the mechanism that makes the allowance panel truthful
     // rather than decorative, so the panel is meaningless with it off.
@@ -1482,7 +1482,7 @@
       enabled: $("toggle-enabled").checked,
       minimap: $("toggle-minimap").checked,
       time: $("toggle-time").checked,
-      history: $("toggle-history").checked,
+      mountHistory: $("toggle-history").checked,
       tempArchive: $("toggle-temp").checked,
       quota: $("toggle-quota").checked,
       quotaWarn: warnOn()

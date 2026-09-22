@@ -835,12 +835,16 @@ it there.
   answer — which reads as parts of one long response being counted separately,
   and is how it was reported. Since 2026-09 the turn is a `<section
   data-testid="conversation-turn-N">`, and `chatgptTurns()` takes either tag.
-- **ChatGPT now mounts only its last few messages** (six of a 106-message chat),
-  and `history-loader.js` puts the rest back from the archive under
-  `#lct-old-turns`. The engine windowed only the host's rows, so on the longest
-  chat there is it slept NOTHING and painted a hundred rows of ours. `rescan()`
-  now manages our own rows too, older than anything the host mounted; the map is
-  still handed the host's rows alone. Measured: 100 of 106 asleep.
+- **ChatGPT virtualizes; it does not truncate.** It keeps ~10 turns mounted
+  and loads older ones as the reader scrolls up — measured with Tvara off, a
+  107-message chat reaches message 1 with every image. An earlier note here said
+  it "mounts only its last six" and history-loader.js put the rest back from the
+  archive under `#lct-old-turns`, ON by default: 96 rows of text with the images
+  stripped above ChatGPT's list, duplicating what it then loaded itself and
+  moving the page under the reader. Reported as images and messages not
+  loading. The mount is now opt-in under a NEW key, `mountHistory` (the old
+  `history: true` is in every install that ever saved a setting). The engine
+  still manages our rows when the mount is on.
 - **An empty message is only a turn when it is a picture.** The fetch keeps one
   that carries a non-text part and marks it `m: 1`; everything else empty is
   dropped. Records written before that still hold the placeholders, so
@@ -1025,6 +1029,12 @@ a real chat — so the Claude reader takes the `text` content blocks first and
 `claudeClean()` cuts the fences whole. Its page heads every turn with an sr-only
 "You said:" / "Claude responded:", now in `SKIP_SEL`. Records archived before
 either fix are cleaned on read (`chatArchive`, `indexFromMsgs`), on claude.ai only.
+
+**The map canvas is square.** It had its own 12px rounded bottom, which cut
+the bottom-left marks along the curve; `#lct-mm-stage` already rounds and pads.
+**`.lct-awake` sets no background.** It had `background: none !important`, which
+stripped the host's own bubble colour from every message near a jump; the
+skeleton is `.lct-cv:not(.lct-awake)` instead.
 
 **The strip is one mark per message, and each mark is exactly its message.**
 Three rules in `content/minimap.js` and `content/preview.js`, all from one

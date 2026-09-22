@@ -81,7 +81,7 @@ if (!worker) done(1);
    scrolls back to read older turns, which used to be taken as permission and
    cost them the page for sixty round trips. */
 const set = (s) => worker.evaluate((v) => chrome.storage.local.set({ settings: v }), s);
-await set({ enabled: true, minimap: true, time: true, history: false });
+await set({ enabled: true, minimap: true, time: true, mountHistory: false });
 await page.close();
 page = await ctx.newPage();
 await page.goto(URL);
@@ -115,7 +115,7 @@ await page.close();
 
 /* TICKED: the whole conversation arrives on its own, and the reader never sees
    it happen — the walk runs behind makeFreeze() and hands back the exact view. */
-await set({ enabled: true, minimap: true, time: true, history: true });
+await set({ enabled: true, minimap: true, time: true, mountHistory: true });
 const armed = await ctx.newPage();
 await armed.goto(URL);
 await armed.waitForSelector("#lct-minimap", { timeout: 25000 });
