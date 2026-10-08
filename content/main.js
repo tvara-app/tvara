@@ -584,7 +584,11 @@
         flashNote(res.whole
           ? `Backed up the whole conversation: ${res.count.toLocaleString()} messages, ` +
             `including ${(res.count - res.loaded).toLocaleString()} this page had not loaded`
-          : `Backed up the ${res.count.toLocaleString()} loaded messages`);
+          /* A backup that is a slice must say how to get the rest, or it reads
+             as "the whole chat" until the day somebody needs it. */
+          : `Backed up the ${res.count.toLocaleString()} messages loaded on this page. ` +
+            `For the whole chat, scroll up to load older messages first` +
+            ((state.pro || trialActive()) ? "." : `, or use Pro (${self.LCTProduct.PRICE} once) to back it all up from your archive.`));
       }).catch(() => { /* the download either happened or it did not */ });
     });
   }
@@ -759,7 +763,7 @@
   // chrome://extensions/shortcuts — the only cross-OS/cross-browser-safe way).
   // The background relays the pressed command through storage; the ACTIVE tab
   // (the one the user is looking at) handles it. Gating + locked-feedback here.
-  const TRIAL_NUDGE = "start the free 7-day trial in the extension popup.";
+  const TRIAL_NUDGE = "Start the free 7-day trial in the extension popup.";
   function dispatchCommand(name) {
     if (!state.enabled) return;
     if (name === "in-chat-search") {
@@ -949,6 +953,7 @@
         if (el.hasAttribute?.(a)) s += `[${a}=${String(el.getAttribute(a) || "").slice(0, 24)}]`;
       }
       if (el.hasAttribute?.("data-message-id")) s += "[data-message-id]";
+      if (el.hasAttribute?.("data-content-search-unit-key")) s += "[unit:" + String(el.getAttribute("data-content-search-unit-key")).split(":").pop() + "]";
       if (el.classList?.contains("sr-only") || el.getAttribute?.("aria-hidden") === "true") s += "[hidden]";
       // The question the counts raised: are these nodes MESSAGES, or the empty
       // placeholders a virtualizing host leaves behind for turns it has not

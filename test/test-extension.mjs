@@ -2035,6 +2035,29 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
   t("B2j a two-message chat still has a map",
     await gptPage.locator("#lct-minimap").isVisible());
   await gptPage.close();
+
+  /* ---------- B2u ChatGPT's 2026-10 transcript: role-suffixed units --------
+     Found on a real account: ChatGPT dropped data-message-id and
+     data-message-author-role together, the adapter fell to its structural
+     layer, saw 7 of a chat's messages, guessed every role and keyed none —
+     so no map jump, no archive match, no send time. */
+  const unitPage = await ctx.newPage();
+  trackErrors(unitPage);
+  await unitPage.goto("http://127.0.0.1:8917/test/chatgpt-units.html?lctAdapter=chatgpt");
+  await unitPage.waitForSelector("#lct-minimap", { timeout: 20000 });
+  await unitPage.waitForFunction(() =>
+    Number(document.getElementById("lct-mm-canvas")?.getAttribute("aria-valuemax") || 0) > 0,
+    null, { timeout: 8000 });
+  const units = await unitPage.evaluate(() => ({
+    ticks: Number(document.getElementById("lct-mm-canvas")?.getAttribute("aria-valuemax") || 0),
+    want: window.__fixtureTurns,
+    keyed: [...document.querySelectorAll("[data-lct-mid]")].map((el) =>
+      el.getAttribute("data-content-search-unit-key").split(":").pop() + "=" + el.getAttribute("data-lct-mid"))
+  }));
+  t("B2u four role-suffixed units map as four ticks", units.ticks === units.want, JSON.stringify(units));
+  t("B2u each unit is keyed by the provider's own id: the user's by its turn, the answer's by its selection id",
+    units.keyed.join(",") === "user=user-1,assistant=answer-1,user=user-2,assistant=answer-2", JSON.stringify(units));
+  await unitPage.close();
   await seeded.evaluate(() => window.__virtualHistory.resetMotion());
   await seeded.waitForTimeout(2000);
   const seedStill = await seeded.evaluate(() => ({

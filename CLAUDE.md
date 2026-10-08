@@ -1257,3 +1257,35 @@ at a fixture page (localhost only, guarded by the host in `detect()`).
 `test/real-chrome-check.mjs` and `test/real-chrome-session-ui.mjs` are the
 exceptions: they ATTACH over CDP to a Chrome you loaded the extension into by
 hand. That is the only way branded Chrome runs this code now.
+
+## Found on real accounts, 2026-10-08 (release 1.0.3)
+
+- **ChatGPT dropped `data-message-id` and `data-message-author-role`.** A message
+  is now a `[data-content-search-unit-key]` ending in `:user` / `:assistant`; the
+  user's id is the enclosing `[data-turn-key]`, the answer's is
+  `[data-chatgpt-selection-message-id]` (both checked against the conversation
+  API). The adapter copies the id onto `data-lct-mid` — OURS, never the host's
+  attribute — and every id lookup reads both. Without it the map saw 7 of 237
+  messages, guessed every role, and nothing matched the archive.
+- **ChatGPT's conversation budget is shared with the page.** The backfill at
+  320ms × 4 workers got the account 429'd and ChatGPT itself showed "Could not
+  load this conversation" — for a long while, even with Tvara switched off. The
+  host now runs one request at a time with a 20s floor and no ramp
+  (`floorMs`, `noRamp` in `BG_HOST_POLICY`); a reader's foreground request is
+  never retried into a 429. The archive is slower; the site never breaks.
+- **Gemini pages its listing at 100 rows** with a token at payload[1]. Reading
+  one page archived 100 of 269 chats and called the listing complete, so the
+  sweep took the rest for deletions. `list()` follows the token.
+- **One account must not speak for all.** A second Google account Gemini will not
+  serve no longer turns the whole row into "Gemini changed its API"; the row
+  says how many accounts could not be read, and the stored progress keeps the
+  thrown `reason` for support.
+- **A free search is a word, not a keystroke.** Search-as-you-type at a normal
+  250ms/key spent all three free searches on "lab". Refining the query that
+  spent one (adding or removing letters, 90s window, anchored) is free; an
+  exact repeat is not.
+- Hover label and outline numbers come from the archive (`LCTChatIndex.lookup`):
+  real send time, real position — not "#3 · Time unknown" on message 104.
+- Testing in a headed real Chrome: the human's own mouse sends pointerleave
+  (relatedTarget null) into the window. A hover test that "collapses" is often
+  that, not the product.

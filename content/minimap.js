@@ -290,9 +290,9 @@
     let k = keyCache.get(el);
     if (k !== undefined) return k;
     // Grok keys a turn by its response id: <div id="response-<uuid>">.
-    const own = (n) => n && (n.getAttribute("data-message-id") ||
+    const own = (n) => n && (n.getAttribute("data-message-id") || n.getAttribute("data-lct-mid") ||
       (/^response-[0-9a-f-]{8,}$/.test(n.id || "") ? n.id.slice(9) : ""));
-    const id = own(el) || own(el.querySelector?.('[data-message-id], [id^="response-"]'));
+    const id = own(el) || own(el.querySelector?.('[data-message-id], [data-lct-mid], [id^="response-"]'));
     k = id ? "id:" + id : "";
     keyCache.set(el, k);
     return k;
@@ -1185,7 +1185,7 @@
     const id = entry.key.slice(3);            // "id:<message-id>"
     let el = null;
     try {
-      el = document.querySelector('[data-message-id="' + CSS.escape(id) + '"]');
+      el = document.querySelector('[data-message-id="' + CSS.escape(id) + '"], [data-lct-mid="' + CSS.escape(id) + '"]');
       /* Rows mountArchive() rendered from the copy already on this machine.
          They carry data-lct-turn-id and deliberately NOT data-message-id —
          every adapter selects on that attribute and these are not the host's

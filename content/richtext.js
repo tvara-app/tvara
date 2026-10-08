@@ -426,7 +426,12 @@
     // "You said:" / "Claude responded:", and they were archived as the first
     // words of every message.
     // Gemini's are Angular's .cdk-visually-hidden.
-    ".sr-only", ".cdk-visually-hidden"
+    ".sr-only", ".cdk-visually-hidden",
+    /* Perplexity, 2026-10, found in a real export: each turn carried its date
+       header, its time label twice and the "Researched" step chip into the
+       backup as words. user-select:none is the host saying "not content";
+       the other two are the step chip and the turn's date header. */
+    ".select-none", '[class*="sharedDuration"]', "[data-workflow-entry] > .text-secondary"
   ].join(",");
 
   const MATH_SEL = ".katex, .katex-display, mjx-container, math, [data-latex], [data-tex]";

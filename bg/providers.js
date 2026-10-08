@@ -103,7 +103,8 @@ const GEMINI_RPC_USAGE = "jSf9Qc";    // allowance buckets
    that claim — without it the usage rpc is answered with nothing at all. */
 const GEMINI_EXT_USAGE = "[0]";
 const GEMINI_RPC_READ = "hNvQHb";     // read one conversation
-const GEMINI_LIST_MAX = 400;          // conversations asked for per shelf
+const GEMINI_LIST_MAX = 400;          // conversations asked for per page (Google answers ≤100)
+const GEMINI_LIST_PAGES = 60;         // pages read per shelf before the listing is called partial
 const GEMINI_TURN_MAX = 2000;         // turns asked for per conversation
 /* Gemini keeps pinned and unpinned conversations on separate shelves and one
    call returns only one of them. Both, or half a history goes unarchived —
@@ -1031,36 +1032,50 @@ const BG_ADAPTERS = [
       let sawRows = 0, named = 0, truncated = false, shelf = 0;
 
       for (const pinned of GEMINI_SHELVES) {
-        if (shelf++) await sleep(policyFor(this.host).listDelayMs);
-        const payloads = geminiPayloads(
-          await this.rpc(ctx, GEMINI_RPC_LIST, [GEMINI_LIST_MAX, null, [pinned, null, 1]]),
-          GEMINI_RPC_LIST);
-        // No envelope for the rpc we asked for is not an empty account — it is a
-        // transport or a shape this build no longer speaks.
-        if (!payloads.length) throw new BgError("shape", "provider listing not understood");
+        /* A shelf comes back a page at a time: Google answers at most 100 rows
+           whatever count is asked for, with a continuation token at [1]. Reading
+           only the first page archived the newest 100 of a 269-chat account and
+           called the listing complete, so the sweep took every older chat for a
+           deletion. Rows arrive newest first, so a delta stops at the first page
+           that reaches back past its window. */
+        let token = null, pages = 0, reachedWindow = false;
+        do {
+          if (shelf++) await sleep(policyFor(this.host).listDelayMs);
+          const payloads = geminiPayloads(
+            await this.rpc(ctx, GEMINI_RPC_LIST, [GEMINI_LIST_MAX, token, [pinned, null, 1]]),
+            GEMINI_RPC_LIST);
+          // No envelope for the rpc we asked for is not an empty account — it is a
+          // transport or a shape this build no longer speaks.
+          if (!payloads.length) throw new BgError("shape", "provider listing not understood");
 
-        let rowsHere = 0;
-        for (const payload of payloads) {
-          const rows = Array.isArray(payload) && Array.isArray(payload[2]) ? payload[2] : [];
-          for (const row of rows) {
-            if (!Array.isArray(row)) continue;
-            rowsHere++; sawRows++;
-            const cid = String(row[0] || "");
-            if (!cid) continue;
-            named++;
-            if (seen.has(cid)) continue;
-            seen.add(cid);
-            const updatedAt = geminiTime(row[5]) || Date.now();
-            if (sinceMs && updatedAt <= sinceMs) continue;
-            metas.push({ id: cid, title: String(row[1] || ""), createdAt: 0, updatedAt });
+          let rowsHere = 0, next = null;
+          for (const payload of payloads) {
+            if (!Array.isArray(payload)) continue;
+            if (typeof payload[1] === "string" && payload[1]) next = payload[1];
+            const rows = Array.isArray(payload[2]) ? payload[2] : [];
+            for (const row of rows) {
+              if (!Array.isArray(row)) continue;
+              rowsHere++; sawRows++;
+              const cid = String(row[0] || "");
+              if (!cid) continue;
+              named++;
+              if (seen.has(cid)) continue;
+              seen.add(cid);
+              const updatedAt = geminiTime(row[5]) || Date.now();
+              if (sinceMs && updatedAt <= sinceMs) { reachedWindow = true; continue; }
+              metas.push({ id: cid, title: String(row[1] || ""), createdAt: 0, updatedAt });
+            }
           }
-        }
-        // LIST_CHATS takes a COUNT, not a cursor. A shelf that returns exactly
-        // as many rows as it was asked for may have more behind it, and a
-        // listing that might be partial must never be called complete — the
-        // sweep would read everything it omitted as deleted upstream.
-        if (rowsHere >= GEMINI_LIST_MAX) truncated = true;
-        progress(metas.length, 0, `Listing chats… ${metas.length}`);
+          // A token that comes back unchanged, or a page with no rows, would loop
+          // forever; either ends the shelf.
+          token = next && next !== token && rowsHere ? next : null;
+          pages++;
+          progress(metas.length, 0, `Listing chats… ${metas.length}`);
+        } while (token && !reachedWindow && pages < GEMINI_LIST_PAGES);
+        // Stopped by the page ceiling with more behind it: a listing that might be
+        // partial must never be called complete — the sweep would read everything
+        // it omitted as deleted upstream.
+        if (token && !reachedWindow) truncated = true;
       }
 
       metas.sort((a, b) => b.updatedAt - a.updatedAt);

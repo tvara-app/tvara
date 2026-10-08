@@ -150,7 +150,10 @@
       }
       lines.push(head, "", m.text, "");
     }
-    return lines.join("\n");
+    /* A list item whose text sits in a block (<li><p>…</p></li>, every host
+       does it) came out as "- " on one line and the words on the next — a
+       bullet with nothing on it. Join them. */
+    return lines.join("\n").replace(/^(\s*)- *\n+\s*(?=\S)/gm, "$1- ");
   }
 
   function toJSON(messages, whole) {

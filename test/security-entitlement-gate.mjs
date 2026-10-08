@@ -200,7 +200,8 @@ async function seedLicenseAndDevice(ctx, extId, licenseKey = LICENSE_KEY) {
       let res = null;
       const tries = type === "recall-search" ? 6 : 1;
       for (let i = 0; i < tries; i++) {
-        res = await sendFromExtensionPage(ctx, id, { type, q: "x", long: false,
+        // Different words each time: refining one query is one search by design.
+        res = await sendFromExtensionPage(ctx, id, { type, q: ["kiwi", "lemon", "olive", "plum", "fig", "date"][i], long: false,
           host: "chatgpt.com", path: "/c/x" }, "pages/recall.html");
       }
       if (!(res && res.err === "locked")) leaked.push(`${type} → ${JSON.stringify(res)}`);
@@ -274,9 +275,19 @@ async function seedLicenseAndDevice(ctx, extId, licenseKey = LICENSE_KEY) {
     const ask = (type, extra = {}) => sendFromExtensionPage(ctx, id,
       { type, q: "hello", long: false, ...extra }, "pages/recall.html");
 
+    /* Typing is one search, not one per keystroke: the page searches as you
+       type, and at an ordinary pace "label" used to spend all three on l-a-b. */
+    const typed = [];
+    for (const q of ["la", "lab", "labe", "label"]) {
+      const r = await ask("recall-search", { q });
+      typed.push(r && r.taste ? r.taste.left : "x");
+    }
+    t("G: typing one word spends ONE free search, however many keystrokes searched",
+      typed.join(",") === "2,2,2,2", typed.join(","));
+
     const seen = [];
     for (let i = 0; i < 6; i++) {
-      const r = await ask("recall-search");
+      const r = await ask("recall-search", { q: ["zebra", "quartz", "violin", "mango", "orbit", "piano"][i] });
       seen.push(r && r.err === "locked" ? "locked" : `granted(left=${r && r.taste && r.taste.left})`);
     }
     const granted = seen.filter((x) => x.startsWith("granted")).length;

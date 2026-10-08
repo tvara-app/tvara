@@ -9,7 +9,17 @@
 "use strict";
 
 const BG_HOST_POLICY = {
-  "chatgpt.com":       { concurrency: 4, minIntervalMs: 320, listDelayMs: 600 },
+  /* ChatGPT's conversation reads share ONE per-account budget with the page
+     itself. Probing for the ceiling — ramp until refused — spent it on a fresh
+     install's backfill, and the reader's own GET /backend-api/conversations/<id>
+     came back 429: "Could not load this ChatGPT conversation", on a real
+     account, with Tvara the only thing asking. The archive can take longer;
+     the site cannot break. One request at a time, never under the floor, and
+     no ramp above it. 3s still tripped it on a 670-chat account; the rate a
+     real account had earlier settled at by itself was ~19s, so the floor sits
+     just above that. A big history fills in over hours, in the background, and
+     every chat the reader opens is archived on the spot (visit sync) anyway. */
+  "chatgpt.com":       { concurrency: 1, minIntervalMs: 20000, listDelayMs: 3000, floorMs: 20000, noRamp: true },
   "claude.ai":         { concurrency: 4, minIntervalMs: 300, listDelayMs: 450 },
   "chat.deepseek.com": { concurrency: 3, minIntervalMs: 400, listDelayMs: 500 },
   "grok.com":          { concurrency: 3, minIntervalMs: 400, listDelayMs: 500 },

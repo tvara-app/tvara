@@ -119,7 +119,9 @@ function indexFromMsgs(msgs, opts = {}) {
     // Without ids the map keys a row by its place — see seed() in minimap.js.
     if (!m || (!m.i && !opts.keepAll)) continue;
     const t = clean(m.t || "");
-    out.push({ i: m.i || "", r: roles[i] === "user" ? "user" : "assistant", n: t.length, c: IDX_CODE.test(t) ? 1 : 0, s: t.slice(0, IDX_SNIP) });
+    // ts: the provider's own send time, in seconds, where it published one —
+    // what the hover label reads before it would ever say "time unknown".
+    out.push({ i: m.i || "", r: roles[i] === "user" ? "user" : "assistant", n: t.length, c: IDX_CODE.test(t) ? 1 : 0, s: t.slice(0, IDX_SNIP), ...(m.ts ? { ts: m.ts } : {}) });
   }
   return out;
 }

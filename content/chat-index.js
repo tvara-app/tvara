@@ -126,5 +126,21 @@
     return load(adapter, onIndex);
   }
 
-  self.LCTChatIndex = { load, forget, refresh, supported };
+  /* What the archive says about one message by its provider id, for this
+     route, from whatever is already cached — never a request. The position is
+     its place in the WHOLE conversation, which the page cannot know while it
+     mounts only the tail. */
+  function lookup(id) {
+    const hit = id && cache.get(routeId());
+    if (!hit || !Array.isArray(hit.entries)) return null;
+    let byId = hit.byId;
+    if (!byId) {
+      byId = new Map();
+      hit.entries.forEach((e, at) => { if (e && e.i) byId.set(e.i, { at, ts: Number(e.ts) || 0 }); });
+      hit.byId = byId;
+    }
+    return byId.get(id) || null;
+  }
+
+  self.LCTChatIndex = { load, forget, refresh, supported, lookup };
 })();

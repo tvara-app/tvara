@@ -1,0 +1,50 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>ChatGPT 2026-10 message-unit fixture</title>
+<!--
+  ChatGPT's transcript as captured live on 2026-10-08 (a real 110-message chat),
+  trimmed to two turns. No data-message-id, no data-message-author-role, no
+  conversation-turn article: each message is a "search unit" whose key ends in
+  its role, inside a [data-turn-key] that holds the USER message's id. The
+  answer's id is on [data-chatgpt-selection-message-id]. Checked against the
+  conversation API: those are the ids the archive holds.
+
+  Four messages, four ticks; every one keyed by the provider's id, so the map,
+  the seek and the hover label can find them in the archive.
+-->
+<style>
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; background: #fff; color: #111; }
+  main { max-width: 760px; margin: 0 auto; padding: 24px 16px 60vh; }
+  [data-user-message-bubble] { background: #eef3ff; border-radius: 18px; padding: 10px 14px; margin: 12px 0 12px auto; max-width: 70%; }
+</style>
+<main>
+  <div role="region" aria-label="Conversation" class="thread-scroll-container" style="height:100vh;overflow-y:auto">
+    <div data-turn-key="user-1">
+      <div data-content-search-turn-key="fallback-turn-0">
+        <div data-content-search-unit-key="fallback-turn-0:0:user">
+          <div data-user-message-bubble="true">How do I measure the pitch diameter of a screw from a single photo?</div>
+        </div>
+        <div data-content-search-unit-key="fallback-turn-0:1:assistant" data-chatgpt-search-message-ids="answer-1">
+          <div data-chatgpt-selection-message-id="answer-1">
+            <h4 data-conversation-role="assistant" class="sr-only">ChatGPT said:</h4>
+            <div data-markdown-text-style="assistant-message"><p>Fit a line to each flank, then take the distance between the two midlines at the mid-height of the thread. Calibrate pixels to millimetres against a known reference in the same plane.</p></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div data-turn-key="user-2">
+      <div data-content-search-turn-key="fallback-turn-1">
+        <div data-content-search-unit-key="fallback-turn-1:0:user">
+          <div data-user-message-bubble="true">And the height from the top of the screw to the top of the plate?</div>
+        </div>
+        <div data-content-search-unit-key="fallback-turn-1:2:assistant" data-chatgpt-search-message-ids="answer-2">
+          <div data-chatgpt-selection-message-id="answer-2">
+            <h4 data-conversation-role="assistant" class="sr-only">ChatGPT said:</h4>
+            <div data-markdown-text-style="assistant-message"><p>Take the minimum y of the screw's border as the top, find the rows where the width is close to the plate's maximum, and use the top of that band as the bottom.</p></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+<script>window.__fixtureTurns = 4;</script>
