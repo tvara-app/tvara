@@ -1323,6 +1323,9 @@ hand. That is the only way branded Chrome runs this code now.
 - **A panel born open never transitions.** `open()` built Recall and added
   `lct-r-open` in one task, so the first open on every page popped in. A fresh
   panel is flushed (`offsetWidth`) before the class goes on.
-- **A round keycap gets its depth from a shadow.** A thicker bottom border
-  kinked the pill outline at 2x; `#lct-recall kbd` is a circle for one glyph,
-  a pill for more, with an inset line underneath.
+- **A round keycap is one even border.** A thicker bottom edge kinked the pill
+  outline at 2x, and the inset line that replaced it read as a dent;
+  `#lct-recall kbd` is a circle for one glyph, a pill for more, and nothing else.
+- **Text on the accent takes `--lct-on-accent`.** Bridge's Insert button set
+  dark ink on the accent in both themes; on the light theme's crimson that fails
+  contrast. The token is dark on rose and white on crimson.
