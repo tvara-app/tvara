@@ -1329,3 +1329,7 @@ hand. That is the only way branded Chrome runs this code now.
 - **Text on the accent takes `--lct-on-accent`.** Bridge's Insert button set
   dark ink on the accent in both themes; on the light theme's crimson that fails
   contrast. The token is dark on rose and white on crimson.
+- **A field that IS the surface draws no focus box.** The in-chat search bar,
+  Recall and Bridge exist because their text field is focused, so the generic
+  2px accent `:focus-visible` ring around that field said nothing and read as a
+  pink rectangle in the bar. Checkboxes and buttons keep the ring.
