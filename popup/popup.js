@@ -214,7 +214,7 @@
     $("toggle-minimap").checked = !s || s.minimap !== false;
     $("toggle-time").checked = !s || s.time !== false;
     // Off unless chosen: the hosts load their own history (see content/main.js).
-    $("toggle-history").checked = !!(s && s.mountHistory === true);
+    // "Load full history on open" was removed in 1.0.3 — see content/main.js.
     $("toggle-temp").checked = !!(s && s.tempArchive === true);
     // Default on. It is the mechanism that makes the allowance panel truthful
     // rather than decorative, so the panel is meaningless with it off.
@@ -1482,7 +1482,7 @@
       enabled: $("toggle-enabled").checked,
       minimap: $("toggle-minimap").checked,
       time: $("toggle-time").checked,
-      mountHistory: $("toggle-history").checked,
+      mountHistory: false,
       tempArchive: $("toggle-temp").checked,
       quota: $("toggle-quota").checked,
       quotaWarn: warnOn()
@@ -1491,7 +1491,7 @@
     await chrome.storage.local.set({ settings });
   }
 
-  for (const id of ["toggle-enabled", "toggle-minimap", "toggle-time", "toggle-history", "toggle-temp", "toggle-quota"]) {
+  for (const id of ["toggle-enabled", "toggle-minimap", "toggle-time", "toggle-temp", "toggle-quota"]) {
     $(id).addEventListener("change", saveSettings);
   }
 
@@ -1585,10 +1585,16 @@
       const total = done + left;
       // The count belongs in the title: it is the thing being watched, and a
       // sub-line is where the eye goes last.
-      setLine(title, `Adding text · ${done.toLocaleString()} of ${total.toLocaleString()} chats`);
+      /* What is LEFT, not "done of planned": every popup open starts a fresh
+         run, so "0 of 546" came back each time and read as stuck while the
+         queue was in fact shrinking. And when only ChatGPT is left, say why it
+         is slow — it is paced so ChatGPT itself never stops loading chats. */
+      setLine(title, `Adding text · ${left.toLocaleString()} chat${left === 1 ? "" : "s"} to go`);
+      const slowOnPurpose = state && state.platform === "ChatGPT"
+        ? " · ChatGPT is copied slowly on purpose, so it stays fast" : "";
       setLine(sub, state.running
-        ? `${savedMessageLabel()} · tap to stop.`
-        : `${savedMessageLabel()} · the browser will continue.`);
+        ? `${savedMessageLabel()}${slowOnPurpose} · tap to stop.`
+        : `${savedMessageLabel()}${slowOnPurpose} · the browser will continue.`);
       row.classList.add("busy");
       paintBar(done, total);
       return;
@@ -2820,12 +2826,6 @@
       anchor: () => $("toggle-time")?.closest(".row"),
       title: "Timestamps",
       body: "Hover a message to see when it was said. On ChatGPT that is the real send time. Everywhere else a browser was never told, so it says first seen on this device — and a first-seen time is never presented as a send time."
-    },
-    {
-      id: "history",
-      anchor: () => $("toggle-history")?.closest(".row"),
-      title: "Load full history on open",
-      body: "Puts every older message back on the page, which is what the site's own Ctrl+F needs. It reads them from the copy already on this machine — the same one the archive and the map come from — and renders them above the conversation. Nothing is scrolled and the page never moves. Off is fine: the map is complete either way."
     },
     {
       id: "temp",

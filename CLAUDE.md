@@ -1289,3 +1289,27 @@ hand. That is the only way branded Chrome runs this code now.
 - Testing in a headed real Chrome: the human's own mouse sends pointerleave
   (relatedTarget null) into the window. A hover test that "collapses" is often
   that, not the product.
+- **A generated picture is ChatGPT's reply.** It is a `tool` message of
+  `image_asset_pointer` parts addressed to "all"; the page shows it as its own
+  `[data-testid="generated-image-gallery"]` block keyed by that tool message's
+  id. Dropped as machinery, image chats read "You asked 22 · Replies 5".
+- **Gemini dates every turn** at index 4 (`[seconds, nanos]`). Records from
+  before 1.0.3 had none; `geminiTimesOnce()` queues them once for the text queue
+  and `importBatch` takes a dated same-length copy as a repair (`fixesTimes`).
+- **An open does not re-download a chat the archive already covers.**
+  `coversPage()` in `content/chat-index.js`: if every mounted message id is in
+  the archived index, the provider is not asked. It was a second request for
+  the very chat the page was loading, against the same budget.
+- **"Load full history on open" and the ⤒ mount button are retired.** On a real
+  ChatGPT chat they put 102 picture-less rows above a transcript the host loads
+  itself, and the host's own older-message loader failed under them. Same
+  verdict as code-fold: it hurt the host page, so it is gone. The loader module
+  stays for the panel's markdown renderer.
+- Exports: message `ts` is SECONDS (`isoTs`); a chat's date is the provider's
+  `sourceUpdatedAt`, not the local write time; file names use the local date;
+  the HTML page renders headings/bold/bullets/code from already-escaped text.
+- The dense strip only re-follows the reading position after the READER moves
+  the page (`readerMovedPage`); host remounts alone used to snap a wheeled strip
+  back ("Message 178" at its top).
+- Test Chrome: `LCT_OFFSCREEN=1` is opt-in — Chrome 155/macOS quits when an
+  off-screen window is resized then closed.

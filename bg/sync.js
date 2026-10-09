@@ -360,6 +360,7 @@ async function bgSyncAccount(adapter, run, opts, ctx, tabs, seat = { seat: 0, se
     // Two views, two jobs. `index` answers "already held?" across every account
     // on the host so nothing is downloaded twice; `acctIndex` answers "held by
     // THIS account?", and only it may drive deletion and coverage.
+    if (adapter.id === "gemini") await geminiTimesOnce();
     const index = await archiveIndex(adapter.host, adapter.prefix);
     let acctIndex = await accountIndex(adapter.host, adapter.prefix, acct);
     const covered = checkpoint && checkpoint.coverageKnown ? Number(checkpoint.coverage) || 0 : -1;
@@ -866,4 +867,31 @@ async function bgSyncAll(opts = {}) {
     clearInterval(pulse);
     bgSyncRunning = false;
   }
+}
+
+
+/* Gemini records written before 1.0.3 hold no message times (the turn's own
+   [seconds, nanos] at index 4 was never read), so every card said "Created —"
+   and no hover label had a time to give. Once per install: a record whose
+   messages all read 0 joins the text queue, which re-reads it at Gemini's
+   ordinary pace; importBatch takes the dated copy as a repair (fixesTimes).
+   Nothing deleted, nothing shown as "new", and a chat Gemini gives no time for
+   is not asked about again. */
+const GEMINI_TIMES_FLAG = "lct-gemini-times-v1";
+async function geminiTimesOnce() {
+  try {
+    if ((await chrome.storage.local.get(GEMINI_TIMES_FLAG))[GEMINI_TIMES_FLAG]) return;
+    const stale = [];
+    await scanChats((rec) => {
+      if (!rec || typeof rec.id !== "string" || !rec.id.startsWith("gemini.google.com/")) return;
+      const msgs = Array.isArray(rec.msgs) ? rec.msgs : [];
+      if (msgs.length && msgs.every((m) => !m || !Number(m.ts))) stale.push(rec);
+    });
+    if (stale.length) {
+      // The sync only re-reads chats the listing says changed; the text queue
+      // is what fetches a named chat. A minute or two at Gemini's pace.
+      await noteStubs(stale.map((rec) => ({ id: rec.id, host: rec.host || "gemini.google.com", hasBody: false })));
+    }
+    await chrome.storage.local.set({ [GEMINI_TIMES_FLAG]: { at: Date.now(), cleared: stale.length } });
+  } catch (_) { /* a migration that cannot run leaves the archive exactly as it was */ }
 }

@@ -265,7 +265,12 @@ async function chatStats(host, path) {
       held,
       users,
       assistants: held - users,
-      createdAt: Number(rec.createdAt) || 0,
+      // A provider that lists no creation date (Gemini) still dated its first
+      // message; "Created —" on every card was a gap, not the truth.
+      createdAt: Number(rec.createdAt) || (() => {
+        const first = Array.isArray(rec.msgs) && rec.msgs.find((m) => m && Number(m.ts) > 0);
+        return first ? Number(first.ts) * 1000 : 0;
+      })(),
       updatedAt: Number(rec.updatedAt) || 0,
       title: String(rec.title || ""),
       /* What "longest" is measured against. The card used to compare the chat

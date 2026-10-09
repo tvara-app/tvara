@@ -31,6 +31,12 @@
   // The strip scrolls only once its marks would be too close to tell apart.
   let mapScroll = 0;       // css px of strip above its visible top
   let mapFollow = true;    // keep the reading position in view until the reader scrolls the strip
+  /* Did the READER move the page since they wheeled the strip? Only that hands
+     the strip back to following. A host that mounts and unmounts turns as it
+     likes changes the visible range by itself, and that alone used to snap a
+     strip the reader had just wheeled to its top straight back down: on a real
+     237-message chat, pointing at the top of the map said "Message 178". */
+  let readerMovedPage = true;
   let lensSeen = "";       // the reading position last drawn — its moving hands follow back
   const metaCache = new WeakMap(); // el -> {role, hasCode, snippet}
   const rows = new WeakMap();      // el -> projected row (hosts with no stable ids)
@@ -116,7 +122,7 @@
       if (resting === next) return;
       resting = next;
       root.classList.toggle("lct-mm-rest", resting);
-      if (resting) { hoverIdx = -1; hoverText = ""; motion.hoverY = -1; mapFollow = true; }
+      if (resting) { hoverIdx = -1; hoverText = ""; motion.hoverY = -1; mapFollow = true; readerMovedPage = true; }
       scheduleDraw();
     };
     root.classList.add("lct-mm-rest");
@@ -143,7 +149,13 @@
       scheduleDraw();
     });
 
+    // Input aimed at the page, not at the map, is the reader moving on.
+    const movedPage = (e) => { if (!root.contains(e.target)) readerMovedPage = true; };
+    for (const type of ["wheel", "keydown", "touchmove"]) {
+      document.addEventListener(type, movedPage, { capture: true, passive: true });
+    }
     canvas.addEventListener("click", (e) => {
+      readerMovedPage = true;   // a jump moves the page, and the strip goes with it
       const idx = yToIndex(e.offsetY);
       if (idx >= 0) jumpToIndex(idx);
     });
@@ -179,6 +191,7 @@
       if (max <= 0) return;
       e.preventDefault();
       mapFollow = false;
+      readerMovedPage = false;
       const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * canvas.clientHeight : e.deltaY;
       mapScroll = Math.max(0, Math.min(max, mapScroll + dy));
       if (motion.hoverY >= 0) hoverAt(yToIndex(motion.hoverY));
@@ -1010,7 +1023,7 @@
        (the reading position moves), hands control back. Only leaving did, so a
        strip wheeled once stayed parked while the chat below it moved on. */
     const lensNow = vis ? vis.first + ":" + vis.last : "";
-    if (lensNow !== lensSeen) { if (lensSeen) mapFollow = true; lensSeen = lensNow; }
+    if (lensNow !== lensSeen) { if (lensSeen && readerMovedPage) mapFollow = true; lensSeen = lensNow; }
     if (mapFollow && vis) {
       const mid = (motion.lensY + motion.lensH / 2) * step;
       const to = Math.max(0, Math.min(maxScroll, mid - h / 2));
@@ -1132,7 +1145,7 @@
     ariaMax = ""; ariaNow = ""; ariaText = ""; ariaLabel = ""; approxState = null;
     messages = []; live.length = 0; liveDirty = true;
     scroller = null; palette = null; hoverIdx = -1; hoverText = ""; resting = true;
-    mapScroll = 0; mapFollow = true; lensSeen = "";
+    mapScroll = 0; mapFollow = true; readerMovedPage = true; lensSeen = "";
     pin = null; held = false;               // the closure it reached is gone
     clearCatalog();
   }

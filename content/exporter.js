@@ -257,7 +257,7 @@
     }
 
     if (!messages.length) return { ok: false, reason: "no-messages" };
-    const stamp = new Date().toISOString().slice(0, 10);
+    const stamp = ((d) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"))(new Date());   // the reader's date, not UTC's
     if (format === "json") {
       download(toJSON(messages, whole), `${slugTitle()}-${stamp}.json`, "application/json");
     } else {

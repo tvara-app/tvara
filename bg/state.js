@@ -29,7 +29,10 @@ const BG_HOST_POLICY = {
   "www.perplexity.ai": { concurrency: 2, minIntervalMs: 700, listDelayMs: 800 },
   // One batchexecute call per conversation, and Google notices patterns. Paced
   // between the fast hosts and Perplexity's deliberate crawl.
-  "gemini.google.com": { concurrency: 3, minIntervalMs: 450, listDelayMs: 600 }
+  /* Same reasoning as ChatGPT: the page and the backfill share the account's
+     budget at Google, and the ramp took this to six requests at once on a real
+     account. Gentle and flat — 271 chats is still minutes, not hours. */
+  "gemini.google.com": { concurrency: 2, minIntervalMs: 1500, listDelayMs: 1500, floorMs: 1500, noRamp: true }
 };
 const BG_FETCH_ATTEMPTS = 4;
 /* A hung connection (dropped packets, a provider that accepts and never

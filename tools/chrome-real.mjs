@@ -47,7 +47,13 @@ const FLAGS = [
      whatever they have focused. This installs with no window at all. Measured
      on 153: it paints no infobar (87px of chrome on the startup tab and a fresh
      one alike). */
-  "--enable-unsafe-extension-debugging"
+  "--enable-unsafe-extension-debugging",
+  /* LCT_OFFSCREEN=1 parks the window off the visible screen, so a person's real
+     pointer crossing it cannot send pointerleave into a hover test. Opt-in
+     only: Chrome 155 on macOS QUITS when an off-screen window is resized and
+     then closed (the onboarding step does both), taking the whole run with it.
+     On screen, keep the mouse off this window while a suite runs. */
+  ...(process.env.LCT_OFFSCREEN ? ["--window-position=-3000,-3000"] : [])
 ];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

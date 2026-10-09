@@ -91,6 +91,17 @@
       if (!res || res.status !== "ok" || res.stale) {
         await idle();
         if (routeId() !== route) return hit;
+        /* The archived copy already holds every message the page is showing:
+           nothing on screen is newer than it, so there is nothing to correct.
+           Asking anyway re-downloaded the whole conversation on EVERY open —
+           a second request for the very chat the page was loading, against
+           the same per-account budget (ChatGPT answered both with 429). A
+           message the copy lacks — one just sent, or written elsewhere — still
+           brings the provider in. */
+        if (hit && coversPage(adapter, hit.entries)) {
+          if (!cache.has(route)) cache.set(route, hit);
+          return hit;
+        }
         const fresh = await ask(true);
         if (routeId() !== route) return hit;
         if (fresh && fresh.status === "ok" && Array.isArray(fresh.entries) && fresh.entries.length) {
@@ -108,6 +119,20 @@
 
     inflight.set(route, run);
     return run;
+  }
+
+  function coversPage(adapter, entries) {
+    try {
+      const have = new Set(entries.map((e) => e && e.i).filter(Boolean));
+      if (!have.size) return false;
+      const els = adapter.messages();
+      if (!els.length) return false;
+      for (const el of els) {
+        const id = self.LCTAdapters.stableKey(el);
+        if (!id || !have.has(id)) return false;   // unkeyed or newer than the copy
+      }
+      return true;
+    } catch (_) { return false; }               // unsure: ask, as before
   }
 
   const idle = () => new Promise((resolve) => {

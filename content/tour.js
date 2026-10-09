@@ -429,7 +429,7 @@
       offPage: true,   // not on this page — see the filter in start()
       anchor: () => null,
       title: "Your extension window has the defaults",
-      body: "Open the Tvara icon in your browser toolbar to switch the speed engine, minimap, timestamps, full-history loading, temporary-chat archiving and allowance tracking on or off.",
+      body: "Open the Tvara icon in your browser toolbar to switch the speed engine, minimap, timestamps, temporary-chat archiving and allowance tracking on or off.",
       foot: "It also holds Total Recall, your archive, your plan, the adapter health report, and this walkthrough whenever you want it again."
     });
     list.push({

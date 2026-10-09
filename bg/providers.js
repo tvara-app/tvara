@@ -46,11 +46,23 @@ function chatgptMsgs(conv) {
   for (const node of chatBranch(conv)) {
     const m = node && node.message;
     if (!m || !m.author) continue;
-    const role = m.author.role;
+    let role = m.author.role;
+    const parts = (m.content && m.content.parts) || [];
+    /* A generated picture is a TOOL message: the assistant's call to the image
+       tool is hidden, and what the reader sees as ChatGPT's reply is the tool's
+       answer, an image_asset_pointer addressed to "all". Dropped as machinery,
+       every image-generation chat archived its prompts and none of its replies:
+       the card read "You asked 22 · Replies 5" on a chat with 22 pictures in it.
+       Only a tool message made of pictures and nothing else becomes a turn. */
+    if (role === "tool") {
+      const pictures = parts.length > 0 && parts.every((p) =>
+        p && typeof p === "object" && /image_asset_pointer/.test(String(p.content_type || "")));
+      if (!pictures || (m.recipient && m.recipient !== "all")) continue;
+      role = "assistant";
+    }
     if (role !== "user" && role !== "assistant") continue;
     if (m.metadata && m.metadata.is_visually_hidden_from_conversation) continue;
     if (m.recipient && m.recipient !== "all") continue;      // a tool call, not a turn
-    const parts = (m.content && m.content.parts) || [];
     const text = parts.filter((p) => typeof p === "string").join("\n").trim();
     /* An image-only turn still occupies a row in the page and the map's
        positions have to match it, so empty text is kept — but ONLY when the
@@ -1178,14 +1190,21 @@ const BG_ADAPTERS = [
       for (let i = turns.length - 1; i >= 0; i--) {
         const turn = turns[i];
         if (!Array.isArray(turn)) continue;
+        /* [4] is the turn's own time, [seconds, nanos] — found on a real
+           account (2026-10-08). Without it every Gemini card read "Created —"
+           and every hover label had no time to give. Both halves of the turn
+           take it: the answer arrives seconds after, and no finer figure is
+           published. Anything that is not a plausible epoch stays 0. */
+        const at = geminiAt(turn, [4, 0]);
+        const turnTs = typeof at === "number" && at > 1e9 && at < 4e9 ? Math.floor(at) : 0;
         const ask = String(geminiAt(turn, [2, 0, 0]) || "").trim();
-        if (ask) msgs.push({ r: "user", t: ask, ts: 0 });
+        if (ask) msgs.push({ r: "user", t: ask, ts: turnTs });
         // The first candidate is the one the page shows; the rest are alternate
         // drafts the reader never saw.
         const best = geminiAt(turn, [3, 0, 0]);
         // Index 22 is where a "card" answer keeps its text instead of index 1.
         const reply = geminiText(geminiAt(best, [1])) || geminiText(geminiAt(best, [22]));
-        if (reply) msgs.push({ r: "assistant", t: reply, ts: 0 });
+        if (reply) msgs.push({ r: "assistant", t: reply, ts: turnTs });
       }
       return msgs;
     }

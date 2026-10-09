@@ -196,10 +196,24 @@
     const ids = (el.getAttribute("data-chatgpt-search-message-ids") || "").trim().split(/\s+/);
     return ids[ids.length - 1] || "";
   }
+  /* A generated picture is not a search unit: it is its own block, tagged with
+     the tool message's id and holding the image gallery, beside the units of
+     its turn. It is ChatGPT's reply as far as the reader is concerned, so it is
+     a message here too, keyed by that id — the archive keeps the same message. */
+  const GPT_GALLERY = '[data-testid="generated-image-gallery"]';
   function chatgptUnits() {
     const els = [];
-    for (const el of document.querySelectorAll(GPT_UNIT)) {
+    for (const el of document.querySelectorAll(GPT_UNIT + ", [data-chatgpt-search-message-ids]")) {
       if (el.closest("#lct-freeze, #lct-old-turns")) continue;
+      if (!el.hasAttribute("data-content-search-unit-key")) {
+        if (el.closest(GPT_UNIT) || !el.querySelector(GPT_GALLERY)) continue;
+        const ids = (el.getAttribute("data-chatgpt-search-message-ids") || "").trim().split(/\s+/);
+        const gid = ids[ids.length - 1] || "";
+        el.setAttribute("data-lct-gallery", "");
+        if (gid && el.getAttribute("data-lct-mid") !== gid) el.setAttribute("data-lct-mid", gid);
+        els.push(el);
+        continue;
+      }
       if (!chatgptUnitRole(el)) continue;
       const id = chatgptUnitId(el);
       if (id && el.getAttribute("data-lct-mid") !== id) el.setAttribute("data-lct-mid", id);
@@ -372,10 +386,10 @@
       // The layer-1 selector, quoted for the health check: matched messages that
       // do NOT satisfy it mean this platform has drifted and we are running on
       // a fallback layer — working, but on borrowed time.
-      canon: "[data-message-id], [data-message-author-role], [data-content-search-unit-key$=':user'], [data-content-search-unit-key$=':assistant']",
+      canon: "[data-message-id], [data-message-author-role], [data-content-search-unit-key$=':user'], [data-content-search-unit-key$=':assistant'], [data-lct-gallery]",
       // Where a POSITIVE role marker exists for both sides, so the health
       // report can say whether roles were read or guessed.
-      roleCanon: "[data-message-author-role], [data-content-search-unit-key$=':user'], [data-content-search-unit-key$=':assistant']",
+      roleCanon: "[data-message-author-role], [data-content-search-unit-key$=':user'], [data-content-search-unit-key$=':assistant'], [data-lct-gallery]",
       hostRe: /(^|\.)chatgpt\.com$|(^|\.)chat\.openai\.com$/,
       messages() {
         // Layer 0 (2026-10 onward): role-suffixed search units. See chatgptUnits().
@@ -418,7 +432,8 @@
         if (own) return own.getAttribute("data-message-author-role") === "user" ? "user" : "assistant";
         const r = el.querySelector("[data-message-author-role]");
         if (r) return r.getAttribute("data-message-author-role") === "user" ? "user" : "assistant";
-        // 2026-10 DOM: the role is the suffix of the unit's key.
+        // 2026-10 DOM: the role is the suffix of the unit's key; a picture block is ChatGPT's.
+        if (el.closest && el.closest("[data-lct-gallery]")) return "assistant";
         const unit = el.closest && el.closest(GPT_UNIT);
         const ur = unit && chatgptUnitRole(unit);
         if (ur) return ur;

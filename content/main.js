@@ -544,9 +544,13 @@
     // Only offered where the host actually pages its transcript; everywhere
     // else the whole conversation is already mounted and the button would be a
     // lie. Placed here, once, because the bar is built once.
-    if (!self.LCTHistoryLoader.supported(adapter)) {
-      bar.querySelector('[data-act="history"]').remove();
-    }
+    /* Mounting older turns into the host's page is retired (1.0.3). Measured
+       on a real ChatGPT chat: 102 rows of text with every picture stripped,
+       placed above a transcript the host then loads ITSELF, and the host's own
+       older-message loader failed under them ("Try again"). Every site Tvara
+       supports loads its own history now, and the map, its message panel and
+       search reach every message without touching the host's DOM. */
+    bar.querySelector('[data-act="history"]').remove();
     bar.addEventListener("click", (e) => {
       const act = e.target.closest("button[data-act]");
       if (act) {
@@ -712,7 +716,7 @@
 
   function applyState() {
     self.LCTRecall.setTempArchive(state.enabled && state.tempArchive);
-    self.LCTHistoryLoader.setAuto(state.enabled && state.mountHistory && toolsUnlocked());
+    self.LCTHistoryLoader.setAuto(false);   // retired — see the toolbar note
     self.LCTTimeline.setDisplay(state.enabled && state.time && toolsUnlocked());
     self.LCTOutline.setEnabled(state.enabled && toolsUnlocked());
     /* Free everywhere, like the minimap. The card shows four integers about the
