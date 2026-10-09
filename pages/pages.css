@@ -402,7 +402,8 @@ button.is-pro-locked:disabled { opacity: .58; color: var(--ink-faint); backgroun
   font: 12.5px/1 var(--mono);
   transition: border-color .3s var(--ease), background .3s var(--ease);
 }
-.secure-input:focus { border-color: rgb(255 93 138 / .6); background: rgb(255 255 255 / .06); }
+/* focus brightens the field; a pink box around a password reads as an error */
+.secure-input:focus { border-color: rgb(255 255 255 / .32); background: rgb(255 255 255 / .06); }
 .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; }
 
 .file-control {
@@ -625,7 +626,7 @@ kbd {
   font: 400 10px/1.3 var(--mono);
 }
 
-:is(button, input, .r-item, .file-control):focus-visible {
+:is(button, input:not(.secure-input), .r-item, .file-control):focus-visible {
   outline: 1px solid rgb(255 93 138 / .85);
   outline-offset: 3px;
 }

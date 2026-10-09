@@ -1333,3 +1333,6 @@ hand. That is the only way branded Chrome runs this code now.
   Recall and Bridge exist because their text field is focused, so the generic
   2px accent `:focus-visible` ring around that field said nothing and read as a
   pink rectangle in the bar. Checkboxes and buttons keep the ring.
+- **A password field focuses neutral.** `.secure-input` (archive backup) wore a
+  rose border plus the accent outline when focused, which reads as an error on
+  the one field where an error is plausible. Focus now brightens the border.
