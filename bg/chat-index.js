@@ -119,7 +119,9 @@ function indexFromMsgs(msgs, opts = {}) {
     // Without ids the map keys a row by its place — see seed() in minimap.js.
     if (!m || (!m.i && !opts.keepAll)) continue;
     const t = clean(m.t || "");
-    out.push({ i: m.i || "", r: roles[i] === "user" ? "user" : "assistant", n: t.length, c: IDX_CODE.test(t) ? 1 : 0, s: t.slice(0, IDX_SNIP) });
+    // ts: the provider's own send time, in seconds, where it published one —
+    // what the hover label reads before it would ever say "time unknown".
+    out.push({ i: m.i || "", r: roles[i] === "user" ? "user" : "assistant", n: t.length, c: IDX_CODE.test(t) ? 1 : 0, s: t.slice(0, IDX_SNIP), ...(m.ts ? { ts: m.ts } : {}) });
   }
   return out;
 }
@@ -263,7 +265,12 @@ async function chatStats(host, path) {
       held,
       users,
       assistants: held - users,
-      createdAt: Number(rec.createdAt) || 0,
+      // A provider that lists no creation date (Gemini) still dated its first
+      // message; "Created —" on every card was a gap, not the truth.
+      createdAt: Number(rec.createdAt) || (() => {
+        const first = Array.isArray(rec.msgs) && rec.msgs.find((m) => m && Number(m.ts) > 0);
+        return first ? Number(first.ts) * 1000 : 0;
+      })(),
       updatedAt: Number(rec.updatedAt) || 0,
       title: String(rec.title || ""),
       /* What "longest" is measured against. The card used to compare the chat

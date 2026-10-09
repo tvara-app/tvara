@@ -435,13 +435,19 @@ async function importBatch(chats) {
       const richer = !previous || candidateCount > previous.n;
       const fixesIds = !!previous && previous.mv !== 1 &&
         chat.msgs.length > 0 && chat.msgs.every((m) => m && m.i);
+      /* Same rule for times: a copy that dates its messages where the stored one
+         dated none is a repair, not a rival revision. Gemini was archived for
+         months without them and every same-length re-read was refused as a tie. */
+      const fixesTimes = !!previous && Array.isArray(previous.msgs) && previous.msgs.length > 0 &&
+        previous.msgs.every((m) => !m || !Number(m.ts)) &&
+        chat.msgs.some((m) => m && Number(m.ts) > 0);
       // Restores and retries are merge operations: a stale snapshot must not
       // overwrite a newer local conversation that arrived in the meantime.
       // No write happens here — `ok` used to count it anyway, so a restore of
       // a backup that was already fully synced reported hundreds of chats
       // "added to the archive" that were, byte for byte, already there.
       if (previous && previous.n > 0 && candidateSource > 0 &&
-          previousSource > candidateSource && !richer && !fixesIds) {
+          previousSource > candidateSource && !richer && !fixesIds && !fixesTimes) {
         skipped++;
         stored.push(id);
         continue;
@@ -472,7 +478,7 @@ async function importBatch(chats) {
          (an edited message keeps the same count) exactly like the guard
          above does. */
       const ties = !!previous && previous.n > 0 && candidateCount === previous.n;
-      if (ties && !fixesIds && !(candidateSource > 0 && previousSource > 0 && candidateSource > previousSource)) {
+      if (ties && !fixesIds && !fixesTimes && !(candidateSource > 0 && previousSource > 0 && candidateSource > previousSource)) {
         skipped++;
         stored.push(id);
         continue;

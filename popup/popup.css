@@ -701,6 +701,8 @@ button.usage-switch:focus-visible { outline: 1px solid var(--ink-dim); outline-o
 .rows > .row-static,
 .rows > .row-panel,
 .rows > .row-button { grid-column: 1 / -1; }
+/* An odd switch out: the last toggle spans the pair rather than leaving a hole. */
+.rows > .row.row-full { grid-column: 1 / -1; }
 
 /* Everything in a row hangs off the TITLE's line, not off the middle of the
    row. Centring looks right until two rows differ in height — and they always

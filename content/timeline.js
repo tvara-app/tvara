@@ -73,11 +73,11 @@
     if (cached && (cached.fixed || !fresh)) return cached.k;
 
     const idEl =
-      el.hasAttribute && el.hasAttribute("data-message-id")
+      el.hasAttribute && (el.hasAttribute("data-message-id") || el.hasAttribute("data-lct-mid"))
         ? el
-        : el.querySelector && el.querySelector("[data-message-id]");
+        : el.querySelector && el.querySelector("[data-message-id], [data-lct-mid]");
     const id = idEl
-      ? idEl.getAttribute("data-message-id")
+      ? idEl.getAttribute("data-message-id") || idEl.getAttribute("data-lct-mid")
       : el.id && /^r_[0-9a-f]+$/i.test(el.id) ? el.id : "";
     if (id) {
       const k = "id:" + id;
@@ -228,9 +228,21 @@
 
   /* ---------- reading times back ---------- */
 
+  /* The archive's copy of this message, by provider id: the true send time and
+     the true position. Without it the label said "#3 · Time unknown (sent
+     before install)" on message 104 of a chat whose every time ChatGPT had
+     published. */
+  function archived(el) {
+    const k = keyOf(el);
+    if (!k || !k.startsWith("id:") || !self.LCTChatIndex || !self.LCTChatIndex.lookup) return null;
+    try { return self.LCTChatIndex.lookup(k.slice(3)); } catch (_) { return null; }
+  }
+
   function info(el) {
     const k = keyOf(el);
     if (exact[k]) return { t: exact[k], kind: "exact" };
+    const a = archived(el);
+    if (a && a.ts) return { t: a.ts, kind: "exact" };
     if (seen[k]) return { t: seen[k], kind: "seen" };
     return null;
   }
@@ -247,10 +259,14 @@
     if (!display) return "";
     // "#n" — the message's stable position in the conversation, so users can
     // reference "my #57" and find it again in the outline
-    const ix = indexMap.get(el);
+    // The position among MOUNTED messages is only the true one when the whole
+    // chat is mounted; the archive knows the real one, and no number beats a
+    // wrong one.
+    const a = archived(el);
+    const ix = a ? a.at : (adapter && adapter.virtualizes ? undefined : indexMap.get(el));
     const id = ix === undefined ? "" : "#" + (ix + 1) + " · ";
     const inf = info(el);
-    if (!inf) return id + "Time unknown (sent before install)";
+    if (!inf) return id + "Time not recorded";
     return inf.kind === "exact"
       ? id + "Sent " + fmt(inf.t)
       : id + "First seen " + fmt(inf.t) + " · this device";

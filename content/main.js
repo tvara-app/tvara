@@ -544,9 +544,13 @@
     // Only offered where the host actually pages its transcript; everywhere
     // else the whole conversation is already mounted and the button would be a
     // lie. Placed here, once, because the bar is built once.
-    if (!self.LCTHistoryLoader.supported(adapter)) {
-      bar.querySelector('[data-act="history"]').remove();
-    }
+    /* Mounting older turns into the host's page is retired (1.0.3). Measured
+       on a real ChatGPT chat: 102 rows of text with every picture stripped,
+       placed above a transcript the host then loads ITSELF, and the host's own
+       older-message loader failed under them ("Try again"). Every site Tvara
+       supports loads its own history now, and the map, its message panel and
+       search reach every message without touching the host's DOM. */
+    bar.querySelector('[data-act="history"]').remove();
     bar.addEventListener("click", (e) => {
       const act = e.target.closest("button[data-act]");
       if (act) {
@@ -584,7 +588,11 @@
         flashNote(res.whole
           ? `Backed up the whole conversation: ${res.count.toLocaleString()} messages, ` +
             `including ${(res.count - res.loaded).toLocaleString()} this page had not loaded`
-          : `Backed up the ${res.count.toLocaleString()} loaded messages`);
+          /* A backup that is a slice must say how to get the rest, or it reads
+             as "the whole chat" until the day somebody needs it. */
+          : `Backed up the ${res.count.toLocaleString()} messages loaded on this page. ` +
+            `For the whole chat, scroll up to load older messages first` +
+            ((state.pro || trialActive()) ? "." : `, or use Pro (${self.LCTProduct.PRICE} once) to back it all up from your archive.`));
       }).catch(() => { /* the download either happened or it did not */ });
     });
   }
@@ -708,7 +716,7 @@
 
   function applyState() {
     self.LCTRecall.setTempArchive(state.enabled && state.tempArchive);
-    self.LCTHistoryLoader.setAuto(state.enabled && state.mountHistory && toolsUnlocked());
+    self.LCTHistoryLoader.setAuto(false);   // retired — see the toolbar note
     self.LCTTimeline.setDisplay(state.enabled && state.time && toolsUnlocked());
     self.LCTOutline.setEnabled(state.enabled && toolsUnlocked());
     /* Free everywhere, like the minimap. The card shows four integers about the
@@ -759,7 +767,7 @@
   // chrome://extensions/shortcuts — the only cross-OS/cross-browser-safe way).
   // The background relays the pressed command through storage; the ACTIVE tab
   // (the one the user is looking at) handles it. Gating + locked-feedback here.
-  const TRIAL_NUDGE = "start the free 7-day trial in the extension popup.";
+  const TRIAL_NUDGE = "Start the free 7-day trial in the extension popup.";
   function dispatchCommand(name) {
     if (!state.enabled) return;
     if (name === "in-chat-search") {
@@ -949,6 +957,7 @@
         if (el.hasAttribute?.(a)) s += `[${a}=${String(el.getAttribute(a) || "").slice(0, 24)}]`;
       }
       if (el.hasAttribute?.("data-message-id")) s += "[data-message-id]";
+      if (el.hasAttribute?.("data-content-search-unit-key")) s += "[unit:" + String(el.getAttribute("data-content-search-unit-key")).split(":").pop() + "]";
       if (el.classList?.contains("sr-only") || el.getAttribute?.("aria-hidden") === "true") s += "[hidden]";
       // The question the counts raised: are these nodes MESSAGES, or the empty
       // placeholders a virtualizing host leaves behind for turns it has not

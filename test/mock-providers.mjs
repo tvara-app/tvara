@@ -332,7 +332,13 @@ export function startProviders(port = 8931) {
             const shelf = chats
               .filter((c) => pinnedIds.includes(c.id) === wantPinned)
               .slice().sort((a, b) => b.updatedAt - a.updatedAt);
-            out = [null, null, shelf.map((c) => [
+            /* Real Gemini (2026-10) answers at most 100 rows whatever count is
+               asked for, and puts a continuation token at [1]; the next page is
+               asked for with that token at payload[1]. */
+            const size = state.gemini.pageSize || 100;
+            const from = typeof payload[1] === "string" ? Number(payload[1].slice(5)) || 0 : 0;
+            const next = from + size < shelf.length ? "page:" + (from + size) : null;
+            out = [null, next, shelf.slice(from, from + size).map((c) => [
               // `blankIds` models the field moving: rows still arrive, but the
               // adapter can name none of them. That must be reported, not
               // rendered as an account with no conversations in it.

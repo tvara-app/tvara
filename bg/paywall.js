@@ -92,9 +92,49 @@ async function tasteRead() {
  * is spent only on success is one that never runs out for anybody whose
  * searches fail.
  */
-async function tasteSpend() {
+/* ONE search is one thing somebody looked for, not one keystroke. The page
+   searches as you type (180ms debounce), and at an ordinary 250ms a key the
+   three free searches were gone before the first word was finished — measured
+   on a real archive: "label" spent all three and the card closed on "lab".
+   Adding or removing letters from the query just searched, within a short
+   window, is the same search and costs nothing. Session storage: a worker
+   restart forgets it, which costs at most one more search. */
+const TASTE_REFINE_KEY = "lct-taste-last";
+const TASTE_REFINE_MS = 90 * 1000;
+const tasteNorm = (q) => String(q || "").trim().toLowerCase().replace(/\s+/g, " ");
+
+async function tasteRefines(q) {
+  const now = tasteNorm(q);
+  if (!now) return false;
+  let last = null;
+  try { last = (await chrome.storage.session.get(TASTE_REFINE_KEY))[TASTE_REFINE_KEY]; } catch { /* none */ }
+  if (!last || Date.now() - last.at > TASTE_REFINE_MS) return false;
+  // Asking the very same thing again is a new search, not an edit of one —
+  // otherwise a spent allowance could be replayed for ever.
+  if (now === last.q) return false;
+  return now.startsWith(last.q) || last.q.startsWith(now);
+}
+
+/* The query that SPENT the search is the anchor; refinements move the clock,
+   never the anchor, so a chain of edits cannot walk from one word to another. */
+async function tasteNote(q, refined) {
+  const now = tasteNorm(q);
+  if (!now) return;
+  let anchor = now;
+  if (refined) {
+    try { anchor = ((await chrome.storage.session.get(TASTE_REFINE_KEY))[TASTE_REFINE_KEY] || {}).q || now; } catch { /* none */ }
+  }
+  try { await chrome.storage.session.set({ [TASTE_REFINE_KEY]: { q: anchor, at: Date.now() } }); } catch { /* none */ }
+}
+
+async function tasteSpend(q) {
   const held = await tasteRead();
+  if (await tasteRefines(q)) {
+    await tasteNote(q, true);
+    return { granted: true, refined: true, ...held };
+  }
   if (held.left <= 0) return { granted: false, ...held };
+  await tasteNote(q);
   const rec = { used: held.used + 1, at: Date.now() };
   try { await chrome.storage.sync.set({ [TASTE_KEY]: rec }); } catch { /* quota */ }
   try { await chrome.storage.local.set({ [TASTE_KEY]: rec }); } catch { /* dead context */ }

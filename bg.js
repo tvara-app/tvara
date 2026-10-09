@@ -461,7 +461,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if ((msg && msg.type) !== "recall-search") {
           return { err: "locked", feature, reason: gate.reason };
         }
-        taste = await tasteSpend();
+        taste = await tasteSpend(msg.q);
         if (!taste.granted) return { err: "locked", feature, reason: gate.reason, taste };
       }
     }

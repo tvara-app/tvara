@@ -3,7 +3,7 @@
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA26+guhHml/CClIKXeYELInJxS2CHBRNAFaaI7A6yVP/jZxkHtXcx+cYdaY8G2GQwilewKZtpwpVvY0k2xy2n/IPSduu2diMeQO/RmtmjKoG+r3+rdGPsJt+qbO8rkLdaSVRDoM36d5TMYIkQZdezjZ5RksQ6ybcIl2z0CqAk0IwCN1yusvkFUB3pNhIi5YB6Wg1siY0uu7hWclXvDMCc+I8Es53XFo9LKCMmLyA/AzC0Iea2AkJu9ITJnS4Hg7xae2aDh+OXoh8SfoVBMUZFbjjFAy4dUs19F+3SjtgGo81Jb7fsBlGRix4Ub0u46y4dmjMrSZ22Hi4aFmwr3zrN/wIDAQAB",
   "name": "Tvara: Long AI Chat Speed, Search & Backup",
   "short_name": "Tvara",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Keep long AI chats fast, searchable and backed up locally—without deleting messages or sending chat text to us.",
   "permissions": [
     "alarms",

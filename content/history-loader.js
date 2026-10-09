@@ -1011,8 +1011,13 @@
     try {
       for (const n of clone.querySelectorAll("[id]")) n.removeAttribute("id");
       clone.removeAttribute("id");
-      for (const n of clone.querySelectorAll("[data-message-id]")) n.removeAttribute("data-message-id");
-      clone.removeAttribute("data-message-id");
+      // Every attribute an adapter selects a host turn by, or this copy is counted as one.
+      const HOST_TURN_ATTRS = ["data-message-id", "data-lct-mid", "data-content-search-unit-key",
+        "data-chatgpt-selection-message-id", "data-chatgpt-search-message-ids", "data-turn-key"];
+      for (const a of HOST_TURN_ATTRS) {
+        for (const n of clone.querySelectorAll("[" + a + "]")) n.removeAttribute(a);
+        clone.removeAttribute(a);
+      }
       // Copy buttons, regenerate, feedback, avatars: inert here and misleading.
       for (const n of clone.querySelectorAll(CONTROL_SEL)) n.remove();
       const host = textHost(clone);
@@ -1843,7 +1848,7 @@
           if (el) return el;
           if (!target.id) return null;
         }
-        const direct = document.querySelector('[data-message-id="' + CSS.escape(target.id) + '"]');
+        const direct = document.querySelector('[data-message-id="' + CSS.escape(target.id) + '"], [data-lct-mid="' + CSS.escape(target.id) + '"]');
         if (direct) return direct;
         /* Rows mountArchive() rendered from the copy already on this machine.
            They deliberately carry data-lct-turn-id and NOT data-message-id —

@@ -302,8 +302,16 @@
           // "#n" = the message's position in the whole conversation — a stable
           // ID users can reference ("see my #57"). Media-only prompts (image/
           // file, no text) get a typed label instead of a blank row.
+          // On a host that mounts only its tail, mi is a place among the
+          // MOUNTED rows — "#2" on message 102. The archive knows the real one.
+          let at = mi;
+          try {
+            const id = self.LCTAdapters && self.LCTAdapters.stableKey(el);
+            const hit = id && self.LCTChatIndex && self.LCTChatIndex.lookup && self.LCTChatIndex.lookup(id);
+            if (hit) at = hit.at;
+          } catch (_) { /* the mounted place still stands */ }
           rows.push(entryRow({
-            text: "#" + (mi + 1) + " · " + snippetOrMedia(el),
+            text: "#" + (at + 1) + " · " + snippetOrMedia(el),
             cls: "lct-o-user", i: rows.length, key, el, onClick: () => jumpTo(el)
           }));
         } else {

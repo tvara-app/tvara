@@ -91,6 +91,17 @@
       if (!res || res.status !== "ok" || res.stale) {
         await idle();
         if (routeId() !== route) return hit;
+        /* The archived copy already holds every message the page is showing:
+           nothing on screen is newer than it, so there is nothing to correct.
+           Asking anyway re-downloaded the whole conversation on EVERY open —
+           a second request for the very chat the page was loading, against
+           the same per-account budget (ChatGPT answered both with 429). A
+           message the copy lacks — one just sent, or written elsewhere — still
+           brings the provider in. */
+        if (hit && coversPage(adapter, hit.entries)) {
+          if (!cache.has(route)) cache.set(route, hit);
+          return hit;
+        }
         const fresh = await ask(true);
         if (routeId() !== route) return hit;
         if (fresh && fresh.status === "ok" && Array.isArray(fresh.entries) && fresh.entries.length) {
@@ -110,6 +121,20 @@
     return run;
   }
 
+  function coversPage(adapter, entries) {
+    try {
+      const have = new Set(entries.map((e) => e && e.i).filter(Boolean));
+      if (!have.size) return false;
+      const els = adapter.messages();
+      if (!els.length) return false;
+      for (const el of els) {
+        const id = self.LCTAdapters.stableKey(el);
+        if (!id || !have.has(id)) return false;   // unkeyed or newer than the copy
+      }
+      return true;
+    } catch (_) { return false; }               // unsure: ask, as before
+  }
+
   const idle = () => new Promise((resolve) => {
     if (self.requestIdleCallback) requestIdleCallback(() => resolve(), { timeout: 1200 });
     else setTimeout(resolve, 120);
@@ -126,5 +151,21 @@
     return load(adapter, onIndex);
   }
 
-  self.LCTChatIndex = { load, forget, refresh, supported };
+  /* What the archive says about one message by its provider id, for this
+     route, from whatever is already cached — never a request. The position is
+     its place in the WHOLE conversation, which the page cannot know while it
+     mounts only the tail. */
+  function lookup(id) {
+    const hit = id && cache.get(routeId());
+    if (!hit || !Array.isArray(hit.entries)) return null;
+    let byId = hit.byId;
+    if (!byId) {
+      byId = new Map();
+      hit.entries.forEach((e, at) => { if (e && e.i) byId.set(e.i, { at, ts: Number(e.ts) || 0 }); });
+      hit.byId = byId;
+    }
+    return byId.get(id) || null;
+  }
+
+  self.LCTChatIndex = { load, forget, refresh, supported, lookup };
 })();

@@ -61,11 +61,11 @@
     const hit = keyMemo.get(el);
     if (hit !== undefined) return hit;
 
-    const withId = el.hasAttribute("data-message-id")
+    const withId = (el.hasAttribute("data-message-id") || el.hasAttribute("data-lct-mid"))
       ? el
-      : (el.querySelector && el.querySelector("[data-message-id]"));
+      : (el.querySelector && el.querySelector("[data-message-id], [data-lct-mid]"));
     let key = "";
-    if (withId) key = withId.getAttribute("data-message-id") || "";
+    if (withId) key = withId.getAttribute("data-message-id") || withId.getAttribute("data-lct-mid") || "";
     else if (el.id && R_ID.test(el.id)) key = el.id;
     else {
       const rid = el.querySelector && el.querySelector('[id^="r_"], [id^="R_"]');
@@ -171,6 +171,57 @@
   ].join(",");
   const CLAUDE_BODY = '[data-testid="user-message"], .font-user-message, .font-claude-message, .font-claude-response';
 
+  /* ChatGPT, since 2026-10: no data-message-id, no data-message-author-role,
+     no conversation-turn article. Each message is a "search unit" whose key
+     ends in its role — "<turn>:<n>:user" / "<turn>:<n>:assistant" — inside a
+     [data-turn-key] holding the USER message's id; the answer's id sits on
+     [data-chatgpt-selection-message-id] inside the unit. Verified against the
+     conversation API on a real 237-message chat: turn-key = the user node,
+     selection id = the assistant node, so archive ids and page ids agree.
+     The id is copied onto data-lct-mid — an attribute that is ours, never the
+     host's own data-message-id, which ChatGPT's code could still be reading. */
+  const GPT_UNIT = "[data-content-search-unit-key]";
+  function chatgptUnitRole(el) {
+    const key = (el.getAttribute && el.getAttribute("data-content-search-unit-key")) || "";
+    const m = /:(user|assistant)$/.exec(key);
+    return m ? m[1] : "";
+  }
+  function chatgptUnitId(el) {
+    if (chatgptUnitRole(el) === "user") {
+      const turn = el.closest("[data-turn-key]");
+      return (turn && turn.getAttribute("data-turn-key")) || "";
+    }
+    const sel = el.querySelector("[data-chatgpt-selection-message-id]");
+    if (sel) return sel.getAttribute("data-chatgpt-selection-message-id") || "";
+    const ids = (el.getAttribute("data-chatgpt-search-message-ids") || "").trim().split(/\s+/);
+    return ids[ids.length - 1] || "";
+  }
+  /* A generated picture is not a search unit: it is its own block, tagged with
+     the tool message's id and holding the image gallery, beside the units of
+     its turn. It is ChatGPT's reply as far as the reader is concerned, so it is
+     a message here too, keyed by that id — the archive keeps the same message. */
+  const GPT_GALLERY = '[data-testid="generated-image-gallery"]';
+  function chatgptUnits() {
+    const els = [];
+    for (const el of document.querySelectorAll(GPT_UNIT + ", [data-chatgpt-search-message-ids]")) {
+      if (el.closest("#lct-freeze, #lct-old-turns")) continue;
+      if (!el.hasAttribute("data-content-search-unit-key")) {
+        if (el.closest(GPT_UNIT) || !el.querySelector(GPT_GALLERY)) continue;
+        const ids = (el.getAttribute("data-chatgpt-search-message-ids") || "").trim().split(/\s+/);
+        const gid = ids[ids.length - 1] || "";
+        el.setAttribute("data-lct-gallery", "");
+        if (gid && el.getAttribute("data-lct-mid") !== gid) el.setAttribute("data-lct-mid", gid);
+        els.push(el);
+        continue;
+      }
+      if (!chatgptUnitRole(el)) continue;
+      const id = chatgptUnitId(el);
+      if (id && el.getAttribute("data-lct-mid") !== id) el.setAttribute("data-lct-mid", id);
+      els.push(el);
+    }
+    return els;
+  }
+
   /* One turn is one message. ChatGPT keys its DOM nodes by TRANSCRIPT message
      id, and one visible answer can hold several of them — a reasoning summary,
      a browsing block, the answer — each carrying data-message-id and each
@@ -180,13 +231,13 @@
     if (els.length < 2) return els;
     const stated = (el) => {
       const n = el.closest && el.closest("[data-message-author-role]");
-      return (n && n.getAttribute("data-message-author-role")) || "";
+      return (n && n.getAttribute("data-message-author-role")) || chatgptUnitRole(el);
     };
     const seen = new Map();               // turn element -> role -> the node kept
     const out = [];
     for (const el of els) {
       // An <article> until 2026-09; a <section> since, with the same testid.
-      const turn = el.closest && el.closest('article[data-testid^="conversation-turn"], article[data-turn], section[data-testid^="conversation-turn"], section[data-turn]');
+      const turn = el.closest && el.closest('article[data-testid^="conversation-turn"], article[data-turn], section[data-testid^="conversation-turn"], section[data-turn], [data-turn-key]');
       if (!turn) { out.push(el); continue; }
       // Keyed by role as well as by turn: two speakers under one container are
       // two messages whatever the container is called, and a build that grouped
@@ -335,16 +386,19 @@
       // The layer-1 selector, quoted for the health check: matched messages that
       // do NOT satisfy it mean this platform has drifted and we are running on
       // a fallback layer — working, but on borrowed time.
-      canon: "[data-message-id], [data-message-author-role]",
+      canon: "[data-message-id], [data-message-author-role], [data-content-search-unit-key$=':user'], [data-content-search-unit-key$=':assistant'], [data-lct-gallery]",
       // Where a POSITIVE role marker exists for both sides, so the health
       // report can say whether roles were read or guessed.
-      roleCanon: "[data-message-author-role]",
+      roleCanon: "[data-message-author-role], [data-content-search-unit-key$=':user'], [data-content-search-unit-key$=':assistant'], [data-lct-gallery]",
       hostRe: /(^|\.)chatgpt\.com$|(^|\.)chat\.openai\.com$/,
       messages() {
-        // Layer 1 (current, stable): div elements with data-message-id
-        // As of 2025–2026, ChatGPT wraps each message in a div with
-        // data-message-id and data-message-author-role attributes.
-        let els = Array.from(document.querySelectorAll('[data-message-id]'));
+        // Layer 0 (2026-10 onward): role-suffixed search units. See chatgptUnits().
+        let els = chatgptUnits();
+        if (els.length) return chatgptTurns(els);
+
+        // Layer 1 (2025 – 2026-09): div elements with data-message-id and
+        // data-message-author-role attributes.
+        els = Array.from(document.querySelectorAll('[data-message-id]'));
         if (els.length) return chatgptTurns(els);
 
         // Layer 2: data-message-author-role without data-message-id
@@ -378,6 +432,11 @@
         if (own) return own.getAttribute("data-message-author-role") === "user" ? "user" : "assistant";
         const r = el.querySelector("[data-message-author-role]");
         if (r) return r.getAttribute("data-message-author-role") === "user" ? "user" : "assistant";
+        // 2026-10 DOM: the role is the suffix of the unit's key; a picture block is ChatGPT's.
+        if (el.closest && el.closest("[data-lct-gallery]")) return "assistant";
+        const unit = el.closest && el.closest(GPT_UNIT);
+        const ur = unit && chatgptUnitRole(unit);
+        if (ur) return ur;
         // data-testid may encode the role (legacy)
         const tid = el.getAttribute("data-testid") || "";
         if (/user/i.test(tid)) return "user";

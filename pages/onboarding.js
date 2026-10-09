@@ -73,16 +73,16 @@
         why: `Sign in to ${label} in this browser and this fills in on its own.` };
     }
     if (why === "no working endpoint") {
-      return { text: "No limit to read", figure: false, pending: false,
+      return { text: "No usage limit shown", figure: false, pending: false,
         why: `${label} does not publish an allowance figure this browser can read.` };
     }
     if (record || why === "provider reported nothing") {
-      return { text: "Signed in · nothing published", figure: false, pending: false,
+      return { text: "Signed in · no usage limit shown", figure: false, pending: false,
         why: `${label} answered, but told us nothing about your remaining allowance.` };
     }
     // Asked, answered, and the answer carried no figure. Reaching here at all
     // means wasChecked, so there is no unchecked case left to fall through to.
-    return { text: "Nothing published yet", figure: false, pending: false,
+    return { text: "No usage limit shown yet", figure: false, pending: false,
       why: `${label} has been asked and has not published a figure yet.` };
   }
 
@@ -129,7 +129,7 @@
        server status page; what the reader wants to know is whether the thing
        has finished looking yet. */
     $("updated").textContent = figures
-      ? `${figures} of ${ids.length} sites answered`
+      ? `${figures} of ${ids.length} sites show a usage limit`
       : "Checking the sites you're signed in to…";
   }
 

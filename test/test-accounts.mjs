@@ -584,6 +584,21 @@ try {
     gemCp.length === 1 && gemCp[0][1].coverage === 5,
     JSON.stringify(gemCp.map(([, c]) => c.coverage)));
 
+  /* Found on a real 269-chat account (2026-10-08): Google pages the listing at
+     100 rows with a token at [1]. Only the first page was read, the listing was
+     called complete, and the sweep took everything older for a deletion. */
+  await providers.control({ gemini: { pageSize: 2 } });
+  await makeSweepDue();
+  await syncNow();
+  const pagedCp = await checkpointsFor("gemini");
+  t("M3b a paged listing is followed to its last page, not stopped at the first",
+    pagedCp.length === 1 && pagedCp[0][1].coverage === 5,
+    JSON.stringify(pagedCp.map(([, c]) => c.coverage)));
+  t("M3b and nothing past the first page is taken for a deletion",
+    !(await quarantined()).some((id) => id.includes("gemchat") || id.includes("gemlong")),
+    JSON.stringify(await quarantined()));
+  await providers.control({ gemini: { pageSize: 0 } });
+
   await providers.control({ gemini: { blankIds: true } });
   await makeSweepDue();
   await syncNow();

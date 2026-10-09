@@ -157,6 +157,33 @@ async function freshChat(id, overrides = {}) {
   }
 }
 
+// 3b. A same-length re-read that DATES messages the stored copy never dated is
+//     a repair (Gemini, 2026-10-08: archived for months with every ts 0, and
+//     every re-read refused as a tie). A same-length copy that adds nothing is
+//     still refused.
+{
+  const id = "gemini.google.com/app/c_times";
+  const base = { id, host: "gemini.google.com", path: "/app/c_times", platform: "Gemini", title: "t",
+    createdAt: 0, updatedAt: 5, sourceUpdatedAt: 0 };
+  const undated = [{ r: "user", t: "first question here", ts: 0 }, { r: "assistant", t: "first answer here", ts: 0 }];
+  const dated = [{ r: "user", t: "first question here", ts: 1790701404 }, { r: "assistant", t: "first answer here", ts: 1790701404 }];
+  try {
+    await ctx.importBatch([{ ...base, msgs: undated }]);
+    await ctx.importBatch([{ ...base, msgs: dated }]);
+    let after = null;
+    await ctx.scanChats((v) => { if (v.id === id) after = v; });
+    t("importBatch() accepts a same-length copy that dates undated messages",
+      !!after && after.msgs.every((m) => m.ts === 1790701404), JSON.stringify(after && after.msgs));
+    await ctx.importBatch([{ ...base, msgs: undated }]);
+    let again = null;
+    await ctx.scanChats((v) => { if (v.id === id) again = v; });
+    t("…and an undated same-length copy cannot wipe the times back out",
+      !!again && again.msgs.every((m) => m.ts === 1790701404), JSON.stringify(again && again.msgs));
+  } catch (e) {
+    t("importBatch() accepts a same-length copy that dates undated messages", false, e.message);
+  }
+}
+
 // 4. Schema-version mismatch: fake-indexeddb starts a fresh, unversioned
 //    database per process — this exercises bg.js's own onupgradeneeded path
 //    (DB_VERSION bump from nothing to whatever bg.js declares), which is the

@@ -2035,6 +2035,29 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
   t("B2j a two-message chat still has a map",
     await gptPage.locator("#lct-minimap").isVisible());
   await gptPage.close();
+
+  /* ---------- B2u ChatGPT's 2026-10 transcript: role-suffixed units --------
+     Found on a real account: ChatGPT dropped data-message-id and
+     data-message-author-role together, the adapter fell to its structural
+     layer, saw 7 of a chat's messages, guessed every role and keyed none —
+     so no map jump, no archive match, no send time. */
+  const unitPage = await ctx.newPage();
+  trackErrors(unitPage);
+  await unitPage.goto("http://127.0.0.1:8917/test/chatgpt-units.html?lctAdapter=chatgpt");
+  await unitPage.waitForSelector("#lct-minimap", { timeout: 20000 });
+  await unitPage.waitForFunction(() =>
+    Number(document.getElementById("lct-mm-canvas")?.getAttribute("aria-valuemax") || 0) > 0,
+    null, { timeout: 8000 });
+  const units = await unitPage.evaluate(() => ({
+    ticks: Number(document.getElementById("lct-mm-canvas")?.getAttribute("aria-valuemax") || 0),
+    want: window.__fixtureTurns,
+    keyed: [...document.querySelectorAll("[data-lct-mid]")].map((el) =>
+      (el.hasAttribute("data-lct-gallery") ? "gallery" : el.getAttribute("data-content-search-unit-key").split(":").pop()) + "=" + el.getAttribute("data-lct-mid"))
+  }));
+  t("B2u role-suffixed units and a generated picture map as one tick each", units.ticks === units.want, JSON.stringify(units));
+  t("B2u each is keyed by the provider's own id: the user's by its turn, the answer's by its selection id, a picture by its tool message",
+    units.keyed.join(",") === "user=user-1,assistant=answer-1,user=user-2,assistant=answer-2,user=user-3,gallery=image-3", JSON.stringify(units));
+  await unitPage.close();
   await seeded.evaluate(() => window.__virtualHistory.resetMotion());
   await seeded.waitForTimeout(2000);
   const seedStill = await seeded.evaluate(() => ({
@@ -2321,241 +2344,28 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
     })).then((r) => r.state === "exhausted" && r.pillGone));
   await dead.close();
 
-  /* B2c — virtual-history backfill, the deliberate kind. ChatGPT's host
-     virtualizer mounts only the tail at first. Once asked, the loader must
-     reach the earliest turn, stop, and restore the reader without relying on
-     a magic scroll height. */
+  /* B2c — mounting older turns into the host's page is RETIRED (1.0.3).
+     Measured on a real ChatGPT chat: 102 archive rows with every picture
+     stripped, above a transcript the host then loads itself, and the host's own
+     older-message loader failing under them. So: an install that saved the old
+     setting as ON still mounts nothing, and the toolbar offers no button. */
   await pop.evaluate(() => chrome.storage.local.set({
     settings: { enabled: true, minimap: true, time: true, mountHistory: true }
   }));
-  /* B2c1 — the setting is ON and a long chat has just opened. The whole
-     conversation must arrive, and the reader must never see it happen. The walk
-     drives the host's scroller to the first turn a page at a time; what makes
-     that acceptable is makeFreeze() — a still clone covers the scroller, so the
-     pixels on screen do not change while it runs, and the reader is put back
-     before the clone comes down. Waiting for a hidden tab instead was tried and
-     it silently deleted the feature: this fixture is never hidden either. */
-  const armed = await ctx.newPage();
-  trackErrors(armed);
-  await armed.goto("http://127.0.0.1:8917/test/virtual-history.html");
-  await armed.waitForSelector("#lct-minimap", { timeout: 20000 });
-  const walked = await armed.evaluate(async () => {
-    const s = document.getElementById("virtual-scroller");
-    let sawFreeze = false;
-    for (let i = 0; i < 300; i++) {
-      if (document.getElementById("lct-freeze")) sawFreeze = true;
-      if (/^(complete|partial)$/.test(document.documentElement.dataset.lctHistoryState || "")) break;
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    await new Promise((r) => setTimeout(r, 500));
-    return {
-      sawFreeze,
-      state: document.documentElement.dataset.lctHistoryState || "(never started)",
-      mounted: document.querySelectorAll("[data-lct-message]").length,
-      loads: window.__virtualHistory.loads,
-      /* The reader opened the chat at the bottom, so the newest turn is what
-         they were looking at and what has to be in front of them afterwards.
-         Asserted as "still on screen" rather than as a pixel delta: measuring a
-         delta means measuring BEFORE the walk, and with no settle delay left
-         there is no longer a moment that is reliably before it. */
-      anchorOnScreen: (() => {
-        const el = document.querySelector('[data-message-id="virtual-240"]');
-        if (!el) return false;
-        const r = el.getBoundingClientRect();
-        return r.bottom > 0 && r.top < (window.innerHeight || s.clientHeight);
-      })(),
-      freezeGone: !document.getElementById("lct-freeze"),
-      visibility: s.style.visibility
-    };
-  });
-  t("B2c1 opening a long chat loads every older turn",
-    walked.state === "complete" && walked.mounted === 240 && walked.loads >= 10,
-    JSON.stringify(walked));
-  t("B2c1 …behind a freeze, and the reader is handed back the exact view",
-    walked.sawFreeze && walked.freezeGone && walked.visibility !== "hidden" &&
-    walked.anchorOnScreen,
-    JSON.stringify(walked));
-
-  /* B2c3 — the second chat in the same tab. startedRoutes stamps a route the
-     moment the walk begins, so anything scoped per-route wrongly leaves the
-     second conversation permanently unwalked. That is exactly what a
-     single-slot `pending` did before it was a Map, and nothing caught it. */
-  const twoRoutes = await armed.evaluate(async () => {
-    delete document.documentElement.dataset.lctHistoryState;
-    history.pushState({}, "", "?c=second");
-    window.dispatchEvent(new Event("popstate"));
-    for (let i = 0; i < 300; i++) {
-      if (/^(complete|partial)$/.test(document.documentElement.dataset.lctHistoryState || "")) break;
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    return {
-      state: document.documentElement.dataset.lctHistoryState || "(never started)",
-      href: location.search
-    };
-  });
-  t("B2c3 a second chat in the same tab is walked too, not stamped handled and abandoned",
-    twoRoutes.state === "complete" && twoRoutes.href === "?c=second",
-    JSON.stringify(twoRoutes));
-
-  /* B2c4 — the same walk on a host with no scroller of its own, so the
-     DOCUMENT scrolls. findScroller() answers document.scrollingElement there,
-     and the obvious freeze is catastrophic on that path: the element to hide is
-     <html>, the freeze shell is a CHILD of <html>, so hiding one hides the
-     other and the reader gets a blank page for the whole walk. It has to hide
-     <body> instead, which is the shell's sibling. */
-  const rooted = await ctx.newPage();
-  trackErrors(rooted);
-  await rooted.goto("http://127.0.0.1:8917/test/virtual-history.html?root=1");
-  await rooted.waitForSelector("#lct-minimap", { timeout: 20000 });
-  const rootWalk = await rooted.evaluate(async () => {
-    let sawFreeze = false, blanked = false, hidBody = false;
-    for (let i = 0; i < 300; i++) {
-      if (document.getElementById("lct-freeze")) {
-        sawFreeze = true;
-        if (document.documentElement.style.visibility === "hidden") blanked = true;
-        if (document.body.style.visibility === "hidden") hidBody = true;
-      }
-      if (/^(complete|partial)$/.test(document.documentElement.dataset.lctHistoryState || "")) break;
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    await new Promise((r) => setTimeout(r, 500));
-    return {
-      sawFreeze, blanked, hidBody,
-      state: document.documentElement.dataset.lctHistoryState || "(never started)",
-      mounted: document.querySelectorAll("[data-lct-message]").length,
-      bodyVisible: document.body.style.visibility !== "hidden",
-      freezeGone: !document.getElementById("lct-freeze")
-    };
-  });
-  t("B2c4 a document-scrolling host is walked to the first turn as well",
-    rootWalk.state === "complete" && rootWalk.mounted === 240, JSON.stringify(rootWalk));
-  t("B2c4 …and the freeze hides the body, never the page the copy is pinned to",
-    rootWalk.sawFreeze && rootWalk.hidBody && !rootWalk.blanked &&
-    rootWalk.bodyVisible && rootWalk.freezeGone, JSON.stringify(rootWalk));
-  await rooted.close();
-
-  await armed.close();
-
-  const virtual = await ctx.newPage();
-  trackErrors(virtual);
-  await virtual.goto("http://127.0.0.1:8917/test/virtual-history.html");
-  // The strip rests with its toolbar visibility:hidden until it is hovered, so
-  // this waits for the button to EXIST, and clicks it in the page.
-  await virtual.waitForSelector('#lct-export-bar [data-act="history"]', { state: "attached", timeout: 20000 });
-  // Asked for, out loud, by someone watching: the ⤒ button. The page moving is
-  // the answer to a question they just asked, not a thing that happened to them.
-  await virtual.evaluate(() => document.querySelector('#lct-export-bar [data-act="history"]').click());
-  await virtual.waitForFunction(() => document.documentElement.dataset.lctHistoryState === "complete", null, { timeout: 20000 });
-  const historyState = await virtual.evaluate(async () => {
-    const scroller = document.getElementById("virtual-scroller");
-    const anchor = document.getElementById(window.__virtualHistory.anchor);
-    const sr = scroller.getBoundingClientRect();
-    const ar = anchor.getBoundingClientRect();
-    const ids = [...document.querySelectorAll("[data-message-id]")].map((el) => el.getAttribute("data-message-id"));
-    const loadsAtFinish = window.__virtualHistory.loads;
-    await new Promise((resolve) => setTimeout(resolve, 800));
-    return {
-      count: ids.length,
-      unique: new Set(ids).size,
-      first: ids[0],
-      last: ids[ids.length - 1],
-      total: window.__virtualHistory.total,
-      loadsAtFinish,
-      loadsAfterWait: window.__virtualHistory.loads,
-      anchorVisible: ar.bottom > sr.top && ar.top < sr.bottom
-    };
-  });
-  t("B2c initial loader mounts every virtual turn through the first",
-    historyState.count === historyState.total && historyState.first === "virtual-1" && historyState.last === "virtual-240",
-    JSON.stringify(historyState));
-  t("B2c initial loader keeps virtual turns unique", historyState.unique === historyState.total);
-  t("B2c initial loader restores the reader anchor", historyState.anchorVisible);
-  t("B2c initial loader stops once the oldest turn is mounted", historyState.loadsAtFinish === historyState.loadsAfterWait);
-  await virtual.waitForSelector('#lct-mm-canvas[role="slider"]', { timeout: 5000 });
-  t("B2c redesigned minimap exposes keyboard navigation semantics", true);
-  // Model the host recycling its old DOM window after the initial crawl. The
-  // navigator must retain the established full-map catalog instead of snapping
-  // back to only the last mounted page.
-  await virtual.evaluate(() => {
-    [...document.querySelectorAll("[data-message-id]")].slice(0, 200).forEach((el) => el.remove());
-  });
-  await virtual.waitForFunction(() => {
-    const map = document.getElementById("lct-mm-canvas");
-    return document.querySelectorAll("[data-message-id]").length === 40 && map?.getAttribute("aria-valuemax") === "240";
-  }, null, { timeout: 8000 });
-  t("B2c minimap keeps the complete map after the host recycles old DOM rows", true);
-  await virtual.close();
-
-  /* B2c2 — the same crawl on a host that assigns its messages NO id, while an
-     answer streams into the tail. That is every host except ChatGPT: Claude,
-     Gemini and Grok all page their transcript and none of them hands out a
-     data-message-id. With nothing stable to key a row by, the loader falls back
-     to the row's text — and if it lets the TAIL's text decide whether another
-     page arrived, each streamed token reads as a fresh page, the stall counter
-     never fills, and the crawl runs to its four-minute ceiling on a
-     conversation it finished mounting seconds ago. */
-  const bare = await ctx.newPage();
-  trackErrors(bare);
-  await bare.goto("http://127.0.0.1:8917/test/virtual-history.html?bare=1&stream=1&total=120&page=20");
-  await bare.waitForSelector('#lct-export-bar [data-act="history"]', { state: "attached", timeout: 20000 });
-  await bare.evaluate(() => document.querySelector('#lct-export-bar [data-act="history"]').click());
-  // 20s against a crawl that takes ~3s once the tail is ignored, and against a
-  // streamed prefix that keeps moving for ~40s if it is not. Neither side of
-  // that is close to the line.
-  let bareComplete = true;
-  try {
-    await bare.waitForFunction(() =>
-      document.documentElement.dataset.lctHistoryState === "complete", null, { timeout: 20000 });
-  } catch { bareComplete = false; }
-  t("B2c2 an id-less host with a streaming tail still concludes its crawl", bareComplete,
-    await bare.evaluate(() => document.documentElement.dataset.lctHistoryState || "(none)"));
-  const bareState = await bare.evaluate(() => ({
-    count: document.querySelectorAll("[data-lct-message]").length,
-    total: window.__virtualHistory.total,
-    first: window.__virtualHistory.first,
-    ids: document.querySelectorAll("[data-message-id]").length,
-    streamed: window.__virtualHistory.streamed
+  const retired = await ctx.newPage();
+  trackErrors(retired);
+  await retired.goto("http://127.0.0.1:8917/test/virtual-history.html");
+  await retired.waitForSelector("#lct-minimap", { timeout: 20000 });
+  await retired.waitForTimeout(3000);
+  const mounted = await retired.evaluate(() => ({
+    ourRows: document.querySelectorAll("[data-lct-old]").length,
+    button: !!document.querySelector('#lct-export-bar [data-act="history"]'),
+    state: document.documentElement.dataset.lctHistoryState || ""
   }));
-  // total + 1: every turn of the conversation, plus the answer that was still
-  // streaming underneath the crawl.
-  t("B2c2 it reached the oldest turn, not merely a quiet one",
-    bareState.count === bareState.total + 1 && bareState.first === 0, JSON.stringify(bareState));
-  // Both halves of the premise, asserted rather than assumed: a fixture that
-  // quietly kept its ids, or quietly stopped streaming, would pass the test
-  // above without ever exercising the path it exists for.
-  t("B2c2 the fixture really assigned no message ids", bareState.ids === 0, String(bareState.ids));
-  t("B2c2 the tail really was still streaming during the crawl", bareState.streamed > 0,
-    String(bareState.streamed));
-  await bare.close();
-
-  /* B2d — a reader who scrolls mid-crawl cancels it, and must not be punished
-     for it. The backfill used to be one-shot per route: one stray wheel and
-     that conversation never finished loading its history for the whole session.
-     It has to stand down immediately, then resume once the reader settles. */
-  const resumed = await ctx.newPage();
-  trackErrors(resumed);
-  await resumed.goto("http://127.0.0.1:8917/test/virtual-history.html");
-  await resumed.waitForSelector('#lct-export-bar [data-act="history"]', { state: "attached", timeout: 20000 });
-  await resumed.evaluate(() => document.querySelector('#lct-export-bar [data-act="history"]').click());
-  // Interrupt as soon as the crawl is genuinely under way.
-  await resumed.waitForFunction(() => document.documentElement.dataset.lctHistoryState === "running", null, { timeout: 15000 });
-  await resumed.evaluate(() => {
-    document.getElementById("virtual-scroller")
-      .dispatchEvent(new WheelEvent("wheel", { deltaY: 120, bubbles: true }));
-  });
-  await resumed.waitForFunction(() => document.documentElement.dataset.lctHistoryState === "cancelled", null, { timeout: 8000 });
-  const partial = await resumed.evaluate(() => document.querySelectorAll("[data-message-id]").length);
-  t("B2d a scroll during the crawl stands the loader down at once", true);
-  // Left alone, it picks up where the host now is and finishes the job.
-  await resumed.waitForFunction(() => document.documentElement.dataset.lctHistoryState === "complete", null, { timeout: 30000 });
-  const finished = await resumed.evaluate(() => ({
-    count: document.querySelectorAll("[data-message-id]").length,
-    first: document.querySelector("[data-message-id]")?.getAttribute("data-message-id")
-  }));
-  t("B2d an interrupted backfill resumes and still reaches the first turn",
-    finished.count === 240 && finished.first === "virtual-1",
-    JSON.stringify({ partial, finished }));
-  await resumed.close();
+  t("B2c a saved 'load full history' setting mounts nothing into the host's page",
+    mounted.ourRows === 0 && !mounted.state, JSON.stringify(mounted));
+  t("B2c …and the toolbar no longer offers to mount older messages", !mounted.button, JSON.stringify(mounted));
+  await retired.close();
   await pop.evaluate(() => chrome.storage.local.set({
     settings: { enabled: true, minimap: true, time: true, mountHistory: false }
   }));
@@ -5907,7 +5717,7 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
   for (const [id, wants] of [
     ["plan", /Free, Trial or Pro/], ["pulse", /asleep/], ["settings", /Speed engine|off-screen/],
     ["minimap", /one bar per message|Minimap|thin strip/i], ["times", /send time/],
-    ["history", /older message back on the page|while you are reading/], ["temp", /temporary/i],
+    ["temp", /temporary/i], // "history" went with its switch in 1.0.3
     ["quota", /20%/], ["archive", /Total Recall/], ["core", /Archive|checks for new chats/],
     ["backup", /encrypted file|password/i],
     ["account", /Pro is one payment|trial/i], ["footer", /Health|Shortcuts/],

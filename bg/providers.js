@@ -46,11 +46,23 @@ function chatgptMsgs(conv) {
   for (const node of chatBranch(conv)) {
     const m = node && node.message;
     if (!m || !m.author) continue;
-    const role = m.author.role;
+    let role = m.author.role;
+    const parts = (m.content && m.content.parts) || [];
+    /* A generated picture is a TOOL message: the assistant's call to the image
+       tool is hidden, and what the reader sees as ChatGPT's reply is the tool's
+       answer, an image_asset_pointer addressed to "all". Dropped as machinery,
+       every image-generation chat archived its prompts and none of its replies:
+       the card read "You asked 22 · Replies 5" on a chat with 22 pictures in it.
+       Only a tool message made of pictures and nothing else becomes a turn. */
+    if (role === "tool") {
+      const pictures = parts.length > 0 && parts.every((p) =>
+        p && typeof p === "object" && /image_asset_pointer/.test(String(p.content_type || "")));
+      if (!pictures || (m.recipient && m.recipient !== "all")) continue;
+      role = "assistant";
+    }
     if (role !== "user" && role !== "assistant") continue;
     if (m.metadata && m.metadata.is_visually_hidden_from_conversation) continue;
     if (m.recipient && m.recipient !== "all") continue;      // a tool call, not a turn
-    const parts = (m.content && m.content.parts) || [];
     const text = parts.filter((p) => typeof p === "string").join("\n").trim();
     /* An image-only turn still occupies a row in the page and the map's
        positions have to match it, so empty text is kept — but ONLY when the
@@ -103,7 +115,8 @@ const GEMINI_RPC_USAGE = "jSf9Qc";    // allowance buckets
    that claim — without it the usage rpc is answered with nothing at all. */
 const GEMINI_EXT_USAGE = "[0]";
 const GEMINI_RPC_READ = "hNvQHb";     // read one conversation
-const GEMINI_LIST_MAX = 400;          // conversations asked for per shelf
+const GEMINI_LIST_MAX = 400;          // conversations asked for per page (Google answers ≤100)
+const GEMINI_LIST_PAGES = 60;         // pages read per shelf before the listing is called partial
 const GEMINI_TURN_MAX = 2000;         // turns asked for per conversation
 /* Gemini keeps pinned and unpinned conversations on separate shelves and one
    call returns only one of them. Both, or half a history goes unarchived —
@@ -1031,36 +1044,50 @@ const BG_ADAPTERS = [
       let sawRows = 0, named = 0, truncated = false, shelf = 0;
 
       for (const pinned of GEMINI_SHELVES) {
-        if (shelf++) await sleep(policyFor(this.host).listDelayMs);
-        const payloads = geminiPayloads(
-          await this.rpc(ctx, GEMINI_RPC_LIST, [GEMINI_LIST_MAX, null, [pinned, null, 1]]),
-          GEMINI_RPC_LIST);
-        // No envelope for the rpc we asked for is not an empty account — it is a
-        // transport or a shape this build no longer speaks.
-        if (!payloads.length) throw new BgError("shape", "provider listing not understood");
+        /* A shelf comes back a page at a time: Google answers at most 100 rows
+           whatever count is asked for, with a continuation token at [1]. Reading
+           only the first page archived the newest 100 of a 269-chat account and
+           called the listing complete, so the sweep took every older chat for a
+           deletion. Rows arrive newest first, so a delta stops at the first page
+           that reaches back past its window. */
+        let token = null, pages = 0, reachedWindow = false;
+        do {
+          if (shelf++) await sleep(policyFor(this.host).listDelayMs);
+          const payloads = geminiPayloads(
+            await this.rpc(ctx, GEMINI_RPC_LIST, [GEMINI_LIST_MAX, token, [pinned, null, 1]]),
+            GEMINI_RPC_LIST);
+          // No envelope for the rpc we asked for is not an empty account — it is a
+          // transport or a shape this build no longer speaks.
+          if (!payloads.length) throw new BgError("shape", "provider listing not understood");
 
-        let rowsHere = 0;
-        for (const payload of payloads) {
-          const rows = Array.isArray(payload) && Array.isArray(payload[2]) ? payload[2] : [];
-          for (const row of rows) {
-            if (!Array.isArray(row)) continue;
-            rowsHere++; sawRows++;
-            const cid = String(row[0] || "");
-            if (!cid) continue;
-            named++;
-            if (seen.has(cid)) continue;
-            seen.add(cid);
-            const updatedAt = geminiTime(row[5]) || Date.now();
-            if (sinceMs && updatedAt <= sinceMs) continue;
-            metas.push({ id: cid, title: String(row[1] || ""), createdAt: 0, updatedAt });
+          let rowsHere = 0, next = null;
+          for (const payload of payloads) {
+            if (!Array.isArray(payload)) continue;
+            if (typeof payload[1] === "string" && payload[1]) next = payload[1];
+            const rows = Array.isArray(payload[2]) ? payload[2] : [];
+            for (const row of rows) {
+              if (!Array.isArray(row)) continue;
+              rowsHere++; sawRows++;
+              const cid = String(row[0] || "");
+              if (!cid) continue;
+              named++;
+              if (seen.has(cid)) continue;
+              seen.add(cid);
+              const updatedAt = geminiTime(row[5]) || Date.now();
+              if (sinceMs && updatedAt <= sinceMs) { reachedWindow = true; continue; }
+              metas.push({ id: cid, title: String(row[1] || ""), createdAt: 0, updatedAt });
+            }
           }
-        }
-        // LIST_CHATS takes a COUNT, not a cursor. A shelf that returns exactly
-        // as many rows as it was asked for may have more behind it, and a
-        // listing that might be partial must never be called complete — the
-        // sweep would read everything it omitted as deleted upstream.
-        if (rowsHere >= GEMINI_LIST_MAX) truncated = true;
-        progress(metas.length, 0, `Listing chats… ${metas.length}`);
+          // A token that comes back unchanged, or a page with no rows, would loop
+          // forever; either ends the shelf.
+          token = next && next !== token && rowsHere ? next : null;
+          pages++;
+          progress(metas.length, 0, `Listing chats… ${metas.length}`);
+        } while (token && !reachedWindow && pages < GEMINI_LIST_PAGES);
+        // Stopped by the page ceiling with more behind it: a listing that might be
+        // partial must never be called complete — the sweep would read everything
+        // it omitted as deleted upstream.
+        if (token && !reachedWindow) truncated = true;
       }
 
       metas.sort((a, b) => b.updatedAt - a.updatedAt);
@@ -1163,14 +1190,21 @@ const BG_ADAPTERS = [
       for (let i = turns.length - 1; i >= 0; i--) {
         const turn = turns[i];
         if (!Array.isArray(turn)) continue;
+        /* [4] is the turn's own time, [seconds, nanos] — found on a real
+           account (2026-10-08). Without it every Gemini card read "Created —"
+           and every hover label had no time to give. Both halves of the turn
+           take it: the answer arrives seconds after, and no finer figure is
+           published. Anything that is not a plausible epoch stays 0. */
+        const at = geminiAt(turn, [4, 0]);
+        const turnTs = typeof at === "number" && at > 1e9 && at < 4e9 ? Math.floor(at) : 0;
         const ask = String(geminiAt(turn, [2, 0, 0]) || "").trim();
-        if (ask) msgs.push({ r: "user", t: ask, ts: 0 });
+        if (ask) msgs.push({ r: "user", t: ask, ts: turnTs });
         // The first candidate is the one the page shows; the rest are alternate
         // drafts the reader never saw.
         const best = geminiAt(turn, [3, 0, 0]);
         // Index 22 is where a "card" answer keeps its text instead of index 1.
         const reply = geminiText(geminiAt(best, [1])) || geminiText(geminiAt(best, [22]));
-        if (reply) msgs.push({ r: "assistant", t: reply, ts: 0 });
+        if (reply) msgs.push({ r: "assistant", t: reply, ts: turnTs });
       }
       return msgs;
     }

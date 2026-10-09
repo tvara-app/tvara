@@ -749,7 +749,7 @@
 
     const payload = await collectSnapshot();
     const { stampKey, stampSub } = await stampCreds();
-    const stamp = new Date().toISOString().slice(0, 10);
+    const stamp = ((d) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"))(new Date());   // the reader's date, not UTC's
 
     /* The user's own call, taken at their word and named in the filename so the
        file says what it is wherever it ends up. Still signed, so a restore
@@ -858,10 +858,15 @@
        somebody opening their own history found one-letter keys and no readable
        dates. Every field is spelled out here and every time is ISO 8601. */
     const iso = (ms) => (Number(ms) > 0 ? new Date(Number(ms)).toISOString() : null);
+    /* A message's `ts` is SECONDS (every provider reader floors to seconds);
+       read as milliseconds it dated every message January 1970. A figure too
+       small to be milliseconds is seconds — the few writers that store ms stay
+       right. */
+    const isoTs = (v) => { const n = Number(v); return n > 0 ? iso(n < 1e11 ? n * 1000 : n) : null; };
     const messageOut = (m, i) => ({
       index: i + 1,
       role: m && m.r === "user" ? "user" : "assistant",
-      at: iso(m && m.ts),
+      at: isoTs(m && m.ts),
       text: String((m && m.t) || ""),
       // Present only when true: a flag on every message is noise in a file
       // somebody reads.
@@ -879,7 +884,9 @@
         url: (host && self.LCTProduct && self.LCTProduct.chatUrl(host, path)) || (host ? `https://${host}${path}` : ""),
         title: String((chat && chat.title) || ""),
         createdAt: iso(chat && chat.createdAt),
-        updatedAt: iso(chat && chat.updatedAt),
+        // The provider's own revision where we have it: `updatedAt` is when THIS
+        // browser last wrote the record, which dated a 2024 chat "today".
+        updatedAt: iso((chat && Number(chat.sourceUpdatedAt)) || (chat && chat.updatedAt)),
         messageCount: Number(chat && chat.n) || msgs.length,
         // A title with no body is a chat whose text has not been fetched yet,
         // and a file that does not say so reads as a conversation that was lost.
@@ -948,10 +955,23 @@
             (pic[1] ? `<figcaption>${esc(pic[1])}</figcaption>` : "") + "</figure>");
           continue;
         }
-        out.push(`<p>${esc(chunk)}</p>`);
+        out.push(`<p>${prose(esc(chunk))}</p>`);
       }
     }
     return out.join("\n") || '<p class="none">(no text archived yet)</p>';
+  }
+
+  /* The readable page printed the model's markdown as markup — "## **2.
+     Evolution**" where a heading belongs. Applied to text that is ALREADY
+     escaped, and it only ever inserts fixed tags around what is there, so
+     nothing a chat contains can become markup of its own. */
+  function prose(escaped) {
+    return escaped
+      .replace(/^[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*$/gm, '<span class="sep"></span>')
+      .replace(/^#{1,6}[ \t]+(.+)$/gm, '<strong class="h">$1</strong>')
+      .replace(/^([ \t]*)[-*][ \t]+/gm, "$1• ")
+      .replace(/\*\*([^*\n][^\n]*?)\*\*/g, "<strong>$1</strong>")
+      .replace(/`([^`\n]+)`/g, "<code>$1</code>");
   }
 
   /* One formatter, reused. `toLocaleString()` builds an Intl formatter on every
@@ -990,7 +1010,7 @@
     parts.push(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Your AI archive — ${esc(made.toISOString().slice(0, 10))}</title>
+<title>Your AI archive — ${esc(((d) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"))(made))}</title>
 <style>
   :root { color-scheme: light dark; --ink:#12131a; --dim:#5c6070; --line:#e3e5ec; --bg:#fff; --card:#f7f8fb; --user:#2f6fed; }
   @media (prefers-color-scheme: dark) {
@@ -1017,6 +1037,9 @@
   .who { font-size: .75rem; font-weight: 700; letter-spacing:.06em; text-transform: uppercase; color: var(--dim); margin-bottom:.2rem; }
   .msg.user .who { color: var(--user); }
   .msg p { margin: 0 0 .6rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .msg p .sep { display: block; height: 0; border-top: 1px solid rgba(127,127,127,.3); margin: .4rem 0; }
+  .msg p strong.h { display: inline-block; font-size: 1.05em; margin-top: .3rem; }
+  .msg p code { font: .9em ui-monospace, SFMono-Regular, Menlo, monospace; background: rgba(127,127,127,.15); padding: 0 .25em; border-radius: 4px; }
   .msg .none { color: var(--dim); font-style: italic; }
   pre.code { background: var(--card); border:1px solid var(--line); border-radius: 8px; padding:.75rem .9rem; overflow-x:auto; font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
   figure { margin:.5rem 0; } figure img { max-width:100%; border-radius:8px; }
@@ -1123,7 +1146,7 @@
     });
   }
 
-  const stampToday = () => new Date().toISOString().slice(0, 10);
+  const stampToday = () => ((d) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"))(new Date());   // local, not UTC
 
   exporter("export-readable", (doc) => ({
     blob: new Blob(readableHtml(doc), { type: "text/html" }),

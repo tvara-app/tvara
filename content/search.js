@@ -265,6 +265,11 @@
     bar.classList.remove("lct-s-open");
     isOpen = false;
     if (lastHit) { lastHit.classList.remove("lct-hit"); lastHit = null; }
+    /* A hit further back than the page has loaded opens the message panel to
+       show it. Closing search left that panel over half the conversation,
+       taking the clicks meant for the chat (found on a real ChatGPT thread).
+       Done searching is done with what the search opened. */
+    try { if (self.LCTHistoryPanel && self.LCTHistoryPanel.isOpen) self.LCTHistoryPanel.close(); } catch (_) { /* not built */ }
     input.blur();
   }
 

@@ -86,9 +86,11 @@ function intervalFloor(host) {
      test/test-pacing.mjs as a pacer that never stops being refused at any limit.
      Bounded, so a host that refuses everything cannot slow this to a crawl for
      good — the cooldown is what handles a host that has stopped answering. */
+  // A host whose budget the page shares keeps its own floor whatever it has "earned".
+  const hostFloor = Math.max(BG_MIN_INTERVAL_MS, policyFor(host).floorMs || 0);
   return s.trip
-    ? Math.min(BG_FLOOR_MAX_MS, Math.max(BG_MIN_INTERVAL_MS, Math.round(s.trip / 0.75)))
-    : BG_MIN_INTERVAL_MS;
+    ? Math.min(Math.max(BG_FLOOR_MAX_MS, hostFloor), Math.max(hostFloor, Math.round(s.trip / 0.75)))
+    : hostFloor;
 }
 
 /* How many workers this host currently deserves. Read every iteration, not once
@@ -96,9 +98,10 @@ function intervalFloor(host) {
    their next turn instead of finishing a queue the host is already refusing. */
 function targetConcurrency(host) {
   const s = hostEntry(host);
-  const base = policyFor(host).concurrency;
+  const policy = policyFor(host);
+  const base = policy.concurrency;
   if (!s.concurrency) s.concurrency = base;
-  return Math.max(1, Math.min(base * BG_RAMP_CEILING, s.concurrency));
+  return Math.max(1, Math.min(base * (policy.noRamp ? 1 : BG_RAMP_CEILING), s.concurrency));
 }
 
 // Serializes request starts per host so minIntervalMs holds across all workers.
@@ -479,6 +482,12 @@ async function bgFetch(url, opts = {}) {
       const circuitOpen = await noteRateLimit(pace, retryAfterMs, attempt);
       lastRate = new BgError("rate", "rate-limited", { retryAfterMs, circuitOpen });
       if (circuitOpen) throw lastRate;
+      /* A reader's own request is not retried into a refusal. It fetches the
+         conversation the page itself is loading at that same moment, and a
+         second ask 700ms later (measured on a real ChatGPT account) spends the
+         page's budget, not ours. The map already drew from the archive copy;
+         the next open asks again. */
+      if (opts.foreground) throw lastRate;
       continue;   // retry in place so the caller's slot isn't burned
     }
     if (r.status === 401) throw new BgError("auth", "unauthorized", { status: 401 });

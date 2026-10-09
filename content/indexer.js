@@ -525,7 +525,10 @@
   }
 
   function open() {
+    const fresh = !panel;
     ensurePanel();
+    // a panel born open has no closed style to transition from: it popped in on first use
+    if (fresh) void panel.offsetWidth;
     panel.classList.add("lct-r-open");
     isOpen = true;
     input.focus();

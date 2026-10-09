@@ -1257,3 +1257,72 @@ at a fixture page (localhost only, guarded by the host in `detect()`).
 `test/real-chrome-check.mjs` and `test/real-chrome-session-ui.mjs` are the
 exceptions: they ATTACH over CDP to a Chrome you loaded the extension into by
 hand. That is the only way branded Chrome runs this code now.
+
+## Found on real accounts, 2026-10-08 (release 1.0.3)
+
+- **ChatGPT dropped `data-message-id` and `data-message-author-role`.** A message
+  is now a `[data-content-search-unit-key]` ending in `:user` / `:assistant`; the
+  user's id is the enclosing `[data-turn-key]`, the answer's is
+  `[data-chatgpt-selection-message-id]` (both checked against the conversation
+  API). The adapter copies the id onto `data-lct-mid` — OURS, never the host's
+  attribute — and every id lookup reads both. Without it the map saw 7 of 237
+  messages, guessed every role, and nothing matched the archive.
+- **ChatGPT's conversation budget is shared with the page.** The backfill at
+  320ms × 4 workers got the account 429'd and ChatGPT itself showed "Could not
+  load this conversation" — for a long while, even with Tvara switched off. The
+  host now runs one request at a time with a 20s floor and no ramp
+  (`floorMs`, `noRamp` in `BG_HOST_POLICY`); a reader's foreground request is
+  never retried into a 429. The archive is slower; the site never breaks.
+- **Gemini pages its listing at 100 rows** with a token at payload[1]. Reading
+  one page archived 100 of 269 chats and called the listing complete, so the
+  sweep took the rest for deletions. `list()` follows the token.
+- **One account must not speak for all.** A second Google account Gemini will not
+  serve no longer turns the whole row into "Gemini changed its API"; the row
+  says how many accounts could not be read, and the stored progress keeps the
+  thrown `reason` for support.
+- **A free search is a word, not a keystroke.** Search-as-you-type at a normal
+  250ms/key spent all three free searches on "lab". Refining the query that
+  spent one (adding or removing letters, 90s window, anchored) is free; an
+  exact repeat is not.
+- Hover label and outline numbers come from the archive (`LCTChatIndex.lookup`):
+  real send time, real position — not "#3 · Time unknown" on message 104.
+- Testing in a headed real Chrome: the human's own mouse sends pointerleave
+  (relatedTarget null) into the window. A hover test that "collapses" is often
+  that, not the product.
+- **A generated picture is ChatGPT's reply.** It is a `tool` message of
+  `image_asset_pointer` parts addressed to "all"; the page shows it as its own
+  `[data-testid="generated-image-gallery"]` block keyed by that tool message's
+  id. Dropped as machinery, image chats read "You asked 22 · Replies 5".
+- **Gemini dates every turn** at index 4 (`[seconds, nanos]`). Records from
+  before 1.0.3 had none; `geminiTimesOnce()` queues them once for the text queue
+  and `importBatch` takes a dated same-length copy as a repair (`fixesTimes`).
+- **An open does not re-download a chat the archive already covers.**
+  `coversPage()` in `content/chat-index.js`: if every mounted message id is in
+  the archived index, the provider is not asked. It was a second request for
+  the very chat the page was loading, against the same budget.
+- **"Load full history on open" and the ⤒ mount button are retired.** On a real
+  ChatGPT chat they put 102 picture-less rows above a transcript the host loads
+  itself, and the host's own older-message loader failed under them. Same
+  verdict as code-fold: it hurt the host page, so it is gone. The loader module
+  stays for the panel's markdown renderer.
+- Exports: message `ts` is SECONDS (`isoTs`); a chat's date is the provider's
+  `sourceUpdatedAt`, not the local write time; file names use the local date;
+  the HTML page renders headings/bold/bullets/code from already-escaped text.
+- The dense strip only re-follows the reading position after the READER moves
+  the page (`readerMovedPage`); host remounts alone used to snap a wheeled strip
+  back ("Message 178" at its top).
+- Test Chrome: `LCT_OFFSCREEN=1` is opt-in — Chrome 155/macOS quits when an
+  off-screen window is resized then closed.
+
+## Found while filming, 2026-10-09
+
+- **A transformed panel is a containing block.** `#lct-recall` carries a
+  `transform`, so its `::before` scrim (`position: fixed; inset: -20vh -20vw`)
+  was sized to the PANEL, not the viewport: a dimmed rectangle that stopped
+  mid-page. It is placed from the panel's centre and top instead.
+- **A panel born open never transitions.** `open()` built Recall and added
+  `lct-r-open` in one task, so the first open on every page popped in. A fresh
+  panel is flushed (`offsetWidth`) before the class goes on.
+- **A round keycap gets its depth from a shadow.** A thicker bottom border
+  kinked the pill outline at 2x; `#lct-recall kbd` is a circle for one glyph,
+  a pill for more, with an inset line underneath.

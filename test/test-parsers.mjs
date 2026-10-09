@@ -390,6 +390,30 @@ t("GPT an image-only turn survives, and says why it is empty",
   gptMedia.length === 2 && gptMedia[1].t === "" && gptMedia[1].m === 1,
   JSON.stringify(gptMedia));
 
+/* A generated picture is the TOOL's answer (live, 2026-10-08): the assistant's
+   call to the image tool is hidden behind a recipient, and the picture the
+   reader sees as ChatGPT's reply is a tool message addressed to "all". */
+const gptGen = chatgptMsgs({
+  current_node: "c",
+  mapping: Object.fromEntries([
+    node("a", null, { id: "a", author: { role: "user" }, recipient: "all",
+      content: { content_type: "text", parts: ["make it brighter"] }, create_time: 1 }),
+    node("b", "a", { id: "b", author: { role: "assistant" }, recipient: "t2uay3k.sj1i4kz",
+      content: { content_type: "code", text: "{}" }, create_time: 2 }),
+    node("c", "b", { id: "c", author: { role: "tool", name: "t2uay3k.sj1i4kz" }, recipient: "all",
+      content: { content_type: "multimodal_text", parts: [{ content_type: "image_asset_pointer" }] },
+      create_time: 3 })
+  ])
+});
+t("GPT a generated picture is ChatGPT's reply, keyed by the tool message's id",
+  gptGen.length === 2 && gptGen[1].r === "assistant" && gptGen[1].i === "c" && gptGen[1].m === 1,
+  JSON.stringify(gptGen));
+t("GPT a tool message that is text (a browsing result) is still machinery",
+  chatgptMsgs({ current_node: "z", mapping: Object.fromEntries([
+    node("q", null, { id: "q", author: { role: "user" }, recipient: "all", content: { content_type: "text", parts: ["hi"] }, create_time: 1 }),
+    node("z", "q", { id: "z", author: { role: "tool", name: "web" }, recipient: "all", content: { content_type: "text", parts: ["raw results"] }, create_time: 2 })
+  ]) }).length === 1);
+
 /* The same judgement on the way back OUT, for records written before the fetch
    made it: an empty message with no media flag is a placeholder, not a turn. */
 t("read drops a stored placeholder",

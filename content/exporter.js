@@ -150,7 +150,10 @@
       }
       lines.push(head, "", m.text, "");
     }
-    return lines.join("\n");
+    /* A list item whose text sits in a block (<li><p>…</p></li>, every host
+       does it) came out as "- " on one line and the words on the next — a
+       bullet with nothing on it. Join them. */
+    return lines.join("\n").replace(/^(\s*)- *\n+\s*(?=\S)/gm, "$1- ");
   }
 
   function toJSON(messages, whole) {
@@ -254,7 +257,7 @@
     }
 
     if (!messages.length) return { ok: false, reason: "no-messages" };
-    const stamp = new Date().toISOString().slice(0, 10);
+    const stamp = ((d) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"))(new Date());   // the reader's date, not UTC's
     if (format === "json") {
       download(toJSON(messages, whole), `${slugTitle()}-${stamp}.json`, "application/json");
     } else {
