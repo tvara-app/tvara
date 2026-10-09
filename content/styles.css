@@ -1013,8 +1013,14 @@
    click-outside-to-close path is untouched. */
 #lct-recall::before {
   content: "";
+  /* The panel's transform makes it the containing block: "fixed" resolves to
+     the panel. Placed from its centre and 10vh top it spans the viewport (2%
+     bleed for the open scale); an inset drew a box that ended mid-page. */
   position: fixed;
-  inset: -20vh -20vw;
+  left: calc(50% - 52vw);
+  width: 104vw;
+  top: -12vh;
+  height: 104vh;
   z-index: -1;
   pointer-events: none;
   opacity: 0;
@@ -1269,11 +1275,17 @@
 #lct-recall .lct-r-keys > span { display: inline-flex; align-items: center; gap: 5px; }
 #lct-recall .lct-r-keys i { font-style: normal; }
 #lct-recall kbd {
-  min-width: 17px;
-  padding: 3px 5px;
+  /* One glyph is a circle, more is a pill. Depth is an inset line, not a
+     thicker bottom border: uneven border widths kink a round outline. */
+  display: inline-grid;
+  place-items: center;
+  box-sizing: border-box;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
   border: 1px solid var(--lct-line);
-  border-bottom-width: 1.5px;
-  border-radius: var(--lct-radius);
+  border-radius: 999px;
+  box-shadow: inset 0 -1px 0 var(--lct-line);
   background: color-mix(in srgb, var(--lct-ink) 7%, transparent);
   color: var(--lct-ink);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -1473,6 +1485,7 @@ html[data-lct-history-state="running"] #lct-minimap { opacity: 1; }
 
 @media (max-width: 620px) {
   #lct-recall { top: 6vh; }
+  #lct-recall::before { top: -8vh; }
   #lct-recall .lct-r-when { display: none; }
   #lct-recall .lct-r-keys { display: none; }
   #lct-recall .lct-r-note { text-align: left; }

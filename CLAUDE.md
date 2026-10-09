@@ -1313,3 +1313,16 @@ hand. That is the only way branded Chrome runs this code now.
   back ("Message 178" at its top).
 - Test Chrome: `LCT_OFFSCREEN=1` is opt-in — Chrome 155/macOS quits when an
   off-screen window is resized then closed.
+
+## Found while filming, 2026-10-09
+
+- **A transformed panel is a containing block.** `#lct-recall` carries a
+  `transform`, so its `::before` scrim (`position: fixed; inset: -20vh -20vw`)
+  was sized to the PANEL, not the viewport: a dimmed rectangle that stopped
+  mid-page. It is placed from the panel's centre and top instead.
+- **A panel born open never transitions.** `open()` built Recall and added
+  `lct-r-open` in one task, so the first open on every page popped in. A fresh
+  panel is flushed (`offsetWidth`) before the class goes on.
+- **A round keycap gets its depth from a shadow.** A thicker bottom border
+  kinked the pill outline at 2x; `#lct-recall kbd` is a circle for one glyph,
+  a pill for more, with an inset line underneath.

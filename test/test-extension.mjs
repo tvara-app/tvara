@@ -5717,7 +5717,7 @@ t("A1e unavailable providers use a reset time, not a paywall lock or window swit
   for (const [id, wants] of [
     ["plan", /Free, Trial or Pro/], ["pulse", /asleep/], ["settings", /Speed engine|off-screen/],
     ["minimap", /one bar per message|Minimap|thin strip/i], ["times", /send time/],
-    ["history", /older message back on the page|while you are reading/], ["temp", /temporary/i],
+    ["temp", /temporary/i], // "history" went with its switch in 1.0.3
     ["quota", /20%/], ["archive", /Total Recall/], ["core", /Archive|checks for new chats/],
     ["backup", /encrypted file|password/i],
     ["account", /Pro is one payment|trial/i], ["footer", /Health|Shortcuts/],
